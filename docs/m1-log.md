@@ -312,9 +312,37 @@ cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 无窗口自检
 关键断言：`state.host = None`（销毁 sidecar）之后，`probe_native` 仍然成功并写入
 `origin: native` 的工具卡片——**这就是 M1 退出条件 2 的直接证明**。
 
-**尚未接线**：sidecar 的 `tool.register` 还没有进 Registry（当前 chat 仍用
-`host.invoke_as` 直调），所以 Registry 目前只治理 Native 工具。下一步（ADR-0006 切片 2）
-把 sidecar 注册也接进 `ToolRegistry`，并用 `invalidate_generation` 处理重启。
+### A7b 统一 Registry（2026-11-09）
+
+**目标**：让 sidecar 工具与原生工具进入**同一个** `ToolRegistry`，由同一个 `authorize` 闸门放行；
+并用 generation 处理崩溃与重启。
+
+**改动**：
+
+| 位置 | 改动 |
+|---|---|
+| `compat-dsh-host` | `tool_definitions()` 把注册映射成 `ToolDefinition{origin: Sidecar{generation}}`；generation 改由**宿主分配**（`node-0001`…），sidecar 只回声 —— 之前 sidecar 硬编码，重启会复用同一代，`invalidate_generation` 就失去意义 |
+| `plugin-host` | 暴露 `registry_mut()` 与 `invalidate_generation()`，让外部登记 sidecar 工具 |
+| `chat` | 启动时把 sidecar 工具登记进 Registry；每次 sidecar 调用先 `authorize`；`kill_sidecar()` 销毁进程并整代撤销；`restart_sidecar()` 新 generation + 重新登记 |
+
+**自检证据**（`chat --selftest`，4 轮 11 项）：
+
+```text
+用工具试一下        → 工具 probe_echo [sidecar] · 成功
+kill_sidecar()      → registry 里 probe_echo 消失、probe_native 仍在
+用原生工具          → 工具 probe_native [native] · 成功
+restart_sidecar()   → 新 generation 重新登记，probe_echo 恢复
+再次用工具          → 工具 probe_echo [sidecar] · 成功
+[selftest] persisted=.tmp/chat-selftest.jsonl replay_equal=true
+[selftest] PASS
+```
+
+**意义**：M1 退出条件 1 与 2 现在同时成立——**同一份 Log 里两种来源的工具卡片**，
+以及**杀 Sidecar 后原生工具仍可用**；且两条路径共用 `authorize`（Policy + schema）。
+
+**下一代 generation 的细节**：`SidecarHost` 用进程内 `AtomicU64` 生成 `node-0001`…
+并经 `runtime.hello` 传给 sidecar；如果 sidecar 自己生成，重启后可能撞号，
+导致 `invalidate_generation` 误伤新注册——这是接入 Registry 时才暴露的问题。
 
 ## 实验 B — Rust Cordis 选型（2026-11-09，已完成）
 

@@ -95,6 +95,28 @@ impl Plugin for ProbeNativePlugin {
     }
 }
 
+/// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
+fn spawn_sidecar() -> Option<SidecarHost> {
+    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    SidecarHost::spawn(
+        root.join("sidecar/probe-sidecar.mjs"),
+        root.join("sidecar/probe-plugin.mjs"),
+    )
+    .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
+    .ok()
+}
+
+/// 把 sidecar 注册映射进同一个 ToolRegistry。
+fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
+    for definition in host.tool_definitions() {
+        let name = definition.name.clone();
+        if let Err(err) = plugins.registry_mut().register(definition) {
+            eprintln!("[chat] 注册 sidecar 工具 `{name}` 失败: {err}");
+        }
+    }
+}
+
 impl ChatState {
     fn new(path: PathBuf) -> Self {
         let log = if path.exists() {
@@ -107,18 +129,13 @@ impl ChatState {
             SessionLog::new(SESSION_ID)
         };
 
-        let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .unwrap_or_else(|_| PathBuf::from("."));
-        let host = SidecarHost::spawn(
-            root.join("sidecar/probe-sidecar.mjs"),
-            root.join("sidecar/probe-plugin.mjs"),
-        )
-        .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
-        .ok();
-
+        let host = spawn_sidecar();
         let mut plugins = PluginHost::new(AllowAll);
         if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
             eprintln!("[chat] 原生插件加载失败: {err}");
+        }
+        if let Some(sidecar) = &host {
+            register_sidecar_tools(&mut plugins, sidecar);
         }
 
         Self {
@@ -128,6 +145,25 @@ impl ChatState {
             plugins,
             seq: 0,
         }
+    }
+
+    /// 模拟 Sidecar 崩溃：销毁进程 + 撤销该 generation 的全部工具。
+    fn kill_sidecar(&mut self) -> Option<String> {
+        let host = self.host.take()?;
+        let generation = host.generation().to_owned();
+        drop(host);
+        self.plugins.invalidate_generation(&generation);
+        Some(generation)
+    }
+
+    /// 重启 Sidecar：新 generation，重新注册工具。
+    fn restart_sidecar(&mut self) -> bool {
+        let Some(host) = spawn_sidecar() else {
+            return false;
+        };
+        register_sidecar_tools(&mut self.plugins, &host);
+        self.host = Some(host);
+        true
     }
 
     fn save(&self) {
@@ -216,66 +252,77 @@ impl ChatState {
                 }),
             ));
 
-            match self.host.as_mut() {
-                Some(host) => {
-                    match host.invoke_as(
-                        &call_id,
-                        "probe_echo",
-                        json!({ "text": text }),
-                        Duration::from_secs(5),
-                    ) {
-                        Ok(outcome) => {
-                            for (seq, chunk) in outcome.chunks.iter().enumerate() {
-                                let _ = self.log.append(EventSpec::ephemeral(
-                                    "tool.chunk",
-                                    &ts,
-                                    json!({ "call_id": call_id, "seq": seq, "text": chunk }),
-                                ));
+            // 统一闸门：sidecar 工具与原生工具走同一个 Registry 的 authorize。
+            let arguments = json!({ "text": text });
+            if let Err(err) = self.plugins.registry().authorize("probe_echo", &arguments) {
+                let _ = self.log.append(EventSpec::durable(
+                    "tool.aborted",
+                    &ts,
+                    json!({ "call_id": call_id, "reason": err.to_string() }),
+                ));
+                tool_summary = Some(format!("工具被拒绝：{err}"));
+            } else {
+                match self.host.as_mut() {
+                    Some(host) => {
+                        match host.invoke_as(
+                            &call_id,
+                            "probe_echo",
+                            arguments,
+                            Duration::from_secs(5),
+                        ) {
+                            Ok(outcome) => {
+                                for (seq, chunk) in outcome.chunks.iter().enumerate() {
+                                    let _ = self.log.append(EventSpec::ephemeral(
+                                        "tool.chunk",
+                                        &ts,
+                                        json!({ "call_id": call_id, "seq": seq, "text": chunk }),
+                                    ));
+                                }
+                                if outcome.terminal.kind == "tool.aborted" {
+                                    let _ = self.log.append(EventSpec::durable(
+                                        "tool.aborted",
+                                        &ts,
+                                        json!({
+                                            "call_id": call_id,
+                                            "reason": outcome.terminal.payload["reason"]
+                                                .as_str()
+                                                .unwrap_or("cancelled")
+                                        }),
+                                    ));
+                                    tool_summary = Some("工具被中止".to_owned());
+                                } else {
+                                    let content = outcome.terminal.payload["content"].clone();
+                                    let echo = content[0]["value"].clone();
+                                    let _ = self.log.append(EventSpec::durable(
+                                        "tool.result",
+                                        &ts,
+                                        json!({
+                                            "call_id": call_id,
+                                            "is_error": false,
+                                            "content": content
+                                        }),
+                                    ));
+                                    tool_summary = Some(format!("工具返回 {}", echo));
+                                }
                             }
-                            if outcome.terminal.kind == "tool.aborted" {
+                            Err(err) => {
                                 let _ = self.log.append(EventSpec::durable(
                                     "tool.aborted",
                                     &ts,
-                                    json!({
-                                        "call_id": call_id,
-                                        "reason": outcome.terminal.payload["reason"]
-                                            .as_str()
-                                            .unwrap_or("cancelled")
-                                    }),
+                                    json!({ "call_id": call_id, "reason": err.to_string() }),
                                 ));
-                                tool_summary = Some("工具被中止".to_owned());
-                            } else {
-                                let content = outcome.terminal.payload["content"].clone();
-                                let echo = content[0]["value"].clone();
-                                let _ = self.log.append(EventSpec::durable(
-                                    "tool.result",
-                                    &ts,
-                                    json!({
-                                        "call_id": call_id,
-                                        "is_error": false,
-                                        "content": content
-                                    }),
-                                ));
-                                tool_summary = Some(format!("工具返回 {}", echo));
+                                tool_summary = Some("工具调用失败".to_owned());
                             }
                         }
-                        Err(err) => {
-                            let _ = self.log.append(EventSpec::durable(
-                                "tool.aborted",
-                                &ts,
-                                json!({ "call_id": call_id, "reason": err.to_string() }),
-                            ));
-                            tool_summary = Some("工具调用失败".to_owned());
-                        }
                     }
-                }
-                None => {
-                    let _ = self.log.append(EventSpec::durable(
-                        "tool.aborted",
-                        &ts,
-                        json!({ "call_id": call_id, "reason": "sidecar unavailable" }),
-                    ));
-                    tool_summary = Some("Sidecar 未启动".to_owned());
+                    None => {
+                        let _ = self.log.append(EventSpec::durable(
+                            "tool.aborted",
+                            &ts,
+                            json!({ "call_id": call_id, "reason": "sidecar unavailable" }),
+                        ));
+                        tool_summary = Some("Sidecar 未启动".to_owned());
+                    }
                 }
             }
         }
@@ -478,8 +525,21 @@ fn selftest() -> i32 {
 
     state.submit("你好");
     state.submit("用工具试一下"); // sidecar
-    state.host = None; // 模拟 Sidecar 崩溃：Native 工具必须仍然可用
+
+    // 注册表里应当同时有 native 与 sidecar 工具。
+    let both_registered = state.plugins.registry().get("probe_native").is_some()
+        && state.plugins.registry().get("probe_echo").is_some();
+
+    // 模拟 Sidecar 崩溃：整代撤销，Native 必须仍然可用。
+    let killed = state.kill_sidecar().is_some();
+    let sidecar_tools_gone = state.plugins.registry().get("probe_echo").is_none()
+        && state.plugins.registry().get("probe_native").is_some();
     state.submit("用原生工具");
+
+    // 重启 Sidecar：新 generation 重新注册，sidecar 工具恢复。
+    let restarted = state.restart_sidecar();
+    let sidecar_tools_back = state.plugins.registry().get("probe_echo").is_some();
+    state.submit("再次用工具");
 
     let items = state.items();
     println!("[selftest] items={}", items.len());
@@ -487,13 +547,19 @@ fn selftest() -> i32 {
         println!("  {}", row_text(item));
     }
 
-    // 3 轮 = 3 用户 + 3 助手 + 2 工具卡片（sidecar 与 native 各一）
-    let ok = items.len() == 8
+    // 4 轮 = 4 用户 + 4 助手 + 3 工具卡片（sidecar、native、sidecar）
+    let ok = items.len() == 11
+        && both_registered
+        && killed
+        && sidecar_tools_gone
+        && restarted
+        && sidecar_tools_back
         && matches!(&items[3], Item::Tool(t) if t.origin == "sidecar"
             && t.state == ToolState::Settled { is_error: false })
         && matches!(&items[6], Item::Tool(t) if t.origin == "native"
             && t.state == ToolState::Settled { is_error: false })
-        && state.plugins.registry().get("probe_native").is_some();
+        && matches!(&items[9], Item::Tool(t) if t.origin == "sidecar"
+            && t.state == ToolState::Settled { is_error: false });
 
     // 重启：从磁盘重新加载，回放必须一致
     let reloaded = SessionLog::from_jsonl(

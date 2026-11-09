@@ -1,4 +1,4 @@
-﻿//! Native Plugin 宿主：加载、原子提交声明、卸载清理、调用分发。
+//! Native Plugin 宿主：加载、原子提交声明、卸载清理、调用分发。
 //!
 //! 这是 CPP-v1 的第一条真实路径（`rust-static`）。它目前是**最小生命周期**，
 //! 不含 Service 依赖图与 Effect 撤销——那部分按 ADR-0002 交给 `jincdream/cordis-rs`，
@@ -137,6 +137,16 @@ impl PluginHost {
 
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
+    }
+
+    /// 供外层把 Sidecar / MCP 工具登记进同一个注册表（ADR-0006 切片 2）。
+    pub fn registry_mut(&mut self) -> &mut ToolRegistry {
+        &mut self.registry
+    }
+
+    /// Sidecar 重启：整代撤销，Native 与 MCP 工具不受影响。
+    pub fn invalidate_generation(&mut self, generation: &str) -> usize {
+        self.registry.invalidate_generation(generation)
     }
 
     pub fn panels(&self) -> Vec<&PanelRegistration> {

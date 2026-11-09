@@ -35,6 +35,7 @@ pub enum HostError {
 #[derive(Debug, Clone)]
 pub struct Registration {
     pub name: String,
+    pub description: String,
     pub registration_id: String,
     pub plugin_id: String,
 }
@@ -113,7 +114,14 @@ impl SidecarHost {
             ready: Duration::ZERO,
         };
 
-        let hello = hello(&["tool.stream", "tool.cancel"]);
+        // 规范 §5：generation 由宿主分配，sidecar 只回声。
+        static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let generation = format!(
+            "node-{:04}",
+            NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let mut hello = hello(&["tool.stream", "tool.cancel"]);
+        hello.payload["generation"] = json!(generation);
         host.write(&hello)?;
         let ready = host.wait_for("runtime.ready", Duration::from_secs(10))?;
         if let Some(err) = ready.error {
@@ -122,10 +130,7 @@ impl SidecarHost {
                 message: err.message,
             });
         }
-        host.generation = ready.payload["generation"]
-            .as_str()
-            .unwrap_or("node-0001")
-            .to_owned();
+        host.generation = generation;
         host.ready = started.elapsed();
 
         host.collect_registrations(Duration::from_secs(2))?;
@@ -142,6 +147,27 @@ impl SidecarHost {
 
     pub fn registrations(&self) -> &[Registration] {
         &self.registrations
+    }
+
+    /// 把 sidecar 注册映射成 Registry 可登记的 `ToolDefinition`。
+    ///
+    /// 这是 slice 2 的关键：sidecar 工具与原生工具进入**同一个**注册表，
+    /// 由同一个 `authorize` 闸门放行。
+    pub fn tool_definitions(&self) -> Vec<dshr_tool_runtime::ToolDefinition> {
+        self.registrations
+            .iter()
+            .map(|reg| {
+                dshr_tool_runtime::ToolDefinition::new(
+                    reg.name.clone(),
+                    reg.description.clone(),
+                    dshr_tool_runtime::ToolOrigin::Sidecar {
+                        plugin_id: reg.plugin_id.clone(),
+                        registration_id: reg.registration_id.clone(),
+                        generation: self.generation.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn script(&self) -> &Path {
@@ -274,6 +300,10 @@ impl SidecarHost {
                         .as_str()
                         .unwrap_or_default()
                         .to_owned();
+                    let description = envelope.payload["description"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
                     let plugin_id = envelope.plugin_id.clone().unwrap_or_default();
                     self.seq += 1;
                     let registration_id = format!("reg-{}", self.seq);
@@ -284,6 +314,7 @@ impl SidecarHost {
                     self.write(&ack)?;
                     self.registrations.push(Registration {
                         name,
+                        description,
                         registration_id,
                         plugin_id,
                     });

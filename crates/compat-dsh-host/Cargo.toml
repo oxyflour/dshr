@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 dshr-compat-dsh-protocol = { path = "../compat-dsh-protocol" }
+dshr-tool-runtime = { path = "../tool-runtime" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

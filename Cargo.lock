@@ -987,6 +987,7 @@ dependencies = [
  "dshr-compat-dsh-protocol",
  "dshr-conversation-model",
  "dshr-session-store",
+ "dshr-tool-runtime",
  "serde",
  "serde_json",
  "thiserror",

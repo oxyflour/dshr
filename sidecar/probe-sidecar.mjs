@@ -1,4 +1,4 @@
-// Minimal DSH-compatible sidecar for the L1 unit-cost experiment.
+﻿// Minimal DSH-compatible sidecar for the L1 unit-cost experiment.
 // Speaks NDJSON on stdin/stdout per docs/spec/sidecar-rpc.md.
 //
 // It deliberately does NOT depend on DSH internals: the goal is to measure the
@@ -31,6 +31,8 @@ const send = (kind, requestId, payload, extra = {}) => {
 const handle = async (msg) => {
   switch (msg.kind) {
     case 'runtime.hello': {
+      // Generation is assigned by the Rust host (spec §5), not by us.
+      generation = msg.payload?.generation ?? generation
       if (msg.payload?.protocol_max < PROTOCOL_VERSION) {
         send('runtime.reject', msg.request_id, { reason: 'protocol mismatch' })
         process.exit(1)
