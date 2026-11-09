@@ -99,7 +99,10 @@ p50 稳定在 31.19–31.26。
 **结论**：虚拟化没问题，**每行元素数量是真正的预算消耗者**。ADC-v1 的元素集和会话渲染层
 应按"单行 ≤ 3 个文本段"设计；工具卡片等复杂内容要避免在滚动列表里逐帧重建。
 
-### A2 中文 IME —— 可运行，待人工验证
+### A2 中文 IME —— 可运行，缺陷已归档
+
+> 候选窗首次错位的问题已转入 [`issues/0001`](issues/0001-ime-candidate-first-composition.md)（Open）。
+> 本节只保留结论：编译/启动通过；首次组合输入候选窗位置错误，第二次起正常；缓解无效。
 
 GPUI（此 rev）没有内置 `TextInput` 元素，IME 必须通过 `EntityInputHandler` 自绘输入框实现。
 探针已就位：`tools/ime-probe`（vendor 自上游 `examples/input.rs`，Apache-2.0，改动仅去掉 wasm 字体加载）。
@@ -112,30 +115,35 @@ GPUI（此 rev）没有内置 `TextInput` 元素，IME 必须通过 `EntityInput
 | 候选窗定位 | **已知缺陷**，已加缓解（见下），待复测 |
 | 删除/选词/UTF-16 选区 | 未验证 |
 
-**根因分析**（读 gpui 源码得出，未打补丁验证）：
+根因分析、已尝试的缓解、下一步修复路径全部记在
+[`issues/0001`](issues/0001-ime-candidate-first-composition.md)，此处不重复。
 
-- `gpui_windows` 只在 `WM_IME_STARTCOMPOSITION` 时调 `retrieve_caret_position()`，
-  再用 `ImmSetCandidateWindow(CFS_CANDIDATEPOS)` 定位候选窗（`events.rs` 152 / 658–690）。
-- `retrieve_caret_position` 依赖 input handler 的 `selected_text_range` + `bounds_for_range`；
-  后者在 `last_layout` 缺失或与 `content` 不一致时返回 `None`（`input.rs` 的 `bounds_for_range`）。
-- 首次组合输入时若拿不到 bounds，就**不会调用** `ImmSetCandidateWindow`，IME 回落到默认位置
-  （屏幕右下）；第二次输入时布局已就绪，所以正常。
-- 上游示例从头到尾**没有调用** `Window::invalidate_character_coordinates()`
-  ——这个 API 正是"主动告知 IME 光标位置"的入口（`window.rs` 6944）。
+### A3 WebView2 —— 自动验证通过，叠层待人工确认
 
-**缓解措施**（已改探针，尚未复测）：在获得焦点时与鼠标按下时各调用一次
-`window.invalidate_character_coordinates()`，它在下一帧用 `selected_bounds` 调
-`update_ime_position`，把候选窗位置提前写好。
+**载体**：`tools/webview-probe`（vendor 自 `gpui-kit` `examples/webview`，加了一条故意压在页面上的
+GPUI 横幅，用来观察浮层是否被原生子窗口盖住）。
 
-**如果缓解无效**，下一层修复是给 `gpui_windows` 打补丁：在 `WM_IME_SETCONTEXT` 或焦点切换时
-也执行一次 `ImmSetCandidateWindow`（需要 fork 或 `[patch]`，成本较高，先验证缓解是否够）。
+**自动可验证部分（已通过）**：
 
-验证步骤与要观察的点写在 [`../tools/ime-probe/README.md`](../tools/ime-probe/README.md)。
-结论必须写回本节，不能用"能启动"替代"IME 可用"。
+| 项 | 结果 |
+|---|---|
+| WebView2 运行时 | 已安装 `151.0.4129.107` |
+| 构建 | 通过；冷构建 6 m 27 s；必须设 `GPUI_DISABLE_DIRECT_COMPOSITION=true`（上游要求） |
+| 启动 | 窗口存活 10 s 无崩溃 |
+| 页面加载 | `started` 2964 ms → `finished` 3230 ms（`https://example.com`） |
 
-### A3 WebView2 叠层 —— 未开始
+**待人工确认**（按上游文档的已知限制，先给出预期）：
 
-需要 `gpui-kit` 的 WebView 组件；已知上游限制：WebView 与 GPUI 内容同矩形，popover/dialog 无法可靠覆盖（PLAN §4.2 C）。实验要产出的是"能/不能 + 具体失效场景"。
+| 观察点 | 预期 |
+|---|---|
+| 页面是否可见 | 可见；不可见说明 DirectComposition 没关掉 |
+| 压在页面上的 GPUI 横幅 | **不可见**（原生子窗口在 GPUI 内容之上，同矩形遮挡） |
+| 窗口缩放 | 跟随；错位则记录尺寸 |
+| 点击页面后 Tab 回 GPUI 输入框 | 应可回；记录是否卡在页面 |
+| 容器小于页面时 | Windows 上原生视图**不裁剪**，会溢出容器 |
+| 125%/150% 缩放 | 记录模糊与尺寸偏差 |
+
+观察步骤见 [`../tools/webview-probe/README.md`](../tools/webview-probe/README.md)。
 
 ### A4 流式 Markdown —— 未开始
 
