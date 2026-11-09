@@ -108,9 +108,27 @@ GPUI（此 rev）没有内置 `TextInput` 元素，IME 必须通过 `EntityInput
 |---|---|
 | 编译 | 通过（edition 2024；上游用了 let-chains） |
 | 启动 | 通过（窗口存活 6 s 无崩溃） |
-| 中文组合输入 | **未验证**——需要真实 IME 键盘输入，脚本无法代替 |
-| 候选窗定位 | **未验证**（自绘输入框无原生候选窗，最大风险点） |
-| 删除/选词/UTF-16 选区 | **未验证** |
+| 中文组合输入 | **有人工实测**：首次候选窗出现在**桌面右下角**，第二次起才出现在光标旁 |
+| 候选窗定位 | **已知缺陷**，已加缓解（见下），待复测 |
+| 删除/选词/UTF-16 选区 | 未验证 |
+
+**根因分析**（读 gpui 源码得出，未打补丁验证）：
+
+- `gpui_windows` 只在 `WM_IME_STARTCOMPOSITION` 时调 `retrieve_caret_position()`，
+  再用 `ImmSetCandidateWindow(CFS_CANDIDATEPOS)` 定位候选窗（`events.rs` 152 / 658–690）。
+- `retrieve_caret_position` 依赖 input handler 的 `selected_text_range` + `bounds_for_range`；
+  后者在 `last_layout` 缺失或与 `content` 不一致时返回 `None`（`input.rs` 的 `bounds_for_range`）。
+- 首次组合输入时若拿不到 bounds，就**不会调用** `ImmSetCandidateWindow`，IME 回落到默认位置
+  （屏幕右下）；第二次输入时布局已就绪，所以正常。
+- 上游示例从头到尾**没有调用** `Window::invalidate_character_coordinates()`
+  ——这个 API 正是"主动告知 IME 光标位置"的入口（`window.rs` 6944）。
+
+**缓解措施**（已改探针，尚未复测）：在获得焦点时与鼠标按下时各调用一次
+`window.invalidate_character_coordinates()`，它在下一帧用 `selected_bounds` 调
+`update_ime_position`，把候选窗位置提前写好。
+
+**如果缓解无效**，下一层修复是给 `gpui_windows` 打补丁：在 `WM_IME_SETCONTEXT` 或焦点切换时
+也执行一次 `ImmSetCandidateWindow`（需要 fork 或 `[patch]`，成本较高，先验证缓解是否够）。
 
 验证步骤与要观察的点写在 [`../tools/ime-probe/README.md`](../tools/ime-probe/README.md)。
 结论必须写回本节，不能用"能启动"替代"IME 可用"。

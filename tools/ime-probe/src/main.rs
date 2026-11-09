@@ -125,6 +125,8 @@ impl TextInput {
         } else {
             self.move_to(self.index_for_mouse_position(event.position), window, cx)
         }
+        // 点击进入输入框时同样刷新 IME 坐标，避免第一次组合输入使用默认候选窗位置。
+        window.invalidate_character_coordinates();
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -820,6 +822,10 @@ fn run_example() {
         window
             .update(cx, |view, window, cx| {
                 window.focus(&view.text_input.focus_handle(cx), cx);
+                // 首次组合输入时 IME 候选窗会落到屏幕默认位置，因为 gpui 只在
+                // WM_IME_STARTCOMPOSITION 里查询光标矩形，而那一刻可能还没有可用的
+                // 光标 bounds。这里在获得焦点后主动刷新一次 IME 坐标（下一帧生效）。
+                window.invalidate_character_coordinates();
                 cx.activate(true);
             })
             .unwrap();
