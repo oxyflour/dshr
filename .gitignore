@@ -12,3 +12,6 @@ Thumbs.db
 
 # Throwaway probes (clones, scratch builds) — evidence is recorded in docs/decisions
 /_probe/
+
+# Standalone probe crates keep their own target dirs (~2 GB each)
+/tools/*/target/

@@ -1,0 +1,14 @@
+[package]
+name = "ime-probe"
+description = "M1 A2: 中文 IME 组合输入探针（vendored from zed gpui examples/input.rs）"
+version = "0.0.0"
+# 上游示例使用 edition 2024（let-chains），这里保持一致。
+edition = "2024"
+
+# Standalone: keep it out of the dshr workspace.
+[workspace]
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
+unicode-segmentation = "=1.13.3"

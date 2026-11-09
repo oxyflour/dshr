@@ -99,10 +99,21 @@ p50 稳定在 31.19–31.26。
 **结论**：虚拟化没问题，**每行元素数量是真正的预算消耗者**。ADC-v1 的元素集和会话渲染层
 应按"单行 ≤ 3 个文本段"设计；工具卡片等复杂内容要避免在滚动列表里逐帧重建。
 
-### A2 中文 IME —— 未开始
+### A2 中文 IME —— 可运行，待人工验证
 
-GPUI（此 rev）没有内置 `TextInput` 元素，IME 必须通过 `EntityInputHandler` 自绘输入框实现；
-`gpui/examples/input.rs` 提供了约 800 行的参考实现。下一步应基于它做最小 IME 探针，而不是先做完整输入框。
+GPUI（此 rev）没有内置 `TextInput` 元素，IME 必须通过 `EntityInputHandler` 自绘输入框实现。
+探针已就位：`tools/ime-probe`（vendor 自上游 `examples/input.rs`，Apache-2.0，改动仅去掉 wasm 字体加载）。
+
+| 项 | 状态 |
+|---|---|
+| 编译 | 通过（edition 2024；上游用了 let-chains） |
+| 启动 | 通过（窗口存活 6 s 无崩溃） |
+| 中文组合输入 | **未验证**——需要真实 IME 键盘输入，脚本无法代替 |
+| 候选窗定位 | **未验证**（自绘输入框无原生候选窗，最大风险点） |
+| 删除/选词/UTF-16 选区 | **未验证** |
+
+验证步骤与要观察的点写在 [`../tools/ime-probe/README.md`](../tools/ime-probe/README.md)。
+结论必须写回本节，不能用"能启动"替代"IME 可用"。
 
 ### A3 WebView2 叠层 —— 未开始
 
