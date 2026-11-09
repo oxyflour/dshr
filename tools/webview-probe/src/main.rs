@@ -1,3 +1,6 @@
+// M1 A3 探针：避免控制台窗口抢焦点/遮挡 GPUI 窗口，便于自动截图验证。
+#![windows_subsystem = "windows"]
+
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -30,10 +33,26 @@ pub struct Example {
 impl Example {
     pub fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
         let webview = cx.new(|cx| {
-            let builder = wry::WebViewBuilder::new().with_on_page_load_handler(|event, url| {
-                let phase = match event {
-                    wry::PageLoadEvent::Started => "started",
-                    wry::PageLoadEvent::Finished => "finished",
+            // 自检页面：把 UA / DPR / 视口尺寸通过 IPC 发回 Rust，
+            // 这样无需人眼也能确认 WebView2 引擎真的执行了 JS。
+            let self_check = r#"<html><body><h1>probe</h1><script>
+window.ipc.postMessage(JSON.stringify({
+  ua: navigator.userAgent,
+  dpr: window.devicePixelRatio,
+  w: window.innerWidth,
+  h: window.innerHeight,
+  title: document.title
+}));
+</script></body></html>"#;
+            let builder = wry::WebViewBuilder::new()
+                .with_html(self_check)
+                .with_ipc_handler(|request| {
+                    println!("[ipc] t={:.0}ms body={}", t_ms(), request.body());
+                })
+                .with_on_page_load_handler(|event, url| {
+                    let phase = match event {
+                        wry::PageLoadEvent::Started => "started",
+                        wry::PageLoadEvent::Finished => "finished",
                 };
                 println!("[webview] {phase} {url} t={:.0}ms", t_ms());
             });
@@ -46,10 +65,8 @@ impl Example {
         let address_input =
             cx.new(|cx| InputState::new(window, cx).default_value("https://example.com"));
 
-        let url = address_input.read(cx).value().clone();
-        webview.update(cx, |view, _| {
-            view.load_url(&url);
-        });
+        // 启动时不覆盖初始 HTML：自检脚本要在首屏执行，地址栏仅用于手动导航。
+        let _url = address_input.read(cx).value().clone();
 
         cx.new(|cx| {
             let this = Self {
@@ -195,7 +212,14 @@ fn main() {
         // This must be called before using any GPUI Component features.
         gpui_kit::init(cx);
 
-        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+        // Default WindowOptions 在本机得到一个 135×37 的窗口；
+        // 显式给 bounds，否则 GPUI 窗口不会拿到可用尺寸。
+        let bounds = Bounds::centered(None, size(px(1000.0), px(700.0)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        };
+        gpui_kit::open_window(options, cx, |window, cx| {
             Example::new(window, cx)
         })
         .expect("Failed to open window");

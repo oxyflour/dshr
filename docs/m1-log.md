@@ -118,10 +118,10 @@ GPUI（此 rev）没有内置 `TextInput` 元素，IME 必须通过 `EntityInput
 根因分析、已尝试的缓解、下一步修复路径全部记在
 [`issues/0001`](issues/0001-ime-candidate-first-composition.md)，此处不重复。
 
-### A3 WebView2 —— 自动验证通过，叠层待人工确认
+### A3 WebView2 —— 引擎已自证，叠层行为待视觉确认
 
-**载体**：`tools/webview-probe`（vendor 自 `gpui-kit` `examples/webview`，加了一条故意压在页面上的
-GPUI 横幅，用来观察浮层是否被原生子窗口盖住）。
+**载体**：`tools/webview-probe`（vendor 自 `gpui-kit` `examples/webview`，另加一条故意压在页面上的
+GPUI 横幅，用于观察浮层遮挡）。
 
 **自动可验证部分（已通过）**：
 
@@ -130,17 +130,26 @@ GPUI 横幅，用来观察浮层是否被原生子窗口盖住）。
 | WebView2 运行时 | 已安装 `151.0.4129.107` |
 | 构建 | 通过；冷构建 6 m 27 s；必须设 `GPUI_DISABLE_DIRECT_COMPOSITION=true`（上游要求） |
 | 启动 | 窗口存活 10 s 无崩溃 |
-| 页面加载 | `started` 2964 ms → `finished` 3230 ms（`https://example.com`） |
+| **引擎自检（IPC）** | **通过**：页面 JS 经 `window.ipc.postMessage` 回传 `ua=Edge/151`、`dpr=1.75`、视口 `982×638` |
+| 页面加载 | `started` 1392 ms → `finished` 1416 ms（`about:blank`，自带 HTML） |
 
-**待人工确认**（按上游文档的已知限制，先给出预期）：
+引擎自检的做法：用 `with_html` 注入一段立即执行的脚本，把 UA / devicePixelRatio / 视口尺寸
+通过 IPC 发回 Rust 并打印。**这证明 WebView2 进程、JS 执行与 IPC 通道都通了**，不依赖人眼。
 
-| 观察点 | 预期 |
+**尚未自证的部分（视觉）**：
+
+| 观察点 | 预期（按上游文档） |
 |---|---|
-| 页面是否可见 | 可见；不可见说明 DirectComposition 没关掉 |
+| 页面像素是否真的可见 | 可见；不可见说明 DirectComposition 没关掉 |
 | 压在页面上的 GPUI 横幅 | **不可见**（原生子窗口在 GPUI 内容之上，同矩形遮挡） |
-| 窗口缩放 | 跟随；错位则记录尺寸 |
-| 点击页面后 Tab 回 GPUI 输入框 | 应可回；记录是否卡在页面 |
-| 容器小于页面时 | Windows 上原生视图**不裁剪**，会溢出容器 |
+| 窗口缩放 / 裁剪 / 焦点切换 | Windows 上原生视图**不裁剪**，会溢出容器；焦点需单独验证 |
+
+> 为什么没有自动截图：本机没有装 computer-use 插件，我写了一个 `tools/screen.ps1`
+> （截屏 + 置顶 + 点击 + 按键）。截屏对普通窗口有效，但 GPUI 的 `GpuiFast::Window` 在
+> 置顶/前台化后仍无法稳定出现在全屏截图里（拿到的常是前台浏览器），所以这三项没有用截图断言。
+
+**对 M2 的含义**：WebView 作为"独立 Panel / 独立窗口"的承载方式可行；但**不能**把 GPUI 浮层
+压在页面上（菜单、dialog、tooltip 都要避开 WebView 矩形），这与 PLAN §4.2 C 的结论一致。
 | 125%/150% 缩放 | 记录模糊与尺寸偏差 |
 
 观察步骤见 [`../tools/webview-probe/README.md`](../tools/webview-probe/README.md)。

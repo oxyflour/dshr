@@ -23,7 +23,10 @@ tools\build-env.cmd cargo build --manifest-path tools\webview-probe\Cargo.toml
 | WebView2 运行时 | 已安装，`151.0.4129.107` |
 | 构建 | 通过（含 `GPUI_DISABLE_DIRECT_COMPOSITION=true`，上游要求） |
 | 启动 | 通过（窗口存活 10 s 无崩溃） |
-| 页面加载 | `started` 2964 ms → `finished` 3230 ms（`https://example.com`） |
+| **引擎自检（IPC）** | 页面 JS 回传 `ua=Edge/151`、`dpr=1.75`、视口 `982×638` |
+
+自检页面在 `with_html` 里注入，脚本立即执行并通过 `window.ipc.postMessage` 回报，
+因此不依赖人眼即可确认 WebView2 引擎、JS 与 IPC 通道都正常。
 
 ## 需要人工观察的部分（未验证）
 
