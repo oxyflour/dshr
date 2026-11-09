@@ -1,4 +1,4 @@
-//! M1 experiment A — GPUI 承载能力探针。
+﻿//! M1 experiment A — GPUI 承载能力探针。
 //!
 //! 当前目标：**拆解启动尖峰**（首帧后出现 1000–2000 ms 的空档）。
 //!
@@ -198,7 +198,7 @@ impl Render for BenchApp {
             }
         }
 
-        if self.frames <= 5 || self.frames % 10 == 0 {
+        if self.frames <= 5 || self.frames.is_multiple_of(10) {
             println!(
                 "frame={:3} t_ms={:8.2} dt_ms={:8.2} batch={} render_ms={:.2}",
                 self.frames,

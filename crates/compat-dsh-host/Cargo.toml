@@ -1,7 +1,11 @@
-﻿[package]
+[package]
 name = "dshr-compat-dsh-host"
 description = "Sidecar 生命周期、路由、重试、registration generation"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dshr-compat-dsh-protocol = { path = "../compat-dsh-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

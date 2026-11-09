@@ -1,7 +1,9 @@
-﻿[package]
+[package]
 name = "dshr-compat-dsh-protocol"
 description = "Sidecar IPC schema、错误码、版本协商、附件（spec/sidecar-rpc.md）"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true

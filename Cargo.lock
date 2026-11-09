@@ -983,10 +983,20 @@ version = "0.0.0"
 [[package]]
 name = "dshr-compat-dsh-host"
 version = "0.0.0"
+dependencies = [
+ "dshr-compat-dsh-protocol",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dshr-compat-dsh-protocol"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "dshr-compat-mcp"

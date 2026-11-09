@@ -200,9 +200,49 @@ GPUI 横幅，用于观察浮层遮挡）。
 结论与证据见 [`decisions/0002-cordis-rs-selection.md`](decisions/0002-cordis-rs-selection.md)。
 要点：两候选测试套件均全绿（dshbox 167 / jincdream 111），选 `jincdream/cordis-rs`。
 
-## 实验 C — Sidecar 真实单位成本 —— 未开始
+## 实验 C — Sidecar 单位成本（2026-11-09，协议层完成）
 
-需要一个真实 DSH 插件（带持久化 + 审批）作为样本，并在实现 L1 协议后进行。
+**问题**：L1 的真实成本在协议本身，还是在别处？
+
+**载体**：
+
+- `sidecar/probe-sidecar.mjs` + `sidecar/probe-plugin.mjs`：NDJSON over stdio 的最小 Sidecar，
+  插件以 `register(ctx)` 形式注册工具（模拟 DSH 插件形状，不依赖 Cordis）。
+- `crates/compat-dsh-protocol`：信封与错误码（5 个单元测试）。
+- `crates/compat-dsh-host`：spawn / 握手 / 注册 / invoke / cancel / kill。
+- `crates/compat-dsh-host/tests/l1_roundtrip.rs`：真实 Node 进程的端到端测试（5 个）。
+
+**测量结果**（本机 Windows，Node 24.14，50 次调用）：
+
+| 阶段 | 测量 | 说明 |
+|---|---|---|
+| spawn → `runtime.ready` | **53.1 ms** | 含 Node 启动与握手 |
+| 工具注册 | 3 个 | `probe_echo` / `probe_immediate` / `probe_slow` |
+| **纯协议 invoke（无工具逻辑）** | **p50 148 µs，p95 917 µs** | 一次请求-响应往返 |
+| 流式 invoke（3 chunk + 3×5ms sleep） | p50 47.1 ms | 时间几乎全在工具自己的 sleep |
+| 取消 → `tool.aborted` | **111 ms** | 工具按 200 ms 粒度轮询取消标志 |
+| 中途 kill | `Closed`（管道断开） | 在途调用不产生结果，符合规范 §10 |
+
+**结论**：
+
+1. **协议不是瓶颈**：纯往返不到 1 ms。L1 的 10–15 日估算应当理解为
+   "schema 校验 + 流式背压 + generation 失效 + 重注册 + 附件传递 + 崩溃恢复"的成本，
+   而不是 IPC 的速度成本。
+2. **成本在纪律上**。探针第一次运行时 `invoke` 全部超时，原因是 Sidecar 忘了在
+   `tool.chunk` / `tool.aborted` 的信封上带 `call_id`，Host 侧的关联过滤直接丢弃——
+   这正是规范 §5「身份全链路携带」要防的那类 bug。
+3. 另一个实现陷阱：async generator 的 `return` 值不会出现在 `for await` 里，
+   首版插件把结果放在 `return` 中导致结算丢失；改为"最后 yield 一个终态对象"。
+
+**M1 退出条件的覆盖度**：
+
+| 条件 | 状态 |
+|---|---|
+| JS 工具经 IPC 注册到 Rust | **达成**（host 维护 registration 列表并回填 registration_id） |
+| Rust 按名字调用 JS 工具 | **达成**（`probe_echo` / `probe_immediate` 端到端） |
+| 取消传播 | **达成**（111 ms 内由工具侧观察到） |
+| 崩溃隔离 | **达成**（kill 后调用报 Closed，不影响宿主进程） |
+| 经 Rust Tool Registry（schema + policy）调度 | **未做**（当前是 host 直调，Registry 集成留到 M2） |
 
 ## 附带基线 — Session Log
 
