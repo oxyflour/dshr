@@ -55,3 +55,5 @@ tools\build-env.cmd cargo build --workspace
 ## 当前状态
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
+
+**M1 进行中。** 实验 A1（10k 事件虚拟化）已通过：每帧只构造 24 行，稳态 17.0 ms/帧；实验 B（Cordis 选型）已完成。实验 A2（中文 IME）、A3（WebView2 叠层）与实验 C（Sidecar 成本）未开始。数据与复现命令见 [`docs/m1-log.md`](docs/m1-log.md)。

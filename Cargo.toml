@@ -7,5 +7,7 @@ version = "0.0.0"
 edition = "2021"
 
 [workspace.dependencies]
-# 外部依赖在 ADR-0001（GPUI pin）与 ADR-0002（Cordis 选型）转为 Accepted 之前一律不引入。
-# 引入时按 PLAN ADR-008 精确固定版本或 commit。
+# 精确版本（=）固定，见 PLAN ADR-008。升级必须连同 conformance 一起走。
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = "=1.0.154"
+thiserror = "=2.0.21"

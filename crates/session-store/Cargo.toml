@@ -1,7 +1,10 @@
-﻿[package]
+[package]
 name = "dshr-session-store"
 description = "append-only 事件日志、索引、回放、迁移、崩溃修复（spec/session-log.md）"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
