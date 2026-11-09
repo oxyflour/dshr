@@ -262,6 +262,17 @@ test result: ok. 1 passed
 | 回复不流式 | assistant 文本一次结算，没有逐字渲染 |
 | 无多会话 | 固定 `s-chat` 一个会话、一个固定文件 |
 
+**UI 路径的自动化验证**（不靠人眼）：启动 `chat.exe` 后，用
+`tools/screen.ps1 -Action keys -Text "hello`n"` 注入真实按键，然后检查落盘文件：
+
+```text
+{"type":"message.user", "payload":{"text":"hello"}}
+{"type":"message.assistant.settled", "payload":{"text":"收到：hello。当前是 mock agent，尚未接入 LLM。"}}
+```
+
+说明 `keystroke.key_char` → 输入框 → Enter 提交 → 写日志这条链路是通的，
+而不只是 `--selftest` 里直接调用 `submit()`。未覆盖：中文输入（见下表）。
+
 **运行**：
 
 ```powershell
