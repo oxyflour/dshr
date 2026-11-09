@@ -35,3 +35,4 @@
 | [0003-dsh-pin.md](0003-dsh-pin.md) | 锁定 DSH 版本与 vendored Cordis | Proposed | M0 |
 | [0004-adc-slot-contract.md](0004-adc-slot-contract.md) | ADC-v1 采用 slot 注册表而非组件清单 | Accepted | M0 |
 | [0005-no-web-shell.md](0005-no-web-shell.md) | 不做 Web 壳捷径 | Accepted | M0 |
+| [0006-next-step-native-plugin-registry.md](0006-next-step-native-plugin-registry.md) | M1 收尾顺序：先 Native Plugin + Tool Registry，LLM 往后 | Accepted | M1 |

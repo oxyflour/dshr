@@ -1,3 +1,415 @@
-﻿//! Tool schema、调度、并发、取消、Policy、结果规范化
+//! Tool Registry：注册、查找、Authority 校验（Policy + 参数 schema）。
+//!
+//! 设计要点（对应 PLAN §2.1 与 spec/cpp-v1.md §7）：
+//! - 工具来源是**一等的**：`Native` / `Sidecar` / `Mcp` 三种，注册表里必须能区分；
+//! - `Sidecar` 工具绑定 `generation`，generation 失效时整批撤销（规范 §5）；
+//! - 所有调用先过 `ToolPolicy` 再过参数 schema——**Policy 不能只在 UI 层做**。
+//!
+//! 执行本身（并发、超时、取消）不在这里：本 crate 只回答"能不能调用"。
 
 #![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+
+use serde_json::Value;
+use thiserror::Error;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolOrigin {
+    Native {
+        plugin_id: String,
+    },
+    Sidecar {
+        plugin_id: String,
+        registration_id: String,
+        generation: String,
+    },
+    Mcp {
+        server: String,
+    },
+}
+
+impl ToolOrigin {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Native { .. } => "native",
+            Self::Sidecar { .. } => "sidecar",
+            Self::Mcp { .. } => "mcp",
+        }
+    }
+
+    pub fn generation(&self) -> Option<&str> {
+        match self {
+            Self::Sidecar { generation, .. } => Some(generation),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub origin: ToolOrigin,
+    /// 完整 JSON Schema 子集：type / required / properties / additionalProperties / enum / items。
+    pub input_schema: Value,
+    pub timeout_ms: u64,
+}
+
+impl ToolDefinition {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        origin: ToolOrigin,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            origin,
+            input_schema: Value::Object(Default::default()),
+            timeout_ms: 120_000,
+        }
+    }
+
+    pub fn with_schema(mut self, schema: Value) -> Self {
+        self.input_schema = schema;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyDecision {
+    Allow,
+    /// 需要用户确认；Registry 不弹窗，只把决定交回调用方。
+    Ask,
+    Deny(String),
+}
+
+pub trait ToolPolicy {
+    fn check(&self, tool: &ToolDefinition, arguments: &Value) -> PolicyDecision;
+}
+
+/// 默认策略：全部允许（M1 用；M2 换成真实的审批策略）。
+#[derive(Debug, Default)]
+pub struct AllowAll;
+
+impl ToolPolicy for AllowAll {
+    fn check(&self, _tool: &ToolDefinition, _arguments: &Value) -> PolicyDecision {
+        PolicyDecision::Allow
+    }
+}
+
+/// 测试与演示用：按工具名拒绝。
+#[derive(Debug, Default)]
+pub struct DenyList(pub Vec<String>);
+
+impl ToolPolicy for DenyList {
+    fn check(&self, tool: &ToolDefinition, _arguments: &Value) -> PolicyDecision {
+        if self.0.iter().any(|name| name == &tool.name) {
+            PolicyDecision::Deny(format!("tool {} is denied by policy", tool.name))
+        } else {
+            PolicyDecision::Allow
+        }
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RegistryError {
+    #[error("tool `{0}` is already registered")]
+    Duplicate(String),
+    #[error("tool `{0}` is not registered")]
+    NotFound(String),
+    #[error("policy denied `{tool}`: {reason}")]
+    Denied { tool: String, reason: String },
+    #[error("tool `{tool}` needs approval before running")]
+    NeedsApproval { tool: String },
+    #[error("invalid arguments for `{tool}`: {reason}")]
+    InvalidArguments { tool: String, reason: String },
+}
+
+pub struct ToolRegistry {
+    tools: BTreeMap<String, ToolDefinition>,
+    policy: Box<dyn ToolPolicy>,
+}
+
+impl ToolRegistry {
+    pub fn new(policy: impl ToolPolicy + 'static) -> Self {
+        Self {
+            tools: BTreeMap::new(),
+            policy: Box::new(policy),
+        }
+    }
+
+    pub fn register(&mut self, definition: ToolDefinition) -> Result<(), RegistryError> {
+        if self.tools.contains_key(&definition.name) {
+            return Err(RegistryError::Duplicate(definition.name));
+        }
+        self.tools.insert(definition.name.clone(), definition);
+        Ok(())
+    }
+
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
+    /// Sidecar 重启：丢弃该 generation 的全部注册，返回被移除的数量。
+    pub fn invalidate_generation(&mut self, generation: &str) -> usize {
+        let before = self.tools.len();
+        self.tools
+            .retain(|_, tool| tool.origin.generation() != Some(generation));
+        before - self.tools.len()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
+        self.tools.get(name)
+    }
+
+    pub fn list(&self) -> Vec<&ToolDefinition> {
+        self.tools.values().collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
+    /// 调用前的唯一入口：先策略、再 schema，最后返回定义。
+    pub fn authorize(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<&ToolDefinition, RegistryError> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| RegistryError::NotFound(name.to_owned()))?;
+
+        match self.policy.check(tool, arguments) {
+            PolicyDecision::Allow => {}
+            PolicyDecision::Ask => {
+                return Err(RegistryError::NeedsApproval {
+                    tool: name.to_owned(),
+                })
+            }
+            PolicyDecision::Deny(reason) => {
+                return Err(RegistryError::Denied {
+                    tool: name.to_owned(),
+                    reason,
+                })
+            }
+        }
+
+        validate(&tool.input_schema, arguments).map_err(|reason| {
+            RegistryError::InvalidArguments {
+                tool: name.to_owned(),
+                reason,
+            }
+        })?;
+        Ok(tool)
+    }
+}
+
+/// 一个故意做小的 JSON Schema 子集校验器：
+/// 只支持 type / required / properties / additionalProperties / enum / items。
+/// 完整 JSON Schema 在 M2 换成成熟实现（见 spec/README.md 的依赖策略）。
+fn validate(schema: &Value, value: &Value) -> Result<(), String> {
+    let Some(object) = schema.as_object() else {
+        return Ok(());
+    };
+    if object.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(expected) = object.get("type").and_then(Value::as_str) {
+        let matches = match expected {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "boolean" => value.is_boolean(),
+            "number" => value.is_number(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "null" => value.is_null(),
+            other => return Err(format!("unsupported schema type `{other}`")),
+        };
+        if !matches {
+            return Err(format!("expected {expected}"));
+        }
+    }
+
+    if let Some(allowed) = object.get("enum").and_then(Value::as_array) {
+        if !allowed.contains(value) {
+            return Err(format!("value not in enum: {value}"));
+        }
+    }
+
+    if let Value::Object(map) = value {
+        if let Some(required) = object.get("required").and_then(Value::as_array) {
+            for name in required.iter().filter_map(Value::as_str) {
+                if !map.contains_key(name) {
+                    return Err(format!("missing required property `{name}`"));
+                }
+            }
+        }
+        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+            for (key, sub) in properties {
+                if let Some(sub_value) = map.get(key) {
+                    validate(sub, sub_value)?;
+                }
+            }
+            if object.get("additionalProperties") == Some(&Value::Bool(false)) {
+                for key in map.keys() {
+                    if !properties.contains_key(key) {
+                        return Err(format!("unexpected property `{key}`"));
+                    }
+                }
+            }
+        }
+    }
+
+    if let (Some(items), Some(array)) = (object.get("items"), value.as_array()) {
+        for item in array {
+            validate(items, item)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn native(name: &str) -> ToolDefinition {
+        ToolDefinition::new(
+            name,
+            "native probe tool",
+            ToolOrigin::Native {
+                plugin_id: "builtin.probe".to_owned(),
+            },
+        )
+    }
+
+    fn sidecar(name: &str, generation: &str) -> ToolDefinition {
+        ToolDefinition::new(
+            name,
+            "sidecar tool",
+            ToolOrigin::Sidecar {
+                plugin_id: "probe.plugin".to_owned(),
+                registration_id: "reg-1".to_owned(),
+                generation: generation.to_owned(),
+            },
+        )
+    }
+
+    #[test]
+    fn rejects_duplicate_registration() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry.register(native("probe_native")).unwrap();
+        assert_eq!(
+            registry.register(native("probe_native")).unwrap_err(),
+            RegistryError::Duplicate("probe_native".to_owned())
+        );
+    }
+
+    #[test]
+    fn unregister_is_idempotent() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry.register(native("a")).unwrap();
+        assert!(registry.unregister("a"));
+        assert!(!registry.unregister("a"));
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn generation_invalidation_drops_only_that_runtime() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry.register(native("native_a")).unwrap();
+        registry.register(sidecar("js_a", "node-0001")).unwrap();
+        registry.register(sidecar("js_b", "node-0002")).unwrap();
+
+        assert_eq!(registry.invalidate_generation("node-0001"), 1);
+        assert!(registry.get("native_a").is_some());
+        assert!(registry.get("js_a").is_none());
+        assert!(registry.get("js_b").is_some());
+    }
+
+    #[test]
+    fn policy_denies_before_schema_runs() {
+        let mut registry = ToolRegistry::new(DenyList(vec!["probe_native".to_owned()]));
+        registry
+            .register(native("probe_native").with_schema(json!({ "type": "object" })))
+            .unwrap();
+        let err = registry.authorize("probe_native", &json!({})).unwrap_err();
+        assert!(matches!(err, RegistryError::Denied { .. }));
+    }
+
+    #[test]
+    fn missing_required_argument_is_rejected() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry
+            .register(native("probe_native").with_schema(json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": { "path": { "type": "string" } }
+            })))
+            .unwrap();
+        let err = registry.authorize("probe_native", &json!({})).unwrap_err();
+        assert!(matches!(err, RegistryError::InvalidArguments { .. }));
+    }
+
+    #[test]
+    fn wrong_argument_type_is_rejected() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry
+            .register(native("probe_native").with_schema(json!({
+                "type": "object",
+                "properties": { "limit": { "type": "integer" } }
+            })))
+            .unwrap();
+        let err = registry
+            .authorize("probe_native", &json!({ "limit": "ten" }))
+            .unwrap_err();
+        assert!(matches!(err, RegistryError::InvalidArguments { .. }));
+    }
+
+    #[test]
+    fn additional_properties_are_rejected_when_forbidden() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry
+            .register(native("probe_native").with_schema(json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "additionalProperties": false
+            })))
+            .unwrap();
+        let err = registry
+            .authorize("probe_native", &json!({ "path": "a", "extra": 1 }))
+            .unwrap_err();
+        assert!(matches!(err, RegistryError::InvalidArguments { .. }));
+    }
+
+    #[test]
+    fn authorize_returns_definition_and_lists_sorted() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry.register(native("b")).unwrap();
+        registry.register(native("a")).unwrap();
+
+        let tool = registry.authorize("a", &json!({})).unwrap();
+        assert_eq!(tool.name, "a");
+        let names: Vec<_> = registry.list().iter().map(|t| t.name.clone()).collect();
+        assert_eq!(names, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    #[test]
+    fn unknown_tool_is_reported() {
+        let registry = ToolRegistry::new(AllowAll);
+        assert_eq!(
+            registry.authorize("nope", &json!({})).unwrap_err(),
+            RegistryError::NotFound("nope".to_owned())
+        );
+    }
+}

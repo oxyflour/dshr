@@ -1044,6 +1044,10 @@ dependencies = [
 [[package]]
 name = "dshr-tool-runtime"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dshr-ui-contributions"
