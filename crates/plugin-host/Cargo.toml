@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-plugin-host"
+description = "Rust Cordis 适配层：依赖图、Fiber、Service、Effect、事件"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

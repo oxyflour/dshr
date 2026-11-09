@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dshr.local/schema/cpp-v1/manifest.schema.json",
+  "title": "CPP-v1 plugin manifest",
+  "description": "plugin.toml, serialized to JSON for validation. Unknown fields MUST be rejected.",
+  "type": "object",
+  "required": ["plugin", "runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "plugin": {
+      "type": "object",
+      "required": ["id", "version", "api"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+        },
+        "api": { "const": "cordis-portable/v1" },
+        "description": { "type": "string", "maxLength": 1024 }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["rust-static", "wasm-component", "external-process"]
+        },
+        "entry": { "type": "string", "maxLength": 256 },
+        "fuel": { "type": "integer", "minimum": 0 },
+        "max_memory_mb": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 600000 }
+      }
+    },
+    "inject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "type": "string", "pattern": "^[a-z0-9-]+/v[0-9]+$" }
+        },
+        "optional": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "type": "string", "pattern": "^[a-z0-9-]+/v[0-9]+$" }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "workspace_read": { "type": "boolean" },
+        "workspace_write": { "type": "boolean" },
+        "network": { "type": "boolean" },
+        "network_allow": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "pattern": "^[a-z0-9.*-]+(\\.[a-z0-9-]+)*$" }
+        },
+        "process_spawn": { "type": "boolean" },
+        "credential_use": { "type": "boolean" }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/definitions/tool" }
+    },
+    "ui": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/definitions/uiEntry" }
+    }
+  },
+  "definitions": {
+    "tool": {
+      "type": "object",
+      "required": ["name", "description", "input_schema", "output_schema"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "input_schema": { "type": "string", "pattern": "\\.json$" },
+        "output_schema": { "type": "string", "pattern": "\\.json$" },
+        "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 600000 },
+        "cancelable": { "type": "boolean" },
+        "presentation": {
+          "type": "string",
+          "enum": ["generic", "terminal", "diff", "table"]
+        }
+      }
+    },
+    "uiEntry": {
+      "type": "object",
+      "required": ["slot", "id", "label", "view"],
+      "additionalProperties": false,
+      "properties": {
+        "slot": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "view": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "order": { "type": "number" }
+      }
+    }
+  }
+}

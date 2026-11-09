@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-desktop-gpui"
+description = "GPUI desktop shell entry point"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

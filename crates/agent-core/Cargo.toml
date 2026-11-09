@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-agent-core"
+description = "Agent Loop、Turn/Step、生命周期、消息队列、取消与子 Agent 协调"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-tool-runtime"
+description = "Tool schema、调度、并发、取消、Policy、结果规范化"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

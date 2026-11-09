@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Reproducible-build temp area (see tools/build-env.cmd)
+/.tmp/
+
+# Throwaway probes (clones, scratch builds) — evidence is recorded in docs/decisions
+/_probe/

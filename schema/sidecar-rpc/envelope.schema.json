@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dshr.local/schema/sidecar-rpc/envelope.schema.json",
+  "title": "Sidecar RPC envelope",
+  "description": "One control message between the Rust host and the Node DSH sidecar.",
+  "type": "object",
+  "required": [
+    "version",
+    "kind",
+    "request_id",
+    "runtime_generation",
+    "depth",
+    "trace_id",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "minimum": 1 },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "runtime.hello", "runtime.ready", "runtime.reject", "runtime.crashed",
+        "plugin.load", "plugin.loaded", "plugin.failed", "plugin.unload", "plugin.unloaded",
+        "tool.register", "tool.unregister",
+        "tool.invoke", "tool.chunk", "tool.result", "tool.cancel", "tool.aborted",
+        "service.publish", "service.revoke", "service.invoke", "service.result",
+        "ui.contribute", "ui.retract",
+        "event.subscribe", "event.unsubscribe", "event.emit",
+        "health.ping", "health.pong",
+        "log.emit", "capabilities.list", "diagnostics.snapshot"
+      ]
+    },
+    "request_id": { "type": "string", "pattern": "^[A-Za-z0-9:_-]{1,64}$" },
+    "runtime_generation": { "type": "string", "pattern": "^node-[0-9]{4,}$" },
+    "plugin_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$" },
+    "registration_id": { "type": "string", "pattern": "^reg-[0-9]+$" },
+    "session_id": { "type": "string", "pattern": "^s-[0-9]+$" },
+    "call_id": { "type": "string", "pattern": "^call-[0-9]+$" },
+    "depth": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "trace_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z$"
+    },
+    "payload": { "type": "object" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "pattern": "^E_[A-Z_]+$" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

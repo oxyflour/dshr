@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dshr.local/schema/adc-v1/element.schema.json",
+  "title": "ADC-v1 element node",
+  "description": "One node of a declarative UI tree submitted by a client plugin. Recursive: children are nodes.",
+  "$ref": "#/definitions/node",
+  "definitions": {
+    "node": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "Stack", "Row", "Grid", "Divider", "Spacer",
+            "Text", "Markdown", "Code", "Badge",
+            "Button", "Input", "Textarea", "Select", "Checkbox", "Switch", "Slider",
+            "List", "Table", "Tree", "KeyValue",
+            "Image", "Icon", "Chart",
+            "Card", "Tabs", "Accordion"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "props": {
+          "type": "object"
+        },
+        "children": {
+          "type": "array",
+          "maxItems": 200,
+          "items": { "$ref": "#/definitions/node" }
+        }
+      }
+    }
+  }
+}

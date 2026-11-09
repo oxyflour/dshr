@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["apps/desktop-gpui", "crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+
+[workspace.dependencies]
+# 外部依赖在 ADR-0001（GPUI pin）与 ADR-0002（Cordis 选型）转为 Accepted 之前一律不引入。
+# 引入时按 PLAN ADR-008 精确固定版本或 commit。

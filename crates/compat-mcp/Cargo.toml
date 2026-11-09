@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-compat-mcp"
+description = "MCP 外部工具接入"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

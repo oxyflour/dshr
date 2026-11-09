@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-compat-dsh-host"
+description = "Sidecar 生命周期、路由、重试、registration generation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

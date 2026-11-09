@@ -1,0 +1,5 @@
+# 精确版本固定见 docs/decisions/0001-gpui-pin.md。
+# 已锁定到 M0 实测通过的版本；升级须走 ADR-0001 的迁移窗口。
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

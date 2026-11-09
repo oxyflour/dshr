@@ -1,0 +1,7 @@
+﻿[package]
+name = "dshr-compat-acp"
+description = "ACP 外部 Agent 接入"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

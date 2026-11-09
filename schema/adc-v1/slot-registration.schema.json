@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dshr.local/schema/adc-v1/slot-registration.schema.json",
+  "title": "ADC-v1 slot registration",
+  "description": "One registration entry submitted by a plugin into a host-declared slot.",
+  "type": "object",
+  "required": ["slot_id", "plugin_id", "id", "view"],
+  "additionalProperties": false,
+  "properties": {
+    "slot_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$"
+    },
+    "plugin_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "order": {
+      "type": "number"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "view": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "location": {
+      "type": "string",
+      "enum": ["left", "right", "bottom", "center"]
+    }
+  }
+}
