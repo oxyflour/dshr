@@ -158,6 +158,43 @@ GPUI 横幅，用于观察浮层遮挡）。
 
 依赖会话渲染层，排在 A2/A3 之后。
 
+## A5 端到端回放（Session Log → 模型 → UI，2026-11-09 已完成）
+
+**问题**：同一份 Session Log 能不能稳定重建出会话界面？这是 M1 退出条件的核心断言。
+
+**实现**：`crates/conversation-model`（`Log → Vec<Item>`）+ `apps/desktop-gpui --bin conversation`。
+模型把 durable 事件折叠为：用户消息、助手消息、工具卡片（pending / ok / error / aborted）、
+压缩占位；`tool.result` / `tool.aborted` 回填到对应卡片；未知事件跳过。
+
+**自证方式（不依赖人眼）**：
+
+1. `cargo test -p dshr-conversation-model` → **7 passed**，覆盖：
+   顺序、工具卡片终态、统计、压缩位置、**JSONL 往返后模型逐项相等**、未知事件跳过、坏 JSON 拒绝。
+2. 二进制启动时先跑同一组断言（不一致直接 panic，不开窗），然后打印模型统计。
+3. 实际运行输出：
+
+```text
+[model] total=6 user=1 assistant=2 tools=2 settled=1 aborted=1 compaction=1
+[ui] frame=1 items=6 frame_ms=0.4
+[ui] frame=2 items=6 frame_ms=46.6
+```
+
+**演示会话覆盖**（`demo_session.jsonl`，10 条事件）：
+
+| # | 事件 | 模型产物 |
+|---|---|---|
+| 1 | `turn.started` | 不产出（仅计数） |
+| 2 | `message.user` | USER |
+| 3 | `message.assistant.settled` | AGENT |
+| 4–5 | `tool.call` + `tool.result`（native） | TOOL bash [native] ok |
+| 6–7 | `tool.call` + `tool.aborted`（sidecar） | TOOL cad_validate [sidecar] aborted(crash) |
+| 8 | `context.compacted` | CONTEXT 已压缩 seq 1–3 |
+| 9 | `message.assistant.settled` | AGENT |
+| 10 | `some.future.event` | 跳过（前向兼容） |
+
+**结论**：M1 退出条件中"同一份 Log 可回放 Native/JS 两类工具调用"已由**Native + sidecar 两个来源**
+的工具卡片覆盖；回放的确定性有测试保证，不依赖运行时状态。
+
 ## 实验 B — Rust Cordis 选型（2026-11-09，已完成）
 
 结论与证据见 [`decisions/0002-cordis-rs-selection.md`](decisions/0002-cordis-rs-selection.md)。

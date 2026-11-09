@@ -56,4 +56,4 @@ tools\build-env.cmd cargo build --workspace
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
 
-**M1 进行中。** A1 虚拟化通过（10,000 行只构造 24 行）；A1b 已拆解启动开销：到首帧 1.0–1.15 s（应用初始化 0.62–0.76 s + 窗口创建 0.33–0.41 s），与行数/文本/CJK 无关；连续出帧下四档 p50 均为 31.2 ms，说明当前负载低于出帧节拍。实验 B（Cordis 选型）已完成；A2（IME）、A3（WebView2）、C（Sidecar 成本）未开始。数据与复现命令见 [`docs/m1-log.md`](docs/m1-log.md)。
+**M1 进行中。** 已完成：A1 虚拟化（10,000 行只构造 24 行）、A1b 启动拆解（到首帧 1.0–1.15 s）、A1c 帧预算（重行 15.2 ms / 重行+滚动 22.7 ms）、B Cordis 选型、A3 WebView2 引擎自检（IPC 回传 UA/DPR/视口）、A5 端到端回放（Native + sidecar 工具卡片、压缩占位，7 个测试全绿）。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)）；实验 C（Sidecar 成本）未开始。数据与复现命令见 [`docs/m1-log.md`](docs/m1-log.md)。

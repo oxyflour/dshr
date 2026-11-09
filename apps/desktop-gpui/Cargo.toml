@@ -8,3 +8,9 @@ edition.workspace = true
 # Pinned per docs/decisions/0001-gpui-pin.md. Do not bump without a migration note.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
+
+[dependencies.dshr-conversation-model]
+path = "../../crates/conversation-model"
+
+[dependencies.dshr-session-store]
+path = "../../crates/session-store"

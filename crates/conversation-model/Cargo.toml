@@ -1,0 +1,9 @@
+[package]
+name = "dshr-conversation-model"
+description = "Session Log → 会话渲染模型（消息 / 工具卡片 / 压缩占位）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dshr-session-store = { path = "../session-store" }
+serde_json.workspace = true
