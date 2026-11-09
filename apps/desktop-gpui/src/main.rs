@@ -90,12 +90,16 @@ struct BenchApp {
     last_render_ms: f64,
     max_frame_ms: f64,
     anim: bool,
+    heavy: bool,
+    scroll_each_frame: bool,
     dts: Vec<f64>,
 }
 
 impl BenchApp {
     fn new(mode: Mode) -> Self {
         let anim = std::env::var("PROBE_ANIM").as_deref() == Ok("1");
+        let heavy = std::env::var("PROBE_HEAVY").as_deref() == Ok("1");
+        let scroll_each_frame = std::env::var("PROBE_SCROLL").as_deref() == Ok("1");
         let built_at = Instant::now();
         let rows = (0..mode.rows())
             .map(|ix| {
@@ -131,6 +135,8 @@ impl BenchApp {
             last_render_ms: 0.0,
             max_frame_ms: 0.0,
             anim,
+            heavy,
+            scroll_each_frame,
             dts: Vec::new(),
         }
     }
@@ -146,6 +152,11 @@ impl Render for BenchApp {
         self.max_frame_ms = self.max_frame_ms.max(frame_ms);
         if self.frames > 2 {
             self.dts.push(frame_ms);
+        }
+
+        if self.scroll_each_frame && !self.rows.is_empty() {
+            let target = (self.frames as usize * 37) % self.rows.len();
+            self.scroll.scroll_to_item(target, ScrollStrategy::Top);
         }
 
         if self.anim {
@@ -168,6 +179,20 @@ impl Render for BenchApp {
                     pct(0.95),
                     pct(1.0),
                     self.last_render_ms
+                );
+
+                let snap = window.frame_duration_snapshot();
+                let draw = &snap.draw_duration_histogram;
+                let present = &snap.present_interval_histogram;
+                let d2p = &snap.dirty_to_present_histogram;
+                println!(
+                    "[prof] draw_p50={:.2} draw_p95={:.2} draw_max={:.2} n={} | present_p50={:.2} | dirty_to_present_p50={:.2}",
+                    draw.value_at_quantile(0.50) as f64 / 1e6,
+                    draw.value_at_quantile(0.95) as f64 / 1e6,
+                    draw.max() as f64 / 1e6,
+                    draw.len(),
+                    present.value_at_quantile(0.50) as f64 / 1e6,
+                    d2p.value_at_quantile(0.50) as f64 / 1e6
                 );
                 std::process::exit(0);
             }
@@ -199,6 +224,7 @@ impl Render for BenchApp {
         let scroll_top = self.scroll.clone();
         let rows = self.rows.clone();
         let show_text = self.mode.show_text();
+        let heavy = self.heavy;
 
         div()
             .flex()
@@ -266,11 +292,26 @@ impl Render for BenchApp {
                                         .px_3()
                                         .flex()
                                         .items_center()
+                                        .gap_2()
                                         .text_sm()
                                         .when(ix % 2 == 0, |el| el.bg(rgb(0x191919)));
                                     if show_text {
                                         let text = rows.get(ix).cloned().unwrap_or_default();
-                                        row = row.child(text);
+                                        if heavy {
+                                            row = row
+                                                .child(
+                                                    div()
+                                                        .w(px(44.))
+                                                        .h(px(14.))
+                                                        .rounded_sm()
+                                                        .bg(rgb(0x2f4f7a)),
+                                                )
+                                                .child(div().flex_1().child(text))
+                                                .child(div().w(px(64.)).child("meta"))
+                                                .child(div().w(px(52.)).child("00:42"));
+                                        } else {
+                                            row = row.child(text);
+                                        }
                                     }
                                     items.push(row.into_any_element());
                                 }
@@ -300,6 +341,7 @@ impl Render for BenchApp {
 fn main() {
     START.set(Instant::now()).ok();
     let mode = Mode::from_env();
+    gpui::set_trace_enabled(true);
 
     application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.0), px(600.0)), cx);
