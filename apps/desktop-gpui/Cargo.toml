@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "dshr-desktop-gpui"
 description = "GPUI desktop shell entry point"
 version.workspace = true
@@ -20,3 +20,12 @@ path = "../../crates/compat-dsh-host"
 
 [dependencies.serde_json]
 workspace = true
+
+[dependencies.dshr-plugin-api]
+path = "../../crates/plugin-api"
+
+[dependencies.dshr-plugin-host]
+path = "../../crates/plugin-host"
+
+[dependencies.dshr-tool-runtime]
+path = "../../crates/tool-runtime"

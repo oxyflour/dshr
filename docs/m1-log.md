@@ -280,6 +280,42 @@ cargo run -p dshr-desktop-gpui --bin chat             # 交互
 cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 无窗口自检
 ```
 
+## A7 Native Plugin（2026-11-09）
+
+**目标**：补齐 M1 清单里"M1 退出条件 2"缺的那一半——**Native Tool 存在且 Sidecar 崩溃后仍可用**。
+
+**实现**：
+
+| crate | 内容 |
+|---|---|
+| `plugin-api` | `Plugin` trait（id/apply/call/unload）、`PluginContext`（register_tool / register_panel，纯声明） |
+| `plugin-host` | `PluginHost`：load 时**原子提交**声明（失败回滚）、unload 时撤销该插件全部工具与面板、`call` 先过 Registry 的 Policy + schema |
+| `tool-runtime` | 上一轮已建：`ToolOrigin::Native/Sidecar{generation}/Mcp`，generation 失效整批撤销 |
+| `chat` | 内置 `ProbeNativePlugin`：注册 `probe_native`（文本转大写）+ 一个 Panel |
+
+**自检证据**（`chat --selftest`，其中显式把 sidecar 置空模拟崩溃）：
+
+```text
+[selftest] items=8
+  你    · 你好
+  助手  · 收到：你好。...
+  你    · 用工具试一下
+  工具  · probe_echo [sidecar] · 成功
+  助手  · 工具返回 {"echo":{"text":"用工具试一下"}}。...
+  你    · 用原生工具
+  工具  · probe_native [native] · 成功
+  助手  · 原生工具返回 {"native_echo":"用原生工具"}。...
+[selftest] persisted=.tmp/chat-selftest.jsonl replay_equal=true
+[selftest] PASS
+```
+
+关键断言：`state.host = None`（销毁 sidecar）之后，`probe_native` 仍然成功并写入
+`origin: native` 的工具卡片——**这就是 M1 退出条件 2 的直接证明**。
+
+**尚未接线**：sidecar 的 `tool.register` 还没有进 Registry（当前 chat 仍用
+`host.invoke_as` 直调），所以 Registry 目前只治理 Native 工具。下一步（ADR-0006 切片 2）
+把 sidecar 注册也接进 `ToolRegistry`，并用 `invalidate_generation` 处理重启。
+
 ## 实验 B — Rust Cordis 选型（2026-11-09，已完成）
 
 结论与证据见 [`decisions/0002-cordis-rs-selection.md`](decisions/0002-cordis-rs-selection.md)。

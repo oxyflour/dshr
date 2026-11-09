@@ -20,7 +20,10 @@ use serde_json::json;
 
 use dshr_compat_dsh_host::SidecarHost;
 use dshr_conversation_model::{build_from_log, Item};
+use dshr_plugin_api::{Plugin, PluginContext, PluginError};
+use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionLog, ToolState};
+use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
 
 const ROW_HEIGHT: f32 = 52.0;
 const SESSION_ID: &str = "s-chat";
@@ -38,7 +41,58 @@ struct ChatState {
     log: SessionLog,
     path: PathBuf,
     host: Option<SidecarHost>,
+    plugins: PluginHost,
     seq: u64,
+}
+
+/// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
+struct ProbeNativePlugin;
+
+impl Plugin for ProbeNativePlugin {
+    fn id(&self) -> &'static str {
+        "builtin.probe"
+    }
+
+    fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_tool(
+            ToolDefinition::new(
+                "probe_native",
+                "把输入文本转成大写（Rust 原生插件，不经过 Node）",
+                ToolOrigin::Native {
+                    plugin_id: "builtin.probe".to_owned(),
+                },
+            )
+            .with_schema(json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": { "text": { "type": "string" } }
+            })),
+        )?;
+        ctx.register_panel(dshr_plugin_api::PanelContribution::new(
+            "probe.panel",
+            "Probe Panel",
+            "workspace.panel",
+        ));
+        Ok(())
+    }
+
+    fn call(
+        &mut self,
+        tool: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
+        if tool != "probe_native" {
+            return Err(PluginError::UnknownTool {
+                plugin: "builtin.probe".to_owned(),
+                tool: tool.to_owned(),
+            });
+        }
+        let text = arguments
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        Ok(json!({ "native_echo": text.to_uppercase() }))
+    }
 }
 
 impl ChatState {
@@ -62,10 +116,16 @@ impl ChatState {
         .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
         .ok();
 
+        let mut plugins = PluginHost::new(AllowAll);
+        if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
+            eprintln!("[chat] 原生插件加载失败: {err}");
+        }
+
         Self {
             log,
             path,
             host,
+            plugins,
             seq: 0,
         }
     }
@@ -99,8 +159,48 @@ impl ChatState {
             return;
         }
 
-        let wants_tool = text.contains("工具") || text.to_ascii_lowercase().contains("tool");
+        let wants_native = text.contains("原生") || text.to_ascii_lowercase().contains("native");
+        let wants_tool =
+            !wants_native && (text.contains("工具") || text.to_ascii_lowercase().contains("tool"));
         let mut tool_summary: Option<String> = None;
+
+        if wants_native {
+            self.seq += 1;
+            let call_id = format!("call-n{}", self.seq);
+            let _ = self.log.append(EventSpec::durable(
+                "tool.call",
+                &ts,
+                json!({
+                    "call_id": call_id,
+                    "tool": "probe_native",
+                    "origin": "native",
+                    "arguments": { "text": text }
+                }),
+            ));
+
+            match self.plugins.call("probe_native", &json!({ "text": text })) {
+                Ok(value) => {
+                    let _ = self.log.append(EventSpec::durable(
+                        "tool.result",
+                        &ts,
+                        json!({
+                            "call_id": call_id,
+                            "is_error": false,
+                            "content": [{ "type": "json", "value": value }]
+                        }),
+                    ));
+                    tool_summary = Some(format!("原生工具返回 {value}"));
+                }
+                Err(err) => {
+                    let _ = self.log.append(EventSpec::durable(
+                        "tool.aborted",
+                        &ts,
+                        json!({ "call_id": call_id, "reason": err.to_string() }),
+                    ));
+                    tool_summary = Some("原生工具调用失败".to_owned());
+                }
+            }
+        }
 
         if wants_tool {
             self.seq += 1;
@@ -377,7 +477,9 @@ fn selftest() -> i32 {
     let mut state = ChatState::new(path.clone());
 
     state.submit("你好");
-    state.submit("用工具试一下");
+    state.submit("用工具试一下"); // sidecar
+    state.host = None; // 模拟 Sidecar 崩溃：Native 工具必须仍然可用
+    state.submit("用原生工具");
 
     let items = state.items();
     println!("[selftest] items={}", items.len());
@@ -385,10 +487,13 @@ fn selftest() -> i32 {
         println!("  {}", row_text(item));
     }
 
-    // 断言：2 轮 = 2 用户 + 2 助手 + 1 工具卡片
-    let ok = items.len() == 5
-        && matches!(items[3], Item::Tool(_))
-        && matches!(&items[3], Item::Tool(t) if t.state == ToolState::Settled { is_error: false });
+    // 3 轮 = 3 用户 + 3 助手 + 2 工具卡片（sidecar 与 native 各一）
+    let ok = items.len() == 8
+        && matches!(&items[3], Item::Tool(t) if t.origin == "sidecar"
+            && t.state == ToolState::Settled { is_error: false })
+        && matches!(&items[6], Item::Tool(t) if t.origin == "native"
+            && t.state == ToolState::Settled { is_error: false })
+        && state.plugins.registry().get("probe_native").is_some();
 
     // 重启：从磁盘重新加载，回放必须一致
     let reloaded = SessionLog::from_jsonl(

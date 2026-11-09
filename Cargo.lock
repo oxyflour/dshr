@@ -1018,7 +1018,10 @@ version = "0.0.0"
 dependencies = [
  "dshr-compat-dsh-host",
  "dshr-conversation-model",
+ "dshr-plugin-api",
+ "dshr-plugin-host",
  "dshr-session-store",
+ "dshr-tool-runtime",
  "gpui",
  "gpui_platform",
  "serde_json",
@@ -1027,10 +1030,21 @@ dependencies = [
 [[package]]
 name = "dshr-plugin-api"
 version = "0.0.0"
+dependencies = [
+ "dshr-tool-runtime",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dshr-plugin-host"
 version = "0.0.0"
+dependencies = [
+ "dshr-plugin-api",
+ "dshr-tool-runtime",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dshr-session-store"

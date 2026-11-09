@@ -60,4 +60,4 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
 
-**M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、**A5b 真实调用闭环**（sidecar 调用 → 写入 Session Log → 销毁 sidecar → 重新加载并回放出相同模型）、C Sidecar 协议往返（纯协议 p50 148 µs）。共 26 个测试。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)）。未做：Native Plugin 注册、真实 DSH/Cordis 插件装载、Tool Registry 集成、流式 UI。详见 [`docs/m1-log.md`](docs/m1-log.md)。
+**M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、**A7 Native Plugin**（`plugin-api` + `plugin-host` + `probe_native`，Sidecar 崩溃后原生工具仍可用）。共 41 个测试。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)）。未做：sidecar 注册接入 Registry、真实 DSH/Cordis 插件装载、流式 UI。详见 [`docs/m1-log.md`](docs/m1-log.md)。
