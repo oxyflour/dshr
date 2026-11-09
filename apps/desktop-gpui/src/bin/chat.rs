@@ -1,4 +1,4 @@
-//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
+﻿//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
 //!
 //! 这是 M1 的产品面：能打字、能发送、能看到工具卡片、关掉再开会话还在。
 //! 模型是 **mock**（没有接 LLM，那是 M2），但会话/工具/日志/回放都是真实的。
@@ -187,13 +187,14 @@ impl ChatState {
         }
     }
 
-    /// 一轮对话：用户消息 → （可选）工具调用 → 助手回复。
+    /// 一轮对话的前半段：用户消息 → （可选）工具调用 → 返回要流式展示的回复文本。
     ///
-    /// 模型是 mock；工具调用走真实 sidecar。
-    fn submit(&mut self, text: &str) {
+    /// 助手消息由 `finish_turn` 在流式结束后落库，这样 UI 可以逐字渲染，
+    /// 而 Session Log 里仍然只有一条 settled 消息。
+    fn begin_turn(&mut self, text: &str) -> Option<String> {
         let text = text.trim();
         if text.is_empty() {
-            return;
+            return None;
         }
         let ts = now_ts();
         self.seq += 1;
@@ -204,7 +205,7 @@ impl ChatState {
             json!({ "message_id": user_id, "text": text }),
         )) {
             eprintln!("[chat] 写入用户消息失败: {err}");
-            return;
+            return None;
         }
 
         let wants_native = text.contains("原生") || text.to_ascii_lowercase().contains("native");
@@ -351,13 +352,28 @@ impl ChatState {
             Some(summary) => format!("{summary}。当前是 mock agent，尚未接入 LLM。"),
             None => format!("收到：{text}。当前是 mock agent，尚未接入 LLM。"),
         };
+
+        // 用户消息与工具事件先落盘；助手消息等流式结束再写。
+        self.save();
+        Some(reply)
+    }
+
+    fn finish_turn(&mut self, reply: &str) {
+        self.seq += 1;
+        let ts = now_ts();
         let _ = self.log.append(EventSpec::durable(
             "message.assistant.settled",
             &ts,
             json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
         ));
-
         self.save();
+    }
+
+    /// 同步版本（自检与无 UI 场景使用）。
+    fn submit(&mut self, text: &str) {
+        if let Some(reply) = self.begin_turn(text) {
+            self.finish_turn(&reply);
+        }
     }
 
     fn items(&self) -> Vec<Item> {
@@ -370,6 +386,8 @@ struct ChatApp {
     input: String,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
+    /// 正在逐字渲染的助手回复（尚未写入 Session Log）。
+    streaming: Option<String>,
 }
 
 impl ChatApp {
@@ -378,8 +396,42 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        self.state.submit(&text);
+        let Some(reply) = self.state.begin_turn(&text) else {
+            return;
+        };
+
+        // 逐字渲染：每 12ms 追加一个字符，结束后才把 assistant 消息写入日志。
+        self.streaming = Some(String::new());
         cx.notify();
+        let reply_for_task = reply.clone();
+        cx.spawn(async move |this, cx| {
+            // 每次推送 8 个字符：实测 timer + 重绘一轮约 150ms，
+            // 逐字符推 40 字要 2.5s 以上，视觉上反而不像"流式"。
+            let chars: Vec<char> = reply_for_task.chars().collect();
+            for chunk in chars.chunks(8) {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let piece: String = chunk.iter().collect();
+                let ok = this
+                    .update(cx, |app, cx| {
+                        if let Some(buffer) = app.streaming.as_mut() {
+                            buffer.push_str(&piece);
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !ok {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |app, cx| {
+                app.state.finish_turn(&reply);
+                app.streaming = None;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -433,7 +485,11 @@ fn row_text(item: &Item) -> SharedString {
 impl Render for ChatApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.state.items();
-        let rows: Vec<SharedString> = items.iter().map(row_text).collect();
+        let mut rows: Vec<SharedString> = items.iter().map(row_text).collect();
+        if let Some(buffer) = &self.streaming {
+            rows.push(SharedString::from(format!("助手  · {buffer}▌")));
+        }
+        let total = rows.len();
         let rows_for_list = rows.clone();
         let input_text = if self.input.is_empty() {
             "输入消息，回车发送（mock agent）".to_owned()
@@ -457,7 +513,7 @@ impl Render for ChatApp {
                     .border_b_1()
                     .border_color(rgb(0x2a2a2a))
                     .text_sm()
-                    .child(format!("会话 {SESSION_ID} · {} 条", items.len())),
+                    .child(format!("会话 {SESSION_ID} · {} 条", total)),
             )
             .child(
                 div().flex_1().overflow_hidden().child(
@@ -667,6 +723,7 @@ fn main() {
                     input: String::new(),
                     focus: cx.focus_handle(),
                     scroll: UniformListScrollHandle::new(),
+                    streaming: None,
                 });
                 let focus = app.read(cx).focus.clone();
                 window.focus(&focus, cx);

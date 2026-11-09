@@ -344,6 +344,33 @@ restart_sidecar()   → 新 generation 重新登记，probe_echo 恢复
 并经 `runtime.hello` 传给 sidecar；如果 sidecar 自己生成，重启后可能撞号，
 导致 `invalidate_generation` 误伤新注册——这是接入 Registry 时才暴露的问题。
 
+## A9 流式消息（2026-11-09）
+
+**目标**：补齐 M1 清单里的"单 Session 流式消息"——助手回复逐字出现，但日志里只有一条 settled 消息。
+
+**实现**：
+
+- `ChatState::begin_turn()`：用户消息 + 工具调用，返回待流式展示的回复文本，先落盘用户/工具事件。
+- `ChatApp::send()`：把回复切成小块，用 `cx.spawn` + `cx.background_executor().timer()` 每轮追加一块
+  并 `cx.notify()`，**不写日志**。
+- 流式结束后调用 `ChatState::finish_turn()`：写一条 `message.assistant.settled` 并保存。
+- 渲染：`streaming: Option<String>` 作为虚拟行追加在会话末尾（带 `▌` 光标），不参与回放。
+
+**实测**：
+
+```text
+# 合成按键发送后，轮询会话文件
+assistant_settled_after_ms=2532   # 3 字符/块，38 字回复
+assistant_settled_after_ms=2031   # 同上，复测
+```
+
+**调参发现**：GPUI 的 `timer + notify + 重绘` 一轮实际约 **150 ms**（本机窗口在 32 Hz 远程显示适配器上）。
+所以"每 12ms 推一个字符"实际是 2.5 秒的慢动作；改成每轮 **8 个字符**后降到约 0.8–1 秒。
+结论：流式粒度应由**每次推送的字符数**控制，而不是 timer 精度。
+
+**验证方式**：合成按键输入 → 轮询 `.tmp/chat-session.jsonl`，确认 `message.user` 先出现、
+`message.assistant.settled` 在流式结束后才出现。`chat --selftest` 仍走同步 `submit()`，不受影响。
+
 ## A8 真实 Cordis 插件（2026-11-09）
 
 **目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，
