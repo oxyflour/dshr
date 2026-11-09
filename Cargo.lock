@@ -1016,10 +1016,12 @@ dependencies = [
 name = "dshr-desktop-gpui"
 version = "0.0.0"
 dependencies = [
+ "dshr-compat-dsh-host",
  "dshr-conversation-model",
  "dshr-session-store",
  "gpui",
  "gpui_platform",
+ "serde_json",
 ]
 
 [[package]]

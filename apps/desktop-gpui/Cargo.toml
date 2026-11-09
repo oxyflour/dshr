@@ -14,3 +14,9 @@ path = "../../crates/conversation-model"
 
 [dependencies.dshr-session-store]
 path = "../../crates/session-store"
+
+[dependencies.dshr-compat-dsh-host]
+path = "../../crates/compat-dsh-host"
+
+[dependencies.serde_json]
+workspace = true

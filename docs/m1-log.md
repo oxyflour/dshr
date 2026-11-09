@@ -224,6 +224,51 @@ test result: ok. 1 passed
 
 至此 M1 的"统一 Session Log + 崩溃隔离 + 回放"三件事都有了可跑的端到端证据。
 
+## A6 基本对话（M1 收口，2026-11-09）
+
+**目标**：不接 LLM，也要有一条**能打字、能发送、能看工具卡片、关掉再开还在**的最小产品路径。
+
+**实现**：`apps/desktop-gpui/src/bin/chat.rs`
+
+```text
+输入框（Enter 发送）→ 写入 message.user
+  → 若文本含「工具」/tool：tool.call → 真实 sidecar invoke → chunk(ephemeral) + tool.result
+  → message.assistant.settled（mock 回复）
+  → 每次提交后写 .tmp/chat-session.jsonl
+启动时若日志存在 → from_jsonl → 直接恢复整段会话（含工具卡片终态）
+```
+
+**自检**（无窗口，`chat --selftest`）：
+
+```text
+[selftest] items=5
+  你    · 你好
+  助手  · 收到：你好。当前是 mock agent，尚未接入 LLM。
+  你    · 用工具试一下
+  工具  · probe_echo [sidecar] · 成功
+  助手  · 工具返回 {"echo":{"text":"用工具试一下"}}。当前是 mock agent，尚未接入 LLM。
+[selftest] persisted=.tmp/chat-selftest.jsonl replay_equal=true
+[selftest] PASS
+```
+
+覆盖：两轮对话、真实 sidecar 工具调用、落盘、**从磁盘重新加载后模型逐项相等**。
+
+**已知限制**（都不阻塞"基本对话"）：
+
+| 限制 | 说明 |
+|---|---|
+| 模型是 mock | 没有接 LLM（M2 的 provider 归一化层） |
+| 输入走 `keystroke.key_char` | 没有 `EntityInputHandler`，中文可能要靠 IME 提交后的字符；组合输入候选窗见 [issues/0001](issues/0001-ime-candidate-first-composition.md) |
+| 回复不流式 | assistant 文本一次结算，没有逐字渲染 |
+| 无多会话 | 固定 `s-chat` 一个会话、一个固定文件 |
+
+**运行**：
+
+```powershell
+cargo run -p dshr-desktop-gpui --bin chat             # 交互
+cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 无窗口自检
+```
+
 ## 实验 B — Rust Cordis 选型（2026-11-09，已完成）
 
 结论与证据见 [`decisions/0002-cordis-rs-selection.md`](decisions/0002-cordis-rs-selection.md)。

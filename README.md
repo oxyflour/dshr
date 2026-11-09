@@ -40,6 +40,10 @@ node tools/check-links.mjs
 
 # 构建。Windows 上必须走 build-env：本机 %TEMP% 不能让链接器写入
 tools\build-env.cmd cargo build --workspace
+
+# 基本对话（输入框 + 会话流 + 真实 sidecar 工具 + 落盘恢复）
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 无窗口自检
 ```
 
 ## 已固定的版本
