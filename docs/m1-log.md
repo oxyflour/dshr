@@ -195,6 +195,35 @@ GPUI 横幅，用于观察浮层遮挡）。
 **结论**：M1 退出条件中"同一份 Log 可回放 Native/JS 两类工具调用"已由**Native + sidecar 两个来源**
 的工具卡片覆盖；回放的确定性有测试保证，不依赖运行时状态。
 
+### A5b 真实调用闭环（2026-11-09）
+
+在 A5 的基础上补上"记录侧"：`crates/compat-dsh-host/tests/m1_closure.rs` 走完整链路。
+
+```text
+sidecar 进程 → invoke probe_echo（3 个 chunk + 结果）
+            → 写入 SessionLog（1 turn + 1 user + 1 tool.call + 3 ephemeral chunk + 1 result + 1 assistant）
+            → 落盘 JSONL → drop(sidecar)（进程销毁）
+            → SessionLog::from_jsonl 重新加载
+            → conversation-model 回放 → 与落盘前的模型逐项相等
+```
+
+实测输出：
+
+```text
+[closure] events=8 items=3 state=Tool(ToolItem { call_id: "call-m1-1", tool: "probe_echo",
+          origin: "sidecar", state: Settled { is_error: false } })
+test result: ok. 1 passed
+```
+
+关键断言：
+
+1. `call_id` 在 IPC 与 Session Log 中是**同一个**（用 `invoke_as` 显式传入，不让两边各自生成）。
+2. 流式 chunk 以 `ephemeral` 写入，不进入回放但保留在日志里。
+3. **销毁 sidecar 之后**才重新加载日志——证明回放不依赖插件进程存活。
+4. 重放模型与关闭前逐项相等（`assert_eq!(before, after)`）。
+
+至此 M1 的"统一 Session Log + 崩溃隔离 + 回放"三件事都有了可跑的端到端证据。
+
 ## 实验 B — Rust Cordis 选型（2026-11-09，已完成）
 
 结论与证据见 [`decisions/0002-cordis-rs-selection.md`](decisions/0002-cordis-rs-selection.md)。

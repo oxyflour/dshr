@@ -985,6 +985,8 @@ name = "dshr-compat-dsh-host"
 version = "0.0.0"
 dependencies = [
  "dshr-compat-dsh-protocol",
+ "dshr-conversation-model",
+ "dshr-session-store",
  "serde",
  "serde_json",
  "thiserror",

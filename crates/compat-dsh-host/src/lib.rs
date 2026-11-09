@@ -178,6 +178,28 @@ impl SidecarHost {
         Ok(call_id)
     }
 
+    /// 用调用方指定的 `call_id` 发起调用：Session Log 与 IPC 必须是同一个身份。
+    pub fn invoke_as(
+        &mut self,
+        call_id: &str,
+        tool: &str,
+        arguments: Value,
+        timeout: Duration,
+    ) -> Result<InvokeOutcome, HostError> {
+        self.seq += 1;
+        let request_id = format!("req-invoke-{}", self.seq);
+        let envelope = Envelope::host(
+            "tool.invoke",
+            request_id,
+            json!({ "name": tool, "arguments": arguments }),
+        )
+        .with_generation(self.generation.clone())
+        .with_call(call_id.to_owned())
+        .with_session("s-probe");
+        self.write(&envelope)?;
+        self.wait_terminal(call_id, timeout)
+    }
+
     pub fn cancel(&mut self, call_id: &str) -> Result<(), HostError> {
         self.seq += 1;
         let envelope = Envelope::host(
