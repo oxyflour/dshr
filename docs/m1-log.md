@@ -344,6 +344,49 @@ restart_sidecar()   → 新 generation 重新登记，probe_echo 恢复
 并经 `runtime.hello` 传给 sidecar；如果 sidecar 自己生成，重启后可能撞号，
 导致 `invalidate_generation` 误伤新注册——这是接入 Registry 时才暴露的问题。
 
+## A8 真实 Cordis 插件（2026-11-09）
+
+**目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，
+而不是本项目自定义的 probe 形状；装载它的是 Cordis 运行时（与 DSH 内嵌同一版本）。
+
+**做法**：
+
+| 项 | 内容 |
+|---|---|
+| 依赖 | `sidecar/cordis/package.json` 固定 `@deepseek-ai/cordis@4.0.5`（= DSH 0.2.1-rc.3 内嵌版本） |
+| 插件 | `bridge-plugin.mjs`：`export const inject = ['bridge']`，`apply(ctx)` 内用 `ctx.effect(() => ctx.bridge.tool({...}))` 注册工具 |
+| 侧车 | `sidecar-cordis.mjs`：`new Context()` → `ctx.provide('bridge', …)` → `ctx.plugin(plugin)`；协议与 probe 版完全相同 |
+| 测试 | `crates/compat-dsh-host/tests/cordis_plugin.rs` |
+
+**结果**：
+
+```text
+[cordis] ready=60.1ms generation=node-0001
+[cordis] registrations=["cordis_echo"]
+[cordis] invoke elapsed=561.2µs
+test result: ok. 1 passed
+```
+
+**产品路径验证**（`chat --selftest-cordis`，`DSHR_SIDECAR=cordis`）：
+
+```text
+[selftest-cordis] items=3
+  你    · 用工具试一下
+  工具  · cordis_echo [sidecar] · 成功
+  助手  · 工具返回 {"cordis":{"text":"用工具试一下"}}。...
+[selftest-cordis] replay_equal=true
+[selftest-cordis] PASS
+```
+
+**踩到的坑**：Cordis 插件装载最初放在进程启动时，`tool.register` 会在 `runtime.ready`
+之前发出，携带的是握手前的占位 generation，被宿主按旧代丢弃。改为**收到 hello 并回 ready 之后
+再 `ctx.plugin()`** 才正确——这再次印证规范 §5 的 generation 全链路约束。
+
+**边界（必须说清）**：这里用的是 **Cordis 核心**（Context / Service / effect / inject），
+不是 DSH 的 `ctx.tools` 服务与 Loader。真正的"装载未修改的 DSH 官方插件"需要 DSH 的整套
+包（`@deepseek-ai/dsh-tools`、Loader、Schemastery 在 npm 上版本与 0.2.1-rc.3 不对齐），
+仍是 M2 的任务。本次达成的是：**Cordis 语义可装载、注册可桥接、调用可回放**。
+
 ## 实验 B — Rust Cordis 选型（2026-11-09，已完成）
 
 结论与证据见 [`decisions/0002-cordis-rs-selection.md`](decisions/0002-cordis-rs-selection.md)。

@@ -96,15 +96,27 @@ impl Plugin for ProbeNativePlugin {
 }
 
 /// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
+///
+/// `DSHR_SIDECAR=cordis` 时改用真实的 Cordis 运行时（同一版本 DSH 内嵌的 4.0.5），
+/// 插件通过 `inject: ['bridge']` 注册工具——用于验证兼容性主张。
 fn spawn_sidecar() -> Option<SidecarHost> {
     let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .unwrap_or_else(|_| PathBuf::from("."));
-    SidecarHost::spawn(
-        root.join("sidecar/probe-sidecar.mjs"),
-        root.join("sidecar/probe-plugin.mjs"),
-    )
-    .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
-    .ok()
+    let cordis = std::env::var("DSHR_SIDECAR").as_deref() == Ok("cordis");
+    let (script, plugin) = if cordis {
+        (
+            root.join("sidecar/cordis/sidecar-cordis.mjs"),
+            root.join("sidecar/cordis/bridge-plugin.mjs"),
+        )
+    } else {
+        (
+            root.join("sidecar/probe-sidecar.mjs"),
+            root.join("sidecar/probe-plugin.mjs"),
+        )
+    };
+    SidecarHost::spawn(script, plugin)
+        .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
+        .ok()
 }
 
 /// 把 sidecar 注册映射进同一个 ToolRegistry。
@@ -239,6 +251,13 @@ impl ChatState {
         }
 
         if wants_tool {
+            // sidecar 工具名从注册表里取：probe 插件是 probe_echo，
+            // Cordis 插件是 cordis_echo，同一套 UI 不需要知道区别。
+            let tool_name = self
+                .host
+                .as_ref()
+                .and_then(|host| host.registrations().first().map(|reg| reg.name.clone()))
+                .unwrap_or_else(|| "probe_echo".to_owned());
             self.seq += 1;
             let call_id = format!("call-{}", self.seq);
             let _ = self.log.append(EventSpec::durable(
@@ -246,7 +265,7 @@ impl ChatState {
                 &ts,
                 json!({
                     "call_id": call_id,
-                    "tool": "probe_echo",
+                    "tool": tool_name,
                     "origin": "sidecar",
                     "arguments": { "text": text }
                 }),
@@ -254,7 +273,7 @@ impl ChatState {
 
             // 统一闸门：sidecar 工具与原生工具走同一个 Registry 的 authorize。
             let arguments = json!({ "text": text });
-            if let Err(err) = self.plugins.registry().authorize("probe_echo", &arguments) {
+            if let Err(err) = self.plugins.registry().authorize(&tool_name, &arguments) {
                 let _ = self.log.append(EventSpec::durable(
                     "tool.aborted",
                     &ts,
@@ -266,7 +285,7 @@ impl ChatState {
                     Some(host) => {
                         match host.invoke_as(
                             &call_id,
-                            "probe_echo",
+                            &tool_name,
                             arguments,
                             Duration::from_secs(5),
                         ) {
@@ -583,7 +602,50 @@ fn selftest() -> i32 {
     }
 }
 
+/// 用真实 Cordis 运行时跑一轮对话（`DSHR_SIDECAR=cordis`）。
+fn selftest_cordis() -> i32 {
+    let path = PathBuf::from(".tmp/chat-cordis.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let mut state = ChatState::new(path.clone());
+
+    state.submit("用工具试一下");
+
+    let items = state.items();
+    println!("[selftest-cordis] items={}", items.len());
+    for item in &items {
+        println!("  {}", row_text(item));
+    }
+
+    let ok = items.len() == 3
+        && matches!(&items[1], Item::Tool(t) if t.tool == "cordis_echo"
+            && t.origin == "sidecar"
+            && t.state == ToolState::Settled { is_error: false });
+
+    let replayed = build_from_log(
+        &SessionLog::from_jsonl(
+            SESSION_ID,
+            &std::fs::read_to_string(&path).unwrap_or_default(),
+        )
+        .expect("reload cordis session"),
+    );
+    let same = replayed == items;
+    println!("[selftest-cordis] replay_equal={same}");
+
+    if ok && same {
+        println!("[selftest-cordis] PASS");
+        0
+    } else {
+        println!("[selftest-cordis] FAIL");
+        1
+    }
+}
+
 fn main() {
+    if std::env::args().any(|arg| arg == "--selftest-cordis") {
+        std::env::set_var("DSHR_SIDECAR", "cordis");
+        std::process::exit(selftest_cordis());
+    }
     if std::env::args().any(|arg| arg == "--selftest") {
         std::process::exit(selftest());
     }
