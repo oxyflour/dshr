@@ -1,0 +1,9 @@
+[package]
+name = "dshr-profile"
+description = "插件 profile：启停状态、配置持久化、sidecar 插件清单"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

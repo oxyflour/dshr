@@ -666,6 +666,27 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A25 插件管理：profile + 启停面板 + sidecar 动态清单（2026-11-11）
+
+问题：sidecar 的插件列表写死在 `sidecar-dsh.mjs`，用户无法启停/配置。
+
+**做法**：
+
+1. 新 crate `crates/profile`：`plugins.json`（name/enabled/config/inject），
+   默认两条与旧硬编码一致；`sidecar_json()` 输出 `DSHR_DSH_PLUGINS` 数组。
+2. `chat` 启动时加载 profile → 设置环境变量 → 再启动 sidecar；插件集合从代码变成数据。
+3. 侧栏"插件 · n/m 启用"打开右侧面板：列出条目、启用/禁用按钮；
+   切换时写 profile、更新环境、**空闲时重启当前会话 sidecar**（先撤销旧 generation），
+   生成中只保存。
+4. 面板打开时侧栏自动收起，避免窄窗口下 280+300 挤死正文。
+5. `--selftest-profile`：默认值、禁用后 JSON 不含 fs、持久化；有 vendored 依赖时
+   真实 sidecar 验证"禁用 fs → read 消失；启用 → read 回来"。
+
+**验证**：profile 4 测试、workspace 全绿、六个 selftest PASS、截图核对面板与持久化。
+
+**边界**：还没有 npm 安装流程（"安装"= vendor 抽取 + 写 profile 条目）；
+Loader YAML（cordis.yml/patch）未解析。详见 [`m2-plugins.md`](m2-plugins.md)。
+
 ## A24 沙箱 seam：工作区根 + 写前快照 + 原子写（2026-11-11）
 
 问题：A23 只解决"用户同不同意"，没有解决"同意之后能碰什么"。

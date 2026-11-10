@@ -93,4 +93,6 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 原生写入工具已接**工作区沙箱**：相对路径根、1 MiB 限制、覆盖前快照、原子写
 （[`docs/m2-sandbox.md`](docs/m2-sandbox.md)）；官方 `write`/`bash` 仍关闭，
 需要 Node 侧 `sandbox`/`userApproval` service 与审批 RPC。
+插件集合改为可持久化的 profile（`plugins.json`），侧栏"插件"面板可启用/禁用，
+切换后重启当前会话的 sidecar（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

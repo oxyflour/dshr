@@ -37,6 +37,7 @@ use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
+use dshr_profile::Profile;
 use dshr_sandbox::Workspace;
 use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
 use dshr_tool_runtime::{
@@ -484,8 +485,11 @@ impl ChatState {
         Some(generation)
     }
 
-    /// 重启 Sidecar：新 generation，重新注册工具。
+    /// 重启 Sidecar：先撤销旧 generation，再按当前 profile/环境重新装载。
     fn restart_sidecar(&mut self) -> bool {
+        if let Some(old) = self.host.take() {
+            self.plugins.invalidate_generation(old.generation());
+        }
         let Some(host) = spawn_sidecar() else {
             return false;
         };
@@ -775,6 +779,10 @@ struct ChatApp {
     approvals: Arc<ApprovalBroker>,
     /// 上一次渲染时的 pending 数，用于只在变化时触发重绘。
     pending_approvals: usize,
+    /// 插件 profile（启停状态持久化）。
+    profile: Profile,
+    /// 右侧插件面板是否打开。
+    plugins_open: bool,
 }
 
 impl ChatApp {
@@ -1039,6 +1047,182 @@ impl ChatApp {
         cx.notify();
     }
 
+    /// 启用/禁用插件：写 profile、更新 sidecar 环境、空闲时重启当前会话的 sidecar。
+    fn toggle_plugin(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(entry) = self
+            .profile
+            .entries()
+            .iter()
+            .find(|entry| entry.name == name)
+            .cloned()
+        else {
+            return;
+        };
+        let next = !entry.enabled;
+        if !self.profile.set_enabled(&name, next) {
+            return;
+        }
+        if let Err(err) = self.profile.save() {
+            eprintln!("[chat] 保存插件 profile 失败: {err}");
+        }
+        std::env::set_var("DSHR_DSH_PLUGINS", self.profile.sidecar_json());
+        if !self.busy {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !guard.restart_sidecar() {
+                eprintln!("[chat] 重启 sidecar 失败（插件开关已保存，下次启动生效）");
+            }
+        }
+        cx.notify();
+    }
+
+    fn plugins_panel(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.plugins_open {
+            return None;
+        }
+        let p = t.palette;
+        let entries = self.profile.entries().to_vec();
+        let enabled = entries.iter().filter(|entry| entry.enabled).count();
+        let total = entries.len();
+
+        let mut list = div().flex().flex_col().gap(px(6.0)).w_full();
+        for (index, entry) in entries.iter().enumerate() {
+            let name = entry.name.clone();
+            let display = name
+                .strip_prefix("@deepseek-ai/")
+                .unwrap_or(&name)
+                .to_owned();
+            let is_enabled = entry.enabled;
+            list = list.child(
+                div()
+                    .id(("plugin-row", index))
+                    .w_full()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.border_l1))
+                    .bg(p.color(p.bg_layer_1))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.small)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.color(p.label_primary))
+                                    .text_overflow(TextOverflow::Truncate("…".into()))
+                                    .child(display),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(if is_enabled {
+                                        p.color(p.state_success)
+                                    } else {
+                                        p.color(p.label_caption)
+                                    })
+                                    .child(if is_enabled { "已启用" } else { "已禁用" }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("plugin-toggle", index))
+                            .px(px(8.0))
+                            .py(px(3.0))
+                            .rounded(t.radii.sm)
+                            .border_1()
+                            .border_color(p.color(p.border_l2))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(if is_enabled {
+                                p.color(p.state_error)
+                            } else {
+                                p.color(p.state_success)
+                            })
+                            .child(if is_enabled { "禁用" } else { "启用" })
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.toggle_plugin(name.clone(), cx);
+                            })),
+                    ),
+            );
+        }
+
+        Some(
+            div()
+                .w(px(300.0))
+                .h_full()
+                .flex()
+                .flex_col()
+                .border_l_1()
+                .border_color(p.color(p.border_l3))
+                .bg(p.color(p.bg_base))
+                .child(
+                    div()
+                        .min_h(t.layout.header_height)
+                        .px(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_b_1()
+                        .border_color(p.color(p.border_l3))
+                        .child(
+                            div()
+                                .text_size(t.type_scale.body)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.color(p.label_primary))
+                                .child(format!("插件 · {enabled}/{total} 启用")),
+                        )
+                        .child(
+                            div()
+                                .id("plugins-close")
+                                .px(px(6.0))
+                                .rounded(t.radii.sm)
+                                .cursor_pointer()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_secondary))
+                                .child("关闭")
+                                .on_click(cx.listener(|this, _, _window, cx| {
+                                    this.plugins_open = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("plugin-scroll")
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .child(list),
+                )
+                .child(
+                    div()
+                        .px(px(16.0))
+                        .py(px(8.0))
+                        .border_t_1()
+                        .border_color(p.color(p.border_l3))
+                        .text_size(px(11.0))
+                        .line_height(px(16.0))
+                        .text_color(p.color(p.label_caption))
+                        .child(
+                            "切换会重启当前会话的 sidecar；配置写入 DSHR_PROFILE_DIR/plugins.json",
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn session_list(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
         let sessions = self.sessions.clone();
@@ -1228,6 +1412,13 @@ impl ChatApp {
 
     fn sidebar(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
+        let plugin_total = self.profile.entries().len();
+        let plugin_enabled = self
+            .profile
+            .entries()
+            .iter()
+            .filter(|entry| entry.enabled)
+            .count();
         div()
             .w(t.layout.sidebar_width)
             .h_full()
@@ -1352,11 +1543,24 @@ impl ChatApp {
                     )
                     .child(
                         div()
+                            .id("plugins-toggle")
                             .px(px(12.0))
                             .py(px(6.0))
-                            .text_size(px(11.0))
-                            .text_color(p.color(p.label_caption))
-                            .child("M2 · 官方插件已装载"),
+                            .rounded(t.radii.sm)
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(if self.plugins_open {
+                                p.color(p.label_primary)
+                            } else {
+                                p.color(p.label_secondary)
+                            })
+                            .child(format!(
+                                "插件 · {plugin_enabled}/{plugin_total} 启用（点击管理）"
+                            ))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.plugins_open = !this.plugins_open;
+                                cx.notify();
+                            })),
                     ),
             )
             .into_any_element()
@@ -2040,13 +2244,15 @@ impl Render for ChatApp {
             self.scroll.scroll_to_bottom();
             self.initial_scroll_done = true;
         }
-        // 窄窗口（远程会话 / 小屏）自动收起侧栏，否则 280 的侧栏会把正文挤到窗口外。
-        let collapsed = self.sidebar_collapsed || window.bounds().size.width < px(600.0);
+        // 窄窗口（远程会话 / 小屏）自动收起侧栏，否则 280 的侧栏会把正文挤到窗口外；
+        // 插件面板打开时同理，否则 280+300 会吃掉正文宽度。
+        let collapsed =
+            self.sidebar_collapsed || self.plugins_open || window.bounds().size.width < px(600.0);
         let mut shell = div().flex().size_full().bg(p.color(p.sidebar_fill));
         if !collapsed {
             shell = shell.child(self.sidebar(&theme, cx));
         }
-        shell.child(
+        shell = shell.child(
             div()
                 .flex_1()
                 .h_full()
@@ -2061,7 +2267,8 @@ impl Render for ChatApp {
                 .child(self.transcript(&theme, window, cx))
                 .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
                 .child(self.composer(&theme, cx)),
-        )
+        );
+        shell.when_some(self.plugins_panel(&theme, cx), |el, panel| el.child(panel))
     }
 }
 
@@ -2628,6 +2835,79 @@ fn selftest_sandbox() -> i32 {
     }
 }
 
+/// 插件 profile 自检：默认值、启停持久化、sidecar JSON、以及（有 vendored 依赖时）
+/// 禁用 fs 后 read 工具消失、重新启用后回来。
+fn selftest_profile() -> i32 {
+    let _ = std::fs::create_dir_all(".tmp");
+    let dir = PathBuf::from(".tmp/profile-selftest");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut profile = Profile::load(&dir).expect("load profile");
+    let defaults_ok = profile.entries().len() == 2;
+    let all_json = profile.sidecar_json();
+    let disable_ok = profile.set_enabled("@deepseek-ai/dsh-tool-fs", false);
+    if let Err(err) = profile.save() {
+        println!("[selftest-profile] 保存失败: {err}");
+        return 1;
+    }
+    let disabled_json = profile.sidecar_json();
+    let reloaded = Profile::load(&dir).expect("reload profile");
+    let persisted = reloaded
+        .entries()
+        .iter()
+        .any(|entry| entry.name == "@deepseek-ai/dsh-tool-fs" && !entry.enabled);
+    let json_ok = all_json.contains("dsh-tool-fs") && !disabled_json.contains("dsh-tool-fs");
+
+    let vendored = PathBuf::from("sidecar/dsh-official/node_modules").exists();
+    let mut sidecar_ok = true;
+    if vendored {
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_DSH_PLUGINS", disabled_json.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let without_fs = ChatState::new(
+            PathBuf::from(".tmp/chat-profile-without-fs.jsonl"),
+            SESSION_ID,
+            &cancel,
+            ApprovalBroker::new(),
+        );
+        let read_absent = without_fs.plugins.registry().get("read").is_none();
+        let workspace_present = without_fs
+            .plugins
+            .registry()
+            .get("load_workspace_dependencies")
+            .is_some();
+
+        let mut reopened = Profile::load(&dir).expect("reload");
+        reopened.set_enabled("@deepseek-ai/dsh-tool-fs", true);
+        let _ = reopened.save();
+        std::env::set_var("DSHR_DSH_PLUGINS", reopened.sidecar_json());
+        let with_fs = ChatState::new(
+            PathBuf::from(".tmp/chat-profile-with-fs.jsonl"),
+            SESSION_ID,
+            &cancel,
+            ApprovalBroker::new(),
+        );
+        let read_present = with_fs.plugins.registry().get("read").is_some();
+        sidecar_ok = read_absent && workspace_present && read_present;
+        println!(
+            "[profile] vendored=true read_absent={read_absent} workspace_present={workspace_present} read_present={read_present}"
+        );
+    } else {
+        println!("[profile] vendored=false（跳过 sidecar 端到端）");
+    }
+
+    let ok = defaults_ok && disable_ok && persisted && json_ok && sidecar_ok;
+    println!(
+        "[profile] defaults_ok={defaults_ok} disable_ok={disable_ok} persisted={persisted} json_ok={json_ok}"
+    );
+    if ok {
+        println!("[selftest-profile] PASS");
+        0
+    } else {
+        println!("[selftest-profile] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 ///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
@@ -2708,6 +2988,10 @@ fn main() {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_sandbox());
     }
+    if std::env::args().any(|arg| arg == "--selftest-profile") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_profile());
+    }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");
         std::env::set_var("DSHR_FORCE_MOCK", "1");
@@ -2760,6 +3044,16 @@ fn main() {
         .first()
         .map(|session| session.id.clone())
         .unwrap_or_else(|| SESSION_ID.to_owned());
+    // 插件 profile：启停状态持久化到 DSHR_PROFILE_DIR/plugins.json，并注入 sidecar。
+    let profile_dir = std::env::var("DSHR_PROFILE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".tmp/profile"));
+    let profile = Profile::load(&profile_dir).unwrap_or_else(|err| {
+        eprintln!("[chat] 加载插件 profile 失败（使用默认值）: {err}");
+        Profile::defaults(&profile_dir)
+    });
+    std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
+
     let path = store.path_for(&active);
     let cancel = Arc::new(AtomicBool::new(false));
     let approvals = ApprovalBroker::new();
@@ -2792,6 +3086,7 @@ fn main() {
         let sessions = sessions;
         let active = active;
         let approvals = approvals;
+        let profile = profile;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -2831,6 +3126,8 @@ fn main() {
                     pending_delete: None,
                     approvals,
                     pending_approvals: 0,
+                    profile,
+                    plugins_open: false,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();

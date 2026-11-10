@@ -1068,6 +1068,7 @@ dependencies = [
  "dshr-llm-deepseek",
  "dshr-plugin-api",
  "dshr-plugin-host",
+ "dshr-profile",
  "dshr-sandbox",
  "dshr-session-store",
  "dshr-tool-runtime",
@@ -1103,6 +1104,14 @@ dependencies = [
  "dshr-tool-runtime",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "dshr-profile"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
