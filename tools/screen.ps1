@@ -194,12 +194,11 @@ switch ($Action) {
   }
   'keys' {
     foreach ($ch in $Text.ToCharArray()) {
-      if ($ch -eq ' ') { $vk = 0x20 }
-      elseif ($ch -eq "`n") { $vk = 0x0D }
-      else { $vk = [int][char]::ToUpperInvariant($ch) }
-      [NativeInput]::keybd_event([byte]$vk, 0, 0, [UIntPtr]::Zero)
+      # GPUI 按键分发看扫描码：Enter / Space 必须带真实 scan code，否则被忽略。
+      if ($ch -eq ' ') { $vk = 0x20; $scan = 0x39 } elseif ($ch -eq "`n") { $vk = 0x0D; $scan = 0x1C } else { $vk = [int][char]::ToUpperInvariant($ch); $scan = 0 }
+      [NativeInput]::keybd_event([byte]$vk, [byte]$scan, 0, [UIntPtr]::Zero)
       Start-Sleep -Milliseconds $DelayMs
-      [NativeInput]::keybd_event([byte]$vk, 0, 2, [UIntPtr]::Zero)
+      [NativeInput]::keybd_event([byte]$vk, [byte]$scan, 2, [UIntPtr]::Zero)
       Start-Sleep -Milliseconds $DelayMs
     }
     "keys sent: $Text"

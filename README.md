@@ -87,4 +87,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）。
 上下文在请求前计量：超长工具结果头尾裁剪、超预算丢最旧整轮，丢弃的旧轮次由模型
 生成摘要并写 `context.compacted`（[`docs/m2-context.md`](docs/m2-context.md)）。
+写文件/执行命令类工具默认需要**用户审批**（`write`/`edit`/`bash` 等），
+审批卡片在输入框上方，痕迹落 `approval.asked` / `approval.answered`
+（[`docs/m2-approval.md`](docs/m2-approval.md)）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

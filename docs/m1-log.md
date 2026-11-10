@@ -666,6 +666,31 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A23 工具审批：策略 + 阻塞 broker + 审批 UI（2026-11-11）
+
+问题：M1 的 `AllowAll` 让所有工具直接执行；写文件/执行命令类工具一旦接入，
+就是绕过审批的破坏性通道。
+
+**做法**：
+
+1. `tool-runtime` 新增 `ApprovalPolicy`：拒绝名单 > 写入/执行名名单
+   （write/edit/apply_patch/bash/pwsh/…）> `terminal`/`diff` 展示 > Allow；
+   `DSHR_TOOL_POLICY=ask-all` 全部走审批（自检用）。
+2. `ApprovalBroker`（Mutex + Condvar）：工作线程 `request` 阻塞，UI `resolve` 唤醒；
+   超时按拒绝；`DSHR_APPROVAL_MODE=allow|deny` 供非交互环境。
+3. `ChatExecutor` 消费 `RegistryError::NeedsApproval`：等待决定，允许则绕过策略
+   继续执行，拒绝则返回"用户拒绝"的 tool 错误。
+4. chat UI：输入框上方审批卡片（工具名 + 参数 + 拒绝/允许一次），
+   轮询 pending 变化重绘；审批痕迹在轮次结束落成
+   `approval.asked` / `approval.answered`。
+5. `--selftest-approval`：deny 时工具不执行且事件齐全；allow 时真实执行。
+
+**验证**：tool-runtime 16 测试、workspace 全绿、clippy 干净；截图核对审批卡片、
+点击"允许一次"后工具执行完成。
+
+**边界**：官方 `write`/`edit`/`bash` 仍关闭——审批是必要条件，还需要 `sandbox` seam
+（路径根、写前快照、命令白名单）才能安全打开。详见 [`m2-approval.md`](m2-approval.md)。
+
 ## A22 上下文压缩：LLM 摘要 + context.compacted（2026-11-11）
 
 问题：A21 的"丢最旧整轮"会让早期任务目标/已确认事实直接从模型历史里消失——

@@ -38,7 +38,9 @@ use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
-use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
+use dshr_tool_runtime::{
+    ApprovalBroker, ApprovalOutcome, ApprovalPolicy, RegistryError, ToolDefinition, ToolOrigin,
+};
 use dshr_ui_gpui::{markdown_view, TextInput, Theme, ThemeKind};
 
 const SESSION_ID: &str = "s-chat";
@@ -132,6 +134,8 @@ struct ChatState {
     /// 必须跨轮复用：turn id 单调递增，否则 call_id 重复会被 Session Log 拒收。
     agent: Agent<Box<dyn ModelProvider>>,
     seq: u64,
+    /// 审批 broker：工作线程阻塞等待 UI 决定；不属于大锁保护范围。
+    approvals: Arc<ApprovalBroker>,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
@@ -245,6 +249,7 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
 struct ChatExecutor<'a> {
     plugins: &'a mut PluginHost,
     host: Option<&'a mut SidecarHost>,
+    approvals: &'a ApprovalBroker,
 }
 
 impl ToolExecutor for ChatExecutor<'_> {
@@ -268,6 +273,26 @@ impl ToolExecutor for ChatExecutor<'_> {
             .authorize(&call.tool, &call.arguments)
         {
             Ok(definition) => definition.clone(),
+            Err(RegistryError::NeedsApproval { tool }) => {
+                // 策略说"要确认"：阻塞等工作线程外的 UI 决定（或超时按拒绝）。
+                let outcome = self.approvals.request(
+                    &call.call_id,
+                    &tool,
+                    &call.arguments,
+                    Duration::from_secs(300),
+                );
+                match outcome {
+                    ApprovalOutcome::AllowOnce => {
+                        match self.plugins.registry().get(&tool).cloned() {
+                            Some(definition) => definition,
+                            None => return ToolOutcome::failure(format!("工具 {tool} 已卸载")),
+                        }
+                    }
+                    ApprovalOutcome::Deny => {
+                        return ToolOutcome::failure(format!("用户拒绝了工具 `{tool}` 的调用"))
+                    }
+                }
+            }
             Err(err) => return ToolOutcome::failure(err.to_string()),
         };
 
@@ -326,7 +351,12 @@ fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
 }
 
 impl ChatState {
-    fn new(path: PathBuf, session_id: &str, cancel: &Arc<AtomicBool>) -> Self {
+    fn new(
+        path: PathBuf,
+        session_id: &str,
+        cancel: &Arc<AtomicBool>,
+        approvals: Arc<ApprovalBroker>,
+    ) -> Self {
         let log = if path.exists() {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             SessionLog::from_jsonl(session_id, &text).unwrap_or_else(|err| {
@@ -338,7 +368,12 @@ impl ChatState {
         };
 
         let host = spawn_sidecar();
-        let mut plugins = PluginHost::new(AllowAll);
+        let policy = if std::env::var("DSHR_TOOL_POLICY").as_deref() == Ok("ask-all") {
+            ApprovalPolicy::ask_all()
+        } else {
+            ApprovalPolicy::desktop()
+        };
+        let mut plugins = PluginHost::new(policy);
         if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
             eprintln!("[chat] 原生插件加载失败: {err}");
         }
@@ -353,6 +388,7 @@ impl ChatState {
             plugins,
             agent: Agent::new(select_provider(cancel)),
             seq: 0,
+            approvals,
         }
     }
 
@@ -503,11 +539,13 @@ impl ChatState {
                 plugins,
                 host,
                 log,
+                approvals,
                 ..
             } = self;
             let mut executor = ChatExecutor {
                 plugins,
                 host: host.as_mut(),
+                approvals: approvals.as_ref(),
             };
             agent.run_turn_streaming(&history, text, &mut executor, &mut |event| match event {
                 AgentEvent::TextDelta(delta) => {
@@ -567,6 +605,30 @@ impl ChatState {
             });
         }
 
+        // 审批痕迹落盘（在工具事件之后：审批链用于审计/回放，不影响模型输入）。
+        let records = self.approvals.take_records();
+        for record in records {
+            let approval_ts = now_ts();
+            let _ = self.log.append(EventSpec::durable(
+                "approval.asked",
+                &approval_ts,
+                json!({
+                    "call_id": record.call_id,
+                    "request": { "tool": record.tool, "arguments": record.arguments },
+                    "policy": "desktop",
+                }),
+            ));
+            let _ = self.log.append(EventSpec::durable(
+                "approval.answered",
+                &approval_ts,
+                json!({
+                    "call_id": record.call_id,
+                    "outcome": record.outcome.as_str(),
+                    "answerer": record.answerer,
+                }),
+            ));
+        }
+
         self.seq += 1;
         let ts = now_ts();
         let _ = self.log.append(EventSpec::durable(
@@ -616,6 +678,10 @@ struct ChatApp {
     rename_input: Option<Entity<TextInput>>,
     /// 等待二次确认删除的会话（None = 没有待确认项）。
     pending_delete: Option<String>,
+    /// 工具审批 broker（与 ChatState 共享同一实例）。
+    approvals: Arc<ApprovalBroker>,
+    /// 上一次渲染时的 pending 数，用于只在变化时触发重绘。
+    pending_approvals: usize,
 }
 
 impl ChatApp {
@@ -716,6 +782,14 @@ impl ChatApp {
                     });
                     return;
                 }
+                // 审批可能出现在两个快照之间：轮询 pending，变化时重绘。
+                let _ = this.update(cx, |app, cx| {
+                    let pending = app.approvals.pending().len();
+                    if pending != app.pending_approvals {
+                        app.pending_approvals = pending;
+                        cx.notify();
+                    }
+                });
                 // 16ms 轮询：与一帧同量级，肉眼看不到分批。
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
@@ -777,7 +851,7 @@ impl ChatApp {
         }
         let path = self.store.path_for(&id);
         let cancel = Arc::new(AtomicBool::new(false));
-        let state = ChatState::new(path, &id, &cancel);
+        let state = ChatState::new(path, &id, &cancel, self.approvals.clone());
         let rows = rows_snapshot(&state.log, None);
         self.state = Arc::new(Mutex::new(state));
         self.cancel = cancel;
@@ -1528,6 +1602,135 @@ impl ChatApp {
             .into_any_element()
     }
 
+    /// 工具审批卡片：工作线程阻塞在这里，等待"允许一次 / 拒绝"。
+    fn approval_bar(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pending = self.approvals.pending();
+        let first = pending.first()?;
+        let p = t.palette;
+        let call_id = first.call_id.clone();
+        let preview = serde_json::to_string_pretty(&first.arguments).unwrap_or_default();
+        let preview = if preview.chars().count() > 260 {
+            let mut text: String = preview.chars().take(260).collect();
+            text.push('…');
+            text
+        } else {
+            preview
+        };
+        let call_id_allow = call_id.clone();
+        let call_id_deny = call_id.clone();
+        let approvals_allow = self.approvals.clone();
+        let approvals_deny = self.approvals.clone();
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .px(px(16.0))
+                .pb(px(6.0))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(t.layout.composer_max_width)
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .px(px(14.0))
+                        .py(px(10.0))
+                        .rounded(t.radii.md)
+                        .border_1()
+                        .border_color(p.color(p.state_warn))
+                        .bg(p.color(p.bg_layer_1))
+                        .shadow_sm()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .w(px(6.0))
+                                        .h(px(6.0))
+                                        .rounded_full()
+                                        .bg(p.color(p.state_warn)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(t.type_scale.secondary)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(p.color(p.label_primary))
+                                        .child(format!("工具调用需要确认：{}", first.tool)),
+                                )
+                                .child(div().flex_1())
+                                .when(pending.len() > 1, |row| {
+                                    row.child(
+                                        div()
+                                            .text_size(t.type_scale.small)
+                                            .text_color(p.color(p.label_caption))
+                                            .child(format!("另有 {} 个待确认", pending.len() - 1)),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .max_h(px(80.0))
+                                .overflow_hidden()
+                                .text_size(t.type_scale.small)
+                                .line_height(t.type_scale.small_line)
+                                .text_color(p.color(p.label_tertiary))
+                                .child(preview),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .id("approval-deny")
+                                        .px(px(12.0))
+                                        .py(px(5.0))
+                                        .rounded(t.radii.sm)
+                                        .border_1()
+                                        .border_color(p.color(p.border_l2))
+                                        .bg(p.color(p.button_elevated))
+                                        .cursor_pointer()
+                                        .text_size(t.type_scale.small)
+                                        .text_color(p.color(p.label_primary))
+                                        .child("拒绝")
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            approvals_deny
+                                                .resolve(&call_id_deny, ApprovalOutcome::Deny);
+                                            this.pending_approvals = 0;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("approval-allow")
+                                        .px(px(12.0))
+                                        .py(px(5.0))
+                                        .rounded(t.radii.sm)
+                                        .bg(p.color(p.button_info))
+                                        .cursor_pointer()
+                                        .text_size(t.type_scale.small)
+                                        .text_color(p.color(p.bg_base))
+                                        .child("允许一次")
+                                        .on_click(cx.listener(move |this, _, _window, cx| {
+                                            approvals_allow.resolve(
+                                                &call_id_allow,
+                                                ApprovalOutcome::AllowOnce,
+                                            );
+                                            this.pending_approvals = 0;
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn composer(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
         let (button_bg, button_label) = if self.busy {
@@ -1763,6 +1966,7 @@ impl Render for ChatApp {
                 .bg(p.color(p.bg_base))
                 .child(self.header(&theme, collapsed, cx))
                 .child(self.transcript(&theme, window, cx))
+                .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
                 .child(self.composer(&theme, cx)),
         )
     }
@@ -1774,7 +1978,7 @@ fn selftest() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     state.submit("你好");
     state.submit("用工具试一下"); // sidecar
@@ -1853,7 +2057,7 @@ fn selftest_cordis() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     state.submit("用工具试一下");
 
@@ -1911,7 +2115,7 @@ fn selftest_dsh() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     // 官方插件经 ctx.tools.register 映射进同一个 Registry，origin 必须是 sidecar。
     let registered_workspace = state
@@ -1994,7 +2198,7 @@ fn live_turn(text: &str) -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path, SESSION_ID, &cancel);
+    let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
 
     let started = std::time::Instant::now();
     let mut updates = 0usize;
@@ -2025,7 +2229,7 @@ fn selftest_stream() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     let mut snapshots: Vec<Vec<Row>> = Vec::new();
     let reply = state.stream_turn("你好", &mut |rows| snapshots.push(rows));
@@ -2079,7 +2283,7 @@ fn selftest_context() -> i32 {
     let _ = std::fs::remove_file(&path);
     std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     // 直接写日志模拟长会话：CJK 文本 + 大工具结果，确保超过 8000 的 80%。
     for index in 0..20 {
@@ -2197,6 +2401,80 @@ fn selftest_context() -> i32 {
     }
 }
 
+/// 审批自检：策略对全部工具 Ask，
+/// (1) `DSHR_APPROVAL_MODE=deny`：工具不执行、落 approval 事件、工具结果为空错误；
+/// (2) `DSHR_APPROVAL_MODE=allow`：审批通过、工具真正执行。
+fn selftest_approval() -> i32 {
+    let _ = std::fs::create_dir_all(".tmp");
+    std::env::set_var("DSHR_TOOL_POLICY", "ask-all");
+
+    let denied_path = PathBuf::from(".tmp/chat-approval-deny.jsonl");
+    let _ = std::fs::remove_file(&denied_path);
+    std::env::set_var("DSHR_APPROVAL_MODE", "deny");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut denied_state = ChatState::new(denied_path, SESSION_ID, &cancel, ApprovalBroker::new());
+    let denied_reply = denied_state.stream_turn("用工具试一下", &mut |_| {});
+
+    let event_count = |state: &ChatState, kind: &str| {
+        state
+            .log
+            .events()
+            .iter()
+            .filter(|event| event.event_type == kind)
+            .count()
+    };
+    let denied_tool = denied_state
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "tool.aborted");
+    let asked = event_count(&denied_state, "approval.asked");
+    let answered = event_count(&denied_state, "approval.answered");
+    let deny_outcome = denied_state.log.events().iter().any(|event| {
+        event.event_type == "approval.answered"
+            && event.payload.get("outcome").and_then(|v| v.as_str()) == Some("deny")
+    });
+
+    let allowed_path = PathBuf::from(".tmp/chat-approval-allow.jsonl");
+    let _ = std::fs::remove_file(&allowed_path);
+    std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+    let mut allowed_state =
+        ChatState::new(allowed_path, SESSION_ID, &cancel, ApprovalBroker::new());
+    let allowed_reply = allowed_state.stream_turn("用工具试一下", &mut |_| {});
+    let allowed_tool = allowed_state
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "tool.result");
+    let allow_outcome = allowed_state.log.events().iter().any(|event| {
+        event.event_type == "approval.answered"
+            && event.payload.get("outcome").and_then(|v| v.as_str()) == Some("allow_once")
+    });
+
+    std::env::remove_var("DSHR_APPROVAL_MODE");
+    std::env::remove_var("DSHR_TOOL_POLICY");
+
+    println!(
+        "[approval] asked={asked} answered={answered} denied_tool={denied_tool} \
+         deny_outcome={deny_outcome} allowed_tool={allowed_tool} allow_outcome={allow_outcome}"
+    );
+    let ok = denied_reply.is_some()
+        && allowed_reply.is_some()
+        && denied_tool
+        && asked == 1
+        && answered == 1
+        && deny_outcome
+        && allowed_tool
+        && allow_outcome;
+    if ok {
+        println!("[selftest-approval] PASS");
+        0
+    } else {
+        println!("[selftest-approval] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 ///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
@@ -2205,7 +2483,7 @@ fn live_chat(script: &[String]) -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     let mut failed = false;
     for (index, text) in script.iter().enumerate() {
@@ -2269,6 +2547,10 @@ fn main() {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_context());
     }
+    if std::env::args().any(|arg| arg == "--selftest-approval") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_approval());
+    }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");
         std::env::set_var("DSHR_FORCE_MOCK", "1");
@@ -2323,7 +2605,13 @@ fn main() {
         .unwrap_or_else(|| SESSION_ID.to_owned());
     let path = store.path_for(&active);
     let cancel = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(ChatState::new(path, &active, &cancel)));
+    let approvals = ApprovalBroker::new();
+    let state = Arc::new(Mutex::new(ChatState::new(
+        path,
+        &active,
+        &cancel,
+        approvals.clone(),
+    )));
     let app_cancel = cancel.clone();
     let rows = {
         let guard = state
@@ -2346,6 +2634,7 @@ fn main() {
         let store = store;
         let sessions = sessions;
         let active = active;
+        let approvals = approvals;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -2383,6 +2672,8 @@ fn main() {
                     renaming: None,
                     rename_input: None,
                     pending_delete: None,
+                    approvals,
+                    pending_approvals: 0,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();
@@ -2401,6 +2692,12 @@ fn main() {
                 window.focus(&focus, cx);
                 // 首次 IME 组合前刷新一次坐标，缓解候选窗落到屏幕角落（issue 0001）。
                 window.invalidate_character_coordinates();
+                // 调试钩子：绕过输入法/鼠标，直接发一条消息（验证审批卡片等）。
+                if let Ok(text) = std::env::var("DSHR_UI_AUTOSEND") {
+                    app.update(cx, |chat, cx| {
+                        chat.on_submit(&text, cx);
+                    });
+                }
                 app
             },
         )

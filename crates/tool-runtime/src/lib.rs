@@ -9,6 +9,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod approval;
+
+pub use approval::{ApprovalBroker, ApprovalOutcome, ApprovalRecord, PendingApproval};
+
 use std::collections::BTreeMap;
 
 use serde_json::Value;
@@ -164,6 +168,85 @@ impl ToolPolicy for AllowAll {
         PolicyDecision::Allow
     }
 }
+
+/// 桌面默认策略：读类工具直接放行，写入/执行类需要用户确认。
+///
+/// 判定顺序：显式 deny 名单 → 名字命中写入/执行名单 → 展示类型是 `terminal`/`diff`
+/// → 其余 Allow。名单可通过 `MUTATING_TOOL_NAMES` 扩展，保持"默认拒绝破坏性操作"。
+#[derive(Debug, Default)]
+pub struct ApprovalPolicy {
+    pub deny: Vec<String>,
+    pub ask: Vec<String>,
+    /// 是否把所有 `terminal` / `diff` 展示的工具都归入 Ask。
+    pub ask_terminal_and_diff: bool,
+    /// 无条件 Ask（自检/演示用）。
+    pub ask_everything: bool,
+}
+
+impl ApprovalPolicy {
+    /// 默认：常见写入/执行工具名要求确认，terminal/diff 卡片也要求确认。
+    pub fn desktop() -> Self {
+        Self {
+            deny: Vec::new(),
+            ask: MUTATING_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            ask_terminal_and_diff: true,
+            ask_everything: false,
+        }
+    }
+
+    /// 全部工具都要求确认（自检/演示用）。
+    pub fn ask_all() -> Self {
+        Self {
+            deny: Vec::new(),
+            ask: Vec::new(),
+            ask_terminal_and_diff: false,
+            ask_everything: true,
+        }
+    }
+}
+
+impl ToolPolicy for ApprovalPolicy {
+    fn check(&self, tool: &ToolDefinition, _arguments: &Value) -> PolicyDecision {
+        if self.deny.iter().any(|name| name == &tool.name) {
+            return PolicyDecision::Deny(format!("工具 {} 在拒绝名单中", tool.name));
+        }
+        if self.ask_everything {
+            return PolicyDecision::Ask;
+        }
+        if self.ask.iter().any(|name| name == &tool.name) {
+            return PolicyDecision::Ask;
+        }
+        if self.ask_terminal_and_diff
+            && matches!(tool.card(), Presentation::Terminal | Presentation::Diff)
+        {
+            return PolicyDecision::Ask;
+        }
+        PolicyDecision::Allow
+    }
+}
+
+/// 名字命中这些模式的工具默认需要用户确认。
+pub const MUTATING_TOOL_NAMES: &[&str] = &[
+    "write",
+    "edit",
+    "apply_patch",
+    "applyPatch",
+    "bash",
+    "pwsh",
+    "shell",
+    "delete",
+    "remove",
+    "mkdir",
+    "move",
+    "copy",
+    "rename",
+    "chmod",
+    "git_commit",
+    "git_push",
+];
 
 /// 测试与演示用：按工具名拒绝。
 #[derive(Debug, Default)]
@@ -501,5 +584,41 @@ mod tests {
         let unknown = native("c").with_presentation("markdown");
         assert_eq!(unknown.card(), Presentation::Generic);
         assert_eq!(unknown.presentation.as_deref(), Some("markdown"));
+    }
+
+    #[test]
+    fn desktop_approval_policy_asks_for_mutating_tools() {
+        let policy = ApprovalPolicy::desktop();
+        let write = native("write");
+        assert_eq!(policy.check(&write, &json!({})), PolicyDecision::Ask);
+
+        let terminal = native("anything").with_presentation("terminal");
+        assert_eq!(policy.check(&terminal, &json!({})), PolicyDecision::Ask);
+
+        let read = native("read").with_presentation("read");
+        assert_eq!(policy.check(&read, &json!({})), PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn deny_list_wins_over_ask_and_allow() {
+        let policy = ApprovalPolicy {
+            deny: vec!["bash".to_owned()],
+            ask: vec!["bash".to_owned()],
+            ask_terminal_and_diff: false,
+            ask_everything: false,
+        };
+        assert!(matches!(
+            policy.check(&native("bash"), &json!({})),
+            PolicyDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn ask_everything_policy_asks_for_read_tools_too() {
+        let policy = ApprovalPolicy::ask_all();
+        assert_eq!(
+            policy.check(&native("read"), &json!({})),
+            PolicyDecision::Ask
+        );
     }
 }
