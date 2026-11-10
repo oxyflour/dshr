@@ -48,6 +48,25 @@ tools\build-env.cmd cargo build --manifest-path tools\ime-probe\Cargo.toml
 - 或 `WM_IME_STARTCOMPOSITION` 到达时，`with_input_handler_and_scale_factor` 取到的 handler
   仍是旧的/空的，与后续帧无关。
 
+## 2026-11-11 更新：产品界面已换成真实输入组件
+
+`crates/ui-gpui` 现在有 vendored 的 `TextInput`（`EntityInputHandler` + `ElementInputHandler`），
+`chat` 的输入框已从"`div` + `key_down`"换成它。这意味着：
+
+- 中文 IME 的组合输入路径**首次在产品界面里可用**（此前只在 `tools/ime-probe` 里验证过）；
+- 焦点获得与鼠标按下时都会调用 `window.invalidate_character_coordinates()`（沿用探针的缓解）；
+- 该问题仍**未关闭**：缓解在探针里实测无效，产品界面需要真人键盘复验一次。
+
+**人工复验步骤**（自动化无法模拟输入法）：
+
+```powershell
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+```
+
+1. 启动后直接切中文输入法（先不要敲英文）；
+2. 敲一段拼音，观察候选窗是否仍在桌面右下角；
+3. 再确认：组合态下划线与光标正常、上屏文本正确、退格不破坏 UTF-16 选区。
+
 ## 下一步（按成本排序）
 
 1. 在 `update_ime_position` 处加日志（`ImmGetContext` 是否有效、`caret_position` 数值、调用时机），

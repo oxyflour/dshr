@@ -1,7 +1,10 @@
-﻿[package]
+[package]
 name = "dshr-ui-gpui"
 description = "GPUI 原生实现、主题、窗口、Dock、虚拟化渲染"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# 与 desktop-gpui 用同一个 pin（ADR-0001），否则类型不兼容。
+gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
+unicode-segmentation = "=1.13.3"

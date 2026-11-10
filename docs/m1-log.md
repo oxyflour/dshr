@@ -598,6 +598,31 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 
 测试：workspace 98 passed（agent-core 14、agent-context 7、llm-deepseek 15）。
 
+## A16 真实输入组件（中文 IME，2026-11-11）
+
+问题：chat 的输入框是 `div + on_key_down`——ASCII 能打，但中文 IME 的组合输入
+（拼音下划线、候选窗、上屏）依赖 `EntityInputHandler`，只监听 `key_char` 拿不到。
+
+**实现**：
+
+| 项 | 内容 |
+|---|---|
+| 组件 | `crates/ui-gpui/text_input.rs`：从 zed `examples/input.rs`（Apache-2.0，同一 pin）vendored，保留 UTF-16 选区、marked text、光标/选区绘制、剪贴板动作 |
+| 改动 | 抽出 `Submit` action 与 `on_submit` 回调（返回 `bool`：false 时保留内容，用于"生成中按回车"）；去掉示例窗口/字体/退出键；占位符改为深色可读 |
+| 接入 | `chat` 用 `Entity<TextInput>`；回车提交读文本、按钮提交清空并发送；启动时 `TextInput::init` 注册键位，聚焦后 `invalidate_character_coordinates()` |
+| 归属 | `crates/ui-gpui/NOTICE.md` 记录来源、commit 与改动 |
+
+**验证**：
+
+- `cargo build/test/clippy` 全绿（98 个测试；组件本身还没有单测，见边界）。
+- `chat.exe` 启动后 `provider=deepseek`、进程存活且第一帧渲染无 panic；截图工具抓不到 GPUI
+  窗口（既有现象），所以"界面长什么样"没有视觉证据。
+- **中文 IME 行为未自动化验证**：`SendInput` 只能发 ASCII 键，`screen.ps1` 的窗口聚焦动作
+  在本机会挂起。人工复验步骤写在 [`issues/0001`](issues/0001-ime-candidate-first-composition.md)。
+
+**边界**：只支持单行（无换行/多行编辑、无 undo/redo）；组件级测试要打开 GPUI
+`test-support` feature，下一轮补；候选窗首次位置问题（issue 0001）仍等他人工复验。
+
 ## A8 真实 Cordis 插件（2026-11-09）
 
 **目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，

@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rgb, size, uniform_list, App, Bounds, Context, FocusHandle, KeyDownEvent,
-    SharedString, UniformListScrollHandle, Window, WindowBounds, WindowOptions,
+    div, px, rgb, size, uniform_list, App, Bounds, Context, Entity, Focusable,
+    UniformListScrollHandle, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
@@ -38,6 +38,7 @@ use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionLog, ToolState};
 use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
+use dshr_ui_gpui::TextInput;
 
 const ROW_HEIGHT: f32 = 56.0;
 const SESSION_ID: &str = "s-chat";
@@ -445,8 +446,8 @@ struct ChatApp {
     state: Arc<Mutex<ChatState>>,
     /// 当前渲染用的整份快照（由工作线程推送）。
     rows: Vec<Row>,
-    input: String,
-    focus: FocusHandle,
+    /// 真正的文本输入组件（实现 EntityInputHandler，中文 IME 组合输入可用）。
+    input: Entity<TextInput>,
     scroll: UniformListScrollHandle,
     /// 一轮正在生成：输入框仍可编辑，但回车不会发第二条。
     busy: bool,
@@ -464,12 +465,33 @@ impl ChatApp {
         cx.notify();
     }
 
-    fn send(&mut self, cx: &mut Context<Self>) {
+    /// 回车提交（TextInput 的 Submit action）。
+    ///
+    /// 返回 `true` 表示已受理，输入框随后自行清空；生成中返回 `false`，内容保留。
+    fn on_submit(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        if self.busy || text.trim().is_empty() {
+            return false;
+        }
+        self.start_turn(text.to_owned(), cx);
+        true
+    }
+
+    /// 发送按钮：空闲时发送，生成中变成"停止"。
+    fn button_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
+            self.stop(cx);
             return;
         }
-        let text = std::mem::take(&mut self.input);
+        let text = self.input.read(cx).content().to_owned();
         if text.trim().is_empty() {
+            return;
+        }
+        self.input.update(cx, |input, cx| input.clear(window, cx));
+        self.start_turn(text, cx);
+    }
+
+    fn start_turn(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.busy {
             return;
         }
         self.busy = true;
@@ -534,29 +556,6 @@ impl ChatApp {
             }
         })
         .detach();
-    }
-
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        match key {
-            "enter" => {
-                self.send(cx);
-                return;
-            }
-            "backspace" => {
-                self.input.pop();
-                cx.notify();
-                return;
-            }
-            _ => {}
-        }
-        if let Some(ch) = event.keystroke.key_char.as_deref() {
-            // 只接受可见字符；组合输入（IME）由后续的 EntityInputHandler 组件接管。
-            if !ch.chars().next().map(|c| c.is_control()).unwrap_or(true) {
-                self.input.push_str(ch);
-                cx.notify();
-            }
-        }
     }
 }
 
@@ -646,16 +645,6 @@ impl Render for ChatApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let total = self.rows.len();
         let rows_for_list = self.rows.clone();
-        let input_text = if self.input.is_empty() {
-            if self.busy {
-                "正在生成…".to_owned()
-            } else {
-                "输入消息，回车发送".to_owned()
-            }
-        } else {
-            format!("{}▌", self.input)
-        };
-        let dim = self.input.is_empty();
         let header = if self.busy {
             format!("会话 {SESSION_ID} · {} 条 · 生成中（可停止）", total)
         } else {
@@ -729,18 +718,16 @@ impl Render for ChatApp {
                     .border_color(rgb(0x2a2a2a))
                     .child(
                         div()
-                            .track_focus(&self.focus)
-                            .on_key_down(cx.listener(Self::on_key_down))
                             .flex_1()
-                            .px_3()
-                            .py_2()
+                            .h(px(38.0))
+                            .flex()
+                            .items_center()
                             .rounded_md()
                             .border_1()
                             .border_color(rgb(0x3a3a3a))
                             .bg(rgb(0x1b1b1b))
                             .text_sm()
-                            .when(dim, |el| el.text_color(rgb(0x777777)))
-                            .child(SharedString::from(input_text)),
+                            .child(self.input.clone()),
                     )
                     .children([div()
                         .id("send-button")
@@ -755,12 +742,8 @@ impl Render for ChatApp {
                         })
                         .cursor_pointer()
                         .child(if self.busy { "停止" } else { "发送" })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if this.busy {
-                                this.stop(cx);
-                            } else {
-                                this.send(cx);
-                            }
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.button_click(window, cx);
                         }))]),
             )
     }
@@ -1059,6 +1042,8 @@ fn main() {
     };
 
     application().run(move |cx: &mut App| {
+        // 文本输入组件的按键绑定（含回车提交）。
+        dshr_ui_gpui::init(cx);
         let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);
         let state = state;
         let rows = rows;
@@ -1069,17 +1054,32 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
-                let app = cx.new(|cx| ChatApp {
+                let input = cx.new(|cx| TextInput::new("输入消息，回车发送", cx));
+                let app = cx.new(|_cx| ChatApp {
                     state,
                     rows,
-                    input: String::new(),
-                    focus: cx.focus_handle(),
+                    input: input.clone(),
                     scroll: UniformListScrollHandle::new(),
                     busy: false,
                     cancel: app_cancel,
                 });
-                let focus = app.read(cx).focus.clone();
+                // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
+                let weak = app.downgrade();
+                let accepted = std::rc::Rc::new(std::cell::Cell::new(false));
+                let accepted_in = accepted.clone();
+                input.update(cx, |input, _cx| {
+                    input.set_on_submit(Box::new(move |text, _window, cx| {
+                        let accepted = accepted_in.clone();
+                        let _ = weak.update(cx, |chat, cx| {
+                            accepted.set(chat.on_submit(text, cx));
+                        });
+                        accepted_in.get()
+                    }));
+                });
+                let focus = input.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
+                // 首次 IME 组合前刷新一次坐标，缓解候选窗落到屏幕角落（issue 0001）。
+                window.invalidate_character_coordinates();
                 app
             },
         )
