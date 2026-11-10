@@ -1066,6 +1066,8 @@ dependencies = [
  "dshr-compat-dsh-host",
  "dshr-conversation-model",
  "dshr-llm-deepseek",
+ "dshr-llm-openai",
+ "dshr-llm-retry",
  "dshr-plugin-api",
  "dshr-plugin-host",
  "dshr-profile",
@@ -1085,6 +1087,22 @@ dependencies = [
  "dshr-agent-core",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "dshr-llm-openai"
+version = "0.0.0"
+dependencies = [
+ "dshr-agent-core",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "dshr-llm-retry"
+version = "0.0.0"
+dependencies = [
+ "dshr-agent-core",
 ]
 
 [[package]]

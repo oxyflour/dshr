@@ -666,6 +666,28 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A28 第二 provider + 重试/退避 + 故障注入（2026-11-11）
+
+问题：只有 DeepSeek 一家、网络一抖就整轮失败；M2 gate 要求 ≥2 provider 与
+20 步成功率。
+
+**做法**：
+
+1. 新 crate `dshr-llm-openai`：OpenAI Chat Completions 兼容 provider
+   （`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`），独立实现，
+   非流式（默认 `complete_streaming` 回退成整段一个 delta）。
+2. 新 crate `dshr-llm-retry`：`RetryingProvider` + `RetryPolicy`；
+   只重试 429/5xx/timeout/连接类错误，指数退避封顶；**流式已交付 delta 后不再重试**。
+3. `select_provider` 支持 `DSHR_PROVIDER=mock|deepseek|openai`，自动选择顺序
+   deepseek → openai → mock；真实 provider 统一套重试。
+4. `--selftest-retry`：FlakyProvider 每第 3 次返回 503，20 轮跑出
+   `succeeded=20 failed=0 provider_calls=29`。
+
+**验证**：llm-retry 7 测试、llm-openai 6 测试、workspace 全绿、selftest PASS。
+
+**未做**：10k 事件性能基线、工具级重试、真实网络重试验证。
+详见 [`m2-stability.md`](m2-stability.md)。
+
 ## A27 离线安装：本地插件包 → sidecar + profile（2026-11-11）
 
 问题：A25/A26 能启停和读 Loader YAML，但没有"安装"入口——插件包必须手动拷进

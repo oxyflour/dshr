@@ -1,0 +1,10 @@
+[package]
+name = "dshr-llm-openai"
+description = "OpenAI Chat Completions 兼容 Provider（第二 provider，同步 HTTP）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dshr-agent-core = { path = "../agent-core" }
+serde_json.workspace = true
+ureq = { version = "=3.5.1", features = ["json"] }

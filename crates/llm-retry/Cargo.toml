@@ -1,0 +1,8 @@
+[package]
+name = "dshr-llm-retry"
+description = "ModelProvider 重试/退避包装：429/5xx/连接中断，流式安全"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dshr-agent-core = { path = "../agent-core" }

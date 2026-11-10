@@ -35,6 +35,8 @@ use dshr_agent_core::{
 use dshr_compat_dsh_host::SidecarHost;
 use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
+use dshr_llm_openai::OpenAiProvider;
+use dshr_llm_retry::{RetryPolicy, RetryingProvider};
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_profile::{install_package, Profile, ProfileSource};
@@ -305,23 +307,75 @@ fn spawn_sidecar() -> Option<SidecarHost> {
         .ok()
 }
 
-/// 有 DEEPSEEK_API_KEY（环境变量或 `~/.dsh/.env`）时用真实模型，否则退回 mock。
+/// provider 选择：`DSHR_PROVIDER` 显式指定（mock/deepseek/openai），否则按 key 自动。
+///
+/// 真实 provider 统一包一层 `RetryingProvider`（429/5xx/连接中断指数退避）；
+/// 流式请求只在"还没有交付任何 delta"时重试，避免重复显示。
 fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
     // 自检必须确定性：显式要求 mock 时不看环境里的 key。
     if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
         println!("[chat] provider=mock（DSHR_FORCE_MOCK=1）");
         return Box::new(MockProvider);
     }
-    match DeepSeekProvider::from_env() {
-        Some(provider) => {
-            println!("[chat] provider=deepseek model={}", provider.model());
-            Box::new(provider.with_cancel(cancel.clone()))
+    let requested = std::env::var("DSHR_PROVIDER").unwrap_or_default();
+    let with_retries = |provider: Box<dyn ModelProvider>, name: &str, model: &str| {
+        println!(
+            "[chat] provider={name} model={model} retries={}",
+            RetryPolicy::from_env().max_attempts
+        );
+        Box::new(RetryingProvider::new(provider, RetryPolicy::from_env()))
+    };
+
+    match requested.as_str() {
+        "mock" => {
+            println!("[chat] provider=mock（DSHR_PROVIDER=mock）");
+            return Box::new(MockProvider);
         }
-        None => {
-            println!("[chat] provider=mock（未找到 DEEPSEEK_API_KEY）");
-            Box::new(MockProvider)
+        "openai" => {
+            if let Some(provider) = OpenAiProvider::from_env() {
+                let model = provider.model().to_owned();
+                return with_retries(
+                    Box::new(provider.with_cancel(cancel.clone())),
+                    "openai",
+                    &model,
+                );
+            }
+            println!("[chat] provider=mock（DSHR_PROVIDER=openai 但缺少 OPENAI_API_KEY）");
+            return Box::new(MockProvider);
         }
+        "deepseek" => {
+            if let Some(provider) = DeepSeekProvider::from_env() {
+                let model = provider.model().to_owned();
+                return with_retries(
+                    Box::new(provider.with_cancel(cancel.clone())),
+                    "deepseek",
+                    &model,
+                );
+            }
+            println!("[chat] provider=mock（DSHR_PROVIDER=deepseek 但缺少 DEEPSEEK_API_KEY）");
+            return Box::new(MockProvider);
+        }
+        _ => {}
     }
+
+    if let Some(provider) = DeepSeekProvider::from_env() {
+        let model = provider.model().to_owned();
+        return with_retries(
+            Box::new(provider.with_cancel(cancel.clone())),
+            "deepseek",
+            &model,
+        );
+    }
+    if let Some(provider) = OpenAiProvider::from_env() {
+        let model = provider.model().to_owned();
+        return with_retries(
+            Box::new(provider.with_cancel(cancel.clone())),
+            "openai",
+            &model,
+        );
+    }
+    println!("[chat] provider=mock（未找到 DEEPSEEK_API_KEY / OPENAI_API_KEY）");
+    Box::new(MockProvider)
 }
 
 /// Agent 的工具执行器：authorize 之后按来源分发给 PluginHost（native）或 Sidecar。
@@ -3105,8 +3159,82 @@ fn selftest_install() -> i32 {
         1
     }
 }
+/// 重试/故障注入自检：每第 3 次请求返回 503，20 轮全部应成功。
+struct FlakyProvider {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    fail_every: usize,
+}
+
+impl ModelProvider for FlakyProvider {
+    fn complete(
+        &mut self,
+        _request: &CompletionRequest,
+    ) -> Result<dshr_agent_core::ModelReply, String> {
+        let call = self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        if self.fail_every > 0 && call.is_multiple_of(self.fail_every) {
+            return Err(String::from("HTTP 503 temporarily unavailable"));
+        }
+        Ok(dshr_agent_core::ModelReply {
+            text: format!("ok-{call}"),
+            tool_calls: Vec::new(),
+        })
+    }
+}
+
+struct NoopExecutor;
+
+impl ToolExecutor for NoopExecutor {
+    fn specs(&self) -> Vec<ToolSpec> {
+        Vec::new()
+    }
+
+    fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        ToolOutcome::failure(format!("unexpected tool {}", call.tool))
+    }
+}
+
+fn selftest_retry() -> i32 {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let flaky = FlakyProvider {
+        calls: calls.clone(),
+        fail_every: 3,
+    };
+    let mut agent = Agent::new(RetryingProvider::new(
+        Box::new(flaky),
+        RetryPolicy::immediate(4),
+    ));
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    for _ in 0..20 {
+        let events = agent.run_turn("继续", &mut NoopExecutor);
+        if events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::TurnFailed(_)))
+        {
+            failed += 1;
+        } else {
+            succeeded += 1;
+        }
+    }
+    let total_calls = calls.load(std::sync::atomic::Ordering::Relaxed);
+    println!(
+        "[retry] turns=20 succeeded={succeeded} failed={failed} provider_calls={total_calls} \
+         (fault every 3rd call, max attempts 4)"
+    );
+    let ok = failed == 0 && succeeded == 20 && total_calls > 20;
+    if ok {
+        println!("[selftest-retry] PASS");
+        0
+    } else {
+        println!("[selftest-retry] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
-///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
 fn live_chat(script: &[String]) -> i32 {
     let path = PathBuf::from(".tmp/chat-live-chat.jsonl");
@@ -3196,6 +3324,10 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-install") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_install());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-retry") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_retry());
     }
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {

@@ -39,6 +39,12 @@ path = "../../crates/ui-gpui"
 [dependencies.dshr-llm-deepseek]
 path = "../../crates/llm-deepseek"
 
+[dependencies.dshr-llm-openai]
+path = "../../crates/llm-openai"
+
+[dependencies.dshr-llm-retry]
+path = "../../crates/llm-retry"
+
 [dependencies.dshr-plugin-api]
 path = "../../crates/plugin-api"
 

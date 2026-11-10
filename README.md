@@ -99,4 +99,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 （`DSHR_LOADER_BUNDLE` / `DSHR_LOADER_PATCH`，[`docs/m2-loader.md`](docs/m2-loader.md)）。
 本地插件包可用 `chat --install-plugin <目录>` 离线安装（复制到 sidecar + 写 profile，
 [`docs/m2-plugins.md`](docs/m2-plugins.md)）。
+模型 provider 已有 DeepSeek 与 OpenAI 兼容两家（`DSHR_PROVIDER`），
+统一套重试/退避（429/5xx/连接中断，流式已交付后不重试，
+[`docs/m2-stability.md`](docs/m2-stability.md)）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。
