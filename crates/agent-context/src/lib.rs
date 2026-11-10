@@ -111,6 +111,10 @@ pub struct ContextPlan {
     pub pruned_tool_results: usize,
     /// 因超预算丢弃的历史消息条数。
     pub dropped_messages: usize,
+    /// 被丢弃的前缀消息（用于生成压缩摘要）。
+    pub dropped: Vec<ChatMessage>,
+    /// 被丢弃消息覆盖的事件区间 `[from_seq, to_seq]`；写 `context.compacted` 用。
+    pub dropped_range: Option<(u64, u64)>,
 }
 
 impl ContextPlan {
@@ -134,51 +138,84 @@ pub fn plan_context(log: &SessionLog, next_user_text: &str) -> ContextPlan {
 /// 可注入窗口的版本（测试/自检用）。
 pub fn plan_with_window(log: &SessionLog, next_user_text: &str, window: usize) -> ContextPlan {
     let window = window.max(1);
-    let full = history_from_log(log);
-    let mut messages = full.clone();
-    let mut tokens = estimate_history_tokens(&messages) + estimate_tokens(next_user_text);
+    let full = history_with_seqs(log);
+    let full_messages: Vec<ChatMessage> =
+        full.iter().map(|wrapped| wrapped.message.clone()).collect();
+    let tokens_before = estimate_history_tokens(&full_messages) + estimate_tokens(next_user_text);
+    let mut working = full.clone();
+    let mut tokens = tokens_before;
 
     let trigger = (window as f32 * TRIGGER_RATIO) as usize;
     if tokens <= trigger {
         return ContextPlan {
-            messages,
+            messages: full_messages,
             window,
-            tokens_before: tokens,
+            tokens_before,
             tokens_after: tokens,
             pruned_tool_results: 0,
             dropped_messages: 0,
+            dropped: Vec::new(),
+            dropped_range: None,
         };
     }
 
     // 1. 超长工具结果做头尾裁剪。
     let mut pruned_tool_results = 0usize;
-    for message in &mut messages {
-        if let ChatMessage::Tool { content, .. } = message {
+    for wrapped in &mut working {
+        if let ChatMessage::Tool { content, .. } = &mut wrapped.message {
             if estimate_tokens(content) > TOOL_RESULT_TOKEN_LIMIT {
                 *content = prune_tool_result(content);
                 pruned_tool_results += 1;
             }
         }
     }
-    tokens = estimate_history_tokens(&messages) + estimate_tokens(next_user_text);
+    tokens = estimate_history_tokens(
+        &working
+            .iter()
+            .map(|wrapped| wrapped.message.clone())
+            .collect::<Vec<_>>(),
+    ) + estimate_tokens(next_user_text);
 
     // 2. 仍超预算：从最旧的对话丢起，直到降到目标占比。
-    let mut dropped_messages = 0usize;
+    let mut dropped = Vec::new();
+    let mut dropped_range = None;
     if tokens > trigger {
         let target = (window as f32 * TARGET_RATIO) as usize;
-        let trimmed = trim_to_budget(&messages, target, estimate_tokens(next_user_text));
-        dropped_messages = messages.len() - trimmed.len();
-        messages = trimmed;
-        tokens = estimate_history_tokens(&messages) + estimate_tokens(next_user_text);
+        let (kept, removed) = trim_to_budget(&working, target, estimate_tokens(next_user_text));
+        if !removed.is_empty() {
+            dropped_range = Some((
+                removed
+                    .first()
+                    .map(|wrapped| wrapped.start_seq)
+                    .unwrap_or(0),
+                removed.last().map(|wrapped| wrapped.end_seq).unwrap_or(0),
+            ));
+            dropped = removed
+                .iter()
+                .map(|wrapped| wrapped.message.clone())
+                .collect();
+        }
+        working = kept;
+        tokens = estimate_history_tokens(
+            &working
+                .iter()
+                .map(|wrapped| wrapped.message.clone())
+                .collect::<Vec<_>>(),
+        ) + estimate_tokens(next_user_text);
     }
 
     ContextPlan {
-        messages,
+        messages: working
+            .iter()
+            .map(|wrapped| wrapped.message.clone())
+            .collect(),
         window,
-        tokens_before: estimate_history_tokens(&full) + estimate_tokens(next_user_text),
+        tokens_before,
         tokens_after: tokens,
         pruned_tool_results,
-        dropped_messages,
+        dropped_messages: dropped.len(),
+        dropped,
+        dropped_range,
     }
 }
 
@@ -196,16 +233,17 @@ fn prune_tool_result(content: &str) -> String {
 }
 
 /// 从尾部往前累计到预算内，并把起点调到合法的 `User` 消息。
+/// 返回 `(保留, 丢弃)`；丢弃的是一段前缀，可直接映射成事件区间。
 fn trim_to_budget(
-    messages: &[ChatMessage],
+    messages: &[SeqMessage],
     target_tokens: usize,
     user_text_tokens: usize,
-) -> Vec<ChatMessage> {
+) -> (Vec<SeqMessage>, Vec<SeqMessage>) {
     let budget = target_tokens.saturating_sub(user_text_tokens);
     let mut used = 0usize;
     let mut start = messages.len();
     while start > 0 {
-        let cost = single_message_tokens(&messages[start - 1]);
+        let cost = single_message_tokens(&messages[start - 1].message);
         if used + cost > budget && start < messages.len() {
             break;
         }
@@ -213,50 +251,106 @@ fn trim_to_budget(
         start -= 1;
     }
     // 不从 Tool 开始：它对应的 assistant.tool_calls 被丢掉了。
-    while start < messages.len() && matches!(messages[start], ChatMessage::Tool { .. }) {
+    while start < messages.len() && matches!(messages[start].message, ChatMessage::Tool { .. }) {
         start += 1;
     }
     // 尽量从 User 开始，避免历史以孤立的 assistant 开头。
     if let Some(user_index) = messages[start..]
         .iter()
-        .position(|message| matches!(message, ChatMessage::User(_)))
+        .position(|wrapped| matches!(wrapped.message, ChatMessage::User(_)))
     {
         start += user_index;
     }
-    if start >= messages.len() {
-        return Vec::new();
-    }
-    messages[start..].to_vec()
+    let dropped = messages[..start].to_vec();
+    (messages[start..].to_vec(), dropped)
 }
 
 fn single_message_tokens(message: &ChatMessage) -> usize {
     estimate_history_tokens(std::slice::from_ref(message))
 }
 
-/// 从日志重建全部历史消息（不截断）。
-pub fn history_from_log(log: &SessionLog) -> Vec<ChatMessage> {
-    let mut messages: Vec<ChatMessage> = Vec::new();
+/// 带事件区间的一条消息：压缩时用 `start_seq..end_seq` 标记被替换的原始事件。
+#[derive(Debug, Clone, PartialEq)]
+struct SeqMessage {
+    start_seq: u64,
+    end_seq: u64,
+    message: ChatMessage,
+}
+
+/// 从日志重建**带 seq 区间**的消息（不截断），并应用已存在的 `context.compacted`：
+/// - `[from_seq, to_seq]` 内的事件跳过；
+/// - 摘要消息（被 `summary_message_id` 引用的那条）不单独展示；
+/// - 压缩事件本身还原成一条 `System` 摘要消息，插在原来的位置。
+fn history_with_seqs(log: &SessionLog) -> Vec<SeqMessage> {
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    let mut summary_ids: HashSet<String> = HashSet::new();
+    for event in log.events() {
+        if event.durability == Durability::Ephemeral {
+            continue;
+        }
+        if event.event_type != "context.compacted" {
+            continue;
+        }
+        let from = num_of(&event.payload, "from_seq");
+        let to = num_of(&event.payload, "to_seq");
+        if from > 0 && to >= from {
+            ranges.push((from, to));
+        }
+        let summary_id = str_of(&event.payload, "summary_message_id");
+        if !summary_id.is_empty() {
+            summary_ids.insert(summary_id);
+        }
+    }
+
+    let mut summary_text: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for event in log.events() {
+        if event.event_type != "message.assistant.settled" {
+            continue;
+        }
+        let message_id = str_of(&event.payload, "message_id");
+        if summary_ids.contains(&message_id) {
+            summary_text.insert(message_id, text_of(&event.payload));
+        }
+    }
+
+    let in_range = |seq: u64| ranges.iter().any(|(from, to)| seq >= *from && seq <= *to);
+
+    let mut messages: Vec<SeqMessage> = Vec::new();
     let mut pending: HashSet<String> = HashSet::new();
     let mut settled: HashSet<String> = HashSet::new();
 
     for event in log.events() {
-        if event.durability == Durability::Ephemeral {
+        if event.durability == Durability::Ephemeral || in_range(event.seq) {
             continue;
         }
         match event.event_type.as_str() {
             "message.user" => {
                 let text = text_of(&event.payload);
                 if !text.is_empty() {
-                    messages.push(ChatMessage::user(text));
+                    messages.push(SeqMessage {
+                        start_seq: event.seq,
+                        end_seq: event.seq,
+                        message: ChatMessage::user(text),
+                    });
                 }
             }
             "message.assistant.settled" => {
+                let message_id = str_of(&event.payload, "message_id");
+                // 摘要消息只经 context.compacted 还原，不重复出现。
+                if summary_ids.contains(&message_id) {
+                    continue;
+                }
                 // 空文本（例如纯工具轮次）不产生消息：空 assistant 只会干扰模型。
                 let text = text_of(&event.payload);
                 if !text.is_empty() {
-                    messages.push(ChatMessage::Assistant {
-                        text,
-                        tool_calls: Vec::new(),
+                    messages.push(SeqMessage {
+                        start_seq: event.seq,
+                        end_seq: event.seq,
+                        message: ChatMessage::Assistant {
+                            text,
+                            tool_calls: Vec::new(),
+                        },
                     });
                 }
             }
@@ -277,10 +371,27 @@ pub fn history_from_log(log: &SessionLog) -> Vec<ChatMessage> {
                 pending.insert(call_id);
                 // 工具调用必须挂在 assistant 消息上；若上一条不是 assistant，补一条空的。
                 match messages.last_mut() {
-                    Some(ChatMessage::Assistant { tool_calls, .. }) => tool_calls.push(call),
-                    _ => messages.push(ChatMessage::Assistant {
-                        text: String::new(),
-                        tool_calls: vec![call],
+                    Some(wrapped) => match &mut wrapped.message {
+                        ChatMessage::Assistant { tool_calls, .. } => {
+                            tool_calls.push(call);
+                            wrapped.end_seq = event.seq;
+                        }
+                        _ => messages.push(SeqMessage {
+                            start_seq: event.seq,
+                            end_seq: event.seq,
+                            message: ChatMessage::Assistant {
+                                text: String::new(),
+                                tool_calls: vec![call],
+                            },
+                        }),
+                    },
+                    None => messages.push(SeqMessage {
+                        start_seq: event.seq,
+                        end_seq: event.seq,
+                        message: ChatMessage::Assistant {
+                            text: String::new(),
+                            tool_calls: vec![call],
+                        },
                     }),
                 }
             }
@@ -307,13 +418,41 @@ pub fn history_from_log(log: &SessionLog) -> Vec<ChatMessage> {
                         text
                     }
                 };
-                messages.push(ChatMessage::Tool { call_id, content });
+                messages.push(SeqMessage {
+                    start_seq: event.seq,
+                    end_seq: event.seq,
+                    message: ChatMessage::Tool { call_id, content },
+                });
+            }
+            "context.compacted" => {
+                let summary_id = str_of(&event.payload, "summary_message_id");
+                let text = summary_text
+                    .get(&summary_id)
+                    .cloned()
+                    .unwrap_or_else(|| String::from("（历史已压缩，摘要缺失）"));
+                messages.push(SeqMessage {
+                    start_seq: event.seq,
+                    end_seq: event.seq,
+                    message: ChatMessage::System(format!("以下是早前对话的摘要：\n{text}")),
+                });
             }
             _ => {}
         }
     }
 
     messages
+}
+
+fn num_of(payload: &Value, field: &str) -> u64 {
+    payload.get(field).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// 从日志重建全部历史消息（不截断）。
+pub fn history_from_log(log: &SessionLog) -> Vec<ChatMessage> {
+    history_with_seqs(log)
+        .into_iter()
+        .map(|wrapped| wrapped.message)
+        .collect()
 }
 
 /// 对话历史 + 截断，供 Agent 直接使用。
@@ -408,11 +547,23 @@ mod tests {
             SessionLog::from_jsonl("s-demo", dshr_conversation_model_session()).expect("demo");
         let messages = history_from_log(&log);
         assert_paired(&messages);
-        assert!(messages.len() >= 5, "messages={messages:?}");
-        assert!(matches!(&messages[0], ChatMessage::User(text) if text.contains("两个工具")));
+        // demo 里 seq 1..3 已被 context.compacted 压缩，摘要消息缺失（fixture 只带引用），
+        // 因此先看到工具轮次，中间是"摘要缺失"的 System，最后是最终回复。
+        assert_paired(&messages);
         assert!(
-            matches!(&messages[1], ChatMessage::Assistant { text, .. } if text.contains("先调用"))
+            messages.iter().any(|message| matches!(
+                message,
+                ChatMessage::Assistant { tool_calls, .. } if tool_calls.len() == 1
+            )),
+            "messages={messages:?}"
         );
+        assert!(messages.iter().any(
+            |message| matches!(message, ChatMessage::System(text) if text.contains("摘要缺失"))
+        ));
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            ChatMessage::Assistant { text, .. } if text.contains("Rust 工具成功")
+        )));
     }
 
     // 让测试不依赖 conversation-model（避免循环依赖）：直接读同一份 fixture 路径。
@@ -732,5 +883,86 @@ mod tests {
             Some(ChatMessage::Tool { .. })
         ));
         assert_paired(&plan.messages);
+    }
+
+    #[test]
+    fn compaction_event_rebuilds_system_summary() {
+        let mut log = SessionLog::new("s-t");
+        log.append(EventSpec::durable(
+            "message.user",
+            "t0",
+            json!({ "message_id": "u-old", "text": "旧问题" }),
+        ))
+        .unwrap();
+        log.append(EventSpec::durable(
+            "message.assistant.settled",
+            "t0",
+            json!({ "message_id": "a-old", "text": "旧回答" }),
+        ))
+        .unwrap();
+        // 摘要消息（内容要被隐藏，只通过 compacted 引用还原）
+        log.append(EventSpec::durable(
+            "message.assistant.settled",
+            "t0",
+            json!({ "message_id": "m-sum1", "text": "用户问了旧问题，助手回答了旧回答。" }),
+        ))
+        .unwrap();
+        log.append(EventSpec::durable(
+            "context.compacted",
+            "t0",
+            json!({
+                "from_seq": 1, "to_seq": 2,
+                "summary_message_id": "m-sum1",
+                "tokens_before": 100, "tokens_after": 40
+            }),
+        ))
+        .unwrap();
+        log.append(EventSpec::durable(
+            "message.user",
+            "t0",
+            json!({ "message_id": "u-new", "text": "新问题" }),
+        ))
+        .unwrap();
+
+        let history = history_from_log(&log);
+        assert_eq!(
+            history,
+            vec![
+                ChatMessage::System(
+                    "以下是早前对话的摘要：\n用户问了旧问题，助手回答了旧回答。".to_owned()
+                ),
+                ChatMessage::user("新问题"),
+            ]
+        );
+        // 压缩后历史很小，不应再次触发裁剪。
+        let plan = plan_with_window(&log, "", 64_000);
+        assert!(!plan.triggered());
+        assert_eq!(plan.messages.len(), 2);
+    }
+
+    #[test]
+    fn plan_reports_dropped_range_for_compaction() {
+        let mut log = SessionLog::new("s-t");
+        for index in 0..20 {
+            log.append(EventSpec::durable(
+                "message.user",
+                "t0",
+                json!({ "message_id": format!("u{index}"), "text": "长".repeat(300) }),
+            ))
+            .unwrap();
+            log.append(EventSpec::durable(
+                "message.assistant.settled",
+                "t0",
+                json!({ "message_id": format!("a{index}"), "text": "答".repeat(300) }),
+            ))
+            .unwrap();
+        }
+        let plan = plan_with_window(&log, "继续", 4_000);
+        assert!(plan.dropped_messages > 0, "{plan:?}");
+        let (from, to) = plan.dropped_range.expect("dropped_range");
+        assert_eq!(from, 1);
+        assert!(to < 40, "to={to}");
+        assert_eq!(plan.dropped.len(), plan.dropped_messages);
+        assert!(plan.dropped_range.is_some());
     }
 }

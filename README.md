@@ -85,6 +85,6 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 粗斜体/行内代码/链接，[`crates/ui-gpui/src/markdown.rs`](crates/ui-gpui/src/markdown.rs)），
 无语法高亮与图片。侧栏已是真实会话列表：新建、切换、行内重命名、二次确认删除，
 重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）。
-上下文在请求前计量：超长工具结果头尾裁剪、超预算丢最旧整轮，并写
-`context.measured` 事件（[`docs/m2-context.md`](docs/m2-context.md)）。
+上下文在请求前计量：超长工具结果头尾裁剪、超预算丢最旧整轮，丢弃的旧轮次由模型
+生成摘要并写 `context.compacted`（[`docs/m2-context.md`](docs/m2-context.md)）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

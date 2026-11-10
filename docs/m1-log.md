@@ -666,6 +666,31 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A22 上下文压缩：LLM 摘要 + context.compacted（2026-11-11）
+
+问题：A21 的"丢最旧整轮"会让早期任务目标/已确认事实直接从模型历史里消失——
+预算保住了，语义没有。
+
+**做法**：
+
+1. `history_with_seqs`：重建消息时携带事件区间（`start_seq..end_seq`，工具调用/结果
+   并入所属 assistant），并应用日志里已有的 `context.compacted`：区间内事件跳过、
+   摘要消息隐藏、压缩事件还原成 System 摘要。
+2. `plan_with_window` 在丢弃前缀时输出 `dropped` 消息与 `dropped_range`。
+3. `chat` 检测到丢弃后：用 provider 对丢弃前缀生成 ≤1200 字摘要（失败退回截取开头），
+   追加摘要消息 + `context.compacted(from_seq,to_seq,summary_message_id,tokens_before/after)`，
+   然后重新计算计划、用压缩后的历史请求。
+4. `conversation-model` 同规则：压缩区间不再渲染原文，只留
+   `上下文已压缩 · seq a–b` 占位。
+5. `--selftest-context` 扩展：断言压缩事件、摘要消息、重建出的 System 摘要都存在，
+   ratio ≤ 0.8，且压缩后 `dropped_messages == 0`（不会每轮重复压缩）。
+
+**验证**：agent-context 14 测试、conversation-model 24 测试、workspace 124 全绿，
+clippy 干净；截图核对压缩占位与区间隐藏；头部标题顺带修了截断与右栏被挤出的问题。
+
+**边界**：摘要单次生成，无层级压缩；provider 失败时是截断兜底；spill 外部化仍未做。
+详见 [`m2-context.md`](m2-context.md)。
+
 ## A21 上下文工程：计量与裁剪（2026-11-11）
 
 问题：多轮会话只按"最近 60 条"硬截断，既不知道会发多少 token，也会在长任务里

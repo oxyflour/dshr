@@ -64,17 +64,41 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
     let mut tool_index: HashMap<String, usize> = HashMap::new();
 
+    // 压缩区间与摘要消息：区间内事件不再渲染，摘要消息只经 context.compacted 展示。
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    let mut summary_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for event in log.events() {
-        if event.durability == Durability::Ephemeral {
+        if event.event_type != "context.compacted" {
+            continue;
+        }
+        let from = num_of(&event.payload, "from_seq");
+        let to = num_of(&event.payload, "to_seq");
+        if from > 0 && to >= from {
+            ranges.push((from, to));
+        }
+        let summary_id = str_of(&event.payload, "summary_message_id");
+        if !summary_id.is_empty() {
+            summary_ids.insert(summary_id);
+        }
+    }
+    let in_range = |seq: u64| ranges.iter().any(|(from, to)| seq >= *from && seq <= *to);
+
+    for event in log.events() {
+        if event.durability == Durability::Ephemeral || in_range(event.seq) {
             continue;
         }
         match event.event_type.as_str() {
             "message.user" => items.push(Item::User {
                 text: text_of(&event.payload),
             }),
-            "message.assistant.settled" => items.push(Item::Assistant {
-                text: text_of(&event.payload),
-            }),
+            "message.assistant.settled" => {
+                if summary_ids.contains(&str_of(&event.payload, "message_id")) {
+                    continue;
+                }
+                items.push(Item::Assistant {
+                    text: text_of(&event.payload),
+                })
+            }
             "tool.call" => {
                 let call_id = str_of(&event.payload, "call_id");
                 tool_index.insert(call_id.clone(), items.len());
@@ -221,11 +245,13 @@ mod tests {
     #[test]
     fn demo_has_expected_items_and_order() {
         let items = demo();
-        assert_eq!(items.len(), 6, "10 条事件中 4 条不产出展示项");
-        assert!(matches!(items[0], Item::User { .. }));
-        assert!(matches!(items[1], Item::Assistant { .. }));
-        assert!(matches!(items[2], Item::Tool(_)));
-        assert!(matches!(items[5], Item::Assistant { .. }));
+        // demo 的 seq 1..3 被 context.compacted 压缩：用户消息与首条 assistant 不再展示，
+        // 留下两条工具卡片、压缩占位、最后一条 assistant。
+        assert_eq!(items.len(), 4, "10 条事件中 6 条不产出展示项");
+        assert!(matches!(items[0], Item::Tool(_)));
+        assert!(matches!(items[1], Item::Tool(_)));
+        assert!(matches!(items[2], Item::Compaction { .. }));
+        assert!(matches!(items[3], Item::Assistant { .. }));
     }
 
     #[test]
@@ -257,9 +283,9 @@ mod tests {
     #[test]
     fn stats_match_demo() {
         let stats = stats(&demo());
-        assert_eq!(stats.total, 6);
-        assert_eq!(stats.user, 1);
-        assert_eq!(stats.assistant, 2);
+        assert_eq!(stats.total, 4);
+        assert_eq!(stats.user, 0);
+        assert_eq!(stats.assistant, 1);
         assert_eq!(stats.tools, 2);
         assert_eq!(stats.settled, 1);
         assert_eq!(stats.aborted, 1);
@@ -273,7 +299,7 @@ mod tests {
             .iter()
             .position(|item| matches!(item, Item::Compaction { .. }))
             .expect("compaction item exists");
-        assert_eq!(ix, 4, "压缩事件位于两条工具卡片之后、最后一条消息之前");
+        assert_eq!(ix, 2, "压缩事件位于两条工具卡片之后、最后一条消息之前");
     }
 
     #[test]
@@ -289,7 +315,7 @@ mod tests {
     fn unknown_event_is_skipped_without_panic() {
         // 第 10 条事件类型未知：不应进入模型，也不应报错。
         let items = demo();
-        assert_eq!(items.len(), 6);
+        assert_eq!(items.len(), 4);
     }
 
     #[test]

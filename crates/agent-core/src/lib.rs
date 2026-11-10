@@ -235,6 +235,11 @@ impl<P: ModelProvider> Agent<P> {
         self.turn
     }
 
+    /// 访问 provider：上下文压缩需要在 Agent 之外调用一次模型（摘要）。
+    pub fn provider_mut(&mut self) -> &mut P {
+        &mut self.provider
+    }
+
     /// 跑一轮：最多 `1 + MAX_TOOL_CALLS` 个 step。无历史版本（测试与单轮场景）。
     ///
     /// 事件顺序保证：`TurnStarted` → (`StepStarted` → `TextDelta`* → (`ToolCall` → `ToolResult`)*)? →

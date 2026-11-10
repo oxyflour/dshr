@@ -22,15 +22,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::{
     div, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font, FontWeight, Rgba,
-    ScrollHandle, Window, WindowBounds, WindowOptions,
+    ScrollHandle, TextOverflow, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
 
-use dshr_agent_context::{history_for_model, plan_context};
+use dshr_agent_context::{estimate_tokens, history_for_model, history_from_log, plan_context};
 use dshr_agent_core::{
-    Agent, AgentEvent, MockProvider, ModelProvider, ToolCallRequest, ToolExecutor, ToolOutcome,
-    ToolSpec,
+    Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider, ModelProvider,
+    ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
 };
 use dshr_compat_dsh_host::SidecarHost;
 use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
@@ -67,6 +67,61 @@ fn relative_time(updated_at: u64) -> String {
     } else {
         format!("{} 天前", diff / 86_400)
     }
+}
+
+const SUMMARY_PROMPT: &str = "你是对话压缩器。把下面的对话压缩成 200 字以内的中文摘要，\
+保留：任务目标、已确认的事实、关键决定、未完成的步骤、工具调用的结论。只输出摘要，不要客套。";
+
+/// 把被丢弃的历史压缩成一段摘要；provider 失败时退回"截取开头"，不让压缩阻塞对话。
+fn summarize_dropped(provider: &mut dyn ModelProvider, dropped: &[ChatMessage]) -> String {
+    let transcript = transcript_text(dropped, 8_000);
+    if transcript.trim().is_empty() {
+        return String::from("（没有可压缩的历史）");
+    }
+    let request = CompletionRequest {
+        messages: vec![
+            ChatMessage::System(SUMMARY_PROMPT.to_owned()),
+            ChatMessage::user(transcript.clone()),
+        ],
+        tool_specs: Vec::new(),
+    };
+    let reply = provider
+        .complete_streaming(&request, &mut |_| {})
+        .map(|reply| reply.text)
+        .unwrap_or_default();
+    let summary = reply.trim();
+    if summary.is_empty() {
+        let head: String = transcript.chars().take(600).collect();
+        format!("（摘要生成失败，保留历史开头）\n{head}")
+    } else {
+        summary.chars().take(1_200).collect()
+    }
+}
+
+/// 把消息拼成摘要输入；总长受 `max_chars` 限制。
+fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
+    let mut out = String::new();
+    for message in messages {
+        let (role, text) = match message {
+            ChatMessage::System(text) => ("system", text.clone()),
+            ChatMessage::User(text) => ("user", text.clone()),
+            ChatMessage::Assistant { text, tool_calls } => {
+                let mut body = text.clone();
+                if !tool_calls.is_empty() {
+                    let names: Vec<&str> =
+                        tool_calls.iter().map(|call| call.name.as_str()).collect();
+                    body.push_str(&format!("（调用工具 {}）", names.join(", ")));
+                }
+                ("assistant", body)
+            }
+            ChatMessage::Tool { content, .. } => ("tool", content.clone()),
+        };
+        out.push_str(&format!("[{role}] {text}\n"));
+        if out.chars().count() >= max_chars {
+            break;
+        }
+    }
+    out.chars().take(max_chars).collect()
 }
 
 struct ChatState {
@@ -357,7 +412,41 @@ impl ChatState {
 
         // 历史从 durable 事件重建：多轮记忆靠它，重开应用也能接上。
         // 上下文预算在这里做：超长工具结果头尾裁剪、超预算丢最旧，且不拆配对。
-        let plan = plan_context(&self.log, "");
+        let mut plan = plan_context(&self.log, "");
+        if let Some((from_seq, to_seq)) = plan.dropped_range {
+            // 丢弃了旧轮次：先让模型生成摘要，写 context.compacted，再按压缩后的历史请求。
+            let summary = {
+                let provider: &mut dyn ModelProvider = self.agent.provider_mut().as_mut();
+                summarize_dropped(provider, &plan.dropped)
+            };
+            let summary_ts = now_ts();
+            self.seq += 1;
+            let summary_id = format!("m-sum{}", self.seq);
+            let tokens_after = plan.tokens_after + estimate_tokens(&summary);
+            let _ = self.log.append(EventSpec::durable(
+                "message.assistant.settled",
+                &summary_ts,
+                json!({ "message_id": summary_id, "text": summary }),
+            ));
+            let _ = self.log.append(EventSpec::durable(
+                "context.compacted",
+                &summary_ts,
+                json!({
+                    "from_seq": from_seq,
+                    "to_seq": to_seq,
+                    "summary_message_id": summary_id,
+                    "tokens_before": plan.tokens_before,
+                    "tokens_after": tokens_after,
+                }),
+            ));
+            self.save();
+            plan = plan_context(&self.log, "");
+            eprintln!(
+                "[chat] 已压缩 seq {from_seq}..{to_seq}：{} -> {} tokens",
+                plan.tokens_before, plan.tokens_after
+            );
+            emit(rows_snapshot(&self.log, None));
+        }
         let _ = self.log.append(EventSpec::durable(
             "context.measured",
             &ts,
@@ -945,6 +1034,7 @@ impl ChatApp {
                                     FontWeight::NORMAL
                                 })
                                 .text_color(p.color(p.label_primary))
+                                .text_overflow(TextOverflow::Truncate("…".into()))
                                 .child(session.title.clone()),
                         )
                         .child(
@@ -1125,6 +1215,8 @@ impl ChatApp {
                     .flex()
                     .items_center()
                     .gap(px(10.0))
+                    .flex_1()
+                    .min_w(px(0.0))
                     .child(
                         div()
                             .id("sidebar-toggle")
@@ -1147,6 +1239,7 @@ impl ChatApp {
                             .flex()
                             .items_center()
                             .gap(px(4.0))
+                            .min_w(px(0.0))
                             .child(
                                 div()
                                     .text_size(t.type_scale.body)
@@ -1161,11 +1254,12 @@ impl ChatApp {
                             )
                             .child(
                                 div()
-                                    .max_w(px(220.0))
+                                    .max_w(px(360.0))
                                     .overflow_hidden()
                                     .text_size(t.type_scale.body)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(p.color(p.label_primary))
+                                    .text_overflow(TextOverflow::Truncate("…".into()))
                                     .child(self.active_title()),
                             ),
                     ),
@@ -2044,12 +2138,41 @@ fn selftest_context() -> i32 {
         .get("dropped_messages")
         .and_then(|value| value.as_u64())
         .unwrap_or(0);
+
+    // 压缩事件 + 摘要消息 + 重建出的 System 摘要都应存在。
+    let compacted = state
+        .log
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "context.compacted")
+        .cloned();
+    let summary_id = compacted
+        .as_ref()
+        .and_then(|event| event.payload.get("summary_message_id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let summary_event = state.log.events().iter().find(|event| {
+        event.event_type == "message.assistant.settled"
+            && event.payload.get("message_id").and_then(|v| v.as_str()) == Some(&summary_id)
+    });
+    let history = history_from_log(&state.log);
+    let has_system_summary = history
+        .iter()
+        .any(|message| matches!(message, ChatMessage::System(text) if text.contains("摘要")));
     println!(
-        "[context] ratio={ratio:.3} pruned={pruned} dropped={dropped} window={:?}",
+        "[context] ratio={ratio:.3} pruned={pruned} dropped={dropped} compacted={} summary_chars={:?} window={:?}",
+        compacted.is_some(),
+        summary_event
+            .and_then(|event| event.payload.get("text"))
+            .and_then(|value| value.as_str())
+            .map(str::chars)
+            .map(Iterator::count),
         measured.payload.get("window")
     );
 
-    // 用同一份日志重建计划，断言配对合法。
+    // 用同一份日志重建计划，断言配对合法且压缩后不再触发丢弃。
     let plan = dshr_agent_context::plan_context(&state.log, "");
     let legal = !matches!(
         plan.messages.first(),
@@ -2058,8 +2181,12 @@ fn selftest_context() -> i32 {
 
     let ok = reply.is_some()
         && ratio <= 0.8
-        && (pruned > 0 || dropped > 0)
+        && compacted.is_some()
+        && !summary_id.is_empty()
+        && summary_event.is_some()
+        && has_system_summary
         && legal
+        && plan.dropped_messages == 0
         && plan.tokens_after <= plan.window;
     if ok {
         println!("[selftest-context] PASS");
