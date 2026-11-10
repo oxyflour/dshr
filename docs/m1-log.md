@@ -399,6 +399,55 @@ assistant_settled_after_ms=2031   # 同上，复测
 **仍未做**：`ModelProvider` 没有真实 LLM（无 API key）；流式 delta 目前由 `Agent` 按 16 字切分，
 真实 provider 接入后应改由模型流驱动。
 
+## A11 真实 LLM（2026-11-10）
+
+**目标**：把 `MockProvider` 换成真模型，验证 Agent Loop 在真实模型下能跑通工具调用。
+
+**实现**：`crates/llm-deepseek`
+
+| 项 | 内容 |
+|---|---|
+| 传输 | `ureq` 3.5.1（同步 HTTP），`stream: false` |
+| 凭据 | 环境变量 `DEEPSEEK_API_KEY`；缺失时读 `~/.dsh/.env`（只读，不打印、不写日志） |
+| 模型 | `deepseek-chat`（可用 `DEEPSEEK_MODEL` / `DEEPSEEK_BASE_URL` 覆盖） |
+| 工具 | 把 Registry 里的 `ToolSpec.parameters`（JSON Schema）原样传给模型，`tool_choice: auto` |
+| 解析 | `parse_reply` 独立成函数，4 个无网络单测（纯文本 / tool_calls / API 错误 / 坏 JSON） |
+
+**真实调用证据**：
+
+```text
+[chat] provider=deepseek model=deepseek-chat
+[live] reply=我是一个桌面 Agent，可以调用工具帮你完成查询、处理文本等任务。
+elapsed_ms=3275          # 含 sidecar 启动；单次 HTTP 约 3 秒
+
+# 带工具的提示
+$ chat --live "请用 probe_native 工具把 hello 转成大写"
+[live] reply=HELLO
+```
+
+落盘事件（真实模型驱动）：
+
+```text
+1 message.user
+2 tool.call   call-1-1 probe_native native
+3 tool.result call-1-1
+4 message.assistant.settled
+```
+
+即：**模型选择工具 → 宿主 authorize → PluginHost 执行 → 结果回填 → 模型给出最终答复**。
+
+**确定性问题**：自检模式强制 `DSHR_FORCE_MOCK=1`，否则一旦机器上有 key，
+`--selftest` 会真的调模型，断言随模型输出漂移。
+
+**尚未做（M2 待办）**：
+
+| 项 | 现状 |
+|---|---|
+| 流式 | 未做 SSE；UI 的逐字效果仍是本地切分 |
+| 工具协议严格性 | 第二轮用 `role: user` 传工具结果，不是 OpenAI 的 `assistant.tool_calls` + `role: tool` + `tool_call_id` |
+| 重试 / 限流 | 无；只有 60s 全局超时 |
+| 用量计量 | 未记录 token（PLAN §6.4 的计量还没接） |
+
 ## A8 真实 Cordis 插件（2026-11-09）
 
 **目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，

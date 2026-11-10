@@ -1,4 +1,4 @@
-//! Agent Loop：Turn / Step / 工具调用事件流。
+﻿//! Agent Loop：Turn / Step / 工具调用事件流。
 //!
 //! 这一层是 PLAN §6.1 的最小实现，也是 M2 的入口：
 //! **模型只负责产出文本与工具调用意图，执行与记录由宿主完成**。
@@ -16,10 +16,12 @@ use serde_json::{json, Value};
 /// 一次 run_turn 内允许的最大工具调用次数（防止模型自激循环）。
 pub const MAX_TOOL_CALLS: usize = 2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
+    /// JSON Schema（原样交给模型；MockProvider 忽略它）。
+    pub parameters: Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +59,13 @@ pub struct ModelReply {
 
 pub trait ModelProvider {
     fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String>;
+}
+
+/// 让 `Agent<Box<dyn ModelProvider>>` 成为可用类型（运行时选择 provider）。
+impl ModelProvider for Box<dyn ModelProvider> {
+    fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+        (**self).complete(request)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -271,10 +280,12 @@ mod tests {
                 ToolSpec {
                     name: "probe_native".to_owned(),
                     description: "native".to_owned(),
+                    parameters: json!({ "type": "object" }),
                 },
                 ToolSpec {
                     name: "probe_echo".to_owned(),
                     description: "sidecar".to_owned(),
+                    parameters: json!({ "type": "object" }),
                 },
             ]
         }

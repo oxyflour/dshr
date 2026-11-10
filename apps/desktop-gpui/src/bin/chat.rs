@@ -1,4 +1,4 @@
-//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
+﻿//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
 //!
 //! 这是 M1 的产品面：能打字、能发送、能看到工具卡片、关掉再开会话还在。
 //! 模型是 **mock**（没有接 LLM，那是 M2），但会话/工具/日志/回放都是真实的。
@@ -19,10 +19,12 @@ use gpui_platform::application;
 use serde_json::json;
 
 use dshr_agent_core::{
-    Agent, AgentEvent, MockProvider, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
+    Agent, AgentEvent, MockProvider, ModelProvider, ToolCallRequest, ToolExecutor, ToolOutcome,
+    ToolSpec,
 };
 use dshr_compat_dsh_host::SidecarHost;
 use dshr_conversation_model::{build_from_log, Item};
+use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionLog, ToolState};
@@ -46,7 +48,7 @@ struct ChatState {
     host: Option<SidecarHost>,
     plugins: PluginHost,
     /// 必须跨轮复用：turn id 单调递增，否则 call_id 重复会被 Session Log 拒收。
-    agent: Agent<MockProvider>,
+    agent: Agent<Box<dyn ModelProvider>>,
     seq: u64,
 }
 
@@ -124,6 +126,25 @@ fn spawn_sidecar() -> Option<SidecarHost> {
         .ok()
 }
 
+/// 有 DEEPSEEK_API_KEY（环境变量或 `~/.dsh/.env`）时用真实模型，否则退回 mock。
+fn select_provider() -> Box<dyn ModelProvider> {
+    // 自检必须确定性：显式要求 mock 时不看环境里的 key。
+    if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
+        println!("[chat] provider=mock（DSHR_FORCE_MOCK=1）");
+        return Box::new(MockProvider);
+    }
+    match DeepSeekProvider::from_env() {
+        Some(provider) => {
+            println!("[chat] provider=deepseek model={}", provider.model());
+            Box::new(provider)
+        }
+        None => {
+            println!("[chat] provider=mock（未找到 DEEPSEEK_API_KEY）");
+            Box::new(MockProvider)
+        }
+    }
+}
+
 /// Agent 的工具执行器：authorize 之后按来源分发给 PluginHost（native）或 Sidecar。
 struct ChatExecutor<'a> {
     plugins: &'a mut PluginHost,
@@ -139,6 +160,7 @@ impl ToolExecutor for ChatExecutor<'_> {
             .map(|definition| ToolSpec {
                 name: definition.name.clone(),
                 description: definition.description.clone(),
+                parameters: definition.input_schema.clone(),
             })
             .collect()
     }
@@ -240,7 +262,7 @@ impl ChatState {
             path,
             host,
             plugins,
-            agent: Agent::new(MockProvider),
+            agent: Agent::new(select_provider()),
             seq: 0,
         }
     }
@@ -698,12 +720,38 @@ fn selftest_cordis() -> i32 {
     }
 }
 
+/// 单轮真实调用（需要 API key）；用于人工验证 provider，不进 CI。
+fn live_turn(text: &str) -> i32 {
+    let path = PathBuf::from(".tmp/chat-live.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let mut state = ChatState::new(path);
+    let Some(reply) = state.begin_turn(text) else {
+        println!("[live] empty prompt");
+        return 1;
+    };
+    state.finish_turn(&reply);
+    println!("[live] reply={reply}");
+    0
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--live") {
+        let text = args
+            .get(index + 1)
+            .cloned()
+            .unwrap_or_else(|| "用一句话介绍你自己".to_owned());
+        std::process::exit(live_turn(&text));
+    }
+
     if std::env::args().any(|arg| arg == "--selftest-cordis") {
         std::env::set_var("DSHR_SIDECAR", "cordis");
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_cordis());
     }
     if std::env::args().any(|arg| arg == "--selftest") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest());
     }
 

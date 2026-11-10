@@ -1,0 +1,10 @@
+[package]
+name = "dshr-llm-deepseek"
+description = "DeepSeek 的 ModelProvider 实现（同步 HTTP，供 M2 接入真实 LLM）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dshr-agent-core = { path = "../agent-core" }
+serde_json.workspace = true
+ureq = { version = "=3.5.1", features = ["json"] }

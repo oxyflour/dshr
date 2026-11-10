@@ -24,6 +24,9 @@ workspace = true
 [dependencies.dshr-agent-core]
 path = "../../crates/agent-core"
 
+[dependencies.dshr-llm-deepseek]
+path = "../../crates/llm-deepseek"
+
 [dependencies.dshr-plugin-api]
 path = "../../crates/plugin-api"
 
