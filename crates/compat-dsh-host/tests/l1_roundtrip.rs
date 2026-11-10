@@ -57,6 +57,14 @@ fn handshake_and_registration() {
     assert_eq!(host.registrations()[1].name, "probe_immediate");
     assert_eq!(host.registrations()[2].name, "probe_slow");
     assert!(host.generation().starts_with("node-"));
+
+    // 对齐 DSH 的 output.schema / presentResult 卡片类型：必须能穿过注册链路。
+    let definitions = host.tool_definitions();
+    assert!(
+        definitions[0].output_schema.is_some(),
+        "output schema 必须保留"
+    );
+    assert_eq!(definitions[0].presentation.as_deref(), Some("generic"));
 }
 
 #[test]

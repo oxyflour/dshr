@@ -1,4 +1,4 @@
-# M1 实验记录
+﻿# M1 实验记录
 
 > M1 的定义见 [`PLAN.md`](PLAN.md) §8：三个判死实验 + 一条端到端闭环。
 > 本文件只记录**可复现的实验事实**，不做进度汇报。被推翻的结论保留并标注。
@@ -447,6 +447,21 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 | 工具协议严格性 | 第二轮用 `role: user` 传工具结果，不是 OpenAI 的 `assistant.tool_calls` + `role: tool` + `tool_call_id` |
 | 重试 / 限流 | 无；只有 60s 全局超时 |
 | 用量计量 | 未记录 token（PLAN §6.4 的计量还没接） |
+
+## A12 与 DSH 的协议对照（2026-11-10）
+
+问题：我们的 sidecar 协议和 DSH 一致吗？
+
+**答：不一致，而且不应一致。** 结论与逐字段对照见
+[`spec/dsh-compat-mapping.md`](spec/dsh-compat-mapping.md)。要点：
+
+- DSH 没有 sidecar：工具在同进程用 `ctx.tools.register(ToolDefinition)` 注册；
+  Host↔浏览器走 `hostProtocolVersion: 4` 的 Remote RPC。我们的 NDJSON 是 ADR-004/005 的产物。
+- 判断标准不是"字节一致"，而是"DSH 工具的定义与结果能否无损穿过我们的层"。目前**不能无损**：
+  缺 `output.schema` / `presentCall` / `presentResult` / scope / `isConcurrencySafe` /
+  `additionalContexts` / `concludesTurn`，终端与 diff 卡片会退化为文本。
+- 已做的对齐（本轮）：`ToolDefinition` 增加 `output_schema` 与 `presentation`，
+  `tool.register` 携带它们并在测试中断言（`l1_roundtrip`）。
 
 ## A8 真实 Cordis 插件（2026-11-09）
 

@@ -36,6 +36,10 @@ pub enum HostError {
 pub struct Registration {
     pub name: String,
     pub description: String,
+    /// 对齐 DSH 的 `output.schema`；L1 暂不校验，但必须能穿过协议。
+    pub output_schema: Option<serde_json::Value>,
+    /// 对齐 DSH 的 `presentResult` 卡片类型。
+    pub presentation: Option<String>,
     pub registration_id: String,
     pub plugin_id: String,
 }
@@ -157,7 +161,7 @@ impl SidecarHost {
         self.registrations
             .iter()
             .map(|reg| {
-                dshr_tool_runtime::ToolDefinition::new(
+                let mut definition = dshr_tool_runtime::ToolDefinition::new(
                     reg.name.clone(),
                     reg.description.clone(),
                     dshr_tool_runtime::ToolOrigin::Sidecar {
@@ -165,7 +169,14 @@ impl SidecarHost {
                         registration_id: reg.registration_id.clone(),
                         generation: self.generation.clone(),
                     },
-                )
+                );
+                if let Some(schema) = &reg.output_schema {
+                    definition = definition.with_output_schema(schema.clone());
+                }
+                if let Some(card) = &reg.presentation {
+                    definition = definition.with_presentation(card.clone());
+                }
+                definition
             })
             .collect()
     }
@@ -304,6 +315,16 @@ impl SidecarHost {
                         .as_str()
                         .unwrap_or_default()
                         .to_owned();
+                    let output_schema = envelope
+                        .payload
+                        .get("output_schema")
+                        .cloned()
+                        .filter(|value| !value.is_null());
+                    let presentation = envelope
+                        .payload
+                        .get("presentation")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
                     let plugin_id = envelope.plugin_id.clone().unwrap_or_default();
                     self.seq += 1;
                     let registration_id = format!("reg-{}", self.seq);
@@ -315,6 +336,8 @@ impl SidecarHost {
                     self.registrations.push(Registration {
                         name,
                         description,
+                        output_schema,
+                        presentation,
                         registration_id,
                         plugin_id,
                     });

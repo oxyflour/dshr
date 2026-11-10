@@ -1,4 +1,4 @@
-//! Tool Registry：注册、查找、Authority 校验（Policy + 参数 schema）。
+﻿//! Tool Registry：注册、查找、Authority 校验（Policy + 参数 schema）。
 //!
 //! 设计要点（对应 PLAN §2.1 与 spec/cpp-v1.md §7）：
 //! - 工具来源是**一等的**：`Native` / `Sidecar` / `Mcp` 三种，注册表里必须能区分；
@@ -53,6 +53,10 @@ pub struct ToolDefinition {
     pub origin: ToolOrigin,
     /// 完整 JSON Schema 子集：type / required / properties / additionalProperties / enum / items。
     pub input_schema: Value,
+    /// 结果 schema（对齐 DSH 的 `output.schema`；L1 暂不校验，但必须能穿过协议）。
+    pub output_schema: Option<Value>,
+    /// 展示卡片类型（对齐 DSH 的 `presentResult` 视图：generic/terminal/diff/search/read/web）。
+    pub presentation: Option<String>,
     pub timeout_ms: u64,
 }
 
@@ -67,8 +71,20 @@ impl ToolDefinition {
             description: description.into(),
             origin,
             input_schema: Value::Object(Default::default()),
+            output_schema: None,
+            presentation: None,
             timeout_ms: 120_000,
         }
+    }
+
+    pub fn with_output_schema(mut self, schema: Value) -> Self {
+        self.output_schema = Some(schema);
+        self
+    }
+
+    pub fn with_presentation(mut self, card: impl Into<String>) -> Self {
+        self.presentation = Some(card.into());
+        self
     }
 
     pub fn with_schema(mut self, schema: Value) -> Self {

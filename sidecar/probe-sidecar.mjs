@@ -146,7 +146,8 @@ async function loadPlugins() {
         name: spec.name,
         description: spec.description,
         input_schema: {},
-        output_schema: {},
+        output_schema: { type: 'object' },
+        presentation: 'generic',
       }, { plugin_id: plugin.name ?? 'probe.plugin' })
     },
   }

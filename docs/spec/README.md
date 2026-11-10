@@ -1,4 +1,4 @@
-# 设计规范（docs/spec）
+﻿# 设计规范（docs/spec）
 
 这里是**对外承诺的契约**。`docs/PLAN.md` 说明为什么做、什么时候做；本目录说明**做什么、边界在哪、怎么验证**。实现与规范冲突时，以规范为准；改行为必须先改规范。
 
@@ -10,6 +10,7 @@
 | [`cpp-v1.md`](cpp-v1.md) | Cordis Portable Profile v1：Rust 插件 manifest、生命周期、Service/Effect/Tool | Draft | M3 |
 | [`sidecar-rpc.md`](sidecar-rpc.md) | Rust ↔ Node DSH Sidecar 的跨进程协议 | Draft | M2 |
 | [`session-log.md`](session-log.md) | Session 事件日志：信封、事件类型、回放与上下文事件 | Draft | M2 |
+| [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 与 DSH 真实契约的逐字段对照：哪些刻意不同、哪些必须补齐 | Draft | M2 |
 
 状态含义：
 
