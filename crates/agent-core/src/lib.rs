@@ -1,4 +1,4 @@
-﻿//! Agent Loop：Turn / Step / 工具调用事件流。
+//! Agent Loop：Turn / Step / 工具调用事件流。
 //!
 //! 这一层是 PLAN §6.1 的最小实现，也是 M2 的入口：
 //! **模型只负责产出文本与工具调用意图，执行与记录由宿主完成**。
@@ -83,14 +83,38 @@ pub struct ModelReply {
     pub tool_call: Option<(String, Value)>,
 }
 
-pub trait ModelProvider {
+pub trait ModelProvider: Send {
     fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String>;
+
+    /// 流式补全：每收到一段文本就回调一次，返回完整回复。
+    ///
+    /// 默认实现回退到 [`ModelProvider::complete`] 并把整段文本作为**一个** delta 回放，
+    /// 这样不实现流式的 provider 不需要额外代码。真正流式的 provider（SSE）应覆盖它。
+    fn complete_streaming(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelReply, String> {
+        let reply = self.complete(request)?;
+        if !reply.text.is_empty() {
+            on_delta(&reply.text);
+        }
+        Ok(reply)
+    }
 }
 
 /// 让 `Agent<Box<dyn ModelProvider>>` 成为可用类型（运行时选择 provider）。
 impl ModelProvider for Box<dyn ModelProvider> {
     fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
         (**self).complete(request)
+    }
+
+    fn complete_streaming(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelReply, String> {
+        (**self).complete_streaming(request, on_delta)
     }
 }
 
@@ -138,9 +162,23 @@ impl<P: ModelProvider> Agent<P> {
         user_text: &str,
         executor: &mut dyn ToolExecutor,
     ) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        self.run_turn_streaming(user_text, executor, &mut |event| events.push(event.clone()));
+        events
+    }
+
+    /// 流式版本：事件一到就回调，不攒到轮次结束。
+    ///
+    /// UI 用这个接口才能"边收边显示"；测试与无 UI 场景用 [`Agent::run_turn`] 收集。
+    pub fn run_turn_streaming(
+        &mut self,
+        user_text: &str,
+        executor: &mut dyn ToolExecutor,
+        on_event: &mut dyn FnMut(&AgentEvent),
+    ) {
         self.turn += 1;
         let turn_id = self.turn;
-        let mut events = vec![AgentEvent::TurnStarted { turn_id }];
+        on_event(&AgentEvent::TurnStarted { turn_id });
 
         let mut step: u32 = 1;
         let mut previous: Option<ToolOutcome> = None;
@@ -148,7 +186,7 @@ impl<P: ModelProvider> Agent<P> {
         let mut text = String::new();
 
         loop {
-            events.push(AgentEvent::StepStarted { turn_id, step });
+            on_event(&AgentEvent::StepStarted { turn_id, step });
 
             let request = CompletionRequest {
                 user_text: user_text.to_owned(),
@@ -156,27 +194,40 @@ impl<P: ModelProvider> Agent<P> {
                 previous: previous.clone(),
             };
 
-            let reply = match self.provider.complete(&request) {
-                Ok(reply) => reply,
-                Err(err) => {
-                    events.push(AgentEvent::TurnFailed(err));
-                    return events;
+            // provider 边流边回调；这里只负责把 delta 转成事件并累计全文。
+            let mut streamed_any = false;
+            let reply = {
+                let mut forward = |delta: &str| {
+                    if delta.is_empty() {
+                        return;
+                    }
+                    streamed_any = true;
+                    text.push_str(delta);
+                    on_event(&AgentEvent::TextDelta(delta.to_owned()));
+                };
+                match self.provider.complete_streaming(&request, &mut forward) {
+                    Ok(reply) => reply,
+                    Err(err) => {
+                        on_event(&AgentEvent::TurnFailed(err));
+                        return;
+                    }
                 }
             };
 
-            for delta in chunks(&reply.text, 16) {
-                events.push(AgentEvent::TextDelta(delta));
+            // provider 没走流式（或实现有 bug 只返回值）：补发一次，保证 UI 不空白。
+            if !streamed_any && !reply.text.is_empty() {
+                text.push_str(&reply.text);
+                on_event(&AgentEvent::TextDelta(reply.text.clone()));
             }
-            text.push_str(&reply.text);
 
             let Some((tool, arguments)) = reply.tool_call else {
                 break;
             };
             if calls >= MAX_TOOL_CALLS {
-                events.push(AgentEvent::TurnFailed(format!(
+                on_event(&AgentEvent::TurnFailed(format!(
                     "tool call budget exhausted ({MAX_TOOL_CALLS})"
                 )));
-                return events;
+                return;
             }
             calls += 1;
 
@@ -185,9 +236,9 @@ impl<P: ModelProvider> Agent<P> {
                 tool,
                 arguments,
             };
-            events.push(AgentEvent::ToolCall(call.clone()));
+            on_event(&AgentEvent::ToolCall(call.clone()));
             let outcome = executor.execute(&call);
-            events.push(AgentEvent::ToolResult {
+            on_event(&AgentEvent::ToolResult {
                 call_id: call.call_id.clone(),
                 outcome: outcome.clone(),
             });
@@ -195,17 +246,8 @@ impl<P: ModelProvider> Agent<P> {
             step += 1;
         }
 
-        events.push(AgentEvent::TurnEnded { text });
-        events
+        on_event(&AgentEvent::TurnEnded { text });
     }
-}
-
-fn chunks(text: &str, size: usize) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    chars
-        .chunks(size)
-        .map(|chunk| chunk.iter().collect())
-        .collect()
 }
 
 /// M1 的替代模型：按关键词决定"回文本"还是"调工具"。
@@ -255,6 +297,21 @@ impl ModelProvider for MockProvider {
             ),
             tool_call: None,
         })
+    }
+
+    /// 把回复切成 8 字符的 delta 依次回调：让流式路径在 mock 下也可确定性地被测。
+    fn complete_streaming(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelReply, String> {
+        let reply = self.complete(request)?;
+        let chars: Vec<char> = reply.text.chars().collect();
+        for chunk in chars.chunks(8) {
+            let piece: String = chunk.iter().collect();
+            on_delta(&piece);
+        }
+        Ok(reply)
     }
 }
 
@@ -443,5 +500,109 @@ mod tests {
             events.last().unwrap(),
             AgentEvent::TurnFailed(message) if message.contains("503")
         ));
+    }
+
+    fn text_deltas(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta(delta) => Some(delta.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn turn_text(events: &[AgentEvent]) -> String {
+        events
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::TurnEnded { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn streaming_deltas_are_forwarded_in_order() {
+        struct StreamingProvider;
+        impl ModelProvider for StreamingProvider {
+            fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+                unreachable!("流式 provider 不应回退到 complete")
+            }
+            fn complete_streaming(
+                &mut self,
+                _request: &CompletionRequest,
+                on_delta: &mut dyn FnMut(&str),
+            ) -> Result<ModelReply, String> {
+                on_delta("你");
+                on_delta("好");
+                on_delta("呀");
+                Ok(ModelReply {
+                    text: "你好呀".to_owned(),
+                    tool_call: None,
+                })
+            }
+        }
+
+        let mut agent = Agent::new(StreamingProvider);
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("hi", &mut executor);
+
+        assert_eq!(text_deltas(&events), vec!["你", "好", "呀"]);
+        assert_eq!(turn_text(&events), "你好呀");
+    }
+
+    #[test]
+    fn provider_ignoring_on_delta_still_gets_one_delta() {
+        struct SilentProvider;
+        impl ModelProvider for SilentProvider {
+            fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+                Ok(ModelReply {
+                    text: "整段返回".to_owned(),
+                    tool_call: None,
+                })
+            }
+        }
+
+        let mut agent = Agent::new(SilentProvider);
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("hi", &mut executor);
+
+        assert_eq!(text_deltas(&events), vec!["整段返回"]);
+        assert_eq!(turn_text(&events), "整段返回");
+    }
+
+    #[test]
+    fn mock_provider_streams_multiple_deltas() {
+        let mut agent = Agent::new(MockProvider);
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("你好", &mut executor);
+
+        let deltas = text_deltas(&events);
+        assert!(deltas.len() > 1, "mock 也应切成多个 delta: {deltas:?}");
+        assert_eq!(deltas.concat(), turn_text(&events));
+    }
+
+    #[test]
+    fn streaming_tool_turn_keeps_call_before_result() {
+        let mut agent = Agent::new(MockProvider);
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("用工具试一下", &mut executor);
+
+        let call_pos = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolCall(_)))
+            .expect("tool call");
+        let result_pos = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolResult { .. }))
+            .expect("tool result");
+        assert!(call_pos < result_pos);
+        // 工具调用那一步没有文本，所以 delta 只能来自调用之后的第二步。
+        let first_delta_pos = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::TextDelta(_)))
+            .expect("streamed delta");
+        assert!(first_delta_pos > result_pos);
     }
 }

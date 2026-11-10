@@ -1,4 +1,4 @@
-﻿# Native Agent Desktop — workspace
+# Native Agent Desktop — workspace
 
 Rust 是唯一权威运行时；GPUI 是原生渲染底座；DSH 通过 Node Sidecar 兼容；UI 扩展走 ADC-v1。
 
@@ -41,9 +41,11 @@ node tools/check-links.mjs
 # 构建。Windows 上必须走 build-env：本机 %TEMP% 不能让链接器写入
 tools\build-env.cmd cargo build --workspace
 
-# 基本对话（输入框 + 会话流 + 真实 sidecar 工具 + 落盘恢复）
+# 基本对话（输入框 + 会话流 + 真实 sidecar 工具 + 落盘恢复 + SSE 流式）
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 无窗口自检
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest          # 无窗口自检
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-stream   # 流式自检
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live "一句话"      # 真实 LLM（需 key）
 ```
 
 ## 已固定的版本
@@ -60,4 +62,4 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
 
-**M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、**A9 流式消息**、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key；真实工具调用闭环已验证）。共 52 个测试 + 两个 `chat --selftest` + `chat --live`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)）。未做：SSE 流式、严格 tool_call 协议、DSH 官方插件（需 `ctx.tools`/Loader）、输入框 IME 组件。详见 [`docs/m1-log.md`](docs/m1-log.md)。
+**M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、**A12/A13 协议对齐与结果卡片**、**A14 真 SSE 流式**（首字 ~0.7–0.85 s，Agent 跑在工作线程，UI 只消费快照）。共 80 个测试 + 三个 `chat --selftest*` + `chat --live`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)）。未做：严格 tool_call 协议（`role: tool` + `tool_call_id`）、DSH 官方插件（需 `ctx.tools`/Loader）、输入框 IME 组件。详见 [`docs/m1-log.md`](docs/m1-log.md)。

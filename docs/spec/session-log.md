@@ -61,7 +61,7 @@
 | `model.request` | durable | `step_id`, `provider`, `model`, `token_estimate` |
 | `model.response.meta` | durable | `usage{input,output,cached}`, `latency_ms` |
 
-规则：`delta` 永不进入回放；`settled` 必须完整。
+规则：`delta` 永不进入回放；`settled` 必须完整。当前实现（M1）把 delta 只送给 UI、不落盘（规范允许丢）；M2 若需要诊断首字延迟，再按 ephemeral 记录。
 
 ### 3.3 工具
 

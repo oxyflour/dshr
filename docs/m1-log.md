@@ -371,6 +371,8 @@ assistant_settled_after_ms=2031   # 同上，复测
 **验证方式**：合成按键输入 → 轮询 `.tmp/chat-session.jsonl`，确认 `message.user` 先出现、
 `message.assistant.settled` 在流式结束后才出现。`chat --selftest` 仍走同步 `submit()`，不受影响。
 
+> 后续：这一版是**本地伪造的流式**（回复已经全部拿到，只是慢慢展示）。A14 换成了真 SSE。
+
 ## A10 Agent 接口（2026-11-10）
 
 **目标**：把 chat 里那段 if-else 的 mock 逻辑抽成真正的 Agent Loop：模型产意图、宿主执行、事件可测。
@@ -510,6 +512,54 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 
 **未做**：`presentCall`（调用前视图）仍是工具名；插件自带的自定义视图函数（`output.render`）
 不执行——那是 M2 接真实 DSH 插件时才需要的能力。
+
+## A14 真 SSE 流式（2026-11-10）
+
+问题：A9 的"流式"是假的——回复已经整段拿到，UI 只是按 timer 慢慢展示。
+真正的流式要模型边生成边到，首字延迟才从"整段生成完"降到"第一个 token"。
+
+**三层改动**：
+
+| 层 | 改动 |
+|---|---|
+| provider | `ModelProvider::complete_streaming(request, on_delta)`，默认实现回退到 `complete`（不实现流式的 provider 无需改动）；`DeepSeekProvider` 覆盖为 SSE |
+| agent | `Agent::run_turn_streaming(..., on_event)`，事件一到就回调；`run_turn` 变成收集版（既有测试不变） |
+| ui | Agent 与工具跑在工作线程，每产生一个事件推一份**整份快照**到 UI；UI 只覆盖 rows，不做事件合并 |
+
+**SSE 解码**（`llm-deepseek::SseDecoder`）：文本增量、分片到达的工具调用参数、`[DONE]` 边界、
+`error` 载荷、CR 结尾都在一处处理；逐行喂 SSE 的单测不依赖网络。
+
+**实测**（`chat --live`，本机到 api.deepseek.com）：
+
+```text
+[live] stream_updates=29 first_text_ms=697 total_ms=943
+[live] reply=我是桌面 Agent，可以调用工具帮你完成任务……
+
+# 带工具的一轮
+[live] stream_updates=7 first_text_ms=845 total_ms=1325
+[live] reply=HELLO
+```
+
+`chat --selftest-stream`（mock 切成 8 字符/段）：
+
+```text
+[stream] snapshots=6 streaming_rows=4
+  助手  · 收到：你好。当前▌
+  助手  · 收到：你好。当前是 mock a▌
+  助手  · 收到：你好。当前是 mock agent，尚未接▌
+  助手  · 收到：你好。当前是 mock agent，尚未接入 LLM。▌
+[selftest-stream] PASS
+```
+
+**踩到的坑**：
+
+1. `Arc<Mutex<ChatState>>` 要求 `ChatState: Send` → `Plugin`、`ModelProvider`、`ToolPolicy` 三个 trait 都要加 `Send` 超 trait。这是正确约束（它们会被移到工作线程），不是为绕编译器。
+2. 流式回调里不能借注册表：`ChatExecutor` 正持有 `&mut ToolRegistry`。改为**轮次开始前**拍一张 `name -> (origin, presentation)` 快照。
+3. 快照是整份而不是增量：UI 不需要事件合并逻辑，丢一条也不会错位；16 ms 轮询窗口里只取最后一份，避免积压。
+4. mock 也必须实现流式（切段），否则 selftest 测不到"增量"这个性质。
+
+**边界**：SSE 断线不重连；取消尚未接；工具结果第二轮仍以 `role: user` 传递（严格 `role: tool` 是下一步）。
+测试：workspace 80 passed（agent-core 6→10，llm-deepseek 4→10）。
 
 ## A8 真实 Cordis 插件（2026-11-09）
 

@@ -151,7 +151,7 @@ pub enum PolicyDecision {
     Deny(String),
 }
 
-pub trait ToolPolicy {
+pub trait ToolPolicy: Send {
     fn check(&self, tool: &ToolDefinition, arguments: &Value) -> PolicyDecision;
 }
 

@@ -1,13 +1,20 @@
-//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
+//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复 + 真流式。
 //!
 //! 这是 M1 的产品面：能打字、能发送、能看到工具卡片、关掉再开会话还在。
-//! 模型是 **mock**（没有接 LLM，那是 M2），但会话/工具/日志/回放都是真实的。
+//! 模型在无 key 时用 mock，有 key 时用 DeepSeek（SSE 流式）；会话/工具/日志/回放都是真实的。
 //!
-//! 两种模式：
-//!   cargo run -p dshr-desktop-gpui --bin chat            # 交互界面
-//!   cargo run -p dshr-desktop-gpui --bin chat -- --selftest   # 无窗口自检（CI 用）
+//! 线程模型：Agent 与工具在工作线程跑，UI 线程只消费"整份快照"——
+//! 网络等待不会卡住界面，这正是把 `ModelProvider` 做成流式的目的。
+//!
+//! 四种模式：
+//!   cargo run -p dshr-desktop-gpui --bin chat                 # 交互界面
+//!   cargo run ... --bin chat -- --selftest                   # 无窗口自检
+//!   cargo run ... --bin chat -- --selftest-stream            # 流式自检
+//!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
 use std::path::PathBuf;
+use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::prelude::*;
@@ -23,7 +30,7 @@ use dshr_agent_core::{
     ToolSpec,
 };
 use dshr_compat_dsh_host::SidecarHost;
-use dshr_conversation_model::{build_from_log, CardKind, Item};
+use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
@@ -51,7 +58,6 @@ struct ChatState {
     agent: Agent<Box<dyn ModelProvider>>,
     seq: u64,
 }
-
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
 
@@ -289,18 +295,18 @@ impl ChatState {
         }
     }
 
-    /// 一轮对话的前半段：用户消息 → （可选）工具调用 → 返回要流式展示的回复文本。
+    /// 跑一轮对话：用户消息 → Agent（模型 + 工具）→ 助手消息落库。
     ///
-    /// 助手消息由 `finish_turn` 在流式结束后落库，这样 UI 可以逐字渲染，
-    /// 而 Session Log 里仍然只有一条 settled 消息。
-    /// 一轮对话的前半段：用户消息 → Agent 循环（模型 + 工具执行）→ 返回要流式展示的文本。
+    /// **每产生一个事件就推一份完整快照**给调用方（UI 在别的线程画），
+    /// 所以网络等待不会阻塞界面，流式文本也是真的逐段到达。
     ///
-    /// Agent 只产出事件；落盘由这里完成（Agent 不碰 Session Log）。
-    fn begin_turn(&mut self, text: &str) -> Option<String> {
+    /// 同步场景（自检、`--live`）传一个空 sink 即可。
+    fn stream_turn(&mut self, text: &str, emit: &mut dyn FnMut(Vec<Row>)) -> Option<String> {
         let text = text.trim();
         if text.is_empty() {
             return None;
         }
+
         let ts = now_ts();
         self.seq += 1;
         let user_id = format!("m-u{}", self.seq);
@@ -313,35 +319,52 @@ impl ChatState {
             return None;
         }
         self.save();
+        emit(rows_snapshot(&self.log, None));
 
-        let events = {
-            let mut executor = ChatExecutor {
-                plugins: &mut self.plugins,
-                host: self.host.as_mut(),
-            };
-            self.agent.run_turn(text, &mut executor)
-        };
+        // 来源与卡片类型在轮次开始前固定：流式回调里不能再借注册表（执行器正持有它）。
+        let presentations: std::collections::BTreeMap<String, (String, String)> = self
+            .plugins
+            .registry()
+            .list()
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name.clone(),
+                    (
+                        definition.origin.kind().to_owned(),
+                        definition
+                            .presentation
+                            .clone()
+                            .unwrap_or_else(|| "generic".to_owned()),
+                    ),
+                )
+            })
+            .collect();
 
         let mut reply = String::new();
-        for event in events {
-            match event {
-                AgentEvent::TextDelta(delta) => reply.push_str(&delta),
+        {
+            let Self {
+                agent,
+                plugins,
+                host,
+                log,
+                ..
+            } = self;
+            let mut executor = ChatExecutor {
+                plugins,
+                host: host.as_mut(),
+            };
+            agent.run_turn_streaming(text, &mut executor, &mut |event| match event {
+                AgentEvent::TextDelta(delta) => {
+                    reply.push_str(delta);
+                    emit(rows_snapshot(log, Some(&reply)));
+                }
                 AgentEvent::ToolCall(call) => {
-                    let (origin, presentation) = self
-                        .plugins
-                        .registry()
+                    let (origin, presentation) = presentations
                         .get(&call.tool)
-                        .map(|definition| {
-                            (
-                                definition.origin.kind().to_owned(),
-                                definition
-                                    .presentation
-                                    .clone()
-                                    .unwrap_or_else(|| "generic".to_owned()),
-                            )
-                        })
+                        .cloned()
                         .unwrap_or_else(|| ("unknown".to_owned(), "generic".to_owned()));
-                    let _ = self.log.append(EventSpec::durable(
+                    let _ = log.append(EventSpec::durable(
                         "tool.call",
                         &ts,
                         json!({
@@ -354,16 +377,17 @@ impl ChatState {
                             "arguments": call.arguments
                         }),
                     ));
+                    emit(rows_snapshot(log, Some(&reply)));
                 }
                 AgentEvent::ToolResult { call_id, outcome } => {
                     if outcome.is_error {
-                        let _ = self.log.append(EventSpec::durable(
+                        let _ = log.append(EventSpec::durable(
                             "tool.aborted",
                             &ts,
                             json!({ "call_id": call_id, "reason": outcome.content.to_string() }),
                         ));
                     } else {
-                        let _ = self.log.append(EventSpec::durable(
+                        let _ = log.append(EventSpec::durable(
                             "tool.result",
                             &ts,
                             json!({
@@ -376,20 +400,18 @@ impl ChatState {
                             }),
                         ));
                     }
+                    emit(rows_snapshot(log, Some(&reply)));
                 }
                 AgentEvent::TurnFailed(err) => {
                     reply.push_str(&format!("处理失败：{err}"));
+                    emit(rows_snapshot(log, Some(&reply)));
                 }
                 AgentEvent::TurnStarted { .. }
                 | AgentEvent::StepStarted { .. }
                 | AgentEvent::TurnEnded { .. } => {}
-            }
+            });
         }
 
-        Some(reply)
-    }
-
-    fn finish_turn(&mut self, reply: &str) {
         self.seq += 1;
         let ts = now_ts();
         let _ = self.log.append(EventSpec::durable(
@@ -398,13 +420,13 @@ impl ChatState {
             json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
         ));
         self.save();
+        emit(rows_snapshot(&self.log, None));
+        Some(reply)
     }
 
-    /// 同步版本（自检与无 UI 场景使用）。
+    /// 同步版本（自检与无 UI 场景使用）：丢弃 UI 快照。
     fn submit(&mut self, text: &str) {
-        if let Some(reply) = self.begin_turn(text) {
-            self.finish_turn(&reply);
-        }
+        let _ = self.stream_turn(text, &mut |_| {});
     }
 
     fn items(&self) -> Vec<Item> {
@@ -413,54 +435,81 @@ impl ChatState {
 }
 
 struct ChatApp {
-    state: ChatState,
+    /// Agent / 工具 / 日志都在工作线程里改；UI 只读快照，所以这里必须加锁。
+    state: Arc<Mutex<ChatState>>,
+    /// 当前渲染用的整份快照（由工作线程推送）。
+    rows: Vec<Row>,
     input: String,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
-    /// 正在逐字渲染的助手回复（尚未写入 Session Log）。
-    streaming: Option<String>,
+    /// 一轮正在生成：输入框仍可编辑，但回车不会发第二条。
+    busy: bool,
 }
 
 impl ChatApp {
     fn send(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let text = std::mem::take(&mut self.input);
         if text.trim().is_empty() {
             return;
         }
-        let Some(reply) = self.state.begin_turn(&text) else {
-            return;
-        };
-
-        // 逐字渲染：每 12ms 追加一个字符，结束后才把 assistant 消息写入日志。
-        self.streaming = Some(String::new());
+        self.busy = true;
         cx.notify();
-        let reply_for_task = reply.clone();
+
+        // 模型调用与工具执行都在工作线程：UI 线程不允许被网络阻塞。
+        // 事件 → 快照 → channel → UI 合并，UI 侧没有事件重放逻辑。
+        let state = self.state.clone();
+        let (tx, rx) = mpsc::channel::<Vec<Row>>();
+        std::thread::spawn(move || {
+            let mut guard = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.stream_turn(&text, &mut |rows| {
+                // UI 已关闭时发送失败：忽略并继续，不要 panic。
+                let _ = tx.send(rows);
+            });
+        });
+
         cx.spawn(async move |this, cx| {
-            // 每次推送 8 个字符：实测 timer + 重绘一轮约 150ms，
-            // 逐字符推 40 字要 2.5s 以上，视觉上反而不像"流式"。
-            let chars: Vec<char> = reply_for_task.chars().collect();
-            for chunk in chars.chunks(8) {
+            loop {
+                // 同一轮询窗口内只取最后一份快照：快照是全量的，旧的不需要画。
+                let mut latest = None;
+                let mut closed = false;
+                loop {
+                    match rx.try_recv() {
+                        Ok(rows) => latest = Some(rows),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+                if let Some(rows) = latest {
+                    let ok = this
+                        .update(cx, |app, cx| {
+                            app.rows = rows;
+                            cx.notify();
+                        })
+                        .is_ok();
+                    if !ok {
+                        return;
+                    }
+                }
+                if closed {
+                    let _ = this.update(cx, |app, cx| {
+                        app.busy = false;
+                        cx.notify();
+                    });
+                    return;
+                }
+                // 16ms 轮询：与一帧同量级，肉眼看不到分批。
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
-                let piece: String = chunk.iter().collect();
-                let ok = this
-                    .update(cx, |app, cx| {
-                        if let Some(buffer) = app.streaming.as_mut() {
-                            buffer.push_str(&piece);
-                            cx.notify();
-                        }
-                    })
-                    .is_ok();
-                if !ok {
-                    return;
-                }
             }
-            let _ = this.update(cx, |app, cx| {
-                app.state.finish_turn(&reply);
-                app.streaming = None;
-                cx.notify();
-            });
         })
         .detach();
     }
@@ -490,10 +539,12 @@ impl ChatApp {
 }
 
 /// 一行的渲染数据：主行 + （工具卡片的）副行。
-#[derive(Debug, Clone)]
+///
+/// 用 `String` 而不是 GPUI 类型：快照要跨线程从 Agent 线程送到 UI 线程。
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Row {
-    main: SharedString,
-    sub: Option<SharedString>,
+    main: String,
+    sub: Option<String>,
     tone: Tone,
 }
 
@@ -519,12 +570,12 @@ impl Tone {
 fn describe(item: &Item) -> Row {
     match item {
         Item::User { text } => Row {
-            main: SharedString::from(format!("你    · {text}")),
+            main: format!("你    · {text}"),
             sub: None,
             tone: Tone::User,
         },
         Item::Assistant { text } => Row {
-            main: SharedString::from(format!("助手  · {text}")),
+            main: format!("助手  · {text}"),
             sub: None,
             tone: Tone::Assistant,
         },
@@ -541,44 +592,53 @@ fn describe(item: &Item) -> Row {
                 ToolState::Aborted { reason } => format!("中止({reason})"),
             };
             Row {
-                main: SharedString::from(format!(
-                    "工具  · {} [{}] · {state}",
-                    tool.tool, tool.origin
-                )),
-                sub: tool
-                    .card
-                    .as_ref()
-                    .map(|card| SharedString::from(card.summary())),
+                main: format!("工具  · {} [{}] · {state}", tool.tool, tool.origin),
+                sub: tool.card.as_ref().map(ToolCard::summary),
                 tone: Tone::Tool,
             }
         }
         Item::Compaction { from_seq, to_seq } => Row {
-            main: SharedString::from(format!("上下文 · 已压缩 seq {from_seq}–{to_seq}")),
+            main: format!("上下文 · 已压缩 seq {from_seq}–{to_seq}"),
             sub: None,
             tone: Tone::Meta,
         },
     }
 }
 
+/// 从当前日志生成整份快照；`streaming` 非空时把"正在生成的回复"追加为最后一行。
+///
+/// 快照而不是增量：UI 只做覆盖，不用维护事件合并逻辑，也不会因为丢一条消息就错位。
+fn rows_snapshot(log: &SessionLog, streaming: Option<&str>) -> Vec<Row> {
+    let mut rows: Vec<Row> = build_from_log(log).iter().map(describe).collect();
+    if let Some(text) = streaming {
+        rows.push(Row {
+            main: format!("助手  · {text}▌"),
+            sub: None,
+            tone: Tone::Assistant,
+        });
+    }
+    rows
+}
+
 impl Render for ChatApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self.state.items();
-        let mut rows: Vec<Row> = items.iter().map(describe).collect();
-        if let Some(buffer) = &self.streaming {
-            rows.push(Row {
-                main: SharedString::from(format!("助手  · {buffer}▌")),
-                sub: None,
-                tone: Tone::Assistant,
-            });
-        }
-        let total = rows.len();
-        let rows_for_list = rows.clone();
+        let total = self.rows.len();
+        let rows_for_list = self.rows.clone();
         let input_text = if self.input.is_empty() {
-            "输入消息，回车发送（mock agent）".to_owned()
+            if self.busy {
+                "正在生成…".to_owned()
+            } else {
+                "输入消息，回车发送".to_owned()
+            }
         } else {
             format!("{}▌", self.input)
         };
         let dim = self.input.is_empty();
+        let header = if self.busy {
+            format!("会话 {SESSION_ID} · {} 条 · 生成中", total)
+        } else {
+            format!("会话 {SESSION_ID} · {} 条", total)
+        };
 
         div()
             .flex()
@@ -595,7 +655,7 @@ impl Render for ChatApp {
                     .border_b_1()
                     .border_color(rgb(0x2a2a2a))
                     .text_sm()
-                    .child(format!("会话 {SESSION_ID} · {} 条", total)),
+                    .child(header),
             )
             .child(
                 div().flex_1().overflow_hidden().child(
@@ -607,7 +667,7 @@ impl Render for ChatApp {
                                 let mut out = Vec::with_capacity(range.len());
                                 for ix in range {
                                     let row = rows_for_list.get(ix).cloned().unwrap_or(Row {
-                                        main: SharedString::default(),
+                                        main: String::new(),
                                         sub: None,
                                         tone: Tone::Assistant,
                                     });
@@ -795,19 +855,82 @@ fn selftest_cordis() -> i32 {
     }
 }
 
-/// 单轮真实调用（需要 API key）；用于人工验证 provider，不进 CI。
+/// 单轮真实调用（需要 API key）；用于人工验证 provider 与真流式，不进 CI。
 fn live_turn(text: &str) -> i32 {
     let path = PathBuf::from(".tmp/chat-live.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let mut state = ChatState::new(path);
-    let Some(reply) = state.begin_turn(text) else {
+
+    let started = std::time::Instant::now();
+    let mut updates = 0usize;
+    let mut first_text = None;
+    let reply = state.stream_turn(text, &mut |rows| {
+        updates += 1;
+        if first_text.is_none() && rows.last().is_some_and(|row| row.main.contains('▌')) {
+            first_text = Some(started.elapsed());
+        }
+    });
+    let total = started.elapsed();
+    let Some(reply) = reply else {
         println!("[live] empty prompt");
         return 1;
     };
-    state.finish_turn(&reply);
+    println!(
+        "[live] stream_updates={updates} first_text_ms={} total_ms={}",
+        first_text.map_or_else(|| "n/a".to_owned(), |d| d.as_millis().to_string()),
+        total.as_millis()
+    );
     println!("[live] reply={reply}");
     0
+}
+
+/// 流式自检：mock provider 把回复切成多段，断言"快照是增量推送的、落库只有一条 settled"。
+fn selftest_stream() -> i32 {
+    let path = PathBuf::from(".tmp/chat-stream.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let mut state = ChatState::new(path.clone());
+
+    let mut snapshots: Vec<Vec<Row>> = Vec::new();
+    let reply = state.stream_turn("你好", &mut |rows| snapshots.push(rows));
+    let items = state.items();
+
+    let streaming: Vec<&Row> = snapshots
+        .iter()
+        .filter_map(|rows| rows.last())
+        .filter(|row| row.main.contains('▌'))
+        .collect();
+    let final_row = snapshots.last().and_then(|rows| rows.last());
+    println!(
+        "[stream] snapshots={} streaming_rows={}",
+        snapshots.len(),
+        streaming.len()
+    );
+    for row in &streaming {
+        println!("  {}", row.main);
+    }
+
+    let reply = reply.unwrap_or_default();
+    let ok = reply.contains("收到：你好")
+        && snapshots.len() >= 3
+        && streaming.len() >= 2
+        // 流式文本单调增长：每个快照都比上一个长。
+        && streaming
+            .windows(2)
+            .all(|pair| pair[0].main.chars().count() < pair[1].main.chars().count())
+        && items.len() == 2
+        && matches!(&items[0], Item::User { .. })
+        && matches!(&items[1], Item::Assistant { text } if text == &reply)
+        && final_row.is_some_and(|row| row.main.contains(&reply) && !row.main.contains('▌'));
+
+    if ok {
+        println!("[selftest-stream] PASS");
+        0
+    } else {
+        println!("[selftest-stream] FAIL");
+        1
+    }
 }
 
 fn main() {
@@ -820,6 +943,10 @@ fn main() {
         std::process::exit(live_turn(&text));
     }
 
+    if std::env::args().any(|arg| arg == "--selftest-stream") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_stream());
+    }
     if std::env::args().any(|arg| arg == "--selftest-cordis") {
         std::env::set_var("DSHR_SIDECAR", "cordis");
         std::env::set_var("DSHR_FORCE_MOCK", "1");
@@ -831,11 +958,18 @@ fn main() {
     }
 
     let path = PathBuf::from(".tmp/chat-session.jsonl");
-    let state = ChatState::new(path);
+    let state = Arc::new(Mutex::new(ChatState::new(path)));
+    let rows = {
+        let guard = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        rows_snapshot(&guard.log, None)
+    };
 
     application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);
         let state = state;
+        let rows = rows;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -844,10 +978,11 @@ fn main() {
             move |window, cx| {
                 let app = cx.new(|cx| ChatApp {
                     state,
+                    rows,
                     input: String::new(),
                     focus: cx.focus_handle(),
                     scroll: UniformListScrollHandle::new(),
-                    streaming: None,
+                    busy: false,
                 });
                 let focus = app.read(cx).focus.clone();
                 window.focus(&focus, cx);

@@ -1,4 +1,4 @@
-﻿//! CPP-v1 的公开契约：插件实现这个 trait，宿主提供 `PluginContext`。
+//! CPP-v1 的公开契约：插件实现这个 trait，宿主提供 `PluginContext`。
 //!
 //! 这一层**不依赖 GPUI、不依赖 Cordis 实现**：它只描述"插件能声明什么"。
 //! 生命周期（Fiber / generation / 回滚）由 `plugin-host` 负责。
@@ -84,7 +84,9 @@ impl PluginContext {
 }
 
 /// CPP-v1 插件入口。`rust-static` / `wasm-component` / `external-process` 共用这一层语义。
-pub trait Plugin {
+///
+/// `Send` 是硬约束：插件可能被宿主移到工作线程执行（UI 线程不允许被工具阻塞）。
+pub trait Plugin: Send {
     fn id(&self) -> &'static str;
     fn version(&self) -> &'static str {
         "0.1.0"
