@@ -37,6 +37,7 @@ use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
+use dshr_sandbox::Workspace;
 use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
 use dshr_tool_runtime::{
     ApprovalBroker, ApprovalOutcome, ApprovalPolicy, RegistryError, ToolDefinition, ToolOrigin,
@@ -188,6 +189,83 @@ impl Plugin for ProbeNativePlugin {
     }
 }
 
+/// 原生写入工具：走沙箱 seam（路径根 + 写前快照 + 1 MiB 限制）。
+///
+/// 工具展示类型是 `diff`，所以默认策略会要求审批；审批通过后才写文件。
+/// 这不是官方 `write` 的替代品，而是用来证明"审批 + 沙箱"链路可端到端工作。
+struct ProbeWritePlugin {
+    workspace: Workspace,
+}
+
+impl ProbeWritePlugin {
+    fn new() -> Self {
+        let root = std::env::var("DSHR_WORKSPACE").unwrap_or_else(|_| String::from("."));
+        let workspace = Workspace::new(&root).unwrap_or_else(|err| {
+            eprintln!("[chat] 沙箱工作区不可用（回退到当前目录）: {err}");
+            Workspace::new(".").expect("cwd workspace")
+        });
+        Self { workspace }
+    }
+}
+
+impl Plugin for ProbeWritePlugin {
+    fn id(&self) -> &'static str {
+        "builtin.probe-write"
+    }
+
+    fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_tool(
+            ToolDefinition::new(
+                "probe_write",
+                "把一段文本写入工作区文件（沙箱 seam：相对路径、写前快照、1 MiB 限制）",
+                ToolOrigin::Native {
+                    plugin_id: "builtin.probe-write".to_owned(),
+                },
+            )
+            .with_schema(json!({
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                }
+            }))
+            .with_presentation("diff"),
+        )?;
+        Ok(())
+    }
+
+    fn call(
+        &mut self,
+        tool: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
+        if tool != "probe_write" {
+            return Err(PluginError::UnknownTool {
+                plugin: "builtin.probe-write".to_owned(),
+                tool: tool.to_owned(),
+            });
+        }
+        let path = arguments
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| PluginError::Invalid(String::from("missing path")))?;
+        let content = arguments
+            .get("content")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| PluginError::Invalid(String::from("missing content")))?;
+        let receipt = self
+            .workspace
+            .write_text(path, content)
+            .map_err(|err| PluginError::Invalid(err.to_string()))?;
+        Ok(json!({
+            "path": receipt.path.display().to_string(),
+            "bytes": receipt.bytes,
+            "snapshot": receipt.snapshot.map(|snapshot| snapshot.id),
+        }))
+    }
+}
+
 /// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
 ///
 /// 三种运行时（`DSHR_SIDECAR`）：
@@ -297,12 +375,14 @@ impl ToolExecutor for ChatExecutor<'_> {
         };
 
         match definition.origin {
-            ToolOrigin::Native { .. } => match self.plugins.call(&call.tool, &call.arguments) {
-                Ok(value) => {
-                    ToolOutcome::success(json!([{ "type": "json", "value": value }]), value)
+            ToolOrigin::Native { .. } => {
+                match self.plugins.call_approved(&call.tool, &call.arguments) {
+                    Ok(value) => {
+                        ToolOutcome::success(json!([{ "type": "json", "value": value }]), value)
+                    }
+                    Err(err) => ToolOutcome::failure(err.to_string()),
                 }
-                Err(err) => ToolOutcome::failure(err.to_string()),
-            },
+            }
             ToolOrigin::Sidecar { .. } => {
                 let Some(host) = self.host.as_mut() else {
                     return ToolOutcome::failure("sidecar unavailable");
@@ -376,6 +456,9 @@ impl ChatState {
         let mut plugins = PluginHost::new(policy);
         if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
             eprintln!("[chat] 原生插件加载失败: {err}");
+        }
+        if let Err(err) = plugins.load(Box::new(ProbeWritePlugin::new())) {
+            eprintln!("[chat] 写入插件加载失败: {err}");
         }
         if let Some(sidecar) = &host {
             register_sidecar_tools(&mut plugins, sidecar);
@@ -648,6 +731,16 @@ impl ChatState {
 
     fn items(&self) -> Vec<Item> {
         build_from_log(&self.log)
+    }
+
+    /// 直接执行一次工具调用（自检用；走与真实轮次相同的策略/审批/沙箱路径）。
+    fn execute_tool(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        let mut executor = ChatExecutor {
+            plugins: &mut self.plugins,
+            host: self.host.as_mut(),
+            approvals: self.approvals.as_ref(),
+        };
+        executor.execute(call)
     }
 }
 
@@ -2475,6 +2568,66 @@ fn selftest_approval() -> i32 {
     }
 }
 
+/// 沙箱 seam 自检：原型写工具走"策略 Ask → 自动批准 → 沙箱写入/快照/路径拒绝"。
+fn selftest_sandbox() -> i32 {
+    let root =
+        std::path::absolute(".tmp/sandbox-ws").unwrap_or_else(|_| PathBuf::from(".tmp/sandbox-ws"));
+    let _ = std::fs::remove_dir_all(&root);
+    std::env::set_var("DSHR_WORKSPACE", &root);
+    std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+    let path = PathBuf::from(".tmp/chat-sandbox.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
+
+    let write = |call_id: &str, relative: &str, content: &str| ToolCallRequest {
+        call_id: call_id.to_owned(),
+        tool: "probe_write".to_owned(),
+        arguments: json!({ "path": relative, "content": content }),
+    };
+    let first = state.execute_tool(&write("c-w1", "demo.txt", "hello sandbox"));
+    let second = state.execute_tool(&write("c-w2", "demo.txt", "v2"));
+    let escaped = state.execute_tool(&write("c-w3", "../escape.txt", "nope"));
+
+    let file = root.join("demo.txt");
+    let content = std::fs::read_to_string(&file).unwrap_or_default();
+    let snapshots = state
+        .approvals
+        .take_records()
+        .into_iter()
+        .filter(|record| record.tool == "probe_write")
+        .count();
+    let snapshot_files = std::fs::read_dir(root.join(".dshr").join("snapshots"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+
+    std::env::remove_var("DSHR_APPROVAL_MODE");
+    std::env::remove_var("DSHR_WORKSPACE");
+
+    println!(
+        "[sandbox] write_ok={} overwrite_ok={} denied={} content={content:?} approval_records={snapshots} snapshot_files={snapshot_files} first_err={:?} second_err={:?}",
+        !first.is_error,
+        !second.is_error,
+        escaped.is_error,
+        first.content,
+        second.content
+    );
+    let ok = !first.is_error
+        && !second.is_error
+        && escaped.is_error
+        && content == "v2"
+        && snapshots >= 2
+        && snapshot_files >= 1;
+    if ok {
+        println!("[selftest-sandbox] PASS");
+        0
+    } else {
+        println!("[selftest-sandbox] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 ///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
@@ -2550,6 +2703,10 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-approval") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_approval());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-sandbox") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_sandbox());
     }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");

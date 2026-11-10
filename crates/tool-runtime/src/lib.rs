@@ -359,6 +359,28 @@ impl ToolRegistry {
         })?;
         Ok(tool)
     }
+
+    /// 已经过策略审批后的二次入口：只做 schema 校验，不再问策略。
+    ///
+    /// 用于"Ask → 用户允许 → 继续执行"：策略已经放行一次，不能因为再次 authorize
+    /// 又回到 NeedsApproval（那会变成死循环/永远无法执行）。
+    pub fn authorize_approved(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<&ToolDefinition, RegistryError> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| RegistryError::NotFound(name.to_owned()))?;
+        validate(&tool.input_schema, arguments).map_err(|reason| {
+            RegistryError::InvalidArguments {
+                tool: name.to_owned(),
+                reason,
+            }
+        })?;
+        Ok(tool)
+    }
 }
 
 /// 一个故意做小的 JSON Schema 子集校验器：
@@ -620,5 +642,28 @@ mod tests {
             policy.check(&native("read"), &json!({})),
             PolicyDecision::Ask
         );
+    }
+
+    #[test]
+    fn authorize_approved_skips_policy_but_keeps_schema_validation() {
+        let mut registry = ToolRegistry::new(ApprovalPolicy::ask_all());
+        registry
+            .register(native("write").with_schema(json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": { "path": { "type": "string" } }
+            })))
+            .unwrap();
+        assert!(matches!(
+            registry.authorize("write", &json!({ "path": "a" })),
+            Err(RegistryError::NeedsApproval { .. })
+        ));
+        assert!(registry
+            .authorize_approved("write", &json!({ "path": "a" }))
+            .is_ok());
+        assert!(matches!(
+            registry.authorize_approved("write", &json!({})),
+            Err(RegistryError::InvalidArguments { .. })
+        ));
     }
 }

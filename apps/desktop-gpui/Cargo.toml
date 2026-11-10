@@ -15,6 +15,9 @@ path = "../../crates/conversation-model"
 [dependencies.dshr-session-store]
 path = "../../crates/session-store"
 
+[dependencies.dshr-sandbox]
+path = "../../crates/sandbox"
+
 [dependencies.dshr-compat-dsh-host]
 path = "../../crates/compat-dsh-host"
 

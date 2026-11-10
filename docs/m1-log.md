@@ -666,6 +666,28 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A24 沙箱 seam：工作区根 + 写前快照 + 原子写（2026-11-11）
+
+问题：A23 只解决"用户同不同意"，没有解决"同意之后能碰什么"。
+
+**做法**：
+
+1. 新 crate `crates/sandbox`：路径只接受相对路径（拒绝绝对路径/`..`/prefix），
+   父目录 canonicalize 后必须在工作区内（防符号链接逃逸），单次写入 ≤1 MiB，
+   覆盖前复制到 `.dshr/snapshots/`，同目录临时文件 + rename 原子写。
+2. 原生 `probe_write` 工具（presentation=diff）：默认策略 Ask → 审批 → 沙箱写入；
+   返回 `{path, bytes, snapshot}`。
+3. `PluginHost::call_approved` + `ToolRegistry::authorize_approved`：审批通过后
+   只做 schema 校验、不再问策略，避免"再次 authorize 又要求审批"的死循环。
+4. `--selftest-sandbox`：写/覆盖/快照/逃逸拒绝/审批记录全部断言。
+
+**验证**：sandbox 5 测试、tool-runtime 17 测试、workspace 全绿；selftest PASS；
+截图（前一轮）确认审批卡片出现且允许后工具执行。
+
+**边界**：官方 `write`/`edit`/`apply_patch` 仍关闭——它们走 DSH 自己的
+`fs`/`sandbox`/`userApproval` 服务，需要 Node 侧实现 + 审批 RPC 才能打开；
+`bash`/`pwsh` 还需要命令白名单与超时。详见 [`m2-sandbox.md`](m2-sandbox.md)。
+
 ## A23 工具审批：策略 + 阻塞 broker + 审批 UI（2026-11-11）
 
 问题：M1 的 `AllowAll` 让所有工具直接执行；写文件/执行命令类工具一旦接入，

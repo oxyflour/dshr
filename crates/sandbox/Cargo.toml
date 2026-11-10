@@ -1,0 +1,8 @@
+[package]
+name = "dshr-sandbox"
+description = "工作区沙箱 seam：路径归一化、写前快照、大小限制"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true

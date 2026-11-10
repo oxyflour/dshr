@@ -135,6 +135,24 @@ impl PluginHost {
         }
     }
 
+    /// 已通过策略审批后的调用：只做 schema 校验，不再问策略。
+    pub fn call_approved(&mut self, tool: &str, arguments: &Value) -> Result<Value, HostError> {
+        let definition = self.registry.authorize_approved(tool, arguments)?.clone();
+        match definition.origin {
+            ToolOrigin::Native { plugin_id } => {
+                let plugin = self
+                    .plugins
+                    .get_mut(&plugin_id)
+                    .ok_or_else(|| HostError::NotFound(plugin_id.clone()))?;
+                Ok(plugin.call(tool, arguments)?)
+            }
+            other => Err(HostError::Plugin(PluginError::Invalid(format!(
+                "tool `{tool}` has non-native origin `{}`",
+                other.kind()
+            )))),
+        }
+    }
+
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
     }

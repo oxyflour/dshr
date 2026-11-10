@@ -90,4 +90,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 写文件/执行命令类工具默认需要**用户审批**（`write`/`edit`/`bash` 等），
 审批卡片在输入框上方，痕迹落 `approval.asked` / `approval.answered`
 （[`docs/m2-approval.md`](docs/m2-approval.md)）。
+原生写入工具已接**工作区沙箱**：相对路径根、1 MiB 限制、覆盖前快照、原子写
+（[`docs/m2-sandbox.md`](docs/m2-sandbox.md)）；官方 `write`/`bash` 仍关闭，
+需要 Node 侧 `sandbox`/`userApproval` service 与审批 RPC。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。
