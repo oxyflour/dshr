@@ -18,6 +18,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod loader;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,11 +42,19 @@ fn default_enabled() -> bool {
     true
 }
 
+/// profile 来源：普通 plugins.json，或 Loader YAML（只读）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileSource {
+    File,
+    Loader,
+}
+
 /// 插件 profile（文件 + 内存条目）。
 #[derive(Debug, Clone)]
 pub struct Profile {
     path: PathBuf,
     entries: Vec<PluginEntry>,
+    source: ProfileSource,
 }
 
 impl Profile {
@@ -59,14 +69,51 @@ impl Profile {
             return Ok(Self {
                 path,
                 entries: parsed.plugins,
+                source: ProfileSource::File,
             });
         }
         let profile = Self {
             path,
             entries: default_entries(),
+            source: ProfileSource::File,
         };
         profile.save()?;
         Ok(profile)
+    }
+
+    /// 从 Loader bundle + patch 文件构建只读 profile。
+    pub fn from_loader(
+        dir: impl Into<PathBuf>,
+        bundle: &Path,
+        patches: &[PathBuf],
+    ) -> Result<Self, String> {
+        let bundle_text =
+            fs::read_to_string(bundle).map_err(|err| format!("读取 bundle 失败: {err}"))?;
+        let mut patch_texts = Vec::new();
+        for patch in patches {
+            patch_texts.push(
+                fs::read_to_string(patch)
+                    .map_err(|err| format!("读取 patch {} 失败: {err}", patch.display()))?,
+            );
+        }
+        let (entries, warnings) = loader::entries_from_loader(&bundle_text, &patch_texts)?;
+        for warning in warnings {
+            eprintln!("[profile] loader: {warning}");
+        }
+        Ok(Self {
+            path: dir.into().join("plugins.json"),
+            entries,
+            source: ProfileSource::Loader,
+        })
+    }
+
+    pub fn source(&self) -> ProfileSource {
+        self.source
+    }
+
+    /// Loader 模式下不写 plugins.json（避免把派生结果固化成第二真相）。
+    pub fn can_edit(&self) -> bool {
+        self.source == ProfileSource::File
     }
 
     pub fn path(&self) -> &Path {
@@ -78,6 +125,7 @@ impl Profile {
         Self {
             path: dir.into().join("plugins.json"),
             entries: default_entries(),
+            source: ProfileSource::File,
         }
     }
 
@@ -96,6 +144,11 @@ impl Profile {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        if self.source == ProfileSource::Loader {
+            return Err(String::from(
+                "Loader 模式的 profile 是派生视图，不写 plugins.json",
+            ));
+        }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|err| format!("创建目录失败: {err}"))?;
         }
@@ -232,6 +285,7 @@ mod tests {
         let profile = Profile {
             path: PathBuf::from("unused"),
             entries: default_entries(),
+            source: ProfileSource::File,
         };
         let json: Value = serde_json::from_str(&profile.sidecar_json()).expect("json");
         let array = json.as_array().expect("array");
@@ -248,6 +302,28 @@ mod tests {
         let dir = temp_dir("unknown");
         let mut profile = Profile::load(&dir).expect("load");
         assert!(!profile.set_enabled("not-installed", false));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn loader_profile_is_read_only_and_derives_entries() {
+        let dir = temp_dir("loader");
+        fs::create_dir_all(&dir).unwrap();
+        let bundle = dir.join("cordis.yml");
+        fs::write(
+            &bundle,
+            "- id: fs\n  name: '@deepseek-ai/dsh-tool-fs'\n  config:\n    read: true\n",
+        )
+        .unwrap();
+        let patch = dir.join("cordis.patch.yml");
+        fs::write(&patch, "- id: fs\n  disabled: true\n").unwrap();
+
+        let profile = Profile::from_loader(&dir, &bundle, &[patch]).expect("loader");
+        assert_eq!(profile.source(), ProfileSource::Loader);
+        assert!(!profile.can_edit());
+        assert_eq!(profile.entries().len(), 1);
+        assert!(!profile.entries()[0].enabled);
+        assert!(profile.save().is_err(), "loader profile 不落盘");
         fs::remove_dir_all(dir).ok();
     }
 }

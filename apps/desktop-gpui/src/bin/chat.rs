@@ -37,7 +37,7 @@ use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
-use dshr_profile::Profile;
+use dshr_profile::{Profile, ProfileSource};
 use dshr_sandbox::Workspace;
 use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
 use dshr_tool_runtime::{
@@ -1049,6 +1049,10 @@ impl ChatApp {
 
     /// 启用/禁用插件：写 profile、更新 sidecar 环境、空闲时重启当前会话的 sidecar。
     fn toggle_plugin(&mut self, name: String, cx: &mut Context<Self>) {
+        if !self.profile.can_edit() {
+            eprintln!("[chat] Loader 模式插件列表只读（改 cordis.yml / patch 后重启）");
+            return;
+        }
         let Some(entry) = self
             .profile
             .entries()
@@ -1084,8 +1088,14 @@ impl ChatApp {
         }
         let p = t.palette;
         let entries = self.profile.entries().to_vec();
+        let editable = self.profile.can_edit();
         let enabled = entries.iter().filter(|entry| entry.enabled).count();
         let total = entries.len();
+        let footer = if editable {
+            String::from("切换会重启当前会话的 sidecar；配置写入 DSHR_PROFILE_DIR/plugins.json")
+        } else {
+            String::from("来自 Loader YAML（DSHR_LOADER_BUNDLE），只读；修改 bundle/patch 后重启")
+        };
 
         let mut list = div().flex().flex_col().gap(px(6.0)).w_full();
         for (index, entry) in entries.iter().enumerate() {
@@ -1095,6 +1105,39 @@ impl ChatApp {
                 .unwrap_or(&name)
                 .to_owned();
             let is_enabled = entry.enabled;
+            let action: AnyElement = if editable {
+                let plugin_name = name.clone();
+                div()
+                    .id(("plugin-toggle", index))
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .cursor_pointer()
+                    .text_size(t.type_scale.small)
+                    .text_color(if is_enabled {
+                        p.color(p.state_error)
+                    } else {
+                        p.color(p.state_success)
+                    })
+                    .child(if is_enabled { "禁用" } else { "启用" })
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.toggle_plugin(plugin_name.clone(), cx);
+                    }))
+                    .into_any_element()
+            } else {
+                div()
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .text_size(t.type_scale.small)
+                    .text_color(p.color(p.label_caption))
+                    .child("只读")
+                    .into_any_element()
+            };
             list = list.child(
                 div()
                     .id(("plugin-row", index))
@@ -1133,26 +1176,7 @@ impl ChatApp {
                                     .child(if is_enabled { "已启用" } else { "已禁用" }),
                             ),
                     )
-                    .child(
-                        div()
-                            .id(("plugin-toggle", index))
-                            .px(px(8.0))
-                            .py(px(3.0))
-                            .rounded(t.radii.sm)
-                            .border_1()
-                            .border_color(p.color(p.border_l2))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(if is_enabled {
-                                p.color(p.state_error)
-                            } else {
-                                p.color(p.state_success)
-                            })
-                            .child(if is_enabled { "禁用" } else { "启用" })
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.toggle_plugin(name.clone(), cx);
-                            })),
-                    ),
+                    .child(action),
             );
         }
 
@@ -1215,9 +1239,7 @@ impl ChatApp {
                         .text_size(px(11.0))
                         .line_height(px(16.0))
                         .text_color(p.color(p.label_caption))
-                        .child(
-                            "切换会重启当前会话的 sidecar；配置写入 DSHR_PROFILE_DIR/plugins.json",
-                        ),
+                        .child(footer),
                 )
                 .into_any_element(),
         )
@@ -1554,9 +1576,11 @@ impl ChatApp {
                             } else {
                                 p.color(p.label_secondary)
                             })
-                            .child(format!(
-                                "插件 · {plugin_enabled}/{plugin_total} 启用（点击管理）"
-                            ))
+                            .child(if self.profile.can_edit() {
+                                format!("插件 · {plugin_enabled}/{plugin_total} 启用（点击管理）")
+                            } else {
+                                format!("插件 · {plugin_enabled}/{plugin_total}（Loader 只读）")
+                            })
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.plugins_open = !this.plugins_open;
                                 cx.notify();
@@ -2908,6 +2932,85 @@ fn selftest_profile() -> i32 {
     }
 }
 
+/// Loader YAML 自检：bundle 条目 + patch 覆盖/插入 → 只读 profile。
+fn selftest_loader() -> i32 {
+    const BUNDLE: &str = r#"
+- name: "@deepseek-ai/dsh-tool-workspace-dependencies"
+  config:
+    source: "C:/dsh/primary-runtime"
+- id: fs-tools
+  name: "@deepseek-ai/dsh-tool-fs"
+  inject: [tools, fs, systemPrompt]
+  config:
+    read: true
+    write: false
+"#;
+    const PATCH: &str = r#"
+- id: fs-tools
+  disabled: true
+  config:
+    read: true
+    write: true
+- insert:
+    - name: "@deepseek-ai/dsh-tool-extra"
+      config:
+        limit: 3
+"#;
+
+    let dir = PathBuf::from(".tmp/loader-selftest");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let bundle = dir.join("cordis.yml");
+    let patch = dir.join("cordis.patch.yml");
+    if let Err(err) = std::fs::write(&bundle, BUNDLE) {
+        println!("[selftest-loader] 写 bundle 失败: {err}");
+        return 1;
+    }
+    if let Err(err) = std::fs::write(&patch, PATCH) {
+        println!("[selftest-loader] 写 patch 失败: {err}");
+        return 1;
+    }
+
+    let profile = match Profile::from_loader(&dir, &bundle, &[patch]) {
+        Ok(profile) => profile,
+        Err(err) => {
+            println!("[selftest-loader] 加载失败: {err}");
+            return 1;
+        }
+    };
+    let entries = profile.entries();
+    let fs = entries
+        .iter()
+        .find(|entry| entry.name == "@deepseek-ai/dsh-tool-fs");
+    let extra = entries
+        .iter()
+        .find(|entry| entry.name == "@deepseek-ai/dsh-tool-extra");
+    let json = profile.sidecar_json();
+
+    let ok = profile.source() == ProfileSource::Loader
+        && !profile.can_edit()
+        && profile.save().is_err()
+        && fs.is_some_and(|entry| !entry.enabled && entry.config["write"] == true)
+        && extra.is_some()
+        && !json.contains("dsh-tool-fs")
+        && json.contains("dsh-tool-extra");
+    println!(
+        "[loader] entries={} fs_disabled={:?} extra={} json_has_fs={} read_only={}",
+        entries.len(),
+        fs.map(|entry| !entry.enabled),
+        extra.is_some(),
+        json.contains("dsh-tool-fs"),
+        !profile.can_edit()
+    );
+    if ok {
+        println!("[selftest-loader] PASS");
+        0
+    } else {
+        println!("[selftest-loader] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 ///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
@@ -2992,6 +3095,10 @@ fn main() {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_profile());
     }
+    if std::env::args().any(|arg| arg == "--selftest-loader") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_loader());
+    }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");
         std::env::set_var("DSHR_FORCE_MOCK", "1");
@@ -3048,10 +3155,23 @@ fn main() {
     let profile_dir = std::env::var("DSHR_PROFILE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".tmp/profile"));
-    let profile = Profile::load(&profile_dir).unwrap_or_else(|err| {
-        eprintln!("[chat] 加载插件 profile 失败（使用默认值）: {err}");
-        Profile::defaults(&profile_dir)
-    });
+    // 两种来源：Loader bundle+patch（只读派生视图），或 plugins.json（可编辑）。
+    let profile = if let Ok(bundle) = std::env::var("DSHR_LOADER_BUNDLE") {
+        let patches: Vec<PathBuf> = std::env::var("DSHR_LOADER_PATCH")
+            .ok()
+            .filter(|path| !path.is_empty())
+            .map(|path| vec![PathBuf::from(path)])
+            .unwrap_or_default();
+        Profile::from_loader(&profile_dir, &PathBuf::from(bundle), &patches).unwrap_or_else(|err| {
+            eprintln!("[chat] 加载 Loader bundle 失败（使用默认值）: {err}");
+            Profile::defaults(&profile_dir)
+        })
+    } else {
+        Profile::load(&profile_dir).unwrap_or_else(|err| {
+            eprintln!("[chat] 加载插件 profile 失败（使用默认值）: {err}");
+            Profile::defaults(&profile_dir)
+        })
+    };
     std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
 
     let path = store.path_for(&active);

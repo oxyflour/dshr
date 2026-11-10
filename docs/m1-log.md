@@ -666,6 +666,27 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A26 Loader YAML：bundle + patch 派生插件条目（2026-11-11）
+
+问题：A25 的 plugins.json 仍是手写条目，和 DSH 的 Loader 组合文件脱节。
+
+**做法**：
+
+1. `crates/profile/src/loader.rs`：迷你 YAML 解析（缩进块、列表、映射、引号/注释/
+   标量/数组/`!!js` 字符串），支持 bundle 条目（id/name/config/inject/disabled/group）
+   与 patch 方言（insert / 按 id 覆盖，config 整体替换）。
+2. `Profile::from_loader(dir, bundle, patches)`：派生**只读** profile；
+   不支持 `group` 插入、`cordis:include`、`isolate`、`!!js` 求值时告警而非静默。
+3. chat：`DSHR_LOADER_BUNDLE` / `DSHR_LOADER_PATCH` 存在时用 Loader 模式；
+   插件面板显示"只读"、侧栏"Loader 只读"，不写 plugins.json。
+4. `--selftest-loader`：bundle+patch → fs 禁用、extra 插入、sidecar_json 不含禁用项、
+   save() 拒绝。
+
+**验证**：profile 9 个测试（loader 5 个）、workspace 全绿、八个 selftest PASS。
+
+**边界**：不是完整 Loader（include/group 展开/`!!js`/isolate 未实现）；
+安装流程仍未做。详见 [`m2-loader.md`](m2-loader.md)。
+
 ## A25 插件管理：profile + 启停面板 + sidecar 动态清单（2026-11-11）
 
 问题：sidecar 的插件列表写死在 `sidecar-dsh.mjs`，用户无法启停/配置。

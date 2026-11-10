@@ -95,4 +95,6 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 需要 Node 侧 `sandbox`/`userApproval` service 与审批 RPC。
 插件集合改为可持久化的 profile（`plugins.json`），侧栏"插件"面板可启用/禁用，
 切换后重启当前会话的 sidecar（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
+也支持从 DSH 的 `cordis.yml` + `cordis.patch.yml` 派生只读插件列表
+（`DSHR_LOADER_BUNDLE` / `DSHR_LOADER_PATCH`，[`docs/m2-loader.md`](docs/m2-loader.md)）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。
