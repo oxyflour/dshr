@@ -47,6 +47,12 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest     
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-stream   # 流式自检
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live "一句话"      # 真实 LLM（需 key）
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live-chat "第一句" "第二句"  # 多轮记忆验证
+
+# 官方 DSH 插件（需要本机安装 DeepSeek Harness 桌面版）
+node tools/dsh-vendor.mjs                     # 从本机 app.asar 抽取官方插件依赖（gitignored）
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-dsh
+$env:DSHR_SIDECAR = 'dsh'                       # 用官方插件运行时（tools + 只读 fs + 官方 read 工具）
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 ```
 
 ## 已固定的版本
@@ -57,10 +63,17 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live-chat "�
 | GPUI | zed `d2a4fb6` | 同上 |
 | GPUI Kit | `dbb0b9a`（0.9.0） | 同上 |
 | Rust Cordis | `jincdream/cordis-rs` | [`ADR-0002`](docs/decisions/0002-cordis-rs-selection.md) |
-| DSH | `0.2.1-rc.3` / Cordis `4.0.5` | [`ADR-0003`](docs/decisions/0003-dsh-pin.md)（license 待补） |
+| DSH | 本机安装副本（采样 `0.2.2-rc.1` / Cordis `4.1.0`） | [`ADR-0003`](docs/decisions/0003-dsh-pin.md)（含 2026-11-11 版本漂移复核；license 待补） |
 
 ## 当前状态
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
 
-**M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 三个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、DSH 官方插件（需 `ctx.tools`/Loader）、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
+**M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
+
+**M2 首个里程碑：官方 DSH 插件可装载（2026-11-11）。** 未修改的官方包
+`@deepseek-ai/dsh-tool-workspace-dependencies` 与只读 `@deepseek-ai/dsh-tool-fs`
+经 Cordis 4.1.0 装载、注册进 Rust Registry，真实 DeepSeek 经官方 `read` 工具读文件成功。
+依赖由 `tools/dsh-vendor.mjs` 从本机安装的 `app.asar` 抽取（不提交仓库）。
+边界（写入/沙箱/会话等 service 未提供、Loader 未接）与复现步骤见
+[`docs/m2-dsh-official.md`](docs/m2-dsh-official.md)。

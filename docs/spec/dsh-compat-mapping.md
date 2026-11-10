@@ -20,7 +20,7 @@
 
 | 层 | DSH 0.2.1-rc.3 | 本项目 | 关系 |
 |---|---|---|---|
-| 插件装载 | Cordis `ctx.plugin()`，进程内 | Rust `PluginHost`（native）/ Node Sidecar（JS） | **刻意不同**（ADR-004） |
+| 插件装载 | Cordis `ctx.plugin()`，进程内 | Rust `PluginHost`（native）/ Node Sidecar（JS）；**2026-11-11 起 Sidecar 可装载未修改的官方插件**（Cordis 4.1.0 + `tools`/`fs`/`systemPrompt` 服务子集，见 [`../m2-dsh-official.md`](../m2-dsh-official.md)） | **刻意不同**（ADR-004），但官方插件的 `apply`/`tools.register` 契约已可承载；Loader/bundle 组合未接 |
 | 工具注册 | `ctx.tools.register(ToolDefinition)`，可带 agent scope，scope 内遮蔽全局 | `ToolRegistry.register(ToolDefinition)`，`ToolOrigin` 区分来源；无 scope | **缺 scope** |
 | Host↔Client | `hostProtocolVersion 4`，生成的 Remote RPC | 无（自绘 GPUI，不桥接 DSH Client） | 不同层，不要求对齐 |
 | Host↔Sidecar | 不存在 | NDJSON over stdio（自研） | 本项目新增 |
@@ -49,7 +49,7 @@ interface ToolOutputDefinition { readonly schema: JsonSchemaNode; render(args, v
 |---|---|---|
 | `name` / `description` / `parameters` | 有（`name`/`description`/`input_schema`） | 字段名不同，语义一致 |
 | `output.schema` | 有（`ToolDefinition.output_schema`），随 `tool.register` 传输 | 已承载；L1 不校验结果 |
-| `output.render` | 无（sidecar 直接回 `content[]`） | 渲染约定由插件自带 |
+| `output.render` | 无（sidecar 直接回 `content[]`）；**官方插件装载路径**会调用 `output.render` 生成 content，失败退回 JSON | 渲染约定由插件自带 |
 | `output.presentationMeta` | 结果侧有 `meta`；`output` 不是函数 | 静态取值可用，动态计算缺 |
 | `execute(args, exec)` | 分离：`ToolExecutor` + sidecar `tool.invoke` | 可映射 |
 | `timeoutMs` | 有（`timeout_ms`） | 一致 |
@@ -110,6 +110,7 @@ DSH 的 session format 有 v0→v4 的迁移链（`dsh-session-format-*` 包）�
 | 严格 tool_call 协议 | ✅ `assistant.tool_calls` + `role: tool` + `tool_call_id`；单轮多工具、循环预算 8 |
 | 多轮上下文 | ✅ `agent-context` 从 Session Log 重建历史，截断不拆散配对 |
 | 停止生成 | ✅ provider 取消 token，UI「停止」按钮；sidecar 工具在途不中断（M2） |
+| 官方 DSH 插件装载 | ✅ `sidecar-dsh`：未修改的官方包经 Cordis 4.1.0 装载，`ctx.tools.register` 映射进 Rust Registry；`fs`（只读）/`systemPrompt` 子集已提供；真实模型经官方 `read` 工具读文件成功（见 [`../m2-dsh-official.md`](../m2-dsh-official.md)） |
 
 ## 7. 下一步落地
 
@@ -118,3 +119,6 @@ DSH 的 session format 有 v0→v4 的迁移链（`dsh-session-format-*` 包）�
 3. `additionalContexts` / `concludesTurn`：Agent Loop 的上下文注入与提前终止。
 4. `deferLoading` 与 scope/restrict/guard：懒加载与多 agent 隔离。
 5. 并行工具执行（当前同一 assistant 消息里的多个 tool_call 串行执行）。
+6. 官方插件的服务图：`sandbox` / `userApproval` / `session` / `sessionProjections` /
+   `workingDirectory`，以解锁 `write`/`edit`/`bash`/`pwsh`/`todo`/`web` 等官方工具；
+   以及 Loader YAML（bundle + patch 组合）而不是硬编码插件列表。

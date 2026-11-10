@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const skipDirs = new Set(['.git', 'target', 'node_modules', 'dist'])
+const skipDirs = new Set(['.git', 'target', 'node_modules', 'dist', '.tmp', '_probe'])
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

@@ -10,6 +10,7 @@
 //!   cargo run -p dshr-desktop-gpui --bin chat                 # 交互界面
 //!   cargo run ... --bin chat -- --selftest                   # 无窗口自检
 //!   cargo run ... --bin chat -- --selftest-stream            # 流式自检
+//!   cargo run ... --bin chat -- --selftest-dsh               # 官方 DSH 插件自检
 //!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
 use std::path::PathBuf;
@@ -114,22 +115,36 @@ impl Plugin for ProbeNativePlugin {
 
 /// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
 ///
-/// `DSHR_SIDECAR=cordis` 时改用真实的 Cordis 运行时（同一版本 DSH 内嵌的 4.0.5），
-/// 插件通过 `inject: ['bridge']` 注册工具——用于验证兼容性主张。
+/// 三种运行时（`DSHR_SIDECAR`）：
+/// - 缺省：probe 侧车（自研最小协议探针）；
+/// - `cordis`：真实 Cordis 4.0.5 + 只注册 `ctx.bridge.tool` 的探针插件；
+/// - `dsh`：真实 Cordis 4.1.0 + **未修改的官方 DSH 插件**（依赖由 `tools/dsh-vendor.mjs`
+///   从本机 DSH 安装中抽取，见 `docs/m2-dsh-official.md`）。
 fn spawn_sidecar() -> Option<SidecarHost> {
     let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .unwrap_or_else(|_| PathBuf::from("."));
-    let cordis = std::env::var("DSHR_SIDECAR").as_deref() == Ok("cordis");
-    let (script, plugin) = if cordis {
-        (
+    let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
+    let (script, plugin) = match mode.as_str() {
+        "cordis" => (
             root.join("sidecar/cordis/sidecar-cordis.mjs"),
             root.join("sidecar/cordis/bridge-plugin.mjs"),
-        )
-    } else {
-        (
+        ),
+        "dsh" => {
+            let dir = root.join("sidecar/dsh-official");
+            if !dir.join("node_modules").exists() {
+                eprintln!(
+                    "[chat] 官方插件运行时未准备：先运行 `node tools/dsh-vendor.mjs`（需要本机安装 DSH）"
+                );
+                return None;
+            }
+            let script = dir.join("sidecar-dsh.mjs");
+            // 官方侧车不需要插件路径参数，但协议签名保持两个文件参数。
+            (script.clone(), script)
+        }
+        _ => (
             root.join("sidecar/probe-sidecar.mjs"),
             root.join("sidecar/probe-plugin.mjs"),
-        )
+        ),
     };
     SidecarHost::spawn(script, plugin)
         .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
@@ -872,6 +887,103 @@ fn selftest_cordis() -> i32 {
     }
 }
 
+/// 官方 DSH 插件自检（`DSHR_SIDECAR=dsh`）。
+///
+/// 装载的是**未修改的官方包**（`@deepseek-ai/dsh-tool-workspace-dependencies`
+/// 与只读配置的 `@deepseek-ai/dsh-tool-fs`），通过 `tools` 服务的 `register`
+/// 进入 Rust Registry，再按普通 sidecar 工具调用。
+///
+/// 依赖 `sidecar/dsh-official/node_modules`（`node tools/dsh-vendor.mjs` 从本机 DSH 抽取）。
+/// 缺失时打印 SKIP 并返回 0：CI 环境不一定装了 DSH。
+fn selftest_dsh() -> i32 {
+    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    if !root.join("sidecar/dsh-official/node_modules").exists() {
+        println!("[selftest-dsh] SKIP: 先运行 `node tools/dsh-vendor.mjs` 准备官方插件依赖");
+        return 0;
+    }
+
+    let path = PathBuf::from(".tmp/chat-dsh.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), &cancel);
+
+    // 官方插件经 ctx.tools.register 映射进同一个 Registry，origin 必须是 sidecar。
+    let registered_workspace = state
+        .plugins
+        .registry()
+        .get("load_workspace_dependencies")
+        .is_some_and(|tool| tool.origin.kind() == "sidecar");
+    let registered_read = state
+        .plugins
+        .registry()
+        .get("read")
+        .is_some_and(|tool| tool.origin.kind() == "sidecar");
+
+    state.submit("用工具试一下");
+
+    let items = state.items();
+    println!(
+        "[selftest-dsh] items={} registered(workspace={registered_workspace}, read={registered_read})",
+        items.len()
+    );
+    for item in &items {
+        let row = describe(item);
+        match row.sub {
+            Some(sub) => println!("  {}\n      ↳ {sub}", row.main),
+            None => println!("  {}", row.main),
+        }
+    }
+
+    let tool_ok = matches!(&items[1], Item::Tool(t)
+        if t.tool == "load_workspace_dependencies"
+            && t.origin == "sidecar"
+            && t.state == ToolState::Settled { is_error: false });
+    // 官方 tool 的真实返回值里必须有 python 路径（证明 execute 真的跑了）。
+    let value_ok = matches!(&items[1], Item::Tool(t)
+        if t.card.as_ref().is_some_and(|card| card.detail.contains("python")));
+
+    // 直接调官方 read 工具：证明带依赖（fs/systemPrompt）的插件也能执行。
+    let read_ok = {
+        let host = state.host.as_mut().expect("dsh sidecar should be running");
+        host.invoke_as(
+            "selftest-read-1",
+            "read",
+            json!({ "file_path": "README.md", "limit": 3 }),
+            Duration::from_secs(5),
+        )
+        .ok()
+        .filter(|outcome| outcome.terminal.kind == "tool.result")
+        .is_some_and(|outcome| {
+            let payload = &outcome.terminal.payload;
+            !payload["is_error"].as_bool().unwrap_or(true)
+                && payload["content"]
+                    .to_string()
+                    .contains("Native Agent Desktop")
+        })
+    };
+    println!("[selftest-dsh] read_tool_ok={read_ok}");
+
+    let replayed = build_from_log(
+        &SessionLog::from_jsonl(
+            SESSION_ID,
+            &std::fs::read_to_string(&path).unwrap_or_default(),
+        )
+        .expect("reload dsh session"),
+    );
+    let same = replayed == items;
+    println!("[selftest-dsh] replay_equal={same}");
+
+    if registered_workspace && registered_read && tool_ok && value_ok && read_ok && same {
+        println!("[selftest-dsh] PASS");
+        0
+    } else {
+        println!("[selftest-dsh] FAIL");
+        1
+    }
+}
+
 /// 单轮真实调用（需要 API key）；用于人工验证 provider 与真流式，不进 CI。
 fn live_turn(text: &str) -> i32 {
     let path = PathBuf::from(".tmp/chat-live.jsonl");
@@ -1019,6 +1131,11 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-stream") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_stream());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-dsh") {
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_dsh());
     }
     if std::env::args().any(|arg| arg == "--selftest-cordis") {
         std::env::set_var("DSHR_SIDECAR", "cordis");

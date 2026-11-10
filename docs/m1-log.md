@@ -623,6 +623,49 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只支持单行（无换行/多行编辑、无 undo/redo）；组件级测试要打开 GPUI
 `test-support` feature，下一轮补；候选窗首次位置问题（issue 0001）仍等他人工复验。
 
+## A17 官方 DSH 插件装载（2026-11-11，M2 首个里程碑）
+
+问题：此前 Sidecar 只能装我们自写的探针插件（`ctx.bridge.tool`）。真正的兼容性主张是
+**装未修改的官方插件**——它们用 `ctx.tools.register(defineTool(...))`，部分还依赖
+`fs`/`systemPrompt`/`sandbox` 等服务。
+
+**做法**：
+
+1. `tools/dsh-vendor.mjs`：只读解析本机安装的 `app.asar`，按 `package.json` 依赖闭包抽取
+   `sidecar/dsh-official/node_modules`（gitignored）。不依赖 npm 上的版本，装的就是用户机器上
+   正在运行的那份（实测 `0.2.2-rc.1` / Cordis `4.1.0`）。
+2. `sidecar-dsh.mjs`：Cordis 4.1.0 + 三个服务（`tools` 映射协议、只读 `fs`、收集式
+   `systemPrompt`），`ctx.plugin` 装载官方插件，`tool.register` → NDJSON → Rust Registry。
+3. 调用：`definition.execute(args, exec)` → `output.render(args, value)` 生成 content，
+   `meta` 来自 `presentationMeta`，`tool.cancel` 走 `AbortController`。
+4. `chat --selftest-dsh` 与 `DSHR_SIDECAR=dsh` 接入。
+
+**证据**：
+
+```text
+[selftest-dsh] items=3 registered(workspace=true, read=true)
+  工具  · load_workspace_dependencies [sidecar] · 成功
+[selftest-dsh] read_tool_ok=true
+[selftest-dsh] PASS
+
+# 真实 DeepSeek 用官方 read 工具
+[live-chat] turn=1 ms=1916 reply=第一行是：`# Native Agent Desktop — workspace`
+[live-chat] persisted_turns=1 history_messages=4
+```
+
+**踩到的坑**（详见 [`m2-dsh-official.md`](m2-dsh-official.md)）：
+
+1. Cordis 不会替插件解析 Schemastery 默认值——必须自己 `Config(raw)`，否则官方插件在
+   `apply` 里因 `readLimit === undefined` 抛错，而且错误会被 fiber 吞掉（表现为"加载成功但
+   一个工具都没注册"）。
+2. 官方插件会访问**未在 `inject` 声明**的服务（`systemPrompt`/`fs`）；DSH Loader 用 entry 级
+   inject 覆盖补上，我们照做（包一层 `{name, inject, Config, apply}`）。
+3. asar 里的原生模块是 unpacked 的，偏移量指向 `app.asar.unpacked`，直接按 asar 偏移读会
+   `ERR_OUT_OF_RANGE`；符号链接条目没有 size/offset，也要跳过。
+
+**边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
+插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
+
 ## A8 真实 Cordis 插件（2026-11-09）
 
 **目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，

@@ -1,6 +1,6 @@
 # ADR-0003 — 锁定 DSH 版本与 vendored Cordis
 
-- 状态：**Accepted**（基线数据已采集；升级流程待 M1 验证）
+- 状态：**Accepted**（基线数据已采集；升级流程待 M1 验证；2026-11-11 记录到版本漂移）
 - 日期：2026-11-08
 - 关联：PLAN ADR-004 / ADR-008 / §5.1
 
@@ -47,3 +47,31 @@
 1. `vendor/dsh-manifest.json` 的哈希与安装包一致。
 2. L1 conformance 在锁定的版本上全绿；升级前后各跑一次并对比报告。
 3. Sidecar 报告的 `dsh_version` 与 host 期望值不一致时，握手失败（见 [`sidecar-rpc.md`](../spec/sidecar-rpc.md) §3）。
+
+## 2026-11-11 复核：版本已漂移，官方插件装载验证通过
+
+本机桌面版自动更新后重新采样（`resources/app.asar`）：
+
+| 项 | 2026-11-08 | 2026-11-11 |
+|---|---|---|
+| 桌面版 | `0.2.1-rc.3` | `0.2.2-rc.1` |
+| Cordis | `4.0.5` | `4.1.0` |
+| `@deepseek-ai/dsh-*` 包数 | 约 300 | 331 |
+| Schemastery | `3.18.5` | 随包（`dsh-tools` 声明 `~3.19.0`） |
+
+结论与调整：
+
+1. **"锁死一个 rc 版本"在桌面版自动更新面前不成立**：能锁的是"本机安装副本"，
+   不是版本号。因此新增 `tools/dsh-vendor.mjs`：从**当前安装**的 `app.asar` 抽取官方插件
+   依赖闭包（`sidecar/dsh-official/node_modules`，gitignored），并用 `node tools/asar.mjs`
+   随时核对版本。
+2. 两套 Cordis 并存、互不混用：
+   - `sidecar/cordis`（探针）固定 npm 的 `4.0.5`；
+   - `sidecar/dsh-official` 使用安装包内 `4.1.0`（官方插件的真实运行环境）。
+3. **官方插件装载已打通**（`@deepseek-ai/dsh-tool-workspace-dependencies` 与只读
+   `@deepseek-ai/dsh-tool-fs`），真实模型经官方 `read` 工具读文件成功。
+   详见 [`../m2-dsh-official.md`](../m2-dsh-official.md)。
+4. 升级流程未变：里程碑边界升级 + 重抽依赖 + 跑完整 conformance；区别是"版本"改为
+   每次运行时采样记录，而不是写死在文档里。
+5. 许可证仍未完成：抽取产物不提交仓库；若将来随安装包分发，需要逐包采集 `LICENSE`。
+
