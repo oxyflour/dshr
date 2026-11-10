@@ -2,8 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod markdown;
 mod text_input;
 pub mod theme;
 
+pub use markdown::{markdown_view, Block, Inline};
 pub use text_input::{init, TextInput};
 pub use theme::{Layout, Palette, Radii, Theme, ThemeKind, Typography};

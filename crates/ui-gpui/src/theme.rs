@@ -244,6 +244,8 @@ pub struct Theme {
     pub radii: Radii,
     pub type_scale: Typography,
     pub layout: Layout,
+    /// 代码字体（DSH `--dsh-font-family-code-default` 的 Windows 首选）。
+    pub font_code: &'static str,
 }
 
 impl Theme {
@@ -257,6 +259,7 @@ impl Theme {
             radii: Radii::DSH,
             type_scale: Typography::DSH,
             layout: Layout::DSH,
+            font_code: "Consolas",
         }
     }
 

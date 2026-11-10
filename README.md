@@ -81,5 +81,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 **界面：按 DSH Desktop 的设计 token 对齐（2026-11-11）。** 侧栏 280、内容列 748、
 输入卡片圆角 28 / max-width 780、链接色/气泡/边框/字体全部取自 DSH 安装包解析出的
 `--dsw-*` 值（[`crates/ui-gpui/src/theme.rs`](crates/ui-gpui/src/theme.rs)），
-默认浅色并可切换深色。消息正文仍是纯文本、无多会话列表和 Markdown 渲染，
+默认浅色并可切换深色。助手正文支持 Markdown 子集（标题/列表/表格/代码块/引用/
+粗斜体/行内代码/链接，[`crates/ui-gpui/src/markdown.rs`](crates/ui-gpui/src/markdown.rs)），
+无语法高亮与图片；侧栏仍是单会话。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, FontWeight, ScrollHandle,
-    Window, WindowBounds, WindowOptions,
+    div, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font, FontWeight, Rgba,
+    ScrollHandle, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
@@ -39,7 +39,7 @@ use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionLog, ToolState};
 use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
-use dshr_ui_gpui::{TextInput, Theme, ThemeKind};
+use dshr_ui_gpui::{markdown_view, TextInput, Theme, ThemeKind};
 
 const SESSION_ID: &str = "s-chat";
 
@@ -867,7 +867,7 @@ impl ChatApp {
             .into_any_element()
     }
 
-    fn render_row(&self, row: &Row, t: &Theme) -> AnyElement {
+    fn render_row(&self, row: &Row, t: &Theme, base_font: &Font, base_color: Rgba) -> AnyElement {
         let p = t.palette;
         match row {
             Row::User(text) => div()
@@ -916,13 +916,7 @@ impl ChatApp {
                             .flex()
                             .flex_col()
                             .gap(px(8.0))
-                            .child(
-                                div()
-                                    .text_size(t.type_scale.body)
-                                    .line_height(t.type_scale.body_line)
-                                    .text_color(p.color(p.label_primary))
-                                    .child(text.clone()),
-                            )
+                            .child(markdown_view(text, t, base_font, base_color))
                             .when(streaming, |el| {
                                 el.child(
                                     div()
@@ -1022,8 +1016,11 @@ impl ChatApp {
         }
     }
 
-    fn transcript(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn transcript(&mut self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
+        let text_style = window.text_style();
+        let base_font = text_style.font();
+        let base_color: Rgba = text_style.color.into();
         let rows = self.rows.clone();
         let mut column = div()
             .flex()
@@ -1075,7 +1072,7 @@ impl ChatApp {
             );
         }
         for row in &rows {
-            column = column.child(self.render_row(row, t));
+            column = column.child(self.render_row(row, t, &base_font, base_color));
         }
         let _ = cx;
         div()
@@ -1323,7 +1320,7 @@ impl Render for ChatApp {
                 .border_color(p.color(p.border_l3))
                 .bg(p.color(p.bg_base))
                 .child(self.header(&theme, collapsed, cx))
-                .child(self.transcript(&theme, cx))
+                .child(self.transcript(&theme, window, cx))
                 .child(self.composer(&theme, cx)),
         )
     }

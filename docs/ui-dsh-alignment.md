@@ -39,13 +39,14 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
 | 工具调用 | 圆角 8 的紧凑行 + 来源标签 + 状态色 | 工具卡片行 |
 | 头部 | `min-height: 76px`、面包屑、右侧操作 | `header_height` + 会话面包屑 |
 | 字体/行高 | 正文 14/24、secondary 13/20、small 12/18 | `Typography::DSH` |
+| 消息正文 | Markdown（标题/列表/表格/代码块/引用/行内样式） | `ui-gpui::markdown` 子集渲染：标题 h1–h4、段落、粗体/斜体/行内代码/链接、围栏代码块、列表、引用、表格、分隔线 |
 | 边框 | 低透明度 0.5–1px（`border-l1..l4`） | 对应 RGBA token |
 | 主题 | 跟随 DSH 的 `ui-theme.preference`（当前 profile 为 light） | 默认浅色，侧栏/头部可切换深色 |
 
 ## 未对齐（明确边界）
 
-1. **消息正文仍是纯文本**：DSH 用 Markdown 渲染（标题/列表/表格/代码块/引用），
-   我们还没接 Markdown 渲染器；代码块样式（`--dsw-alias-markdown-code-block`）暂未使用。
+1. **Markdown 只覆盖常用子集**：语法高亮、图片、嵌套列表的层级渲染、表格列宽自适应、
+   代码行号还没做；围栏代码块只有语言标签与等宽字体。未闭合的标记按字面量渲染。
 2. **侧栏只有当前会话**：DSH 的会话列表按时间分组、支持搜索/重命名/删除；
    我们还没有多会话后端（M1 遗留），侧栏只显示 `s-chat` 一行。
 3. **没有命令面板 / 模型选择器 / 附件 / 审批 / Turn 导航 / 消息反馈**：

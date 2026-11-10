@@ -666,6 +666,30 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A19 Markdown 正文渲染（2026-11-11）
+
+问题：A18 之后界面骨架对齐了，但助手回复仍是纯文本——标题、列表、代码块、表格全变成
+一坨裸文字，真实使用时读不动。
+
+**做法**：
+
+1. `crates/ui-gpui/src/markdown.rs`：解析与渲染分离。`parse()` 是纯函数，产出
+   `Block`（标题/段落/列表/代码块/引用/表格/分隔线）与 `Inline`（文本/粗体/斜体/
+   行内代码/链接）；未闭合标记按字面量保留，不丢文本。
+2. 行内样式编译成 `StyledText` 的 `TextRun`（字体/颜色/下划线/背景），交给 GPUI
+   文本系统负责折行——避免"每个 span 一个 div"导致的断行错位。
+3. 样式全部取 A18 的 DSH token：标题用 `Typography` 的 h1–h3，代码块用
+   `code_block` / `code_block_banner`，引用左侧 `border_l4`，表格 `tag` 表头。
+4. chat 的助手消息改走 `markdown_view`；用户泡泡保持纯文本（与 DSH 一致）。
+
+**验证**：13 个解析单测（标题/段落/围栏代码/未闭合围栏/有无序列表/嵌套缩进/表格/
+引用/链接斜体/未闭合标记/分隔线）；`cargo test --workspace` 111 个测试全绿；
+clippy 干净。用 PrintWindow 截图核对：短会话的标题/粗斜体/行内代码/链接/列表/引用，
+以及多块会话的代码块、表格、引用、分隔线都按预期渲染。
+
+**边界**：无语法高亮、图片、代码行号；表格列宽均分；嵌套列表渲染为缩进近似。
+详见 [`ui-dsh-alignment.md`](ui-dsh-alignment.md)。
+
 ## A18 界面按 DSH Desktop 对齐（2026-11-11）
 
 问题：GPUI 界面是"能用的调试面板"——深色列表、固定行高、没有侧栏/头部/输入卡片层次，
