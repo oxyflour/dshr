@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
 use gpui::{
@@ -37,19 +37,36 @@ use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
-use dshr_session_store::{EventSpec, SessionLog, ToolState};
+use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
 use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
 use dshr_ui_gpui::{markdown_view, TextInput, Theme, ThemeKind};
 
 const SESSION_ID: &str = "s-chat";
 
 fn now_ts() -> String {
-    // 简化：用单调计数占位，真实实现应取系统时间并格式化 RFC3339。
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("t{nanos}")
+}
+
+/// 侧栏的相对时间（不引入日期库）。
+fn relative_time(updated_at: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let diff = now.saturating_sub(updated_at);
+    if diff < 60 {
+        String::from("刚刚")
+    } else if diff < 3_600 {
+        format!("{} 分钟前", diff / 60)
+    } else if diff < 86_400 {
+        format!("{} 小时前", diff / 3_600)
+    } else {
+        format!("{} 天前", diff / 86_400)
+    }
 }
 
 struct ChatState {
@@ -254,15 +271,15 @@ fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
 }
 
 impl ChatState {
-    fn new(path: PathBuf, cancel: &Arc<AtomicBool>) -> Self {
+    fn new(path: PathBuf, session_id: &str, cancel: &Arc<AtomicBool>) -> Self {
         let log = if path.exists() {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
-            SessionLog::from_jsonl(SESSION_ID, &text).unwrap_or_else(|err| {
+            SessionLog::from_jsonl(session_id, &text).unwrap_or_else(|err| {
                 eprintln!("[chat] 无法加载历史会话（忽略并从空会话开始）: {err}");
-                SessionLog::new(SESSION_ID)
+                SessionLog::new(session_id)
             })
         } else {
-            SessionLog::new(SESSION_ID)
+            SessionLog::new(session_id)
         };
 
         let host = spawn_sidecar();
@@ -473,6 +490,15 @@ struct ChatApp {
     sidebar_collapsed: bool,
     /// 首次渲染后把历史滚到最新一条（DSH 打开会话也是停在底部）。
     initial_scroll_done: bool,
+    /// 会话目录索引与列表。
+    store: SessionIndex,
+    sessions: Vec<SessionMeta>,
+    session_id: String,
+    /// 正在重命名的会话与输入框（None = 不在重命名）。
+    renaming: Option<String>,
+    rename_input: Option<Entity<TextInput>>,
+    /// 等待二次确认删除的会话（None = 没有待确认项）。
+    pending_delete: Option<String>,
 }
 
 impl ChatApp {
@@ -549,6 +575,10 @@ impl ChatApp {
                 if let Some(rows) = latest {
                     let ok = this
                         .update(cx, |app, cx| {
+                            // 行数变化 = 新消息落盘：顺手刷新侧栏标题/时间。
+                            if rows.len() != app.rows.len() {
+                                app.reload_sessions();
+                            }
                             app.rows = rows;
                             // 生成过程中始终跟随最新一行；结束后停止强制滚动，
                             // 用户往上翻历史不会被拽回去。
@@ -602,35 +632,317 @@ impl ChatApp {
         window.focus(&handle, cx);
     }
 
+    // ------------------------------------------------------------------
+    // 多会话：索引/切换/新建/重命名/删除
+    // ------------------------------------------------------------------
+
+    fn reload_sessions(&mut self) {
+        match self.store.scan() {
+            Ok(sessions) => self.sessions = sessions,
+            Err(err) => eprintln!("[chat] 扫描会话目录失败: {err}"),
+        }
+    }
+
+    fn active_title(&self) -> String {
+        self.sessions
+            .iter()
+            .find(|session| session.id == self.session_id)
+            .map(|session| session.title.clone())
+            .unwrap_or_else(|| self.session_id.clone())
+    }
+
+    /// 切到另一个会话：新建一份 ChatState（含侧车/插件），把 UI 状态整体替换。
+    ///
+    /// 生成中不允许切换——工作线程还在往旧 state 写，切走会让 UI 与日志分叉。
+    fn open_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || id == self.session_id {
+            return;
+        }
+        let path = self.store.path_for(&id);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let state = ChatState::new(path, &id, &cancel);
+        let rows = rows_snapshot(&state.log, None);
+        self.state = Arc::new(Mutex::new(state));
+        self.cancel = cancel;
+        self.rows = rows;
+        self.session_id = id;
+        self.busy = false;
+        self.initial_scroll_done = false;
+        self.renaming = None;
+        self.rename_input = None;
+        self.pending_delete = None;
+        self.reload_sessions();
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let id = self.store.new_id();
+        if let Err(err) = self.store.create(&id) {
+            eprintln!("[chat] 新建会话失败: {err}");
+            return;
+        }
+        if !self.store.path_for(&id).exists() {
+            self.reload_sessions();
+        }
+        self.open_session(id, window, cx);
+    }
+
+    fn delete_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_delete.as_deref() != Some(id.as_str()) {
+            self.pending_delete = Some(id);
+            cx.notify();
+            return;
+        }
+        self.pending_delete = None;
+        if self.busy && id == self.session_id {
+            return;
+        }
+        if let Err(err) = self.store.delete(&id) {
+            eprintln!("[chat] 删除会话 {id} 失败: {err}");
+            return;
+        }
+        self.renaming = None;
+        self.rename_input = None;
+        self.reload_sessions();
+        if id == self.session_id {
+            match self.sessions.first().map(|session| session.id.clone()) {
+                Some(next) => self.open_session(next, window, cx),
+                None => self.new_session(window, cx),
+            }
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn start_rename(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .map(|session| session.title.clone())
+            .unwrap_or_default();
+        let input = cx.new(|cx| TextInput::new("会话名称", cx));
+        input.update(cx, |input, cx| input.set_content(&title, window, cx));
+        let handle = input.read(cx).focus_handle(cx);
+        self.renaming = Some(id);
+        self.rename_input = Some(input);
+        self.pending_delete = None;
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let (Some(id), Some(input)) = (self.renaming.clone(), self.rename_input.clone()) else {
+            return;
+        };
+        let title = input.read(cx).content().to_owned();
+        if let Err(err) = self.store.rename(&id, &title) {
+            eprintln!("[chat] 重命名会话 {id} 失败: {err}");
+        }
+        self.renaming = None;
+        self.rename_input = None;
+        self.reload_sessions();
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.renaming = None;
+        self.rename_input = None;
+        cx.notify();
+    }
+
+    fn session_list(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        let sessions = self.sessions.clone();
+        let active_id = self.session_id.clone();
+        let mut list = div().flex().flex_col().gap(px(2.0)).w_full();
+
+        for (index, session) in sessions.iter().enumerate() {
+            let is_active = session.id == active_id;
+            let is_renaming = self.renaming.as_deref() == Some(session.id.as_str());
+
+            if is_renaming {
+                let input = self.rename_input.clone();
+                let row = div()
+                    .id(("rename-row", index))
+                    .w_full()
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(t.radii.sm)
+                    .bg(p.color(p.tag))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_primary))
+                            .children(input),
+                    )
+                    .child(
+                        div()
+                            .id(("rename-ok", index))
+                            .px(px(4.0))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.state_success))
+                            .child("✓")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                cx.stop_propagation();
+                                this.commit_rename(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("rename-cancel", index))
+                            .px(px(4.0))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_caption))
+                            .child("✕")
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                cx.stop_propagation();
+                                this.cancel_rename(cx);
+                            })),
+                    );
+                list = list.child(row);
+                continue;
+            }
+
+            let open_id = session.id.clone();
+            let is_pending_delete = self.pending_delete.as_deref() == Some(session.id.as_str());
+            let actions: AnyElement = if is_pending_delete {
+                let confirm_id = session.id.clone();
+                let cancel_id = session.id.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .id(("confirm-delete", index))
+                            .px(px(4.0))
+                            .rounded(t.radii.xs)
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.state_error))
+                            .child("删除")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.delete_session(confirm_id.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("cancel-delete", index))
+                            .px(px(4.0))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_caption))
+                            .child("取消")
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                cx.stop_propagation();
+                                let _ = cancel_id;
+                                this.pending_delete = None;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            } else {
+                let rename_id = session.id.clone();
+                let delete_id = session.id.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .id(("rename", index))
+                            .px(px(3.0))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_tertiary))
+                            .child("✎")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.start_rename(rename_id.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("delete", index))
+                            .px(px(3.0))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_tertiary))
+                            .child("×")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.delete_session(delete_id.clone(), window, cx);
+                            })),
+                    )
+                    .into_any_element()
+            };
+            let row = div()
+                .id(("session-row", index))
+                .w_full()
+                .px(px(10.0))
+                .py(px(7.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .rounded(t.radii.sm)
+                .cursor_pointer()
+                .when(is_active, |row| row.bg(p.color(p.interactive_hover)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(0.0))
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_size(t.type_scale.small)
+                                .line_height(px(18.0))
+                                .font_weight(if is_active {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(p.color(p.label_primary))
+                                .child(session.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .line_height(px(15.0))
+                                .text_color(p.color(p.label_caption))
+                                .child(format!(
+                                    "{} 条 · {}",
+                                    session.events,
+                                    relative_time(session.updated_at)
+                                )),
+                        ),
+                )
+                .child(actions)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_session(open_id.clone(), window, cx);
+                }));
+            list = list.child(row);
+        }
+
+        list.into_any_element()
+    }
+
     fn sidebar(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
-        let session_row = div()
-            .id("session-row")
-            .h(px(36.0))
-            .px(px(12.0))
-            .flex()
-            .items_center()
-            .justify_between()
-            .rounded(t.radii.md)
-            .bg(p.color(p.interactive_hover))
-            .child(
-                div()
-                    .text_size(t.type_scale.body)
-                    .line_height(t.type_scale.body_line)
-                    .text_color(p.color(p.label_primary))
-                    .child("当前会话"),
-            )
-            .child(
-                div()
-                    .text_size(t.type_scale.small)
-                    .text_color(p.color(p.label_caption))
-                    .child(SESSION_ID),
-            )
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.focus_composer(window, cx);
-            }));
-
         div()
             .w(t.layout.sidebar_width)
             .h_full()
@@ -706,7 +1018,7 @@ impl ChatApp {
                     .text_color(p.color(p.label_primary))
                     .child("＋  新建对话")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.focus_composer(window, cx);
+                        this.new_session(window, cx);
                     })),
             )
             .child(
@@ -718,8 +1030,14 @@ impl ChatApp {
                     .text_color(p.color(p.label_caption))
                     .child("会话"),
             )
-            .child(session_row)
-            .child(div().flex_1())
+            .child(
+                div()
+                    .id("session-scroll")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .child(self.session_list(t, cx)),
+            )
             .child(
                 div()
                     .flex()
@@ -815,10 +1133,12 @@ impl ChatApp {
                             )
                             .child(
                                 div()
+                                    .max_w(px(220.0))
+                                    .overflow_hidden()
                                     .text_size(t.type_scale.body)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(p.color(p.label_primary))
-                                    .child(SESSION_ID),
+                                    .child(self.active_title()),
                             ),
                     ),
             )
@@ -1332,7 +1652,7 @@ fn selftest() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
 
     state.submit("你好");
     state.submit("用工具试一下"); // sidecar
@@ -1411,7 +1731,7 @@ fn selftest_cordis() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
 
     state.submit("用工具试一下");
 
@@ -1469,7 +1789,7 @@ fn selftest_dsh() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
 
     // 官方插件经 ctx.tools.register 映射进同一个 Registry，origin 必须是 sidecar。
     let registered_workspace = state
@@ -1552,7 +1872,7 @@ fn live_turn(text: &str) -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path, &cancel);
+    let mut state = ChatState::new(path, SESSION_ID, &cancel);
 
     let started = std::time::Instant::now();
     let mut updates = 0usize;
@@ -1583,7 +1903,7 @@ fn selftest_stream() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
 
     let mut snapshots: Vec<Vec<Row>> = Vec::new();
     let reply = state.stream_turn("你好", &mut |rows| snapshots.push(rows));
@@ -1636,7 +1956,7 @@ fn live_chat(script: &[String]) -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), &cancel);
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
 
     let mut failed = false;
     for (index, text) in script.iter().enumerate() {
@@ -1711,9 +2031,46 @@ fn main() {
         std::process::exit(selftest());
     }
 
-    let path = PathBuf::from(".tmp/chat-session.jsonl");
+    // 会话目录：默认 `.tmp/sessions`，可用 DSHR_SESSIONS_DIR 覆盖（测试/打包用）。
+    let dir = std::env::var("DSHR_SESSIONS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".tmp/sessions"));
+    let store = SessionIndex::new(dir);
+    if let Err(err) = store.ensure_dir() {
+        eprintln!("[chat] 无法创建会话目录: {err}");
+        std::process::exit(1);
+    }
+
+    // 迁移旧版单会话文件，避免升级后历史看起来“消失”。
+    let legacy = PathBuf::from(".tmp/chat-session.jsonl");
+    if store
+        .scan()
+        .map(|sessions| sessions.is_empty())
+        .unwrap_or(false)
+        && legacy.exists()
+    {
+        let target = store.path_for(SESSION_ID);
+        if !target.exists() {
+            let _ = std::fs::copy(&legacy, &target);
+        }
+    }
+
+    let mut sessions = store.scan().unwrap_or_default();
+    if sessions.is_empty() {
+        let id = store.new_id();
+        if let Err(err) = store.create(&id) {
+            eprintln!("[chat] 无法创建初始会话: {err}");
+            std::process::exit(1);
+        }
+        sessions = store.scan().unwrap_or_default();
+    }
+    let active = sessions
+        .first()
+        .map(|session| session.id.clone())
+        .unwrap_or_else(|| SESSION_ID.to_owned());
+    let path = store.path_for(&active);
     let cancel = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(ChatState::new(path, &cancel)));
+    let state = Arc::new(Mutex::new(ChatState::new(path, &active, &cancel)));
     let app_cancel = cancel.clone();
     let rows = {
         let guard = state
@@ -1733,6 +2090,9 @@ fn main() {
         let state = state;
         let rows = rows;
         let app_cancel = app_cancel;
+        let store = store;
+        let sessions = sessions;
+        let active = active;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1764,6 +2124,12 @@ fn main() {
                     theme_kind: ThemeKind::Light,
                     sidebar_collapsed: false,
                     initial_scroll_done: false,
+                    store,
+                    sessions,
+                    session_id: active,
+                    renaming: None,
+                    rename_input: None,
+                    pending_delete: None,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();

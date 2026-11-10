@@ -666,6 +666,31 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A20 多会话（2026-11-11）
+
+问题：M1 遗留的固定单会话 `s-chat`——侧栏只有一行，关掉重开只能看到同一个会话。
+
+**做法**：
+
+1. `session-store::SessionIndex`：目录索引（`*.jsonl` → `SessionMeta`），标题优先读
+   `<id>.meta.json` 的重命名值、否则取第一条 `message.user`；更新时间取 mtime；
+   按 mtime 倒序。重命名只写 meta，保持事件文件 append-only。
+2. 启动迁移：目录为空且存在旧 `.tmp/chat-session.jsonl` 时复制成 `s-chat.jsonl`；
+   仍为空则新建；打开最新的一个。
+3. chat：`ChatApp` 持有 `SessionIndex + Vec<SessionMeta> + session_id`，
+   新建/切换会新建一份 `ChatState`（新路径、新 cancel、新 Agent/插件/侧车）；
+   生成中禁止切换，避免 UI 与日志分叉。
+4. 侧栏列表：标题 + "N 条 · 相对时间"，当前项高亮；`✎` 行内重命名（✓/✕），
+   `×` 二次确认删除（删除/取消）；头部面包屑显示当前会话标题并限宽。
+5. 会话行数变化时顺手刷新侧栏（新消息落盘后标题/时间跟着更新）。
+
+**验证**：`session-store` 14 个测试（新增 6 个目录索引测试）、workspace 117 个测试全绿、
+clippy 干净。截图核对：3 个会话列表、切换后内容与标题同步、新建空会话、行内重命名提交、
+删除二次确认与取消。
+
+**边界**：无分组/搜索/置顶；每会话独立 sidecar，频繁切换有启动开销；切换期间不能生成。
+详见 [`m2-sessions.md`](m2-sessions.md)。
+
 ## A19 Markdown 正文渲染（2026-11-11）
 
 问题：A18 之后界面骨架对齐了，但助手回复仍是纯文本——标题、列表、代码块、表格全变成

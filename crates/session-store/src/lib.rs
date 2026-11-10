@@ -14,6 +14,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod session_index;
+
+pub use session_index::{SessionIndex, SessionMeta};
+
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
