@@ -1,4 +1,4 @@
-﻿//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
+//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
 //!
 //! 这是 M1 的产品面：能打字、能发送、能看到工具卡片、关掉再开会话还在。
 //! 模型是 **mock**（没有接 LLM，那是 M2），但会话/工具/日志/回放都是真实的。
@@ -18,6 +18,9 @@ use gpui::{
 use gpui_platform::application;
 use serde_json::json;
 
+use dshr_agent_core::{
+    Agent, AgentEvent, MockProvider, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
+};
 use dshr_compat_dsh_host::SidecarHost;
 use dshr_conversation_model::{build_from_log, Item};
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
@@ -42,6 +45,8 @@ struct ChatState {
     path: PathBuf,
     host: Option<SidecarHost>,
     plugins: PluginHost,
+    /// 必须跨轮复用：turn id 单调递增，否则 call_id 重复会被 Session Log 拒收。
+    agent: Agent<MockProvider>,
     seq: u64,
 }
 
@@ -119,6 +124,86 @@ fn spawn_sidecar() -> Option<SidecarHost> {
         .ok()
 }
 
+/// Agent 的工具执行器：authorize 之后按来源分发给 PluginHost（native）或 Sidecar。
+struct ChatExecutor<'a> {
+    plugins: &'a mut PluginHost,
+    host: Option<&'a mut SidecarHost>,
+}
+
+impl ToolExecutor for ChatExecutor<'_> {
+    fn specs(&self) -> Vec<ToolSpec> {
+        self.plugins
+            .registry()
+            .list()
+            .iter()
+            .map(|definition| ToolSpec {
+                name: definition.name.clone(),
+                description: definition.description.clone(),
+            })
+            .collect()
+    }
+
+    fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        let definition = match self
+            .plugins
+            .registry()
+            .authorize(&call.tool, &call.arguments)
+        {
+            Ok(definition) => definition.clone(),
+            Err(err) => {
+                return ToolOutcome {
+                    is_error: true,
+                    content: json!(err.to_string()),
+                }
+            }
+        };
+
+        match definition.origin {
+            ToolOrigin::Native { .. } => match self.plugins.call(&call.tool, &call.arguments) {
+                Ok(value) => ToolOutcome {
+                    is_error: false,
+                    content: value,
+                },
+                Err(err) => ToolOutcome {
+                    is_error: true,
+                    content: json!(err.to_string()),
+                },
+            },
+            ToolOrigin::Sidecar { .. } => {
+                let Some(host) = self.host.as_mut() else {
+                    return ToolOutcome {
+                        is_error: true,
+                        content: json!("sidecar unavailable"),
+                    };
+                };
+                match host.invoke_as(
+                    &call.call_id,
+                    &call.tool,
+                    call.arguments.clone(),
+                    Duration::from_secs(5),
+                ) {
+                    Ok(outcome) if outcome.terminal.kind == "tool.result" => ToolOutcome {
+                        is_error: false,
+                        content: outcome.terminal.payload["content"].clone(),
+                    },
+                    Ok(outcome) => ToolOutcome {
+                        is_error: true,
+                        content: outcome.terminal.payload.clone(),
+                    },
+                    Err(err) => ToolOutcome {
+                        is_error: true,
+                        content: json!(err.to_string()),
+                    },
+                }
+            }
+            ToolOrigin::Mcp { .. } => ToolOutcome {
+                is_error: true,
+                content: json!("mcp not wired"),
+            },
+        }
+    }
+}
+
 /// 把 sidecar 注册映射进同一个 ToolRegistry。
 fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
     for definition in host.tool_definitions() {
@@ -155,6 +240,7 @@ impl ChatState {
             path,
             host,
             plugins,
+            agent: Agent::new(MockProvider),
             seq: 0,
         }
     }
@@ -191,6 +277,9 @@ impl ChatState {
     ///
     /// 助手消息由 `finish_turn` 在流式结束后落库，这样 UI 可以逐字渲染，
     /// 而 Session Log 里仍然只有一条 settled 消息。
+    /// 一轮对话的前半段：用户消息 → Agent 循环（模型 + 工具执行）→ 返回要流式展示的文本。
+    ///
+    /// Agent 只产出事件；落盘由这里完成（Agent 不碰 Session Log）。
     fn begin_turn(&mut self, text: &str) -> Option<String> {
         let text = text.trim();
         if text.is_empty() {
@@ -207,154 +296,66 @@ impl ChatState {
             eprintln!("[chat] 写入用户消息失败: {err}");
             return None;
         }
+        self.save();
 
-        let wants_native = text.contains("原生") || text.to_ascii_lowercase().contains("native");
-        let wants_tool =
-            !wants_native && (text.contains("工具") || text.to_ascii_lowercase().contains("tool"));
-        let mut tool_summary: Option<String> = None;
+        let events = {
+            let mut executor = ChatExecutor {
+                plugins: &mut self.plugins,
+                host: self.host.as_mut(),
+            };
+            self.agent.run_turn(text, &mut executor)
+        };
 
-        if wants_native {
-            self.seq += 1;
-            let call_id = format!("call-n{}", self.seq);
-            let _ = self.log.append(EventSpec::durable(
-                "tool.call",
-                &ts,
-                json!({
-                    "call_id": call_id,
-                    "tool": "probe_native",
-                    "origin": "native",
-                    "arguments": { "text": text }
-                }),
-            ));
-
-            match self.plugins.call("probe_native", &json!({ "text": text })) {
-                Ok(value) => {
+        let mut reply = String::new();
+        for event in events {
+            match event {
+                AgentEvent::TextDelta(delta) => reply.push_str(&delta),
+                AgentEvent::ToolCall(call) => {
+                    let origin = self
+                        .plugins
+                        .registry()
+                        .get(&call.tool)
+                        .map(|definition| definition.origin.kind())
+                        .unwrap_or("unknown");
                     let _ = self.log.append(EventSpec::durable(
-                        "tool.result",
+                        "tool.call",
                         &ts,
                         json!({
-                            "call_id": call_id,
-                            "is_error": false,
-                            "content": [{ "type": "json", "value": value }]
+                            "call_id": call.call_id,
+                            "tool": call.tool,
+                            "origin": origin,
+                            "arguments": call.arguments
                         }),
                     ));
-                    tool_summary = Some(format!("原生工具返回 {value}"));
                 }
-                Err(err) => {
-                    let _ = self.log.append(EventSpec::durable(
-                        "tool.aborted",
-                        &ts,
-                        json!({ "call_id": call_id, "reason": err.to_string() }),
-                    ));
-                    tool_summary = Some("原生工具调用失败".to_owned());
-                }
-            }
-        }
-
-        if wants_tool {
-            // sidecar 工具名从注册表里取：probe 插件是 probe_echo，
-            // Cordis 插件是 cordis_echo，同一套 UI 不需要知道区别。
-            let tool_name = self
-                .host
-                .as_ref()
-                .and_then(|host| host.registrations().first().map(|reg| reg.name.clone()))
-                .unwrap_or_else(|| "probe_echo".to_owned());
-            self.seq += 1;
-            let call_id = format!("call-{}", self.seq);
-            let _ = self.log.append(EventSpec::durable(
-                "tool.call",
-                &ts,
-                json!({
-                    "call_id": call_id,
-                    "tool": tool_name,
-                    "origin": "sidecar",
-                    "arguments": { "text": text }
-                }),
-            ));
-
-            // 统一闸门：sidecar 工具与原生工具走同一个 Registry 的 authorize。
-            let arguments = json!({ "text": text });
-            if let Err(err) = self.plugins.registry().authorize(&tool_name, &arguments) {
-                let _ = self.log.append(EventSpec::durable(
-                    "tool.aborted",
-                    &ts,
-                    json!({ "call_id": call_id, "reason": err.to_string() }),
-                ));
-                tool_summary = Some(format!("工具被拒绝：{err}"));
-            } else {
-                match self.host.as_mut() {
-                    Some(host) => {
-                        match host.invoke_as(
-                            &call_id,
-                            &tool_name,
-                            arguments,
-                            Duration::from_secs(5),
-                        ) {
-                            Ok(outcome) => {
-                                for (seq, chunk) in outcome.chunks.iter().enumerate() {
-                                    let _ = self.log.append(EventSpec::ephemeral(
-                                        "tool.chunk",
-                                        &ts,
-                                        json!({ "call_id": call_id, "seq": seq, "text": chunk }),
-                                    ));
-                                }
-                                if outcome.terminal.kind == "tool.aborted" {
-                                    let _ = self.log.append(EventSpec::durable(
-                                        "tool.aborted",
-                                        &ts,
-                                        json!({
-                                            "call_id": call_id,
-                                            "reason": outcome.terminal.payload["reason"]
-                                                .as_str()
-                                                .unwrap_or("cancelled")
-                                        }),
-                                    ));
-                                    tool_summary = Some("工具被中止".to_owned());
-                                } else {
-                                    let content = outcome.terminal.payload["content"].clone();
-                                    let echo = content[0]["value"].clone();
-                                    let _ = self.log.append(EventSpec::durable(
-                                        "tool.result",
-                                        &ts,
-                                        json!({
-                                            "call_id": call_id,
-                                            "is_error": false,
-                                            "content": content
-                                        }),
-                                    ));
-                                    tool_summary = Some(format!("工具返回 {}", echo));
-                                }
-                            }
-                            Err(err) => {
-                                let _ = self.log.append(EventSpec::durable(
-                                    "tool.aborted",
-                                    &ts,
-                                    json!({ "call_id": call_id, "reason": err.to_string() }),
-                                ));
-                                tool_summary = Some("工具调用失败".to_owned());
-                            }
-                        }
-                    }
-                    None => {
+                AgentEvent::ToolResult { call_id, outcome } => {
+                    if outcome.is_error {
                         let _ = self.log.append(EventSpec::durable(
                             "tool.aborted",
                             &ts,
-                            json!({ "call_id": call_id, "reason": "sidecar unavailable" }),
+                            json!({ "call_id": call_id, "reason": outcome.content.to_string() }),
                         ));
-                        tool_summary = Some("Sidecar 未启动".to_owned());
+                    } else {
+                        let _ = self.log.append(EventSpec::durable(
+                            "tool.result",
+                            &ts,
+                            json!({
+                                "call_id": call_id,
+                                "is_error": false,
+                                "content": [{ "type": "json", "value": outcome.content }]
+                            }),
+                        ));
                     }
                 }
+                AgentEvent::TurnFailed(err) => {
+                    reply.push_str(&format!("处理失败：{err}"));
+                }
+                AgentEvent::TurnStarted { .. }
+                | AgentEvent::StepStarted { .. }
+                | AgentEvent::TurnEnded { .. } => {}
             }
         }
 
-        self.seq += 1;
-        let reply = match tool_summary {
-            Some(summary) => format!("{summary}。当前是 mock agent，尚未接入 LLM。"),
-            None => format!("收到：{text}。当前是 mock agent，尚未接入 LLM。"),
-        };
-
-        // 用户消息与工具事件先落盘；助手消息等流式结束再写。
-        self.save();
         Some(reply)
     }
 

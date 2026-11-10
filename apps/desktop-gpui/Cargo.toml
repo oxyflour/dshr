@@ -21,6 +21,9 @@ path = "../../crates/compat-dsh-host"
 [dependencies.serde_json]
 workspace = true
 
+[dependencies.dshr-agent-core]
+path = "../../crates/agent-core"
+
 [dependencies.dshr-plugin-api]
 path = "../../crates/plugin-api"
 

@@ -975,6 +975,9 @@ version = "0.0.0"
 [[package]]
 name = "dshr-agent-core"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "dshr-compat-acp"
@@ -1017,6 +1020,7 @@ dependencies = [
 name = "dshr-desktop-gpui"
 version = "0.0.0"
 dependencies = [
+ "dshr-agent-core",
  "dshr-compat-dsh-host",
  "dshr-conversation-model",
  "dshr-plugin-api",

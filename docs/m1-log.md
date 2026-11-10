@@ -371,6 +371,34 @@ assistant_settled_after_ms=2031   # 同上，复测
 **验证方式**：合成按键输入 → 轮询 `.tmp/chat-session.jsonl`，确认 `message.user` 先出现、
 `message.assistant.settled` 在流式结束后才出现。`chat --selftest` 仍走同步 `submit()`，不受影响。
 
+## A10 Agent 接口（2026-11-10）
+
+**目标**：把 chat 里那段 if-else 的 mock 逻辑抽成真正的 Agent Loop：模型产意图、宿主执行、事件可测。
+
+**`crates/agent-core`**（6 个单元测试）：
+
+| 类型 | 作用 |
+|---|---|
+| `ModelProvider::complete(&CompletionRequest) -> ModelReply` | 模型接口；当前实现 `MockProvider`（关键词决定回文本还是调工具） |
+| `ToolExecutor::{specs, execute}` | 工具接口；由应用实现（chat 里接 PluginHost + Sidecar） |
+| `Agent::run_turn(user_text, executor)` | 编排：`TurnStarted → (StepStarted → TextDelta* → ToolCall → ToolResult)+ → TurnEnded` |
+| `MAX_TOOL_CALLS = 2` | 防模型自激循环；超出产出 `TurnFailed` |
+
+事件流设计要点：`Agent` **不碰 Session Log、不碰 UI**，只产出事件；
+落盘（message.user / tool.call / tool.result / assistant.settled）由 chat 映射事件完成。
+
+**接线后的行为**（`chat --selftest` 11 项全部 PASS，三张工具卡片都是"成功"）：
+模型从 `tool_specs` 里挑工具（`probe_native` 之外的第一个 sidecar 工具），
+执行器先 `authorize` 再按 `ToolOrigin` 分发到 PluginHost 或 Sidecar。
+
+**发现并修掉的 bug**：最初每轮 `Agent::new(...)`，turn id 永远是 1，
+于是 `call_id` 都是 `call-1-1`；Session Log 拒收第二条同 id 的结算，
+表现为第一张工具卡片成功、后面两张永远"运行中"。改为把 `Agent` 存在 `ChatState` 里跨轮复用。
+——这正是规范 §4 I3（一次调用至多一次结算）在真实数据流上的体现。
+
+**仍未做**：`ModelProvider` 没有真实 LLM（无 API key）；流式 delta 目前由 `Agent` 按 16 字切分，
+真实 provider 接入后应改由模型流驱动。
+
 ## A8 真实 Cordis 插件（2026-11-09）
 
 **目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，
