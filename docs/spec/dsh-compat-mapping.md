@@ -1,4 +1,4 @@
-# DSH 兼容映射（`docs/spec/dsh-compat-mapping.md`）
+﻿# DSH 兼容映射（`docs/spec/dsh-compat-mapping.md`）
 
 > 状态：Draft · 2026-11-10
 > 用途：回答"我们的协议和 DSH 一致吗"，并把"哪些必须对齐、哪些刻意不对齐"钉死。
@@ -91,6 +91,14 @@ DSH 的 session format 有 v0→v4 的迁移链（`dsh-session-format-*` 包）�
 | P1 | `isConcurrencySafe` → 调度器 | 并发安全无法判定时只能串行 |
 | P2 | scope / restrict / guard | 多 agent 与审批的隔离 |
 | P2 | `additionalContexts` / `concludesTurn` | 改变上下文与提前结束轮次 |
+
+## 6.1 已完成（2026-11-10）
+
+| 事项 | 状态 |
+|---|---|
+| `output.schema` 进入 `ToolDefinition`，随 `tool.register` 传输 | ✅ `ToolDefinition.output_schema` + `l1_roundtrip` 断言 |
+| `presentResult` 卡片类型字段 | ✅ `ToolDefinition.presentation`（仅承载，渲染未接） |
+| `tool.result` 拆出 `value` / `meta` | ✅ 事件载荷为 `{call_id, is_error, content, value, meta}`；`ToolOutcome` 同步 |
 
 ## 7. 下一步落地
 

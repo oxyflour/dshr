@@ -462,6 +462,8 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
   `additionalContexts` / `concludesTurn`，终端与 diff 卡片会退化为文本。
 - 已做的对齐（本轮）：`ToolDefinition` 增加 `output_schema` 与 `presentation`，
   `tool.register` 携带它们并在测试中断言（`l1_roundtrip`）。
+- 结果契约对齐：`tool.result` 现在有独立的 `value` / `meta`（不再只能从 `content` 里挖），
+  `ToolOutcome` 同步拆出这两个字段；`chat --selftest` 的落盘事件已验证。
 
 ## A8 真实 Cordis 插件（2026-11-09）
 

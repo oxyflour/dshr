@@ -34,7 +34,33 @@ pub struct ToolCallRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
     pub is_error: bool,
+    /// 模型可见内容（DSH: `content: ContentBlock[]`）。
     pub content: Value,
+    /// 结构化返回值（DSH: `value`）。展示与回放用它，不要再从 content 里挖。
+    pub value: Value,
+    /// 工具自带的元数据（DSH: `meta`）。
+    pub meta: Option<Value>,
+}
+
+impl ToolOutcome {
+    pub fn success(content: Value, value: Value) -> Self {
+        Self {
+            is_error: false,
+            content,
+            value,
+            meta: None,
+        }
+    }
+
+    pub fn failure(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
+        Self {
+            is_error: true,
+            content: json!([{ "type": "text", "text": reason }]),
+            value: Value::Null,
+            meta: None,
+        }
+    }
 }
 
 pub trait ToolExecutor {
@@ -292,10 +318,10 @@ mod tests {
 
         fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
             self.calls.push(call.clone());
-            ToolOutcome {
-                is_error: false,
-                content: json!({ "echo": call.arguments }),
-            }
+            ToolOutcome::success(
+                json!([{ "type": "json", "value": call.arguments }]),
+                json!({ "echo": call.arguments }),
+            )
         }
     }
 

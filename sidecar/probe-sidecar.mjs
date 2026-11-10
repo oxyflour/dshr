@@ -114,6 +114,8 @@ async function runTool(tool, msg) {
           call_id: msg.call_id,
           is_error: false,
           content: chunk.content ?? [],
+          value: chunk.value ?? null,
+          meta: chunk.meta ?? null,
           metadata: { duration_ms: Date.now() - started, chunks },
         },
         { call_id: msg.call_id },

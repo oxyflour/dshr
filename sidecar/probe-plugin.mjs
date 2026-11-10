@@ -1,4 +1,4 @@
-// Probe plugin for the L1 sidecar experiment.
+﻿// Probe plugin for the L1 sidecar experiment.
 // Shaped like a DSH tool plugin: a register() entry that receives a context with
 // tool registration, not a framework import.
 //
@@ -21,7 +21,7 @@ export function register(ctx) {
         yield `chunk-${i}`
         await sleep(5)
       }
-      yield { content: [{ type: 'json', value: { echo: args } }] }
+      yield { content: [{ type: 'json', value: { echo: args } }], value: { echo: args } }
     },
   })
 
@@ -29,7 +29,7 @@ export function register(ctx) {
     name: 'probe_immediate',
     description: 'Settle without streaming or sleeping, to measure protocol-only cost',
     async *run(args, signal) {
-      yield { content: [{ type: 'text', text: 'ok' }] }
+      yield { content: [{ type: 'text', text: 'ok' }], value: { ok: true } }
     },
   })
 
@@ -44,7 +44,7 @@ export function register(ctx) {
         }
         await sleep(200)
       }
-      yield { content: [{ type: 'text', text: 'done' }] }
+      yield { content: [{ type: 'text', text: 'done' }], value: { done: true } }
     },
   })
 }

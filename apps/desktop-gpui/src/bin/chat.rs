@@ -1,4 +1,4 @@
-﻿//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
+//! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复。
 //!
 //! 这是 M1 的产品面：能打字、能发送、能看到工具卡片、关掉再开会话还在。
 //! 模型是 **mock**（没有接 LLM，那是 M2），但会话/工具/日志/回放都是真实的。
@@ -172,31 +172,19 @@ impl ToolExecutor for ChatExecutor<'_> {
             .authorize(&call.tool, &call.arguments)
         {
             Ok(definition) => definition.clone(),
-            Err(err) => {
-                return ToolOutcome {
-                    is_error: true,
-                    content: json!(err.to_string()),
-                }
-            }
+            Err(err) => return ToolOutcome::failure(err.to_string()),
         };
 
         match definition.origin {
             ToolOrigin::Native { .. } => match self.plugins.call(&call.tool, &call.arguments) {
-                Ok(value) => ToolOutcome {
-                    is_error: false,
-                    content: value,
-                },
-                Err(err) => ToolOutcome {
-                    is_error: true,
-                    content: json!(err.to_string()),
-                },
+                Ok(value) => {
+                    ToolOutcome::success(json!([{ "type": "json", "value": value }]), value)
+                }
+                Err(err) => ToolOutcome::failure(err.to_string()),
             },
             ToolOrigin::Sidecar { .. } => {
                 let Some(host) = self.host.as_mut() else {
-                    return ToolOutcome {
-                        is_error: true,
-                        content: json!("sidecar unavailable"),
-                    };
+                    return ToolOutcome::failure("sidecar unavailable");
                 };
                 match host.invoke_as(
                     &call.call_id,
@@ -204,24 +192,29 @@ impl ToolExecutor for ChatExecutor<'_> {
                     call.arguments.clone(),
                     Duration::from_secs(5),
                 ) {
-                    Ok(outcome) if outcome.terminal.kind == "tool.result" => ToolOutcome {
-                        is_error: false,
-                        content: outcome.terminal.payload["content"].clone(),
-                    },
-                    Ok(outcome) => ToolOutcome {
-                        is_error: true,
-                        content: outcome.terminal.payload.clone(),
-                    },
-                    Err(err) => ToolOutcome {
-                        is_error: true,
-                        content: json!(err.to_string()),
-                    },
+                    Ok(outcome) if outcome.terminal.kind == "tool.result" => {
+                        let payload = &outcome.terminal.payload;
+                        let content = payload["content"].clone();
+                        // value 优先取自 payload.value；旧插件只在 content 里放值，做一次兼容回退。
+                        let value = payload.get("value").cloned().unwrap_or_else(|| {
+                            content
+                                .get(0)
+                                .and_then(|block| block.get("value"))
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null)
+                        });
+                        ToolOutcome {
+                            is_error: payload["is_error"].as_bool().unwrap_or(false),
+                            content,
+                            value,
+                            meta: payload.get("meta").cloned(),
+                        }
+                    }
+                    Ok(outcome) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
+                    Err(err) => ToolOutcome::failure(err.to_string()),
                 }
             }
-            ToolOrigin::Mcp { .. } => ToolOutcome {
-                is_error: true,
-                content: json!("mcp not wired"),
-            },
+            ToolOrigin::Mcp { .. } => ToolOutcome::failure("mcp not wired"),
         }
     }
 }
@@ -364,7 +357,10 @@ impl ChatState {
                             json!({
                                 "call_id": call_id,
                                 "is_error": false,
-                                "content": [{ "type": "json", "value": outcome.content }]
+                                // 对齐 DSH：content 给模型，value/meta 给展示与回放。
+                                "content": outcome.content,
+                                "value": outcome.value,
+                                "meta": outcome.meta,
                             }),
                         ));
                     }
