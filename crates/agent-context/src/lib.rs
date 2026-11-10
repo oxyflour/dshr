@@ -1,14 +1,20 @@
-//! Session Log → 模型消息历史（以及最小上下文工程）。
+//! 上下文工程：token 计量、超长工具结果裁剪、按预算截断历史。
 //!
 //! 两条硬约束：
 //! 1. **回放一致**：历史完全从 durable 事件重建，不读内存状态、不读插件；
 //!    同一份 JSONL 必须得到同一串消息。
 //! 2. **协议合法**：`tool.call` / `tool.result` 折叠成
-//!    `assistant{tool_calls}` + `tool{call_id, content}`，配对关系逐条可断言——
-//!    这正是当前工具轮次"对不上号"的根因。
+//!    `assistant{tool_calls}` + `tool{call_id, content}`，配对关系逐条可断言。
 //!
-//! 上下文工程的第一步只做截断：保留最近 N 条且不拆散配对。计量/压缩/裁剪（PLAN §6.4
-//! 其余四项）在 M2 补。
+//! 预算策略（M2）：
+//! - 估算：CJK 约 1 token/字，其余约 1 token/4 字符（偏保守，不依赖 tokenizer）；
+//! - 触发：历史 + 本轮用户消息 > `window * 0.8`；
+//! - 裁剪：先把超过 800 token 的工具结果截成"头部 + 尾部"；
+//! - 截断：仍超预算则从最旧的对话开始丢，直到降到 `window * 0.6`，且绝不从
+//!   `Tool` 消息开始（那会拆散 `assistant.tool_calls` 配对）。
+//!
+//! 真正的"摘要压缩"（`context.compacted` + LLM 摘要）是下一步，当前是**有损裁剪**：
+//! 被丢掉的消息仍保留在 Session Log 里，只是不再进模型历史。
 
 #![forbid(unsafe_code)]
 
@@ -18,8 +24,214 @@ use dshr_agent_core::{ChatMessage, ModelToolCall};
 use dshr_session_store::{Durability, SessionLog};
 use serde_json::Value;
 
-/// 默认保留的历史消息条数。60 条足够覆盖常见多轮对话，又不至于一次塞满窗口。
+/// 默认保留的历史消息条数（无预算信息时的兜底）。
 pub const DEFAULT_MAX_MESSAGES: usize = 60;
+
+/// 默认上下文窗口（token）。DeepSeek `deepseek-chat` 为 64K，可用
+/// `DSHR_CONTEXT_WINDOW` 覆盖。
+pub const DEFAULT_CONTEXT_WINDOW: usize = 64_000;
+
+/// 触发裁剪的窗口占比。
+pub const TRIGGER_RATIO: f32 = 0.8;
+
+/// 裁剪后希望降到窗口占比（留出输出与工具 schema 余量）。
+pub const TARGET_RATIO: f32 = 0.6;
+
+/// 单条工具结果超过这个 token 数就做头尾裁剪。
+pub const TOOL_RESULT_TOKEN_LIMIT: usize = 800;
+
+/// 裁剪时保留的头部/尾部字符数。
+const TOOL_RESULT_HEAD_CHARS: usize = 1_200;
+const TOOL_RESULT_TAIL_CHARS: usize = 400;
+
+/// 从环境变量读上下文窗口。
+pub fn context_window_from_env() -> usize {
+    std::env::var("DSHR_CONTEXT_WINDOW")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|window| *window >= 4_000)
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+}
+
+/// 估算一段文本的 token 数。CJK 按字计，其它按 4 字符/token，再加少量消息开销。
+pub fn estimate_tokens(text: &str) -> usize {
+    let mut cjk = 0usize;
+    let mut other = 0usize;
+    for ch in text.chars() {
+        if is_cjk(ch) {
+            cjk += 1;
+        } else {
+            other += 1;
+        }
+    }
+    cjk + other.div_ceil(4) + 4
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3000..=0x303F | 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF
+            | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF
+    )
+}
+
+/// 估算整段历史的 token 数。
+pub fn estimate_history_tokens(messages: &[ChatMessage]) -> usize {
+    messages
+        .iter()
+        .map(|message| match message {
+            ChatMessage::System(text) | ChatMessage::User(text) => estimate_tokens(text) + 4,
+            ChatMessage::Assistant { text, tool_calls } => {
+                estimate_tokens(text)
+                    + tool_calls
+                        .iter()
+                        .map(|call| {
+                            estimate_tokens(&call.name)
+                                + estimate_tokens(&call.arguments.to_string())
+                        })
+                        .sum::<usize>()
+                    + 8
+            }
+            ChatMessage::Tool { content, .. } => estimate_tokens(content) + 4,
+        })
+        .sum()
+}
+
+/// 一次请求的上下文计划：实际发给模型的历史 + 计量结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextPlan {
+    pub messages: Vec<ChatMessage>,
+    /// 计量窗口（token）。
+    pub window: usize,
+    /// 计划前的估算（历史 + 本轮用户消息）。
+    pub tokens_before: usize,
+    /// 计划后的估算。
+    pub tokens_after: usize,
+    /// 被头尾裁剪的工具结果条数。
+    pub pruned_tool_results: usize,
+    /// 因超预算丢弃的历史消息条数。
+    pub dropped_messages: usize,
+}
+
+impl ContextPlan {
+    pub fn ratio(&self) -> f64 {
+        if self.window == 0 {
+            return 0.0;
+        }
+        self.tokens_after as f64 / self.window as f64
+    }
+
+    pub fn triggered(&self) -> bool {
+        self.pruned_tool_results > 0 || self.dropped_messages > 0
+    }
+}
+
+/// 按默认策略为下一轮请求生成上下文计划。
+pub fn plan_context(log: &SessionLog, next_user_text: &str) -> ContextPlan {
+    plan_with_window(log, next_user_text, context_window_from_env())
+}
+
+/// 可注入窗口的版本（测试/自检用）。
+pub fn plan_with_window(log: &SessionLog, next_user_text: &str, window: usize) -> ContextPlan {
+    let window = window.max(1);
+    let full = history_from_log(log);
+    let mut messages = full.clone();
+    let mut tokens = estimate_history_tokens(&messages) + estimate_tokens(next_user_text);
+
+    let trigger = (window as f32 * TRIGGER_RATIO) as usize;
+    if tokens <= trigger {
+        return ContextPlan {
+            messages,
+            window,
+            tokens_before: tokens,
+            tokens_after: tokens,
+            pruned_tool_results: 0,
+            dropped_messages: 0,
+        };
+    }
+
+    // 1. 超长工具结果做头尾裁剪。
+    let mut pruned_tool_results = 0usize;
+    for message in &mut messages {
+        if let ChatMessage::Tool { content, .. } = message {
+            if estimate_tokens(content) > TOOL_RESULT_TOKEN_LIMIT {
+                *content = prune_tool_result(content);
+                pruned_tool_results += 1;
+            }
+        }
+    }
+    tokens = estimate_history_tokens(&messages) + estimate_tokens(next_user_text);
+
+    // 2. 仍超预算：从最旧的对话丢起，直到降到目标占比。
+    let mut dropped_messages = 0usize;
+    if tokens > trigger {
+        let target = (window as f32 * TARGET_RATIO) as usize;
+        let trimmed = trim_to_budget(&messages, target, estimate_tokens(next_user_text));
+        dropped_messages = messages.len() - trimmed.len();
+        messages = trimmed;
+        tokens = estimate_history_tokens(&messages) + estimate_tokens(next_user_text);
+    }
+
+    ContextPlan {
+        messages,
+        window,
+        tokens_before: estimate_history_tokens(&full) + estimate_tokens(next_user_text),
+        tokens_after: tokens,
+        pruned_tool_results,
+        dropped_messages,
+    }
+}
+
+/// 头尾裁剪：保留开头与结尾，中间标注被裁掉多少字符。
+fn prune_tool_result(content: &str) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let total = chars.len();
+    if total <= TOOL_RESULT_HEAD_CHARS + TOOL_RESULT_TAIL_CHARS {
+        return content.to_owned();
+    }
+    let omitted = total - TOOL_RESULT_HEAD_CHARS - TOOL_RESULT_TAIL_CHARS;
+    let head: String = chars[..TOOL_RESULT_HEAD_CHARS].iter().collect();
+    let tail: String = chars[total - TOOL_RESULT_TAIL_CHARS..].iter().collect();
+    format!("{head}\n…[已裁剪 {omitted} 字符；原结果保留在 Session Log 中]…\n{tail}")
+}
+
+/// 从尾部往前累计到预算内，并把起点调到合法的 `User` 消息。
+fn trim_to_budget(
+    messages: &[ChatMessage],
+    target_tokens: usize,
+    user_text_tokens: usize,
+) -> Vec<ChatMessage> {
+    let budget = target_tokens.saturating_sub(user_text_tokens);
+    let mut used = 0usize;
+    let mut start = messages.len();
+    while start > 0 {
+        let cost = single_message_tokens(&messages[start - 1]);
+        if used + cost > budget && start < messages.len() {
+            break;
+        }
+        used += cost;
+        start -= 1;
+    }
+    // 不从 Tool 开始：它对应的 assistant.tool_calls 被丢掉了。
+    while start < messages.len() && matches!(messages[start], ChatMessage::Tool { .. }) {
+        start += 1;
+    }
+    // 尽量从 User 开始，避免历史以孤立的 assistant 开头。
+    if let Some(user_index) = messages[start..]
+        .iter()
+        .position(|message| matches!(message, ChatMessage::User(_)))
+    {
+        start += user_index;
+    }
+    if start >= messages.len() {
+        return Vec::new();
+    }
+    messages[start..].to_vec()
+}
+
+fn single_message_tokens(message: &ChatMessage) -> usize {
+    estimate_history_tokens(std::slice::from_ref(message))
+}
 
 /// 从日志重建全部历史消息（不截断）。
 pub fn history_from_log(log: &SessionLog) -> Vec<ChatMessage> {
@@ -356,5 +568,169 @@ mod tests {
             ),
         ]);
         assert_eq!(history_from_log(&log), vec![ChatMessage::user("hi")]);
+    }
+
+    #[test]
+    fn token_estimate_counts_cjk_per_char() {
+        let cjk = estimate_tokens("窗口尺寸问题");
+        let ascii = estimate_tokens("window size issue");
+        assert!(cjk > ascii, "cjk={cjk} ascii={ascii}");
+        assert!(cjk >= 6, "cjk={cjk}");
+        assert!(estimate_tokens("") > 0);
+    }
+
+    #[test]
+    fn plan_under_budget_keeps_everything() {
+        let log = log_with(&[
+            (
+                "message.user",
+                json!({ "message_id": "m1", "text": "你好" }),
+            ),
+            (
+                "message.assistant.settled",
+                json!({ "message_id": "m2", "text": "你好，有什么可以帮你？" }),
+            ),
+        ]);
+        let plan = plan_with_window(&log, "继续", 64_000);
+        assert!(!plan.triggered());
+        assert_eq!(plan.messages, history_from_log(&log));
+        assert_eq!(plan.pruned_tool_results, 0);
+        assert_eq!(plan.dropped_messages, 0);
+    }
+
+    #[test]
+    fn long_tool_result_is_pruned_head_and_tail() {
+        let long = "A".repeat(8_000);
+        let log = log_with(&[
+            (
+                "message.user",
+                json!({ "message_id": "m1", "text": "跑一下" }),
+            ),
+            (
+                "tool.call",
+                json!({ "call_id": "c1", "tool": "bash", "arguments": {} }),
+            ),
+            (
+                "tool.result",
+                json!({
+                    "call_id": "c1", "is_error": false,
+                    "content": [{ "type": "text", "text": long }]
+                }),
+            ),
+            (
+                "message.assistant.settled",
+                json!({ "message_id": "m2", "text": "完成" }),
+            ),
+        ]);
+        let plan = plan_with_window(&log, "", 2_000);
+        assert_eq!(plan.pruned_tool_results, 1);
+        let ChatMessage::Tool { content, .. } = plan
+            .messages
+            .iter()
+            .find(|message| matches!(message, ChatMessage::Tool { .. }))
+            .expect("tool message kept")
+        else {
+            unreachable!()
+        };
+        assert!(content.contains("已裁剪"), "{content}");
+        assert!(content.starts_with('A'));
+        assert!(content.ends_with('A'));
+        assert!(plan.tokens_after < plan.tokens_before);
+        assert!(plan.tokens_after <= 2_000);
+    }
+
+    #[test]
+    fn over_budget_drops_oldest_and_keeps_protocol_legal() {
+        let mut log = SessionLog::new("s-t");
+        for index in 0..40 {
+            let user = format!("很长的用户消息 {index}：{}", "内容".repeat(80));
+            let assistant = format!("很长的助手回复 {index}：{}", "回答".repeat(80));
+            log.append(EventSpec::durable(
+                "message.user",
+                "t0",
+                json!({ "message_id": format!("u{index}"), "text": user }),
+            ))
+            .expect("append user");
+            if index % 5 == 0 {
+                let call_id = format!("c{index}");
+                log.append(EventSpec::durable(
+                    "tool.call",
+                    "t0",
+                    json!({ "call_id": call_id, "tool": "bash", "arguments": {} }),
+                ))
+                .expect("append call");
+                log.append(EventSpec::durable(
+                    "tool.result",
+                    "t0",
+                    json!({
+                        "call_id": call_id, "is_error": false,
+                        "content": [{ "type": "text", "text": "输出".repeat(500) }]
+                    }),
+                ))
+                .expect("append result");
+            }
+            log.append(EventSpec::durable(
+                "message.assistant.settled",
+                "t0",
+                json!({ "message_id": format!("a{index}"), "text": assistant }),
+            ))
+            .expect("append assistant");
+        }
+
+        let window = 8_000;
+        let plan = plan_with_window(&log, "继续", window);
+        assert!(plan.triggered(), "{plan:?}");
+        assert!(plan.dropped_messages > 0, "{plan:?}");
+        assert!(!matches!(
+            plan.messages.first(),
+            Some(ChatMessage::Tool { .. })
+        ));
+        assert!(
+            matches!(plan.messages.first(), Some(ChatMessage::User(_))),
+            "历史应从 user 开始: {:?}",
+            plan.messages.first()
+        );
+        assert_paired(&plan.messages);
+        assert!(
+            (plan.tokens_after as f64) <= (window as f64 * 0.8),
+            "tokens_after={} window={window}",
+            plan.tokens_after
+        );
+        // 被丢掉的旧消息仍在日志里，只是不进模型历史。
+        assert!(plan.dropped_messages < history_from_log(&log).len());
+    }
+
+    #[test]
+    fn plan_never_returns_a_dangling_tool_first() {
+        let mut log = SessionLog::new("s-t");
+        for index in 0..30 {
+            log.append(EventSpec::durable(
+                "message.user",
+                "t0",
+                json!({ "message_id": format!("u{index}"), "text": "长".repeat(200) }),
+            ))
+            .expect("append user");
+            log.append(EventSpec::durable(
+                "tool.call",
+                "t0",
+                json!({ "call_id": format!("c{index}"), "tool": "bash", "arguments": {} }),
+            ))
+            .expect("append call");
+            log.append(EventSpec::durable(
+                "tool.result",
+                "t0",
+                json!({
+                    "call_id": format!("c{index}"), "is_error": false,
+                    "content": [{ "type": "text", "text": "长".repeat(200) }]
+                }),
+            ))
+            .expect("append result");
+        }
+        let plan = plan_with_window(&log, "继续", 3_000);
+        assert!(!matches!(
+            plan.messages.first(),
+            Some(ChatMessage::Tool { .. })
+        ));
+        assert_paired(&plan.messages);
     }
 }

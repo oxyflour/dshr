@@ -27,7 +27,7 @@ use gpui::{
 use gpui_platform::application;
 use serde_json::json;
 
-use dshr_agent_context::history_for_model;
+use dshr_agent_context::{history_for_model, plan_context};
 use dshr_agent_core::{
     Agent, AgentEvent, MockProvider, ModelProvider, ToolCallRequest, ToolExecutor, ToolOutcome,
     ToolSpec,
@@ -356,8 +356,36 @@ impl ChatState {
         emit(rows_snapshot(&self.log, None));
 
         // 历史从 durable 事件重建：多轮记忆靠它，重开应用也能接上。
-        // 截断在 `agent-context` 里做，不会拆散 assistant.tool_calls/tool 配对。
-        let history = history_for_model(&self.log);
+        // 上下文预算在这里做：超长工具结果头尾裁剪、超预算丢最旧，且不拆配对。
+        let plan = plan_context(&self.log, "");
+        let _ = self.log.append(EventSpec::durable(
+            "context.measured",
+            &ts,
+            json!({
+                "tokens": {
+                    "input": plan.tokens_after,
+                    "output": 0,
+                    "total": plan.tokens_after,
+                },
+                "window": plan.window,
+                "ratio": plan.ratio(),
+                "pruned_tool_results": plan.pruned_tool_results,
+                "dropped_messages": plan.dropped_messages,
+            }),
+        ));
+        self.save();
+        if plan.triggered() {
+            eprintln!(
+                "[chat] 上下文裁剪: {} -> {} tokens（窗口 {}，裁剪工具结果 {} 条，丢弃消息 {} 条）",
+                plan.tokens_before,
+                plan.tokens_after,
+                plan.window,
+                plan.pruned_tool_results,
+                plan.dropped_messages
+            );
+        }
+        emit(rows_snapshot(&self.log, None));
+        let history = plan.messages;
 
         // 来源与卡片类型在轮次开始前固定：流式回调里不能再借注册表（执行器正持有它）。
         let presentations: std::collections::BTreeMap<String, (String, String)> = self
@@ -1948,6 +1976,100 @@ fn selftest_stream() -> i32 {
     }
 }
 
+/// 上下文预算自检：塞一份超预算的历史，断言
+/// (1) 写了 `context.measured` 事件；(2) 工具结果被裁剪或旧消息被丢弃；
+/// (3) 实际发给模型的历史仍然是合法配对（不会以 Tool 开头）。
+fn selftest_context() -> i32 {
+    let path = PathBuf::from(".tmp/chat-context.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel);
+
+    // 直接写日志模拟长会话：CJK 文本 + 大工具结果，确保超过 8000 的 80%。
+    for index in 0..20 {
+        let user = format!("历史问题 {index}：{}", "长内容".repeat(60));
+        let _ = state.log.append(EventSpec::durable(
+            "message.user",
+            "t0",
+            json!({ "message_id": format!("h-u{index}"), "text": user }),
+        ));
+        let call_id = format!("h-c{index}");
+        let _ = state.log.append(EventSpec::durable(
+            "tool.call",
+            "t0",
+            json!({ "call_id": call_id, "tool": "probe_echo", "arguments": {} }),
+        ));
+        let _ = state.log.append(EventSpec::durable(
+            "tool.result",
+            "t0",
+            json!({
+                "call_id": call_id, "is_error": false,
+                "content": [{ "type": "text", "text": "输出".repeat(800) }]
+            }),
+        ));
+        let _ = state.log.append(EventSpec::durable(
+            "message.assistant.settled",
+            "t0",
+            json!({ "message_id": format!("h-a{index}"), "text": "收到" }),
+        ));
+    }
+    state.save();
+
+    let reply = state.stream_turn("继续", &mut |_| {});
+    let measured = state
+        .log
+        .events()
+        .iter()
+        .rev()
+        .find(|event| event.event_type == "context.measured")
+        .cloned();
+    let Some(measured) = measured else {
+        println!("[selftest-context] FAIL: 没有 context.measured 事件");
+        return 1;
+    };
+    let ratio = measured
+        .payload
+        .get("ratio")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1.0);
+    let pruned = measured
+        .payload
+        .get("pruned_tool_results")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let dropped = measured
+        .payload
+        .get("dropped_messages")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    println!(
+        "[context] ratio={ratio:.3} pruned={pruned} dropped={dropped} window={:?}",
+        measured.payload.get("window")
+    );
+
+    // 用同一份日志重建计划，断言配对合法。
+    let plan = dshr_agent_context::plan_context(&state.log, "");
+    let legal = !matches!(
+        plan.messages.first(),
+        Some(dshr_agent_core::ChatMessage::Tool { .. })
+    );
+
+    let ok = reply.is_some()
+        && ratio <= 0.8
+        && (pruned > 0 || dropped > 0)
+        && legal
+        && plan.tokens_after <= plan.window;
+    if ok {
+        println!("[selftest-context] PASS");
+        0
+    } else {
+        println!("[selftest-context] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 ///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
@@ -2015,6 +2137,10 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-stream") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_stream());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-context") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_context());
     }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");

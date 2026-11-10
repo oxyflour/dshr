@@ -666,6 +666,27 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A21 上下文工程：计量与裁剪（2026-11-11）
+
+问题：多轮会话只按"最近 60 条"硬截断，既不知道会发多少 token，也会在长任务里
+悄悄丢掉关键上下文；工具结果一大就更容易爆窗口。
+
+**做法**：
+
+1. `agent-context` 增加 CJK 感知的 `estimate_tokens` / `estimate_history_tokens`。
+2. `plan_with_window` 分三级：未超 80% 原样；超长 `tool` 结果做头 1200 / 尾 400 字符
+   裁剪并标注；仍超则丢最旧的整轮、降到 60%，起点必须落在 `User`（绝不以 `Tool` 开头）。
+3. `ContextPlan` 带 `tokens_before/after`、`pruned_tool_results`、`dropped_messages`。
+4. `chat` 每轮请求前调用计划，并写 durable `context.measured`
+   （`tokens/window/ratio/pruned_tool_results/dropped_messages`），UI 的 token 曲线可直接取它。
+5. `--selftest-context`：36814 token 的历史 → 裁剪后 3694（ratio 0.462），
+   20 条工具结果被裁剪、72 条旧消息被丢弃，重建计划仍保持配对合法。
+
+**验证**：agent-context 新增 6 个测试、workspace 全绿、clippy 干净、context 自检 PASS。
+
+**未做**：LLM 摘要压缩（`context.compacted`）与 spill 外部化是下一阶段；现在是
+有损裁剪，原事件仍在日志里。详见 [`m2-context.md`](m2-context.md)。
+
 ## A20 多会话（2026-11-11）
 
 问题：M1 遗留的固定单会话 `s-chat`——侧栏只有一行，关掉重开只能看到同一个会话。
