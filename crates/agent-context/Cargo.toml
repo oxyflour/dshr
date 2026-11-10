@@ -1,7 +1,10 @@
-﻿[package]
+[package]
 name = "dshr-agent-context"
 description = "上下文计量、压缩、工具结果裁剪与外部化引用（PLAN §6.4）"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dshr-agent-core = { path = "../agent-core" }
+dshr-session-store = { path = "../session-store" }
+serde_json.workspace = true

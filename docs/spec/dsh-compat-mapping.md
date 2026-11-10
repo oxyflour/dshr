@@ -73,6 +73,8 @@ DSH 的 `ToolExecutionResult` 是 `{ isError, value, content, meta?, additionalC
 - `tool.result` 载荷为 `{call_id, is_error, content, value, meta, metadata}`——**结果字段已对齐**；
 - `value` 是结构化返回值，卡片折叠与回放只读它，不再从 `content[0].value` 里挖（旧插件仍走回退）；
 - `meta` 保留工具自带展示元数据；
+- 工具消息按 OpenAI 严格协议回传：`assistant.tool_calls[]` + `role: tool` + `tool_call_id`，
+  历史由 `agent-context` 从 Session Log 重建（多轮记忆与多工具对号都依赖它）；
 - 仍**没有** `additionalContexts`（工具向对话注入消息）与 `concludesTurn`（工具结束整轮）。
 
 这三项影响的不只是展示：`additionalContexts` 是 DSH 工具改变后续模型上下文的正规通道，
@@ -105,6 +107,9 @@ DSH 的 session format 有 v0→v4 的迁移链（`dsh-session-format-*` 包）�
 | 卡片折叠与渲染 | ✅ `conversation-model::card`：6 类卡片 + 错误卡片，确定性、有界、形状不符回退 |
 | 卡片类型随事件持久化 | ✅ `tool.call.presentation`，回放不依赖插件版本 |
 | 两个界面接上副行 | ✅ `chat` / `conversation` 工具行显示卡片摘要，`conversation --check` 无窗口断言 |
+| 严格 tool_call 协议 | ✅ `assistant.tool_calls` + `role: tool` + `tool_call_id`；单轮多工具、循环预算 8 |
+| 多轮上下文 | ✅ `agent-context` 从 Session Log 重建历史，截断不拆散配对 |
+| 停止生成 | ✅ provider 取消 token，UI「停止」按钮；sidecar 工具在途不中断（M2） |
 
 ## 7. 下一步落地
 
@@ -112,3 +117,4 @@ DSH 的 session format 有 v0→v4 的迁移链（`dsh-session-format-*` 包）�
 2. `isConcurrencySafe`：进入执行器调度，允许只读工具并发。
 3. `additionalContexts` / `concludesTurn`：Agent Loop 的上下文注入与提前终止。
 4. `deferLoading` 与 scope/restrict/guard：懒加载与多 agent 隔离。
+5. 并行工具执行（当前同一 assistant 消息里的多个 tool_call 串行执行）。

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "dshr-desktop-gpui"
 description = "GPUI desktop shell entry point"
 version.workspace = true
@@ -23,6 +23,9 @@ workspace = true
 
 [dependencies.dshr-agent-core]
 path = "../../crates/agent-core"
+
+[dependencies.dshr-agent-context]
+path = "../../crates/agent-context"
 
 [dependencies.dshr-llm-deepseek]
 path = "../../crates/llm-deepseek"

@@ -11,10 +11,13 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-use dshr_agent_core::{CompletionRequest, ModelProvider, ModelReply};
+use dshr_agent_core::{ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall};
 use serde_json::{json, Value};
 
 const DEFAULT_BASE: &str = "https://api.deepseek.com";
@@ -27,6 +30,8 @@ pub struct DeepSeekProvider {
     base_url: String,
     model: String,
     timeout: Duration,
+    /// UI 置 true 即请求停止生成；provider 在每次请求开始时清零。
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl DeepSeekProvider {
@@ -37,7 +42,14 @@ impl DeepSeekProvider {
                 .unwrap_or_else(|_| DEFAULT_BASE.to_owned()),
             model: std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned()),
             timeout: Duration::from_secs(60),
+            cancel: None,
         }
+    }
+
+    /// 接入 UI 的"停止"按钮：同一个 token 可以在不持有 provider 时置位。
+    pub fn with_cancel(mut self, token: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(token);
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -61,19 +73,16 @@ impl DeepSeekProvider {
     }
 
     fn request_body(&self, request: &CompletionRequest, stream: bool) -> Value {
-        let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
-        messages.push(json!({ "role": "user", "content": request.user_text }));
-        if let Some(previous) = &request.previous {
-            let label = if previous.is_error {
-                "工具执行失败"
-            } else {
-                "工具执行结果"
-            };
-            messages.push(json!({
-                "role": "user",
-                "content": format!("{label}：{}", previous.content),
-            }));
+        // 历史已经是严格协议形状（`agent-context` 负责重建），这里只做逐条映射。
+        let mut messages: Vec<Value> = Vec::new();
+        let has_system = request
+            .messages
+            .iter()
+            .any(|message| matches!(message, ChatMessage::System(_)));
+        if !has_system {
+            messages.push(json!({ "role": "system", "content": SYSTEM_PROMPT }));
         }
+        messages.extend(request.messages.iter().map(message_json));
 
         let tools: Vec<Value> = request
             .tool_specs
@@ -119,6 +128,45 @@ impl DeepSeekProvider {
     }
 }
 
+/// 把内部消息映射成 OpenAI Chat Completions 的 `messages[]`。
+fn message_json(message: &ChatMessage) -> Value {
+    match message {
+        ChatMessage::System(text) => json!({ "role": "system", "content": text }),
+        ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+        ChatMessage::Assistant { text, tool_calls } if tool_calls.is_empty() => {
+            json!({ "role": "assistant", "content": text })
+        }
+        ChatMessage::Assistant { text, tool_calls } => {
+            let calls: Vec<Value> = tool_calls
+                .iter()
+                .map(|call| {
+                    json!({
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            // OpenAI 协议里 arguments 是字符串化的 JSON。
+                            "arguments": call.arguments.to_string(),
+                        }
+                    })
+                })
+                .collect();
+            // 有工具调用时 content 必须是 null 或省略，空字符串也不合规。
+            let content = if text.is_empty() {
+                Value::Null
+            } else {
+                json!(text)
+            };
+            json!({ "role": "assistant", "content": content, "tool_calls": calls })
+        }
+        ChatMessage::Tool { call_id, content } => json!({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": content,
+        }),
+    }
+}
+
 fn load_key_from_dsh_env() -> Option<String> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -141,6 +189,10 @@ fn load_key_from_dsh_env() -> Option<String> {
 }
 
 impl ModelProvider for DeepSeekProvider {
+    fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
+        self.cancel.clone()
+    }
+
     fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
         let body = self.request_body(request, false);
         let mut response = self.post(&body)?;
@@ -156,11 +208,23 @@ impl ModelProvider for DeepSeekProvider {
         request: &CompletionRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelReply, String> {
+        // 新一轮开始前清零：上一轮的停止请求不能误伤这一轮。
+        if let Some(token) = &self.cancel {
+            token.store(false, Ordering::Relaxed);
+        }
         let body = self.request_body(request, true);
         let response = self.post(&body)?;
         let reader = BufReader::new(response.into_reader());
         let mut decoder = SseDecoder::default();
         for line in reader.lines() {
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|token| token.load(Ordering::Relaxed))
+            {
+                // 停止 = 不再接收；已生成的部分按正常回复返回。
+                break;
+            }
             let line = line.map_err(|err| format!("deepseek stream read failed: {err}"))?;
             if let Some(chunk) = decoder.feed(&line)? {
                 on_delta(&chunk);
@@ -194,32 +258,40 @@ pub fn parse_reply(body: &str) -> Result<ModelReply, String> {
         .unwrap_or_default()
         .to_owned();
 
-    if let Some(call) = message
+    let tool_calls = message
         .get("tool_calls")
         .and_then(Value::as_array)
-        .and_then(|calls| calls.first())
-    {
-        let name = call
-            .get("function")
-            .and_then(|function| function.get("name"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| "tool call missing function.name".to_owned())?;
-        let raw_args = call
-            .get("function")
-            .and_then(|function| function.get("arguments"))
-            .and_then(Value::as_str)
-            .unwrap_or("{}");
-        let arguments: Value =
-            serde_json::from_str(raw_args).unwrap_or_else(|_| json!({ "raw": raw_args }));
-        return Ok(ModelReply {
-            text,
-            tool_call: Some((name.to_owned(), arguments)),
-        });
-    }
+        .map(|calls| {
+            calls
+                .iter()
+                .enumerate()
+                .filter_map(|(index, call)| parse_tool_call(index, call))
+                .collect()
+        })
+        .unwrap_or_default();
 
-    Ok(ModelReply {
-        text,
-        tool_call: None,
+    Ok(ModelReply { text, tool_calls })
+}
+
+/// 解析单个 `tool_calls[]` 元素。缺少 name 视为无效调用（跳过而非整包失败）。
+fn parse_tool_call(index: usize, call: &Value) -> Option<ModelToolCall> {
+    let function = call.get("function")?;
+    let name = function.get("name").and_then(Value::as_str)?;
+    let raw_args = function
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}");
+    let arguments: Value =
+        serde_json::from_str(raw_args).unwrap_or_else(|_| json!({ "raw": raw_args }));
+    let id = call
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map_or_else(|| format!("call-{index}"), str::to_owned);
+    Some(ModelToolCall {
+        id,
+        name: name.to_owned(),
+        arguments,
     })
 }
 
@@ -234,13 +306,20 @@ fn error_message(error: &Value) -> String {
 /// SSE 增量解码器：文本与工具调用分片都在这里累积。
 ///
 /// 单独成类型是为了能在无网络单测里逐行喂 SSE 文本——流式最容易错的地方
-/// 是"分片拼接"与"[DONE] 边界"，不是 HTTP 本身。
+/// 是"分片拼接"、"多工具按 index 归并"与"[DONE] 边界"，不是 HTTP 本身。
 #[derive(Debug, Default)]
 pub struct SseDecoder {
     text: String,
-    tool_name: Option<String>,
-    tool_arguments: String,
+    /// 按 `tool_calls[].index` 归并：多个工具调用是交织到达的。
+    tool_calls: BTreeMap<u64, ToolCallBuilder>,
     done: bool,
+}
+
+#[derive(Debug, Default)]
+struct ToolCallBuilder {
+    id: String,
+    name: String,
+    arguments: String,
 }
 
 impl SseDecoder {
@@ -285,17 +364,28 @@ impl SseDecoder {
 
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
+                let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let builder = self.tool_calls.entry(index).or_default();
+                if let Some(id) = call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                {
+                    builder.id = id.to_owned();
+                }
                 let Some(function) = call.get("function") else {
                     continue;
                 };
-                if let Some(name) = function.get("name").and_then(Value::as_str) {
-                    if !name.is_empty() {
-                        self.tool_name = Some(name.to_owned());
-                    }
+                if let Some(name) = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                {
+                    builder.name = name.to_owned();
                 }
                 if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
                     // 参数是分片到达的，必须按到达顺序拼接后再解析。
-                    self.tool_arguments.push_str(arguments);
+                    builder.arguments.push_str(arguments);
                 }
             }
         }
@@ -308,14 +398,29 @@ impl SseDecoder {
     }
 
     pub fn finish(self) -> ModelReply {
-        let tool_call = self.tool_name.map(|name| {
-            let arguments: Value = serde_json::from_str(&self.tool_arguments)
-                .unwrap_or_else(|_| json!({ "raw": self.tool_arguments }));
-            (name, arguments)
-        });
+        let tool_calls = self
+            .tool_calls
+            .into_iter()
+            .filter_map(|(index, builder)| {
+                if builder.name.is_empty() {
+                    return None;
+                }
+                let arguments: Value = serde_json::from_str(&builder.arguments)
+                    .unwrap_or_else(|_| json!({ "raw": builder.arguments }));
+                Some(ModelToolCall {
+                    id: if builder.id.is_empty() {
+                        format!("call-{index}")
+                    } else {
+                        builder.id
+                    },
+                    name: builder.name,
+                    arguments,
+                })
+            })
+            .collect();
         ModelReply {
             text: self.text,
-            tool_call,
+            tool_calls,
         }
     }
 }
@@ -329,7 +434,7 @@ mod tests {
         let body = r#"{"choices":[{"message":{"role":"assistant","content":"你好"}}]}"#;
         let reply = parse_reply(body).unwrap();
         assert_eq!(reply.text, "你好");
-        assert!(reply.tool_call.is_none());
+        assert!(reply.tool_calls.is_empty());
     }
 
     #[test]
@@ -338,9 +443,31 @@ mod tests {
             "tool_calls":[{"id":"c1","type":"function",
             "function":{"name":"probe_native","arguments":"{\"text\":\"hi\"}"}}]}}]}"#;
         let reply = parse_reply(body).unwrap();
-        let (name, args) = reply.tool_call.expect("tool call");
-        assert_eq!(name, "probe_native");
-        assert_eq!(args["text"], "hi");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(reply.tool_calls[0].id, "c1");
+        assert_eq!(reply.tool_calls[0].name, "probe_native");
+        assert_eq!(reply.tool_calls[0].arguments["text"], "hi");
+    }
+
+    #[test]
+    fn parses_multiple_tool_calls_in_one_reply() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":null,
+            "tool_calls":[
+                {"id":"c1","type":"function","function":{"name":"a","arguments":"{\"x\":1}"}},
+                {"id":"c2","type":"function","function":{"name":"b","arguments":"{}"}}
+            ]}}]}"#;
+        let reply = parse_reply(body).unwrap();
+        assert_eq!(reply.tool_calls.len(), 2);
+        assert_eq!(reply.tool_calls[0].name, "a");
+        assert_eq!(reply.tool_calls[1].id, "c2");
+    }
+
+    #[test]
+    fn tool_call_without_id_gets_a_stable_synthetic_id() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":null,
+            "tool_calls":[{"type":"function","function":{"name":"a","arguments":"{}"}}]}}]}"#;
+        let reply = parse_reply(body).unwrap();
+        assert_eq!(reply.tool_calls[0].id, "call-0");
     }
 
     #[test]
@@ -376,14 +503,14 @@ mod tests {
         assert!(decoder.is_done());
         let reply = decoder.finish();
         assert_eq!(reply.text, "你好呀");
-        assert!(reply.tool_call.is_none());
+        assert!(reply.tool_calls.is_empty());
     }
 
     #[test]
     fn sse_tool_call_fragments_are_joined() {
         let mut decoder = SseDecoder::default();
         for line in [
-            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"probe_native","arguments":""}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"probe_native","arguments":""}}]}}]}"#,
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"text\":"}}]}}]}"#,
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"hi\"}"}}]}}]}"#,
             "data: [DONE]",
@@ -391,9 +518,28 @@ mod tests {
             decoder.feed(line).expect("valid sse");
         }
         let reply = decoder.finish();
-        let (name, args) = reply.tool_call.expect("tool call");
-        assert_eq!(name, "probe_native");
-        assert_eq!(args["text"], "hi");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(reply.tool_calls[0].id, "c1");
+        assert_eq!(reply.tool_calls[0].name, "probe_native");
+        assert_eq!(reply.tool_calls[0].arguments["text"], "hi");
+    }
+
+    #[test]
+    fn sse_multiple_tool_calls_are_merged_by_index() {
+        let mut decoder = SseDecoder::default();
+        for line in [
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"a","arguments":"{\"x\":"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"b","arguments":"{}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}"#,
+            "data: [DONE]",
+        ] {
+            decoder.feed(line).expect("valid sse");
+        }
+        let reply = decoder.finish();
+        assert_eq!(reply.tool_calls.len(), 2);
+        assert_eq!(reply.tool_calls[0].id, "c1");
+        assert_eq!(reply.tool_calls[0].arguments["x"], 1);
+        assert_eq!(reply.tool_calls[1].id, "c2");
     }
 
     #[test]
@@ -423,14 +569,84 @@ mod tests {
         assert!(decoder.feed("data: not-json").is_err());
     }
 
+    fn request(messages: Vec<ChatMessage>) -> CompletionRequest {
+        CompletionRequest {
+            messages,
+            tool_specs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn request_body_maps_strict_tool_protocol() {
+        let provider = DeepSeekProvider::new("test-key");
+        let body = provider.request_body(
+            &request(vec![
+                ChatMessage::user("hi"),
+                ChatMessage::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![ModelToolCall {
+                        id: "c1".to_owned(),
+                        name: "probe_native".to_owned(),
+                        arguments: json!({ "text": "hi" }),
+                    }],
+                },
+                ChatMessage::Tool {
+                    call_id: "c1".to_owned(),
+                    content: "\"HI\"".to_owned(),
+                },
+            ]),
+            false,
+        );
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages[0]["role"], "system", "调用方没给 system 时自动补");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "assistant");
+        assert_eq!(
+            messages[2]["content"],
+            Value::Null,
+            "有 tool_calls 时 content 必须是 null"
+        );
+        assert_eq!(messages[2]["tool_calls"][0]["id"], "c1");
+        assert_eq!(
+            messages[2]["tool_calls"][0]["function"]["arguments"], "{\"text\":\"hi\"}",
+            "arguments 必须是字符串化 JSON"
+        );
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "c1");
+        assert_eq!(messages[3]["content"], "\"HI\"");
+    }
+
+    #[test]
+    fn request_body_keeps_caller_system_prompt() {
+        let provider = DeepSeekProvider::new("test-key");
+        let body = provider.request_body(
+            &request(vec![
+                ChatMessage::System("自定义提示".to_owned()),
+                ChatMessage::user("hi"),
+            ]),
+            false,
+        );
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2, "不应重复追加 system");
+        assert_eq!(messages[0]["content"], "自定义提示");
+    }
+
+    #[test]
+    fn cancel_token_round_trips() {
+        let token = Arc::new(AtomicBool::new(false));
+        let provider = DeepSeekProvider::new("k").with_cancel(token.clone());
+        assert!(
+            Arc::ptr_eq(&provider.cancel_token().expect("token"), &token),
+            "UI 与 provider 必须共享同一个 token"
+        );
+        assert!(DeepSeekProvider::new("k").cancel_token().is_none());
+        assert!(!token.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn request_body_adds_stream_flag_only_when_streaming() {
         let provider = DeepSeekProvider::new("test-key");
-        let request = CompletionRequest {
-            user_text: "hi".to_owned(),
-            tool_specs: Vec::new(),
-            previous: None,
-        };
+        let request = request(vec![ChatMessage::user("hi")]);
         let plain = provider.request_body(&request, false);
         assert!(plain.get("stream").is_none());
         let streamed = provider.request_body(&request, true);

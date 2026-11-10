@@ -159,6 +159,23 @@
 - `is_error: true` 或 `tool.aborted` 生成**错误卡片**（标题分别 `失败` / `已中止`），不套用插件声明的卡片类型。
 - 卡片只派生不落盘：同一份 JSONL 必须折叠出完全相同的卡片（可逐项断言）。
 
+### 6.2 模型历史的重建
+
+下一轮请求的消息历史**从 durable 事件重建**（`agent-context`），不依赖内存状态，因此重开应用也能接上：
+
+| 事件 | 重建出的消息 |
+|---|---|
+| `message.user` | `user` |
+| `message.assistant.settled` | `assistant`（空文本跳过） |
+| `tool.call` | 追加进**前一条** `assistant` 的 `tool_calls`；上一条不是 assistant 时补一条空 assistant |
+| `tool.result` / `tool.aborted` | `tool`，`call_id` 必须等于对应 `tool_calls[].id`；失败内容加 `ERROR:` 前缀 |
+
+约束：
+
+- `role: tool` 的消息必须能反查到同 id 的 `tool_calls`，否则回放直接丢弃该条（宁可少一条，也不产生非法序列）。
+- 历史截断按**消息条数**（默认 60），且不得从 `tool` 消息开始——那会切掉它的调用方。
+- 工具结果传给模型的是文本投影；结构化 `value` 只给 UI/回放。
+
 ## 7. 会话树
 
 - 子会话是完整会话：自己的 `seq` 空间、自己的日志文件、可独立导出。

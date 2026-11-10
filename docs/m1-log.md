@@ -558,8 +558,45 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 3. 快照是整份而不是增量：UI 不需要事件合并逻辑，丢一条也不会错位；16 ms 轮询窗口里只取最后一份，避免积压。
 4. mock 也必须实现流式（切段），否则 selftest 测不到"增量"这个性质。
 
-**边界**：SSE 断线不重连；取消尚未接；工具结果第二轮仍以 `role: user` 传递（严格 `role: tool` 是下一步）。
+**边界**：SSE 断线不重连；取消尚未接；工具结果第二轮仍以 `role: user` 传递（见 A15 已修正）。
 测试：workspace 80 passed（agent-core 6→10，llm-deepseek 4→10）。
+
+## A15 多轮上下文与严格工具协议（2026-11-10）
+
+问题：能做单轮对话，但**不能真实用**——每轮只把当前用户消息发给模型（没有记忆），
+工具结果用 `role: user` 的文本回传（多工具时模型对不上哪个结果属于哪个调用）。
+
+**改动**：
+
+| 模块 | 内容 |
+|---|---|
+| `agent-core` | `ChatMessage{System,User,Assistant{text,tool_calls},Tool{call_id,content}}`；`ModelReply.tool_calls: Vec<ModelToolCall>`；`run_turn_with_history`；单轮多工具、循环预算 8；`last_tool_content` 只看本条用户消息之后（否则上一轮结果会误判成本轮刚跑完工具） |
+| `agent-context`（从空壳补齐） | Session Log → `ChatMessage` 重建：`tool.call` 追加进前一条 assistant 的 tool_calls，`tool.result/aborted` 生成 `role:tool`（id 必须对得上）；截断默认 60 条且不拆散配对 |
+| `llm-deepseek` | 消息逐条映射：`assistant.content=null` + `tool_calls[].function.arguments` 字符串化；`role:tool` + `tool_call_id`；SSE 按 `tool_calls[].index` 归并分片；停止 token |
+| `chat` | 每轮先 `history_for_model(log)`；UI「停止/发送」双态；生成中自动滚到底部；`--live-chat` 多轮脚本 |
+
+**真实 LLM 验证**：
+
+```text
+# 多轮记忆
+[live-chat] turn=1 ms=603  stream_updates=16 reply=已记住：你叫小张，你的狗叫豆豆。
+[live-chat] turn=2 ms=858  stream_updates=13 reply=你叫小张，你的狗叫豆豆。
+[live-chat] persisted_turns=2 history_messages=4
+
+# 单轮两个工具（严格协议）
+[live-chat] persisted_turns=1 history_messages=6
+  1. probe_native（text="hello"）→ {"native_echo":"HELLO"}
+  2. probe_echo（无参数）→ {"echo":{}}
+```
+
+第二轮回答的是第一轮说过的小张/豆豆，证明历史真的进了请求；多工具那轮 `history_messages=6`
+说明消息序列是 `user → assistant(tool_calls) → tool → assistant(tool_calls) → tool → assistant`，
+模型还能准确指出 `probe_echo` 没有收到参数——它读到的是真实的 tool 结果，不是回显文本。
+
+**边界**（都写进了 spec）：并行工具调用仍是串行执行；截断按条数而非 token；停止只中断 provider
+读取，已在途的 sidecar 工具调用不会撤销；重试/退避未做。
+
+测试：workspace 98 passed（agent-core 14、agent-context 7、llm-deepseek 15）。
 
 ## A8 真实 Cordis 插件（2026-11-09）
 

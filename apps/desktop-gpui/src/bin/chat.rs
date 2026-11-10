@@ -13,6 +13,7 @@
 //!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,6 +26,7 @@ use gpui::{
 use gpui_platform::application;
 use serde_json::json;
 
+use dshr_agent_context::history_for_model;
 use dshr_agent_core::{
     Agent, AgentEvent, MockProvider, ModelProvider, ToolCallRequest, ToolExecutor, ToolOutcome,
     ToolSpec,
@@ -134,7 +136,7 @@ fn spawn_sidecar() -> Option<SidecarHost> {
 }
 
 /// 有 DEEPSEEK_API_KEY（环境变量或 `~/.dsh/.env`）时用真实模型，否则退回 mock。
-fn select_provider() -> Box<dyn ModelProvider> {
+fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
     // 自检必须确定性：显式要求 mock 时不看环境里的 key。
     if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
         println!("[chat] provider=mock（DSHR_FORCE_MOCK=1）");
@@ -143,7 +145,7 @@ fn select_provider() -> Box<dyn ModelProvider> {
     match DeepSeekProvider::from_env() {
         Some(provider) => {
             println!("[chat] provider=deepseek model={}", provider.model());
-            Box::new(provider)
+            Box::new(provider.with_cancel(cancel.clone()))
         }
         None => {
             println!("[chat] provider=mock（未找到 DEEPSEEK_API_KEY）");
@@ -237,7 +239,7 @@ fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
 }
 
 impl ChatState {
-    fn new(path: PathBuf) -> Self {
+    fn new(path: PathBuf, cancel: &Arc<AtomicBool>) -> Self {
         let log = if path.exists() {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             SessionLog::from_jsonl(SESSION_ID, &text).unwrap_or_else(|err| {
@@ -262,7 +264,7 @@ impl ChatState {
             path,
             host,
             plugins,
-            agent: Agent::new(select_provider()),
+            agent: Agent::new(select_provider(cancel)),
             seq: 0,
         }
     }
@@ -321,6 +323,10 @@ impl ChatState {
         self.save();
         emit(rows_snapshot(&self.log, None));
 
+        // 历史从 durable 事件重建：多轮记忆靠它，重开应用也能接上。
+        // 截断在 `agent-context` 里做，不会拆散 assistant.tool_calls/tool 配对。
+        let history = history_for_model(&self.log);
+
         // 来源与卡片类型在轮次开始前固定：流式回调里不能再借注册表（执行器正持有它）。
         let presentations: std::collections::BTreeMap<String, (String, String)> = self
             .plugins
@@ -354,7 +360,7 @@ impl ChatState {
                 plugins,
                 host: host.as_mut(),
             };
-            agent.run_turn_streaming(text, &mut executor, &mut |event| match event {
+            agent.run_turn_streaming(&history, text, &mut executor, &mut |event| match event {
                 AgentEvent::TextDelta(delta) => {
                     reply.push_str(delta);
                     emit(rows_snapshot(log, Some(&reply)));
@@ -444,9 +450,20 @@ struct ChatApp {
     scroll: UniformListScrollHandle,
     /// 一轮正在生成：输入框仍可编辑，但回车不会发第二条。
     busy: bool,
+    /// 与 provider 共享的停止句柄（UI 不持锁就能请求中断）。
+    cancel: Arc<AtomicBool>,
 }
 
 impl ChatApp {
+    /// 请求停止生成：provider 在下一个 SSE 行边界返回已生成的部分。
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        if !self.busy {
+            return;
+        }
+        self.cancel.store(true, Ordering::Relaxed);
+        cx.notify();
+    }
+
     fn send(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -491,6 +508,11 @@ impl ChatApp {
                     let ok = this
                         .update(cx, |app, cx| {
                             app.rows = rows;
+                            // 生成过程中始终跟随最新一行；结束后停止强制滚动，
+                            // 用户往上翻历史不会被拽回去。
+                            if app.busy {
+                                app.scroll.scroll_to_bottom();
+                            }
                             cx.notify();
                         })
                         .is_ok();
@@ -635,7 +657,7 @@ impl Render for ChatApp {
         };
         let dim = self.input.is_empty();
         let header = if self.busy {
-            format!("会话 {SESSION_ID} · {} 条 · 生成中", total)
+            format!("会话 {SESSION_ID} · {} 条 · 生成中（可停止）", total)
         } else {
             format!("会话 {SESSION_ID} · {} 条", total)
         };
@@ -726,10 +748,20 @@ impl Render for ChatApp {
                         .px_3()
                         .py_2()
                         .rounded_md()
-                        .bg(rgb(0x243a5e))
+                        .bg(if self.busy {
+                            rgb(0x5e2a2a)
+                        } else {
+                            rgb(0x243a5e)
+                        })
                         .cursor_pointer()
-                        .child("发送")
-                        .on_click(cx.listener(|this, _, _, cx| this.send(cx)))]),
+                        .child(if self.busy { "停止" } else { "发送" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.busy {
+                                this.stop(cx);
+                            } else {
+                                this.send(cx);
+                            }
+                        }))]),
             )
     }
 }
@@ -739,7 +771,8 @@ fn selftest() -> i32 {
     let path = PathBuf::from(".tmp/chat-selftest.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
-    let mut state = ChatState::new(path.clone());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), &cancel);
 
     state.submit("你好");
     state.submit("用工具试一下"); // sidecar
@@ -817,7 +850,8 @@ fn selftest_cordis() -> i32 {
     let path = PathBuf::from(".tmp/chat-cordis.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
-    let mut state = ChatState::new(path.clone());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), &cancel);
 
     state.submit("用工具试一下");
 
@@ -860,7 +894,8 @@ fn live_turn(text: &str) -> i32 {
     let path = PathBuf::from(".tmp/chat-live.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
-    let mut state = ChatState::new(path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path, &cancel);
 
     let started = std::time::Instant::now();
     let mut updates = 0usize;
@@ -890,7 +925,8 @@ fn selftest_stream() -> i32 {
     let path = PathBuf::from(".tmp/chat-stream.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
-    let mut state = ChatState::new(path.clone());
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), &cancel);
 
     let mut snapshots: Vec<Vec<Row>> = Vec::new();
     let reply = state.stream_turn("你好", &mut |rows| snapshots.push(rows));
@@ -933,8 +969,62 @@ fn selftest_stream() -> i32 {
     }
 }
 
+/// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
+///
+/// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
+fn live_chat(script: &[String]) -> i32 {
+    let path = PathBuf::from(".tmp/chat-live-chat.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), &cancel);
+
+    let mut failed = false;
+    for (index, text) in script.iter().enumerate() {
+        let started = std::time::Instant::now();
+        let mut updates = 0usize;
+        let reply = state
+            .stream_turn(text, &mut |_| updates += 1)
+            .unwrap_or_default();
+        if reply.starts_with("处理失败") {
+            failed = true;
+        }
+        println!(
+            "[live-chat] turn={} ms={} stream_updates={updates} reply={reply}",
+            index + 1,
+            started.elapsed().as_millis()
+        );
+    }
+
+    // 落盘回放：同一份日志重建出的历史必须包含所有轮次。
+    let reloaded = SessionLog::from_jsonl(
+        SESSION_ID,
+        &std::fs::read_to_string(&path).unwrap_or_default(),
+    )
+    .expect("reload live chat log");
+    let history = history_for_model(&reloaded);
+    println!(
+        "[live-chat] persisted_turns={} history_messages={}",
+        script.len(),
+        history.len()
+    );
+    if failed {
+        1
+    } else {
+        0
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--live-chat") {
+        let script: Vec<String> = args.iter().skip(index + 1).cloned().collect();
+        if script.is_empty() {
+            println!("[live-chat] 需要至少一条消息");
+            std::process::exit(1);
+        }
+        std::process::exit(live_chat(&script));
+    }
     if let Some(index) = args.iter().position(|arg| arg == "--live") {
         let text = args
             .get(index + 1)
@@ -958,7 +1048,9 @@ fn main() {
     }
 
     let path = PathBuf::from(".tmp/chat-session.jsonl");
-    let state = Arc::new(Mutex::new(ChatState::new(path)));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(Mutex::new(ChatState::new(path, &cancel)));
+    let app_cancel = cancel.clone();
     let rows = {
         let guard = state
             .lock()
@@ -970,6 +1062,7 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);
         let state = state;
         let rows = rows;
+        let app_cancel = app_cancel;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -983,6 +1076,7 @@ fn main() {
                     focus: cx.focus_handle(),
                     scroll: UniformListScrollHandle::new(),
                     busy: false,
+                    cancel: app_cancel,
                 });
                 let focus = app.read(cx).focus.clone();
                 window.focus(&focus, cx);

@@ -1006,6 +1006,11 @@ dependencies = [
 [[package]]
 name = "dshr-agent-context"
 version = "0.0.0"
+dependencies = [
+ "dshr-agent-core",
+ "dshr-session-store",
+ "serde_json",
+]
 
 [[package]]
 name = "dshr-agent-core"
@@ -1056,6 +1061,7 @@ dependencies = [
 name = "dshr-desktop-gpui"
 version = "0.0.0"
 dependencies = [
+ "dshr-agent-context",
  "dshr-agent-core",
  "dshr-compat-dsh-host",
  "dshr-conversation-model",
