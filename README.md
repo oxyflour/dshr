@@ -102,4 +102,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 模型 provider 已有 DeepSeek 与 OpenAI 兼容两家（`DSHR_PROVIDER`），
 统一套重试/退避（429/5xx/连接中断，流式已交付后不重试，
 [`docs/m2-stability.md`](docs/m2-stability.md)）。
+10k 事件冷启动 147ms；长会话只渲染最近 200 行 + "载入更早"
+（[`docs/m2-performance.md`](docs/m2-performance.md)）；M2 四条 gate 的对账见
+[`docs/m2-status.md`](docs/m2-status.md)（尚未全部达标）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

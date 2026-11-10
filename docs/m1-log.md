@@ -666,6 +666,26 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A29 10k 事件性能基线 + UI 窗口化 + M2 对账（2026-11-11）
+
+问题：M2 gate 2 要求 10k 事件冷启动 <1.5s；transcript 之前每帧构造全部 rows。
+
+**做法**：
+
+1. `--selftest-perf`：10k 事件（2.5k 轮 × 4 事件）测 JSONL 往返、`build_from_log`、
+   `rows_snapshot`、`history_for_model`。
+2. transcript 窗口化：默认只渲染最近 200 行，顶部"载入更早的 N 条"每次 +200；
+   切换会话重置；头部仍显示总数。
+3. 新增 `docs/m2-status.md`：按 M2 四条 exit gate 逐条列证据与缺口。
+
+**结果**：10k 事件冷启动 147ms（load 119 + build 28），JSONL 2.62MB；
+快照 30ms、历史重建 26ms。UI 截图确认 10k 会话可打开且只渲染尾部。
+
+**M2 对账结论**：gate 1（重试+20 轮故障注入）、gate 3（压缩+回放）、
+gate 4（装载/启停/Loader/安装）有证据；gate 2 缺真实 FPS；
+官方写工具/服务图、真实网络 20 步统计、打包分发仍未完成 → **M2 未完成**。
+详见 [`m2-performance.md`](m2-performance.md) 与 [`m2-status.md`](m2-status.md)。
+
 ## A28 第二 provider + 重试/退避 + 故障注入（2026-11-11）
 
 问题：只有 DeepSeek 一家、网络一抖就整轮失败；M2 gate 要求 ≥2 provider 与

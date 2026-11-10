@@ -837,6 +837,8 @@ struct ChatApp {
     profile: Profile,
     /// 右侧插件面板是否打开。
     plugins_open: bool,
+    /// 长会话只渲染最近 N 条（点"载入更早"每次 +200），避免每帧构造上万元素。
+    visible_limit: usize,
 }
 
 impl ChatApp {
@@ -1014,6 +1016,7 @@ impl ChatApp {
         self.session_id = id;
         self.busy = false;
         self.initial_scroll_done = false;
+        self.visible_limit = 200;
         self.renaming = None;
         self.rename_input = None;
         self.pending_delete = None;
@@ -1962,7 +1965,27 @@ impl ChatApp {
                     ),
             );
         }
-        for row in &rows {
+        let total = rows.len();
+        let start = total.saturating_sub(self.visible_limit);
+        if start > 0 {
+            let hidden = start;
+            column = column.child(
+                div()
+                    .id("load-earlier")
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(t.type_scale.small)
+                    .text_color(p.color(p.label_secondary))
+                    .child(format!("载入更早的 {hidden} 条（每次 200 条）"))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.visible_limit = this.visible_limit.saturating_add(200);
+                        cx.notify();
+                    })),
+            );
+        }
+        for row in &rows[start..] {
             column = column.child(self.render_row(row, t, &base_font, base_color));
         }
         let _ = cx;
@@ -3234,6 +3257,88 @@ fn selftest_retry() -> i32 {
     }
 }
 
+/// 10k 事件性能基线：冷加载 + 回放 + 快照 + 历史重建（M2 gate 2 的数据层）。
+fn selftest_perf() -> i32 {
+    let mut log = SessionLog::new("s-perf");
+    for index in 0..2_500 {
+        let user = format!("第 {index} 轮问题：帮我检查一下这个方案的风险点与回滚方式。");
+        let assistant = format!("第 {index} 轮回答：已完成检查，主要风险在并发写入与持久化顺序。");
+        log.append(EventSpec::durable(
+            "message.user",
+            "t0",
+            json!({ "message_id": format!("u{index}"), "text": user }),
+        ))
+        .expect("append user");
+        log.append(EventSpec::durable(
+            "message.assistant.settled",
+            "t0",
+            json!({ "message_id": format!("a{index}"), "text": assistant }),
+        ))
+        .expect("append assistant");
+        log.append(EventSpec::durable(
+            "tool.call",
+            "t0",
+            json!({
+                "call_id": format!("c{index}"),
+                "tool": "read",
+                "arguments": { "path": "README.md" }
+            }),
+        ))
+        .expect("append tool.call");
+        log.append(EventSpec::durable(
+            "tool.result",
+            "t0",
+            json!({
+                "call_id": format!("c{index}"),
+                "is_error": false,
+                "content": [{ "type": "text", "text": "ok" }]
+            }),
+        ))
+        .expect("append tool.result");
+    }
+    assert_eq!(log.len(), 10_000);
+
+    let jsonl = log.to_jsonl();
+    let bytes = jsonl.len();
+    let started = std::time::Instant::now();
+    let reloaded = SessionLog::from_jsonl("s-perf", &jsonl).expect("reload");
+    let load_ms = started.elapsed().as_millis();
+
+    let started = std::time::Instant::now();
+    let items = build_from_log(&reloaded);
+    let build_ms = started.elapsed().as_millis();
+
+    let started = std::time::Instant::now();
+    let rows = rows_snapshot(&reloaded, None);
+    let snapshot_ms = started.elapsed().as_millis();
+
+    let started = std::time::Instant::now();
+    let history = history_for_model(&reloaded);
+    let history_ms = started.elapsed().as_millis();
+
+    let cold_ms = load_ms + build_ms;
+    println!(
+        "[perf] events=10000 jsonl_bytes={bytes} load_ms={load_ms} build_ms={build_ms} \
+         snapshot_ms={snapshot_ms} history_ms={history_ms} cold_ms={cold_ms} \
+         items={} rows={} history_messages={}",
+        items.len(),
+        rows.len(),
+        history.len()
+    );
+    let ok = reloaded.len() == 10_000
+        && items.len() == 7_500
+        && rows.len() == items.len()
+        && history.len() <= 60
+        && cold_ms < 1_500;
+    if ok {
+        println!("[selftest-perf] PASS");
+        0
+    } else {
+        println!("[selftest-perf] FAIL");
+        1
+    }
+}
+
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
 fn live_chat(script: &[String]) -> i32 {
@@ -3328,6 +3433,10 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-retry") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_retry());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-perf") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_perf());
     }
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {
@@ -3485,6 +3594,7 @@ fn main() {
                     pending_approvals: 0,
                     profile,
                     plugins_open: false,
+                    visible_limit: 200,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();
