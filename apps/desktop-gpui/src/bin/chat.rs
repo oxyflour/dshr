@@ -23,14 +23,14 @@ use dshr_agent_core::{
     ToolSpec,
 };
 use dshr_compat_dsh_host::SidecarHost;
-use dshr_conversation_model::{build_from_log, Item};
+use dshr_conversation_model::{build_from_log, CardKind, Item};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionLog, ToolState};
 use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
 
-const ROW_HEIGHT: f32 = 52.0;
+const ROW_HEIGHT: f32 = 56.0;
 const SESSION_ID: &str = "s-chat";
 
 fn now_ts() -> String {
@@ -73,7 +73,8 @@ impl Plugin for ProbeNativePlugin {
                 "type": "object",
                 "required": ["text"],
                 "properties": { "text": { "type": "string" } }
-            })),
+            }))
+            .with_presentation("generic"),
         )?;
         ctx.register_panel(dshr_plugin_api::PanelContribution::new(
             "probe.panel",
@@ -326,12 +327,20 @@ impl ChatState {
             match event {
                 AgentEvent::TextDelta(delta) => reply.push_str(&delta),
                 AgentEvent::ToolCall(call) => {
-                    let origin = self
+                    let (origin, presentation) = self
                         .plugins
                         .registry()
                         .get(&call.tool)
-                        .map(|definition| definition.origin.kind())
-                        .unwrap_or("unknown");
+                        .map(|definition| {
+                            (
+                                definition.origin.kind().to_owned(),
+                                definition
+                                    .presentation
+                                    .clone()
+                                    .unwrap_or_else(|| "generic".to_owned()),
+                            )
+                        })
+                        .unwrap_or_else(|| ("unknown".to_owned(), "generic".to_owned()));
                     let _ = self.log.append(EventSpec::durable(
                         "tool.call",
                         &ts,
@@ -339,6 +348,9 @@ impl ChatState {
                             "call_id": call.call_id,
                             "tool": call.tool,
                             "origin": origin,
+                            // 展示元数据随事件持久化（spec/session-log.md §6）：
+                            // 回放不依赖插件当前版本。
+                            "presentation": presentation,
                             "arguments": call.arguments
                         }),
                     ));
@@ -477,10 +489,45 @@ impl ChatApp {
     }
 }
 
-fn row_text(item: &Item) -> SharedString {
+/// 一行的渲染数据：主行 + （工具卡片的）副行。
+#[derive(Debug, Clone)]
+struct Row {
+    main: SharedString,
+    sub: Option<SharedString>,
+    tone: Tone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    User,
+    Assistant,
+    Tool,
+    Meta,
+}
+
+impl Tone {
+    fn background(self) -> gpui::Rgba {
+        match self {
+            Self::User => rgb(0x1b1b1b),
+            Self::Assistant => rgb(0x161616),
+            Self::Tool => rgb(0x1d2a3d),
+            Self::Meta => rgb(0x2a2418),
+        }
+    }
+}
+
+fn describe(item: &Item) -> Row {
     match item {
-        Item::User { text } => SharedString::from(format!("你    · {text}")),
-        Item::Assistant { text } => SharedString::from(format!("助手  · {text}")),
+        Item::User { text } => Row {
+            main: SharedString::from(format!("你    · {text}")),
+            sub: None,
+            tone: Tone::User,
+        },
+        Item::Assistant { text } => Row {
+            main: SharedString::from(format!("助手  · {text}")),
+            sub: None,
+            tone: Tone::Assistant,
+        },
         Item::Tool(tool) => {
             let state = match &tool.state {
                 ToolState::Pending => "运行中".to_owned(),
@@ -493,20 +540,36 @@ fn row_text(item: &Item) -> SharedString {
                 }
                 ToolState::Aborted { reason } => format!("中止({reason})"),
             };
-            SharedString::from(format!("工具  · {} [{}] · {state}", tool.tool, tool.origin))
+            Row {
+                main: SharedString::from(format!(
+                    "工具  · {} [{}] · {state}",
+                    tool.tool, tool.origin
+                )),
+                sub: tool
+                    .card
+                    .as_ref()
+                    .map(|card| SharedString::from(card.summary())),
+                tone: Tone::Tool,
+            }
         }
-        Item::Compaction { from_seq, to_seq } => {
-            SharedString::from(format!("上下文 · 已压缩 seq {from_seq}–{to_seq}"))
-        }
+        Item::Compaction { from_seq, to_seq } => Row {
+            main: SharedString::from(format!("上下文 · 已压缩 seq {from_seq}–{to_seq}")),
+            sub: None,
+            tone: Tone::Meta,
+        },
     }
 }
 
 impl Render for ChatApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self.state.items();
-        let mut rows: Vec<SharedString> = items.iter().map(row_text).collect();
+        let mut rows: Vec<Row> = items.iter().map(describe).collect();
         if let Some(buffer) = &self.streaming {
-            rows.push(SharedString::from(format!("助手  · {buffer}▌")));
+            rows.push(Row {
+                main: SharedString::from(format!("助手  · {buffer}▌")),
+                sub: None,
+                tone: Tone::Assistant,
+            });
         }
         let total = rows.len();
         let rows_for_list = rows.clone();
@@ -543,27 +606,28 @@ impl Render for ChatApp {
                             move |_this: &mut ChatApp, range: std::ops::Range<usize>, _w, _c| {
                                 let mut out = Vec::with_capacity(range.len());
                                 for ix in range {
-                                    let text = rows_for_list.get(ix).cloned().unwrap_or_default();
-                                    let tone = if text.starts_with("工具") {
-                                        rgb(0x1d2a3d)
-                                    } else if text.starts_with("你") {
-                                        rgb(0x1b1b1b)
-                                    } else {
-                                        rgb(0x161616)
-                                    };
-                                    out.push(
-                                        div()
-                                            .id(ix)
-                                            .h(px(ROW_HEIGHT))
-                                            .px_4()
-                                            .flex()
-                                            .items_center()
-                                            .border_b_1()
-                                            .border_color(rgb(0x222222))
-                                            .bg(tone)
-                                            .child(text)
-                                            .into_any_element(),
-                                    );
+                                    let row = rows_for_list.get(ix).cloned().unwrap_or(Row {
+                                        main: SharedString::default(),
+                                        sub: None,
+                                        tone: Tone::Assistant,
+                                    });
+                                    let mut cell = div()
+                                        .id(ix)
+                                        .h(px(ROW_HEIGHT))
+                                        .px_4()
+                                        .flex()
+                                        .flex_col()
+                                        .justify_center()
+                                        .border_b_1()
+                                        .border_color(rgb(0x222222))
+                                        .bg(row.tone.background())
+                                        .child(div().text_sm().child(row.main));
+                                    if let Some(sub) = row.sub {
+                                        cell = cell.child(
+                                            div().text_xs().text_color(rgb(0x8f9bb3)).child(sub),
+                                        );
+                                    }
+                                    out.push(cell.into_any_element());
                                 }
                                 out
                             },
@@ -638,16 +702,27 @@ fn selftest() -> i32 {
     let items = state.items();
     println!("[selftest] items={}", items.len());
     for item in &items {
-        println!("  {}", row_text(item));
+        let row = describe(item);
+        match row.sub {
+            Some(sub) => println!("  {}\n      ↳ {sub}", row.main),
+            None => println!("  {}", row.main),
+        }
     }
 
     // 4 轮 = 4 用户 + 4 助手 + 3 工具卡片（sidecar、native、sidecar）
+    let cards_ok = matches!(&items[3], Item::Tool(t)
+            if t.presentation.as_deref() == Some("generic")
+                && t.card.as_ref().is_some_and(|card| card.kind == CardKind::Generic
+                    && !card.detail.is_empty()))
+        && matches!(&items[6], Item::Tool(t)
+            if t.card.as_ref().is_some_and(|card| card.kind == CardKind::Generic));
     let ok = items.len() == 11
         && both_registered
         && killed
         && sidecar_tools_gone
         && restarted
         && sidecar_tools_back
+        && cards_ok
         && matches!(&items[3], Item::Tool(t) if t.origin == "sidecar"
             && t.state == ToolState::Settled { is_error: false })
         && matches!(&items[6], Item::Tool(t) if t.origin == "native"
@@ -689,7 +764,11 @@ fn selftest_cordis() -> i32 {
     let items = state.items();
     println!("[selftest-cordis] items={}", items.len());
     for item in &items {
-        println!("  {}", row_text(item));
+        let row = describe(item);
+        match row.sub {
+            Some(sub) => println!("  {}\n      ↳ {sub}", row.main),
+            None => println!("  {}", row.main),
+        }
     }
 
     let ok = items.len() == 3

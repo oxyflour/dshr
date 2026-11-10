@@ -14,22 +14,24 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use dshr_conversation_model::{stats, Item, DEMO_SESSION};
+use dshr_conversation_model::{stats, CardKind, Item, ToolCard, DEMO_SESSION};
 use dshr_session_store::ToolState;
 
-const ROW_HEIGHT: f32 = 56.0;
+const ROW_HEIGHT: f32 = 58.0;
+
+type Row = (SharedString, Option<SharedString>);
 
 struct ConversationApp {
-    rows: Vec<SharedString>,
+    rows: Vec<Row>,
     scroll: UniformListScrollHandle,
     frames: u64,
     last_render_at: Instant,
 }
 
-fn describe(item: &Item) -> SharedString {
+fn describe(item: &Item) -> Row {
     match item {
-        Item::User { text } => SharedString::from(format!("USER    · {text}")),
-        Item::Assistant { text } => SharedString::from(format!("AGENT   · {text}")),
+        Item::User { text } => (SharedString::from(format!("USER    · {text}")), None),
+        Item::Assistant { text } => (SharedString::from(format!("AGENT   · {text}")), None),
         Item::Tool(tool) => {
             let state = match &tool.state {
                 ToolState::Pending => "pending".to_owned(),
@@ -42,23 +44,44 @@ fn describe(item: &Item) -> SharedString {
                 }
                 ToolState::Aborted { reason } => format!("aborted({reason})"),
             };
-            SharedString::from(format!(
-                "TOOL    · {} [{}] · {state}",
-                tool.tool, tool.origin
-            ))
+            (
+                SharedString::from(format!(
+                    "TOOL    · {} [{}] · {state}",
+                    tool.tool, tool.origin
+                )),
+                tool.card
+                    .as_ref()
+                    .map(|card| SharedString::from(card.summary())),
+            )
         }
-        Item::Compaction { from_seq, to_seq } => SharedString::from(format!(
-            "CONTEXT · 已压缩 seq {from_seq}–{to_seq}（原文仍在 Log 中）"
-        )),
+        Item::Compaction { from_seq, to_seq } => (
+            SharedString::from(format!(
+                "CONTEXT · 已压缩 seq {from_seq}–{to_seq}（原文仍在 Log 中）"
+            )),
+            None,
+        ),
     }
+}
+
+fn demo_items() -> Vec<Item> {
+    dshr_conversation_model::build(DEMO_SESSION, "s-demo").expect("demo session must be valid")
+}
+
+fn demo_cards(items: &[Item]) -> Vec<ToolCard> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Tool(tool) => tool.card.clone(),
+            _ => None,
+        })
+        .collect()
 }
 
 /// 回放日志、跑自证断言、返回可渲染的行。
 ///
 /// 断言失败时在开窗之前 panic —— 不允许出现"窗口开了但内容不对"的状态。
-fn load_rows() -> Vec<SharedString> {
-    let items =
-        dshr_conversation_model::build(DEMO_SESSION, "s-demo").expect("demo session must be valid");
+fn load_rows() -> Vec<Row> {
+    let items = demo_items();
     let stats = stats(&items);
 
     assert_eq!(stats.total, 6, "demo 会话应有 6 个展示项");
@@ -69,8 +92,18 @@ fn load_rows() -> Vec<SharedString> {
     assert_eq!(stats.aborted, 1);
     assert_eq!(stats.compaction, 1);
 
-    let again = dshr_conversation_model::build(DEMO_SESSION, "s-demo").expect("valid");
+    // 卡片断言：结果不能只存在于 JSONL 里，必须折叠成可渲染内容。
+    let cards = demo_cards(&items);
+    assert_eq!(cards.len(), 2, "两个工具卡片都应有结果视图");
+    assert_eq!(cards[0].kind, CardKind::Terminal);
+    assert_eq!(cards[0].title, "exit 0");
+    assert_eq!(cards[0].preview, vec!["main.rs".to_owned()]);
+    assert_eq!(cards[1].kind, CardKind::Error);
+    assert_eq!(cards[1].title, "已中止");
+
+    let again = demo_items();
     assert_eq!(items, again, "同一份 JSONL 必须回放出相同模型");
+    assert_eq!(cards, demo_cards(&again), "卡片也必须确定性折叠");
 
     println!(
         "[model] total={} user={} assistant={} tools={} settled={} aborted={} compaction={}",
@@ -82,12 +115,15 @@ fn load_rows() -> Vec<SharedString> {
         stats.aborted,
         stats.compaction
     );
+    for card in &cards {
+        println!("[card] {}", card.summary());
+    }
 
     items.iter().map(describe).collect()
 }
 
 impl ConversationApp {
-    fn new(rows: Vec<SharedString>) -> Self {
+    fn new(rows: Vec<Row>) -> Self {
         Self {
             rows,
             scroll: UniformListScrollHandle::new(),
@@ -146,27 +182,34 @@ impl Render for ConversationApp {
                                   _c| {
                                 let mut items = Vec::with_capacity(range.len());
                                 for ix in range {
-                                    let text = rows.get(ix).cloned().unwrap_or_default();
-                                    let tone = if text.starts_with("TOOL") {
+                                    let (main, sub) = rows
+                                        .get(ix)
+                                        .cloned()
+                                        .unwrap_or((SharedString::default(), None));
+                                    let tone = if main.starts_with("TOOL") {
                                         rgb(0x243a5e)
-                                    } else if text.starts_with("CONTEXT") {
+                                    } else if main.starts_with("CONTEXT") {
                                         rgb(0x3a2f24)
                                     } else {
                                         rgb(0x1b1b1b)
                                     };
-                                    items.push(
-                                        div()
-                                            .id(ix)
-                                            .h(px(ROW_HEIGHT))
-                                            .px_4()
-                                            .flex()
-                                            .items_center()
-                                            .border_b_1()
-                                            .border_color(rgb(0x222222))
-                                            .when(ix % 2 == 1, |el| el.bg(tone))
-                                            .child(text)
-                                            .into_any_element(),
-                                    );
+                                    let mut cell = div()
+                                        .id(ix)
+                                        .h(px(ROW_HEIGHT))
+                                        .px_4()
+                                        .flex()
+                                        .flex_col()
+                                        .justify_center()
+                                        .border_b_1()
+                                        .border_color(rgb(0x222222))
+                                        .when(ix % 2 == 1, |el| el.bg(tone))
+                                        .child(div().text_sm().child(main));
+                                    if let Some(sub) = sub {
+                                        cell = cell.child(
+                                            div().text_xs().text_color(rgb(0x9aa7bd)).child(sub),
+                                        );
+                                    }
+                                    items.push(cell.into_any_element());
                                 }
                                 items
                             },
@@ -182,6 +225,12 @@ impl Render for ConversationApp {
 fn main() {
     // 先完成回放与自证，再开窗。
     let rows = load_rows();
+
+    // `--check`：只跑回放断言、不开窗（CI / 无显示器环境）。
+    if std::env::args().any(|arg| arg == "--check") {
+        println!("[check] rows={} PASS", rows.len());
+        return;
+    }
 
     application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);

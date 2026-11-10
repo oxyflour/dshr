@@ -1,4 +1,4 @@
-﻿//! Tool Registry：注册、查找、Authority 校验（Policy + 参数 schema）。
+//! Tool Registry：注册、查找、Authority 校验（Policy + 参数 schema）。
 //!
 //! 设计要点（对应 PLAN §2.1 与 spec/cpp-v1.md §7）：
 //! - 工具来源是**一等的**：`Native` / `Sidecar` / `Mcp` 三种，注册表里必须能区分；
@@ -46,6 +46,48 @@ impl ToolOrigin {
     }
 }
 
+/// 结果卡片类型：对齐 DSH 的 `presentResult` 视图。
+///
+/// 这里只做**枚举化**：字符串来自插件（可能是新版本带来的未知卡片），
+/// 未知值一律退回 `Generic`，不允许因为卡片类型不认识就丢掉结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presentation {
+    Generic,
+    Terminal,
+    Diff,
+    Search,
+    Read,
+    Web,
+}
+
+impl Presentation {
+    pub const ALL: [Self; 6] = [
+        Self::Generic,
+        Self::Terminal,
+        Self::Diff,
+        Self::Search,
+        Self::Read,
+        Self::Web,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Terminal => "terminal",
+            Self::Diff => "diff",
+            Self::Search => "search",
+            Self::Read => "read",
+            Self::Web => "web",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|card| card.as_str().eq_ignore_ascii_case(name))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
     pub name: String,
@@ -90,6 +132,14 @@ impl ToolDefinition {
     pub fn with_schema(mut self, schema: Value) -> Self {
         self.input_schema = schema;
         self
+    }
+
+    /// 把字符串卡片类型解析成枚举；未知/缺省一律 `Generic`。
+    pub fn card(&self) -> Presentation {
+        self.presentation
+            .as_deref()
+            .and_then(Presentation::parse)
+            .unwrap_or(Presentation::Generic)
     }
 }
 
@@ -427,5 +477,29 @@ mod tests {
             registry.authorize("nope", &json!({})).unwrap_err(),
             RegistryError::NotFound("nope".to_owned())
         );
+    }
+
+    #[test]
+    fn presentation_round_trips_and_defaults_to_generic() {
+        for card in Presentation::ALL {
+            assert_eq!(Presentation::parse(card.as_str()), Some(card));
+            assert_eq!(
+                Presentation::parse(&card.as_str().to_uppercase()),
+                Some(card)
+            );
+        }
+        assert_eq!(Presentation::parse("markdown"), None);
+
+        let plain = native("a");
+        assert_eq!(plain.card(), Presentation::Generic);
+
+        let terminal = native("b").with_presentation("terminal");
+        assert_eq!(terminal.card(), Presentation::Terminal);
+        assert_eq!(terminal.presentation.as_deref(), Some("terminal"));
+
+        // 未知卡片不能丢掉结果：退回 Generic，原始字符串仍保留以便诊断。
+        let unknown = native("c").with_presentation("markdown");
+        assert_eq!(unknown.card(), Presentation::Generic);
+        assert_eq!(unknown.presentation.as_deref(), Some("markdown"));
     }
 }

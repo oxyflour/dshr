@@ -1048,6 +1048,7 @@ name = "dshr-conversation-model"
 version = "0.0.0"
 dependencies = [
  "dshr-session-store",
+ "dshr-tool-runtime",
  "serde_json",
 ]
 

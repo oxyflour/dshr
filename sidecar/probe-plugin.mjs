@@ -1,4 +1,4 @@
-﻿// Probe plugin for the L1 sidecar experiment.
+// Probe plugin for the L1 sidecar experiment.
 // Shaped like a DSH tool plugin: a register() entry that receives a context with
 // tool registration, not a framework import.
 //
@@ -12,6 +12,7 @@ export function register(ctx) {
   ctx.tool({
     name: 'probe_echo',
     description: 'Echo arguments back, streaming a few chunks first',
+    presentation: 'generic',
     async *run(args, signal) {
       for (let i = 0; i < 3; i += 1) {
         if (signal.cancelled) {

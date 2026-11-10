@@ -67,9 +67,9 @@
 
 | type | durability | 载荷要点 |
 |---|---|---|
-| `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`), `registration_id?` |
+| `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`), `registration_id?`, `presentation?` |
 | `tool.chunk` | ephemeral | `call_id`, `seq`, `text` |
-| `tool.result` | durable | `call_id`, `is_error`, `content[]`, `metadata` |
+| `tool.result` | durable | `call_id`, `is_error`, `content[]`, `value`, `meta?`, `metadata` |
 | `tool.aborted` | durable | `call_id`, `reason`(`crash`/`cancel`/`timeout`/`unload`) |
 | `tool.late_result` | durable | `call_id`, `discarded: true`（诊断用） |
 | `tool.result.pruned` | durable | `call_id`, `原始大小`, `spill_ref`（见 §5） |
@@ -138,6 +138,26 @@
 | 子会话树 | `child.*` + `session.created.parent_session_id` |
 
 回放 MUST NOT 触发 LLM 请求或工具执行。所有展示元数据（tool card 的 `presentation`）随事件持久化，不依赖插件当前版本。
+
+### 6.1 工具卡片的折叠规则
+
+卡片是**事件的确定函数**：`(presentation, value, content, 终态)` → 卡片，不读插件、不读当前时间、不随机。
+
+| 卡片 | 数据形状 | 摘要 |
+|---|---|---|
+| `terminal` | `{exit_code, stdout, stderr}` | `exit N` + 输出/错误行数 |
+| `diff` | `{path?, diff\|patch, added?, removed?}` | 路径 + `+a −r` |
+| `search` | `{query, matches[]\|count}` | 查询 + 匹配处数 |
+| `read` | `{path, text\|lines[]}` | 路径 + 行数 |
+| `web` | `{url, title?, snippet?}` | 标题 + URL |
+| `generic` | 任意 `value` | 工具名 + 紧凑 JSON 前若干行 |
+
+约束：
+
+- 预览最多 6 行、单行最多 120 字符，超出以"… 还有 N 行"收尾（UI 不会被输出撑爆）。
+- 形状与 `presentation` 不匹配时 MUST 退回 `generic`；缺少顶层 `value` 时回退到 `content[0].value`（旧插件兼容）。
+- `is_error: true` 或 `tool.aborted` 生成**错误卡片**（标题分别 `失败` / `已中止`），不套用插件声明的卡片类型。
+- 卡片只派生不落盘：同一份 JSONL 必须折叠出完全相同的卡片（可逐项断言）。
 
 ## 7. 会话树
 

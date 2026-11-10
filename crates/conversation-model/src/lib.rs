@@ -13,7 +13,12 @@
 use std::collections::HashMap;
 
 use dshr_session_store::{Durability, LogError, SessionLog, ToolState};
+use dshr_tool_runtime::Presentation;
 use serde_json::Value;
+
+mod card;
+
+pub use card::{card_for, content_text, error_card, CardKind, ToolCard};
 
 /// 演示用会话：包含 native 工具、sidecar 工具、崩溃中止、压缩区间与一个未来事件。
 pub const DEMO_SESSION: &str = include_str!("demo_session.jsonl");
@@ -24,7 +29,11 @@ pub struct ToolItem {
     pub tool: String,
     /// `native` / `sidecar` / `mcp`
     pub origin: String,
+    /// 插件声明的卡片类型（未知值保留原文，解析失败按 `generic` 渲染）。
+    pub presentation: Option<String>,
     pub state: ToolState,
+    /// 结果卡片：`tool.call` 时还是 `None`，终态事件把它填上。
+    pub card: Option<ToolCard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,32 +82,55 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                     call_id,
                     tool: str_of(&event.payload, "tool"),
                     origin: str_of(&event.payload, "origin"),
+                    presentation: event
+                        .payload
+                        .get("presentation")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                     state: ToolState::Pending,
+                    card: None,
                 }));
             }
             "tool.result" => {
                 let call_id = str_of(&event.payload, "call_id");
-                if let Some(ix) = tool_index.get(&call_id) {
-                    if let Item::Tool(tool) = &mut items[*ix] {
-                        tool.state = ToolState::Settled {
-                            is_error: event
-                                .payload
-                                .get("is_error")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false),
-                        };
-                    }
-                }
+                let Some(ix) = tool_index.get(&call_id).copied() else {
+                    continue;
+                };
+                let Some(Item::Tool(tool)) = items.get_mut(ix) else {
+                    continue;
+                };
+                let is_error = event
+                    .payload
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                tool.state = ToolState::Settled { is_error };
+
+                let content = event.payload.get("content").cloned().unwrap_or(Value::Null);
+                tool.card = Some(if is_error {
+                    error_card("失败", &content_text(&content))
+                } else {
+                    let value = event
+                        .payload
+                        .get("value")
+                        .cloned()
+                        .unwrap_or_else(|| fallback_value(&content));
+                    card_for(&tool.tool, card_presentation(tool), &value, &content)
+                });
             }
             "tool.aborted" => {
                 let call_id = str_of(&event.payload, "call_id");
-                if let Some(ix) = tool_index.get(&call_id) {
-                    if let Item::Tool(tool) = &mut items[*ix] {
-                        tool.state = ToolState::Aborted {
-                            reason: str_of(&event.payload, "reason"),
-                        };
-                    }
-                }
+                let Some(ix) = tool_index.get(&call_id).copied() else {
+                    continue;
+                };
+                let Some(Item::Tool(tool)) = items.get_mut(ix) else {
+                    continue;
+                };
+                let reason = str_of(&event.payload, "reason");
+                tool.state = ToolState::Aborted {
+                    reason: reason.clone(),
+                };
+                tool.card = Some(error_card("已中止", &reason));
             }
             "context.compacted" => items.push(Item::Compaction {
                 from_seq: num_of(&event.payload, "from_seq"),
@@ -134,6 +166,23 @@ pub fn stats(items: &[Item]) -> Stats {
     stats
 }
 
+fn card_presentation(tool: &ToolItem) -> Presentation {
+    tool.presentation
+        .as_deref()
+        .and_then(Presentation::parse)
+        .unwrap_or(Presentation::Generic)
+}
+
+/// 旧插件把值只放在 `content[0].value`：缺少顶层 `value` 时回退，避免卡片为空。
+fn fallback_value(content: &Value) -> Value {
+    content
+        .as_array()
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| block.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 fn str_of(payload: &Value, field: &str) -> String {
     payload
         .get(field)
@@ -163,6 +212,7 @@ fn text_of(payload: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dshr_session_store::EventSpec;
 
     fn demo() -> Vec<Item> {
         build(DEMO_SESSION, "s-demo").expect("demo session is valid")
@@ -246,5 +296,126 @@ mod tests {
     fn broken_jsonl_is_rejected() {
         let err = build("{not json}", "s-demo").unwrap_err();
         assert!(matches!(err, LogError::Invalid(_)));
+    }
+
+    fn tool_items(items: &[Item]) -> Vec<ToolItem> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Tool(tool) => Some(tool.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn log_with(events: &[(&str, Value)]) -> SessionLog {
+        let mut log = SessionLog::new("s-t");
+        for (kind, payload) in events {
+            log.append(EventSpec::durable(*kind, "t0", payload.clone()))
+                .expect("append test event");
+        }
+        log
+    }
+
+    #[test]
+    fn demo_tool_cards_carry_the_result() {
+        let tools = tool_items(&demo());
+        assert_eq!(tools[0].presentation.as_deref(), Some("terminal"));
+        let card = tools[0].card.as_ref().expect("settled 工具必须有卡片");
+        assert_eq!(card.kind, CardKind::Terminal);
+        assert_eq!(card.title, "exit 0");
+        assert_eq!(card.preview, vec!["main.rs"]);
+
+        let aborted = tools[1].card.as_ref().expect("aborted 工具必须有卡片");
+        assert_eq!(aborted.kind, CardKind::Error);
+        assert_eq!(aborted.title, "已中止");
+        assert_eq!(aborted.preview, vec!["crash"]);
+    }
+
+    #[test]
+    fn legacy_result_without_value_uses_content_value() {
+        let log = log_with(&[
+            (
+                "tool.call",
+                serde_json::json!({
+                    "call_id": "c1", "tool": "probe_echo",
+                    "origin": "sidecar", "presentation": "generic"
+                }),
+            ),
+            (
+                "tool.result",
+                serde_json::json!({
+                    "call_id": "c1", "is_error": false,
+                    "content": [{ "type": "json", "value": { "echo": { "text": "hi" } } }]
+                }),
+            ),
+        ]);
+        let tools = tool_items(&build_from_log(&log));
+        let card = tools[0].card.as_ref().expect("card exists");
+        assert_eq!(card.kind, CardKind::Generic);
+        assert!(card.detail.contains("hi"), "detail={}", card.detail);
+    }
+
+    #[test]
+    fn unknown_presentation_string_still_renders() {
+        let log = log_with(&[
+            (
+                "tool.call",
+                serde_json::json!({
+                    "call_id": "c1", "tool": "probe_echo",
+                    "origin": "native", "presentation": "markdown"
+                }),
+            ),
+            (
+                "tool.result",
+                serde_json::json!({
+                    "call_id": "c1", "is_error": false,
+                    "content": [], "value": { "echo": 1 }
+                }),
+            ),
+        ]);
+        let tools = tool_items(&build_from_log(&log));
+        let card = tools[0].card.as_ref().expect("card exists");
+        assert_eq!(card.kind, CardKind::Generic);
+        assert_eq!(tools[0].presentation.as_deref(), Some("markdown"));
+    }
+
+    #[test]
+    fn error_result_uses_failure_card() {
+        let log = log_with(&[
+            (
+                "tool.call",
+                serde_json::json!({
+                    "call_id": "c1", "tool": "bash", "origin": "native", "presentation": "terminal"
+                }),
+            ),
+            (
+                "tool.result",
+                serde_json::json!({
+                    "call_id": "c1", "is_error": true,
+                    "content": [{ "type": "text", "text": "permission denied" }]
+                }),
+            ),
+        ]);
+        let tools = tool_items(&build_from_log(&log));
+        assert_eq!(
+            tools[0].state,
+            ToolState::Settled { is_error: true },
+            "is_error 必须进入终态"
+        );
+        let card = tools[0].card.as_ref().expect("card exists");
+        assert_eq!(card.kind, CardKind::Error);
+        assert_eq!(card.title, "失败");
+        assert!(card.preview[0].contains("permission denied"));
+    }
+
+    #[test]
+    fn result_for_unknown_call_is_ignored() {
+        // 结算事件先于 call 到达（或 call 丢失）：不能让模型错位，也不能 panic。
+        let log = log_with(&[(
+            "tool.result",
+            serde_json::json!({ "call_id": "ghost", "is_error": false, "content": [] }),
+        )]);
+        assert!(build_from_log(&log).is_empty());
     }
 }

@@ -6,4 +6,5 @@ edition.workspace = true
 
 [dependencies]
 dshr-session-store = { path = "../session-store" }
+dshr-tool-runtime = { path = "../tool-runtime" }
 serde_json.workspace = true

@@ -1,4 +1,4 @@
-﻿// Minimal DSH-compatible sidecar for the L1 unit-cost experiment.
+// Minimal DSH-compatible sidecar for the L1 unit-cost experiment.
 // Speaks NDJSON on stdin/stdout per docs/spec/sidecar-rpc.md.
 //
 // It deliberately does NOT depend on DSH internals: the goal is to measure the
@@ -149,7 +149,7 @@ async function loadPlugins() {
         description: spec.description,
         input_schema: {},
         output_schema: { type: 'object' },
-        presentation: 'generic',
+        presentation: spec.presentation ?? 'generic',
       }, { plugin_id: plugin.name ?? 'probe.plugin' })
     },
   }

@@ -1,4 +1,4 @@
-﻿# DSH 兼容映射（`docs/spec/dsh-compat-mapping.md`）
+# DSH 兼容映射（`docs/spec/dsh-compat-mapping.md`）
 
 > 状态：Draft · 2026-11-10
 > 用途：回答"我们的协议和 DSH 一致吗"，并把"哪些必须对齐、哪些刻意不对齐"钉死。
@@ -48,29 +48,32 @@ interface ToolOutputDefinition { readonly schema: JsonSchemaNode; render(args, v
 | DSH 字段 | 本项目（`tool-runtime` / `sidecar-rpc`） | 差距 |
 |---|---|---|
 | `name` / `description` / `parameters` | 有（`name`/`description`/`input_schema`） | 字段名不同，语义一致 |
-| `output.schema` | **无** | 结果 schema 不参与校验 |
+| `output.schema` | 有（`ToolDefinition.output_schema`），随 `tool.register` 传输 | 已承载；L1 不校验结果 |
 | `output.render` | 无（sidecar 直接回 `content[]`） | 渲染约定由插件自带 |
-| `output.presentationMeta` | **无** | 卡片元数据丢失 |
+| `output.presentationMeta` | 结果侧有 `meta`；`output` 不是函数 | 静态取值可用，动态计算缺 |
 | `execute(args, exec)` | 分离：`ToolExecutor` + sidecar `tool.invoke` | 可映射 |
 | `timeoutMs` | 有（`timeout_ms`） | 一致 |
 | `isConcurrencySafe` | **无** | 并发调度无法判定 |
-| `presentCall` / `presentResult` | **无** | 只能用通用卡片 |
+| `presentCall` | **无** | 调用前视图退化为工具名 |
+| `presentResult` | 有卡片类型 + 6 类折叠（`conversation-model::card`） | 标准卡片可渲染；自定义视图缺 |
 | `deferLoading` | 无 | 懒加载工具不可表达 |
 | scope（agent 级遮蔽/restrict） | **无** | 多 agent 场景无法隔离 |
-| `ToolCallView` 卡片类型：`generic`/`terminal`/`diff` | 只有 `origin` 与文本 content | 终端/差异卡片会退化成文本 |
+| `ToolCallView` 卡片类型 | `generic`/`terminal`/`diff`/`search`/`read`/`web` 全部实现，未知退回 `generic` | `presentCall` 仍缺 |
 
-**结论**：当前 L1 只能"跑通"简单工具；DSH 深度插件（终端、diff、搜索、read 视图）会**丢失展示语义**，
-但**不会丢数据和执行**。这与 PLAN §5.1 的分级承诺一致（L1 只承诺 Tool 执行），
-但文档必须写明"展示降级"，否则会被误读为兼容。
+**结论**：结果侧的展示语义已经能无损承载——`presentation` 卡片类型进入 `ToolDefinition`，
+`value`/`meta` 独立成字段，6 类标准卡片由事件确定性折叠。仍缺的是**调用前视图**（`presentCall`）、
+**自定义视图**（插件自带渲染函数）与**调度/作用域**字段，这些不影响数据与执行，影响的是体验与隔离。
+文档必须继续写明"标准卡片已对齐、自定义视图未对齐"，否则会被误读为完全兼容。
 
 ## 4. 结果与视图
 
 DSH 的 `ToolExecutionResult` 是 `{ isError, value, content, meta?, additionalContexts?, concludesTurn? }`，
 且 `content` 是 `ContentBlock[]`。我们目前：
 
-- `tool.result` 只有 `call_id` / `is_error` / `content` / `metadata`；
-- **没有** `value`（结构化返回值）与 `meta` 的稳定位置——我们把 value 塞进了 `content[0].value`；
-- **没有** `additionalContexts`（工具向对话注入消息）与 `concludesTurn`（工具结束整轮）。
+- `tool.result` 载荷为 `{call_id, is_error, content, value, meta, metadata}`——**结果字段已对齐**；
+- `value` 是结构化返回值，卡片折叠与回放只读它，不再从 `content[0].value` 里挖（旧插件仍走回退）；
+- `meta` 保留工具自带展示元数据；
+- 仍**没有** `additionalContexts`（工具向对话注入消息）与 `concludesTurn`（工具结束整轮）。
 
 这三项影响的不只是展示：`additionalContexts` 是 DSH 工具改变后续模型上下文的正规通道，
 `concludesTurn` 影响 Agent Loop 的终止条件。**M2 接真实 DSH 工具前必须补齐**。
@@ -83,26 +86,29 @@ DSH 的 session format 有 v0→v4 的迁移链（`dsh-session-format-*` 包）�
 
 ## 6. 优先级（按"影响真实插件"排序）
 
-| 优先 | 事项 | 原因 |
-|---|---|---|
-| P0 | `output.schema` 进入 `ToolDefinition`，随 `tool.register` 传输 | 没有结果 schema，校验与展示都无据可依 |
-| P0 | `value` / `meta` 在 `tool.result` 独立成字段 | 现在塞在 content block 里，DSH 侧读不到 |
-| P1 | `presentResult` 的卡片类型（generic/terminal/diff/search/read/web） | 终端与 diff 工具的体验 |
-| P1 | `isConcurrencySafe` → 调度器 | 并发安全无法判定时只能串行 |
-| P2 | scope / restrict / guard | 多 agent 与审批的隔离 |
-| P2 | `additionalContexts` / `concludesTurn` | 改变上下文与提前结束轮次 |
+| 优先 | 事项 | 原因 | 状态 |
+|---|---|---|---|
+| P0 | `output.schema` 进入 `ToolDefinition`，随 `tool.register` 传输 | 没有结果 schema，校验与展示都无据可依 | ✅ |
+| P0 | `value` / `meta` 在 `tool.result` 独立成字段 | 现在塞在 content block 里，DSH 侧读不到 | ✅ |
+| P1 | `presentResult` 的卡片类型（generic/terminal/diff/search/read/web） | 终端与 diff 工具的体验 | ✅ 卡片类型 + 折叠已实现，`presentCall` 仍缺 |
+| P1 | `isConcurrencySafe` → 调度器 | 并发安全无法判定时只能串行 | 待做 |
+| P2 | scope / restrict / guard | 多 agent 与审批的隔离 | 待做 |
+| P2 | `additionalContexts` / `concludesTurn` | 改变上下文与提前结束轮次 | 待做 |
 
 ## 6.1 已完成（2026-11-10）
 
 | 事项 | 状态 |
 |---|---|
 | `output.schema` 进入 `ToolDefinition`，随 `tool.register` 传输 | ✅ `ToolDefinition.output_schema` + `l1_roundtrip` 断言 |
-| `presentResult` 卡片类型字段 | ✅ `ToolDefinition.presentation`（仅承载，渲染未接） |
+| `presentResult` 卡片类型字段 | ✅ `ToolDefinition.presentation`；未知值退回 `generic` |
 | `tool.result` 拆出 `value` / `meta` | ✅ 事件载荷为 `{call_id, is_error, content, value, meta}`；`ToolOutcome` 同步 |
+| 卡片折叠与渲染 | ✅ `conversation-model::card`：6 类卡片 + 错误卡片，确定性、有界、形状不符回退 |
+| 卡片类型随事件持久化 | ✅ `tool.call.presentation`，回放不依赖插件版本 |
+| 两个界面接上副行 | ✅ `chat` / `conversation` 工具行显示卡片摘要，`conversation --check` 无窗口断言 |
 
 ## 7. 下一步落地
 
-1. `ToolDefinition` 增加 `output_schema`、`presentation`（卡片类型）字段，并让
-   `sidecar-rpc` 的 `tool.register` 携带它们（字段名对齐 DSH，减少映射损耗）。
-2. `tool.result` 增加 `value` 与 `meta`；`content` 保留给模型可见文本。
-3. 在 `spec/sidecar-rpc.md` 的字段表里标注"对齐 DSH 的 X 字段"，让差异可追踪。
+1. `presentCall`：调用前视图（工具名 + 参数摘要），当前只有工具名。
+2. `isConcurrencySafe`：进入执行器调度，允许只读工具并发。
+3. `additionalContexts` / `concludesTurn`：Agent Loop 的上下文注入与提前终止。
+4. `deferLoading` 与 scope/restrict/guard：懒加载与多 agent 隔离。

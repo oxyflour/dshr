@@ -93,7 +93,7 @@ Rust                                    Sidecar
 | `runtime.crashed` | → | `reason`, `exit_code` | — |
 | `plugin.load` / `plugin.loaded` / `plugin.failed` | ↔ | `plugin_id`, `entry` | load 幂等（同 id 返回已加载） |
 | `plugin.unload` / `plugin.unloaded` | ↔ | `plugin_id`, `timeout_ms` | unload 幂等 |
-| `tool.register` / `tool.unregister` | → | `definition`, `registration_id` | 重复注册返回同一 id |
+| `tool.register` / `tool.unregister` | → | `definition`（含 `output_schema?` / `presentation?`，对齐 DSH `output.schema` / `presentResult` 卡片类型）, `registration_id` | 重复注册返回同一 id |
 | `tool.invoke` / `tool.chunk` / `tool.result` / `tool.cancel` | ↔ | 见 §7 | `result` 恰好一次 |
 | `service.publish` / `service.revoke` | → | `service_key`, `methods[]` | key 冲突即 `E_SERVICE_CONFLICT` |
 | `service.invoke` / `service.result` | ↔ | `method`, `args` | 读操作幂等；写操作由方法声明 |
@@ -120,6 +120,7 @@ Rust ◄──tool.result──────  Sidecar
 3. 流式累计超过 8 MB 时，后续内容转附件引用。
 4. 并发上限：默认 4 个 in-flight 调用/插件；超出返回 `E_BACKPRESSURE`，Sidecar 必须暂停发起新调用。
 5. 每个调用都有 `timeout_ms`（Rust 侧裁决，默认 120 s）；超时即 `E_TIMEOUT`，随后发送 `tool.cancel` 兜底。
+6. `tool.result` 载荷为 `{call_id, is_error, content[], value, meta?}`（对齐 DSH `ToolExecutionResult`；字段语义见 [`cpp-v1.md`](cpp-v1.md) §7.3）。Host 只把 `value`/`meta` 落进 Session Log 的事件载荷，卡片由 `presentation` 折叠，不在传输层做渲染。
 
 ## 8. 取消
 

@@ -169,7 +169,7 @@ let effect = ctx.publish::<dyn ToolRegistry>("tool-registry/v1", impl_)?;
 | `input_schema` / `output_schema` | 是 | JSON Schema 文件路径 |
 | `timeout_ms` | 否 | 默认 120 s |
 | `cancelable` | 否 | 默认 `true` |
-| `presentation` | 否 | `generic` / `terminal` / `diff` / `table`，供 Tool Card 选择渲染器 |
+| `presentation` | 否 | 结果卡片类型：`generic` / `terminal` / `diff` / `search` / `read` / `web`；未知值 MUST 退回 `generic`，不得丢弃结果 |
 
 ### 7.2 Canonical value
 
@@ -184,12 +184,17 @@ let effect = ctx.publish::<dyn ToolRegistry>("tool-registry/v1", impl_)?;
     { "type": "text", "text": "3 rules failed" },
     { "type": "json", "value": { "findings": [] } }
   ],
+  "value": { "rules_failed": 3, "findings": [] },
+  "meta": { "duration_ms": 812 },
   "metadata": { "duration_ms": 812 }
 }
 ```
 
-- `content` 非空；`text` 与 `json` 二选一或并存，`image` 必须引用附件。
+- `content` 非空；`text` 与 `json` 二选一或并存，`image` 必须引用附件。**`content` 是模型可见的**。
+- `value` 是结构化返回值（对齐 DSH `ToolResult.value`）：展示与回放只用它，不要求模型可见。
+- `meta` 是工具自带的展示元数据（对齐 DSH `presentationMeta`），可为 `null`。
 - `is_error: true` 表示**工具执行失败**（模型可见），与协议错误（`E_*`）区分。
+- 卡片由 `presentation` + `value` 折叠而来，折叠 MUST 确定性且有界（预览行数/单行长度上限）；形状不匹配时退回 `generic`。
 
 ### 7.4 取消
 

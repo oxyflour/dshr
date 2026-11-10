@@ -1,4 +1,4 @@
-﻿# M1 实验记录
+# M1 实验记录
 
 > M1 的定义见 [`PLAN.md`](PLAN.md) §8：三个判死实验 + 一条端到端闭环。
 > 本文件只记录**可复现的实验事实**，不做进度汇报。被推翻的结论保留并标注。
@@ -464,6 +464,52 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
   `tool.register` 携带它们并在测试中断言（`l1_roundtrip`）。
 - 结果契约对齐：`tool.result` 现在有独立的 `value` / `meta`（不再只能从 `content` 里挖），
   `ToolOutcome` 同步拆出这两个字段；`chat --selftest` 的落盘事件已验证。
+
+## A13 工具结果卡片（presentResult，2026-11-10）
+
+问题：`presentation` 字段已经能穿过协议，但界面只显示"工具名 + 成功/失败"——
+终端、diff、搜索这些结果的信息量全丢了，等于只承载不渲染。
+
+**做法**（三层，各自可单测）：
+
+| 层 | 内容 |
+|---|---|
+| 类型 | `tool-runtime::Presentation`：`generic`/`terminal`/`diff`/`search`/`read`/`web`；`ToolDefinition::card()` 解析，未知值退回 `Generic` 且保留原字符串 |
+| 折叠 | `conversation-model::card::card_for`：`(tool, presentation, value, content)` → `ToolCard{kind,title,detail,preview}`，纯函数、确定性、有界 |
+| 渲染 | `chat` / `conversation` 的工具行改成两行：主行（工具名/来源/状态）+ 副行（卡片摘要） |
+
+**关键约束**（写进 `spec/session-log.md` §6.1）：
+
+- 预览 ≤ 6 行、单行 ≤ 120 字符，超出以"… 还有 N 行"收尾；长输出不能撑爆列表行高。
+- 形状与声明的卡片类型不匹配时**退回 generic**，不允许因为"格式不对"吞掉结果。
+- 缺顶层 `value` 时回退 `content[0].value`（旧 sidecar 插件兼容）。
+- `is_error` / `tool.aborted` 走错误卡片，不套用插件声明的卡片类型。
+- `presentation` 随 `tool.call` 落盘，回放不读插件当前版本。
+
+**结果**（`conversation --check`，新增无窗口自证入口）：
+
+```text
+[model] total=6 user=1 assistant=2 tools=2 settled=1 aborted=1 compaction=1
+[card] 终端 · exit 0 · 1 行输出 · 0 行错误 · main.rs
+[card] 错误 · 已中止 · crash
+[check] rows=6 PASS
+```
+
+`chat --selftest` 的卡片副行：
+
+```text
+工具  · probe_echo [sidecar] · 成功
+    ↳ 通用 · probe_echo · {"echo":{"text":"用工具试一下"}} ·   "echo": {
+```
+
+**踩到的坑**：generic 卡片最初用 `to_string_pretty` 的原始前 6 行，第一行永远是 `{`，
+摘要变成"通用 · probe_echo · {...} · {"——预览等于没做。改为过滤只含括号的行后再取预览。
+
+**测试**：workspace 70 passed（`conversation-model` 7 → 24，含 6 类卡片、形状回退、
+旧插件回退、错误卡片、截断、未知 call 忽略）；clippy `-D warnings` 干净。
+
+**未做**：`presentCall`（调用前视图）仍是工具名；插件自带的自定义视图函数（`output.render`）
+不执行——那是 M2 接真实 DSH 插件时才需要的能力。
 
 ## A8 真实 Cordis 插件（2026-11-09）
 
