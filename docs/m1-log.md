@@ -666,6 +666,27 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A27 离线安装：本地插件包 → sidecar + profile（2026-11-11）
+
+问题：A25/A26 能启停和读 Loader YAML，但没有"安装"入口——插件包必须手动拷进
+`node_modules` 再手写 profile。
+
+**做法**：
+
+1. `profile::install`：读本地包 `package.json`（容忍 UTF-8 BOM）、校验包名
+   （拒绝 `..`/绝对路径）、递归复制到 `<sidecar>/node_modules/<name>`
+   （已存在先删 = 升级）、profile 追加 `enabled: true` 条目（去重）。
+2. `chat --install-plugin <目录>`：默认 sidecar 目录 `sidecar/dsh-official`，
+   可用 `DSHR_SIDECAR_DIR` / `DSHR_PROFILE_DIR` 覆盖；Loader 模式拒绝安装。
+3. `--selftest-install`：复制、profile 追加、重启后 profile 可读。
+4. 顺手修了 Windows 编辑器给 `package.json` 加 BOM 导致解析失败的问题。
+
+**验证**：profile 14 测试、CLI 端到端（安装 → 文件落位 → profile 条目）、
+`--selftest-install` PASS、workspace 全绿。
+
+**边界**：只支持本地目录，不做 npm 网络解析/依赖树/签名审计。
+详见 [`m2-plugins.md`](m2-plugins.md)。
+
 ## A26 Loader YAML：bundle + patch 派生插件条目（2026-11-11）
 
 问题：A25 的 plugins.json 仍是手写条目，和 DSH 的 Loader 组合文件脱节。

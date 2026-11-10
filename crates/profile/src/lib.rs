@@ -18,7 +18,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod install;
 pub mod loader;
+
+pub use install::{install_package, InstallReport};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -131,6 +134,11 @@ impl Profile {
 
     pub fn entries(&self) -> &[PluginEntry] {
         &self.entries
+    }
+
+    /// 追加条目（安装流程用；不去重，由安装器保证）。
+    pub fn entries_mut_push(&mut self, entry: PluginEntry) {
+        self.entries.push(entry);
     }
 
     /// 启用/禁用；未知插件返回 false。

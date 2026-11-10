@@ -37,7 +37,7 @@ use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
-use dshr_profile::{Profile, ProfileSource};
+use dshr_profile::{install_package, Profile, ProfileSource};
 use dshr_sandbox::Workspace;
 use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
 use dshr_tool_runtime::{
@@ -3011,6 +3011,100 @@ fn selftest_loader() -> i32 {
     }
 }
 
+/// 离线安装插件：`chat --install-plugin <本地包目录>`。
+///
+/// 复制到 `sidecar/dsh-official/node_modules/<name>` 并追加 profile 条目；
+/// 不解析 npm 依赖（包需要在本地已完整）。
+fn install_plugin_cli(package: PathBuf) -> i32 {
+    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let sidecar_dir = std::env::var("DSHR_SIDECAR_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join("sidecar/dsh-official"));
+    if let Err(err) = std::fs::create_dir_all(&sidecar_dir) {
+        eprintln!("[install] 创建 sidecar 目录失败: {err}");
+        return 1;
+    }
+    let profile_dir = std::env::var("DSHR_PROFILE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".tmp/profile"));
+    let mut profile = match Profile::load(&profile_dir) {
+        Ok(profile) => profile,
+        Err(err) => {
+            eprintln!("[install] 加载 profile 失败: {err}");
+            return 1;
+        }
+    };
+    match install_package(&sidecar_dir, &package, &mut profile) {
+        Ok(report) => {
+            println!(
+                "[install] {} -> {}（profile_added={}）",
+                report.name,
+                report.destination.display(),
+                report.added_to_profile
+            );
+            println!(
+                "[install] profile={}；重启 chat 后加载",
+                profile.path().display()
+            );
+            0
+        }
+        Err(err) => {
+            eprintln!("[install] 安装失败: {err}");
+            1
+        }
+    }
+}
+
+/// 安装流程自检：本地包复制 + profile 追加 + 重启后可读。
+fn selftest_install() -> i32 {
+    let root = PathBuf::from(".tmp/install-selftest");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(root.join("sidecar"));
+    let package = root.join("pkg");
+    let _ = std::fs::create_dir_all(package.join("lib"));
+    let _ = std::fs::write(
+        package.join("package.json"),
+        json!({ "name": "@deepseek-ai/dsh-tool-selftest", "version": "1.0.0" }).to_string(),
+    );
+    let _ = std::fs::write(package.join("lib/index.js"), "export const ok = true\n");
+
+    let mut profile = match Profile::load(root.join("profile")) {
+        Ok(profile) => profile,
+        Err(err) => {
+            println!("[selftest-install] 加载 profile 失败: {err}");
+            return 1;
+        }
+    };
+    let report = match install_package(&root.join("sidecar"), &package, &mut profile) {
+        Ok(report) => report,
+        Err(err) => {
+            println!("[selftest-install] 安装失败: {err}");
+            return 1;
+        }
+    };
+    let copied = report.destination.join("lib/index.js").exists();
+    let reloaded = Profile::load(root.join("profile")).ok();
+    let in_profile = reloaded.is_some_and(|profile| {
+        profile
+            .entries()
+            .iter()
+            .any(|entry| entry.name == "@deepseek-ai/dsh-tool-selftest" && entry.enabled)
+    });
+
+    println!(
+        "[install] name={} copied={copied} profile_added={} in_profile={in_profile}",
+        report.name, report.added_to_profile
+    );
+    let ok = copied && report.added_to_profile && in_profile;
+    if ok {
+        println!("[selftest-install] PASS");
+        0
+    } else {
+        println!("[selftest-install] FAIL");
+        1
+    }
+}
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
 ///
 /// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
@@ -3098,6 +3192,17 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-loader") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_loader());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-install") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_install());
+    }
+    if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
+        let Some(path) = std::env::args().nth(index + 1) else {
+            eprintln!("用法: chat --install-plugin <本地包目录>");
+            std::process::exit(2);
+        };
+        std::process::exit(install_plugin_cli(PathBuf::from(path)));
     }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");

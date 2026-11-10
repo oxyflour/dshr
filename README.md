@@ -97,4 +97,6 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 切换后重启当前会话的 sidecar（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
 也支持从 DSH 的 `cordis.yml` + `cordis.patch.yml` 派生只读插件列表
 （`DSHR_LOADER_BUNDLE` / `DSHR_LOADER_PATCH`，[`docs/m2-loader.md`](docs/m2-loader.md)）。
+本地插件包可用 `chat --install-plugin <目录>` 离线安装（复制到 sidecar + 写 profile，
+[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

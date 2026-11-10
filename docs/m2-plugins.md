@@ -58,11 +58,30 @@ M2 之前 sidecar 的插件列表是写死的两条（workspace-dependencies + �
 
 截图核对：右侧插件面板、禁用后 `插件 · 1/2 启用` 与按钮状态、`plugins.json` 同步。
 
+## 安装（离线）
+
+`chat --install-plugin <本地包目录>`：
+
+1. 读取包目录的 `package.json`（容忍 UTF-8 BOM），校验 `name` 不含 `..`/绝对路径；
+2. 递归复制到 `<sidecar>/node_modules/<name>`（已存在先删，等于升级）；
+3. 在 profile 里追加 `enabled: true` 条目（重复安装不重复加）；
+4. 重启 chat 生效；Loader 模式下拒绝安装（只读）。
+
+例：
+
+```powershell
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --install-plugin path\to\my-tool
+```
+
+这是**本地包安装**：不做 npm 网络解析、不处理依赖树、不校验签名。包需要已经是
+完整可加载的目录（例如从本机 DSH 的 `app.asar` 抽出，或用户自己的插件构建产物）。
+`--selftest-install` 覆盖复制、profile 追加与重装去重。
+
 ## 边界
 
-- **安装**：还没有 npm 安装流程。目前"安装"等价于：用 `tools/dsh-vendor.mjs`
-  抽取官方包到 `sidecar/dsh-official/node_modules`，再在 profile 里加条目。
-  真正的离线安装/签名/审计是下一阶段。
-- **Loader YAML**：`cordis.yml` / `cordis.patch.yml` 的 bundle 树还没解析；
-  现在等价于"手写 entry 列表"。这是"装插件"和"复刻 DSH 宿主"的分界线。
+- **npm 安装**：网络解析、锁文件、生命周期脚本、签名/审计都还没做；当前只支持
+  本地目录 + 官方 vendor 抽取。
+- **Loader YAML**：`cordis.yml` / `cordis.patch.yml` 已支持只读派生
+  （见 [`m2-loader.md`](m2-loader.md)），但 `include`/group 展开/`!!js` 求值未实现。
 - `source` 在生成默认值时固化；DSH 安装路径变化后需要重新生成 profile。
+
