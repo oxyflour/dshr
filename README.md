@@ -77,3 +77,9 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 依赖由 `tools/dsh-vendor.mjs` 从本机安装的 `app.asar` 抽取（不提交仓库）。
 边界（写入/沙箱/会话等 service 未提供、Loader 未接）与复现步骤见
 [`docs/m2-dsh-official.md`](docs/m2-dsh-official.md)。
+
+**界面：按 DSH Desktop 的设计 token 对齐（2026-11-11）。** 侧栏 280、内容列 748、
+输入卡片圆角 28 / max-width 780、链接色/气泡/边框/字体全部取自 DSH 安装包解析出的
+`--dsw-*` 值（[`crates/ui-gpui/src/theme.rs`](crates/ui-gpui/src/theme.rs)），
+默认浅色并可切换深色。消息正文仍是纯文本、无多会话列表和 Markdown 渲染，
+差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

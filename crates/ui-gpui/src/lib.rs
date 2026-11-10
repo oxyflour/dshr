@@ -3,5 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod text_input;
+pub mod theme;
 
 pub use text_input::{init, TextInput};
+pub use theme::{Layout, Palette, Radii, Theme, ThemeKind, Typography};

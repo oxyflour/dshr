@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, rgb, size, uniform_list, App, Bounds, Context, Entity, Focusable,
-    UniformListScrollHandle, Window, WindowBounds, WindowOptions,
+    div, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, FontWeight, ScrollHandle,
+    Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
@@ -39,9 +39,8 @@ use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_session_store::{EventSpec, SessionLog, ToolState};
 use dshr_tool_runtime::{AllowAll, ToolDefinition, ToolOrigin};
-use dshr_ui_gpui::TextInput;
+use dshr_ui_gpui::{TextInput, Theme, ThemeKind};
 
-const ROW_HEIGHT: f32 = 56.0;
 const SESSION_ID: &str = "s-chat";
 
 fn now_ts() -> String {
@@ -463,11 +462,15 @@ struct ChatApp {
     rows: Vec<Row>,
     /// 真正的文本输入组件（实现 EntityInputHandler，中文 IME 组合输入可用）。
     input: Entity<TextInput>,
-    scroll: UniformListScrollHandle,
+    scroll: ScrollHandle,
     /// 一轮正在生成：输入框仍可编辑，但回车不会发第二条。
     busy: bool,
     /// 与 provider 共享的停止句柄（UI 不持锁就能请求中断）。
     cancel: Arc<AtomicBool>,
+    /// DSH 设计 token（浅色/深色）。
+    theme_kind: ThemeKind,
+    /// 左侧会话栏收起状态（对齐 DSH 的折叠侧栏）。
+    sidebar_collapsed: bool,
 }
 
 impl ChatApp {
@@ -572,72 +575,701 @@ impl ChatApp {
         })
         .detach();
     }
-}
 
-/// 一行的渲染数据：主行 + （工具卡片的）副行。
-///
-/// 用 `String` 而不是 GPUI 类型：快照要跨线程从 Agent 线程送到 UI 线程。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Row {
-    main: String,
-    sub: Option<String>,
-    tone: Tone,
-}
+    // ------------------------------------------------------------------
+    // DSH Desktop 对齐的界面：侧栏 / 头部 / 对话流 / 输入卡片。
+    // 尺寸与颜色都来自 `dshr_ui_gpui::theme`（从 DSH 安装包解析的 token）。
+    // ------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tone {
-    User,
-    Assistant,
-    Tool,
-    Meta,
-}
+    fn theme(&self) -> Theme {
+        Theme::new(self.theme_kind)
+    }
 
-impl Tone {
-    fn background(self) -> gpui::Rgba {
-        match self {
-            Self::User => rgb(0x1b1b1b),
-            Self::Assistant => rgb(0x161616),
-            Self::Tool => rgb(0x1d2a3d),
-            Self::Meta => rgb(0x2a2418),
+    fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        self.theme_kind = self.theme_kind.toggled();
+        cx.notify();
+    }
+
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        cx.notify();
+    }
+
+    fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
+    fn sidebar(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        let session_row = div()
+            .id("session-row")
+            .h(px(36.0))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .rounded(t.radii.md)
+            .bg(p.color(p.interactive_hover))
+            .child(
+                div()
+                    .text_size(t.type_scale.body)
+                    .line_height(t.type_scale.body_line)
+                    .text_color(p.color(p.label_primary))
+                    .child("当前会话"),
+            )
+            .child(
+                div()
+                    .text_size(t.type_scale.small)
+                    .text_color(p.color(p.label_caption))
+                    .child(SESSION_ID),
+            )
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.focus_composer(window, cx);
+            }));
+
+        div()
+            .w(t.layout.sidebar_width)
+            .h_full()
+            .flex()
+            .flex_col()
+            .px(px(8.0))
+            .py(px(6.0))
+            .bg(p.color(p.sidebar_fill))
+            .child(
+                // 品牌行：DSH 的 logo 由图形 + 名称组成；这里用首字母方块占位。
+                div()
+                    .h(px(52.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded(t.radii.sm)
+                            .bg(p.color(p.label_primary))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.color(p.bg_base))
+                                    .child("D"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .line_height(px(22.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.color(p.label_primary))
+                                    .child("DeepSeek Harness"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .line_height(px(16.0))
+                                    .text_color(p.color(p.label_caption))
+                                    .child("dshr · 本地桌面"),
+                            ),
+                    ),
+            )
+            .child(
+                // 新建对话：DSH 侧栏顶部的主按钮。
+                div()
+                    .id("new-session")
+                    .mx(px(4.0))
+                    .mb(px(10.0))
+                    .h(px(38.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .rounded(t.radii.md)
+                    .border_1()
+                    .border_color(p.color(p.border_l3))
+                    .bg(p.color(p.button_elevated))
+                    .cursor_pointer()
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.color(p.label_primary))
+                    .child("＋  新建对话")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.focus_composer(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .px(px(12.0))
+                    .pb(px(4.0))
+                    .pt(px(6.0))
+                    .text_size(t.type_scale.small)
+                    .text_color(p.color(p.label_caption))
+                    .child("会话"),
+            )
+            .child(session_row)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_tertiary))
+                            .child("模型 · deepseek-chat"),
+                    )
+                    .child(
+                        div()
+                            .id("theme-toggle-sidebar")
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .rounded(t.radii.sm)
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_secondary))
+                            .child(format!("界面 · {}（点击切换）", self.theme_kind.label()))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.toggle_theme(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .text_size(px(11.0))
+                            .text_color(p.color(p.label_caption))
+                            .child("M2 · 官方插件已装载"),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn header(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        let (dot, status) = if self.busy {
+            (p.state_warn, "生成中…")
+        } else {
+            (p.state_success, "就绪")
+        };
+        div()
+            .min_h(t.layout.header_height)
+            .px(px(24.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_b_1()
+            .border_color(p.color(p.border_l3))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .id("sidebar-toggle")
+                            .w(px(28.0))
+                            .h(px(28.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(t.radii.sm)
+                            .cursor_pointer()
+                            .text_color(p.color(p.label_secondary))
+                            .hover(|style| style.bg(p.color(p.interactive_hover)))
+                            .child(if self.sidebar_collapsed { "≡" } else { "⟨" })
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.toggle_sidebar(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.body)
+                                    .text_color(p.color(p.label_tertiary))
+                                    .child("会话"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.body)
+                                    .text_color(p.color(p.label_caption))
+                                    .child("/"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.body)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.color(p.label_primary))
+                                    .child(SESSION_ID),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(p.color(dot)))
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.secondary)
+                                    .text_color(p.color(p.label_secondary))
+                                    .child(status),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_tertiary))
+                            .child(format!("{} 条", self.rows.len())),
+                    )
+                    .child(
+                        div()
+                            .id("theme-toggle-header")
+                            .px(px(10.0))
+                            .py(px(4.0))
+                            .rounded(t.radii.sm)
+                            .border_1()
+                            .border_color(p.color(p.border_l2))
+                            .bg(p.color(p.button_elevated))
+                            .cursor_pointer()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_secondary))
+                            .child(format!("切换到{}", self.theme_kind.toggled().label()))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.toggle_theme(cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_row(&self, row: &Row, t: &Theme) -> AnyElement {
+        let p = t.palette;
+        match row {
+            Row::User(text) => div()
+                .flex()
+                .justify_end()
+                .child(
+                    div()
+                        .max_w(t.layout.content_width * 0.702)
+                        .px(px(14.0))
+                        .py(px(10.0))
+                        .rounded(t.radii.lg)
+                        .bg(p.color(p.bubble))
+                        .text_size(t.type_scale.body)
+                        .line_height(t.type_scale.body_line)
+                        .text_color(p.color(p.label_primary))
+                        .child(text.clone()),
+                )
+                .into_any_element(),
+            Row::Assistant(text) => {
+                let streaming = text.ends_with('▌');
+                div()
+                    .flex()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .mt(px(2.0))
+                            .rounded(t.radii.xs)
+                            .bg(p.color(p.business_tertiary))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.color(p.business_primary))
+                                    .child("D"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.body)
+                                    .line_height(t.type_scale.body_line)
+                                    .text_color(p.color(p.label_primary))
+                                    .child(text.clone()),
+                            )
+                            .when(streaming, |el| {
+                                el.child(
+                                    div()
+                                        .text_size(t.type_scale.small)
+                                        .text_color(p.color(p.label_caption))
+                                        .child("正在生成 · 可点击右侧停止"),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            }
+            Row::Tool {
+                name,
+                origin,
+                status,
+                detail,
+                is_error,
+                pending,
+            } => {
+                let dot = if *pending {
+                    p.state_warn
+                } else if *is_error {
+                    p.state_error
+                } else {
+                    p.state_success
+                };
+                let status_color = if *is_error {
+                    p.state_error
+                } else {
+                    p.label_caption
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .bg(p.color(p.bg_layer_1))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(p.color(dot)))
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.secondary)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.color(p.label_primary))
+                                    .child(name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.0))
+                                    .py(px(1.0))
+                                    .rounded(t.radii.xs)
+                                    .bg(p.color(p.tag))
+                                    .text_size(t.type_scale.small)
+                                    .text_color(p.color(p.label_tertiary))
+                                    .child(origin.clone()),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .text_size(t.type_scale.small)
+                                    .text_color(p.color(status_color))
+                                    .child(status.clone()),
+                            ),
+                    )
+                    .when(!detail.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .text_size(t.type_scale.small)
+                                .line_height(t.type_scale.small_line)
+                                .text_color(p.color(p.label_tertiary))
+                                .child(detail.clone()),
+                        )
+                    })
+                    .into_any_element()
+            }
+            Row::Meta(text) => div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py(px(4.0))
+                .child(
+                    div()
+                        .px(px(8.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_caption))
+                        .child(text.clone()),
+                )
+                .into_any_element(),
         }
+    }
+
+    fn transcript(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        let rows = self.rows.clone();
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .max_w(t.layout.content_width)
+            .mx_auto()
+            .gap(px(16.0))
+            .py(px(20.0));
+        if rows.is_empty() {
+            column = column.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.0))
+                    .py(px(64.0))
+                    .child(
+                        div()
+                            .w(px(48.0))
+                            .h(px(48.0))
+                            .rounded(t.radii.lg)
+                            .bg(p.color(p.label_primary))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(20.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.color(p.bg_base))
+                                    .child("D"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(t.type_scale.h2)
+                            .line_height(t.type_scale.h2_line)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.color(p.label_primary))
+                            .child("开始对话"),
+                    )
+                    .child(
+                        div()
+                            .text_size(t.type_scale.body)
+                            .text_color(p.color(p.label_tertiary))
+                            .child("输入问题，Agent 会调用工具，并把每一步写进本地会话日志。"),
+                    ),
+            );
+        }
+        for row in &rows {
+            column = column.child(self.render_row(row, t));
+        }
+        let _ = cx;
+        div()
+            .id("transcript-scroll")
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .px(px(24.0))
+            .child(column)
+            .into_any_element()
+    }
+
+    fn composer(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        let (button_bg, button_label) = if self.busy {
+            (p.state_error, "■")
+        } else {
+            (p.button_info, "↑")
+        };
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .px(px(16.0))
+            .pb(px(8.0))
+            .pt(px(4.0))
+            .child(
+                div()
+                    .w_full()
+                    .max_w(t.layout.composer_max_width)
+                    .flex()
+                    .flex_col()
+                    .rounded(t.radii.panel)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .bg(p.color(p.input_major))
+                    .shadow_sm()
+                    .child(
+                        div()
+                            .px(px(20.0))
+                            .pt(px(14.0))
+                            .min_h(px(48.0))
+                            .flex()
+                            .items_center()
+                            .text_size(t.type_scale.body)
+                            .line_height(t.type_scale.body_line)
+                            .text_color(p.color(p.label_primary))
+                            .child(self.input.clone()),
+                    )
+                    .child(
+                        div()
+                            .px(px(12.0))
+                            .pb(px(10.0))
+                            .pt(px(2.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(2.0))
+                                            .rounded(t.radii.sm)
+                                            .bg(p.color(p.tag))
+                                            .text_size(t.type_scale.small)
+                                            .text_color(p.color(p.label_secondary))
+                                            .child("deepseek-chat"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(t.type_scale.small)
+                                            .text_color(p.color(p.label_caption))
+                                            .child("本地会话 · 严格工具协议"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("send-button")
+                                    .w(px(34.0))
+                                    .h(px(34.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .bg(p.color(button_bg))
+                                    .text_color(p.color(p.bg_base))
+                                    .text_size(px(16.0))
+                                    .cursor_pointer()
+                                    .child(button_label)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.button_click(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .text_size(t.type_scale.small)
+                    .text_color(p.color(p.label_caption))
+                    .child("回车发送 · 生成中可停止 · 输入法组合输入可用"),
+            )
+            .into_any_element()
+    }
+}
+
+/// 会话流里的一行。字段全部是 `String`：快照跨线程从 Agent 线程送到 UI 线程。
+///
+/// 这是"数据"而不是"样式"：渲染时再按 DSH 的对话样式组合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Row {
+    User(String),
+    Assistant(String),
+    Tool {
+        name: String,
+        origin: String,
+        status: String,
+        detail: String,
+        is_error: bool,
+        pending: bool,
+    },
+    Meta(String),
+}
+
+impl Row {
+    fn main_text(&self) -> String {
+        match self {
+            Self::User(text) => format!("你 · {text}"),
+            Self::Assistant(text) => format!("助手 · {text}"),
+            Self::Tool {
+                name,
+                origin,
+                status,
+                ..
+            } => format!("工具 · {name} [{origin}] · {status}"),
+            Self::Meta(text) => text.clone(),
+        }
+    }
+
+    fn sub_text(&self) -> Option<String> {
+        match self {
+            Self::Tool { detail, .. } if !detail.is_empty() => Some(detail.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// 判断一行是否是"正在生成的助手回复"（以光标块结尾）。
+fn is_streaming_row(row: &Row) -> bool {
+    matches!(row, Row::Assistant(text) if text.contains('▌'))
+}
+
+fn streaming_text(row: &Row) -> &str {
+    match row {
+        Row::Assistant(text) => text,
+        _ => "",
     }
 }
 
 fn describe(item: &Item) -> Row {
     match item {
-        Item::User { text } => Row {
-            main: format!("你    · {text}"),
-            sub: None,
-            tone: Tone::User,
-        },
-        Item::Assistant { text } => Row {
-            main: format!("助手  · {text}"),
-            sub: None,
-            tone: Tone::Assistant,
-        },
+        Item::User { text } => Row::User(text.clone()),
+        Item::Assistant { text } => Row::Assistant(text.clone()),
         Item::Tool(tool) => {
-            let state = match &tool.state {
-                ToolState::Pending => "运行中".to_owned(),
+            let (status, pending) = match &tool.state {
+                ToolState::Pending => ("运行中".to_owned(), true),
                 ToolState::Settled { is_error } => {
                     if *is_error {
-                        "失败".to_owned()
+                        ("失败".to_owned(), false)
                     } else {
-                        "成功".to_owned()
+                        ("完成".to_owned(), false)
                     }
                 }
-                ToolState::Aborted { reason } => format!("中止({reason})"),
+                ToolState::Aborted { reason } => (format!("中止 · {reason}"), false),
             };
-            Row {
-                main: format!("工具  · {} [{}] · {state}", tool.tool, tool.origin),
-                sub: tool.card.as_ref().map(ToolCard::summary),
-                tone: Tone::Tool,
+            Row::Tool {
+                name: tool.tool.clone(),
+                origin: tool.origin.clone(),
+                status,
+                detail: tool
+                    .card
+                    .as_ref()
+                    .map(ToolCard::summary)
+                    .unwrap_or_default(),
+                is_error: matches!(tool.state, ToolState::Settled { is_error: true }),
+                pending,
             }
         }
-        Item::Compaction { from_seq, to_seq } => Row {
-            main: format!("上下文 · 已压缩 seq {from_seq}–{to_seq}"),
-            sub: None,
-            tone: Tone::Meta,
-        },
+        Item::Compaction { from_seq, to_seq } => {
+            Row::Meta(format!("上下文已压缩 · seq {from_seq}–{to_seq}"))
+        }
     }
 }
 
@@ -647,120 +1279,34 @@ fn describe(item: &Item) -> Row {
 fn rows_snapshot(log: &SessionLog, streaming: Option<&str>) -> Vec<Row> {
     let mut rows: Vec<Row> = build_from_log(log).iter().map(describe).collect();
     if let Some(text) = streaming {
-        rows.push(Row {
-            main: format!("助手  · {text}▌"),
-            sub: None,
-            tone: Tone::Assistant,
-        });
+        rows.push(Row::Assistant(format!("{text}▌")));
     }
     rows
 }
 
 impl Render for ChatApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let total = self.rows.len();
-        let rows_for_list = self.rows.clone();
-        let header = if self.busy {
-            format!("会话 {SESSION_ID} · {} 条 · 生成中（可停止）", total)
-        } else {
-            format!("会话 {SESSION_ID} · {} 条", total)
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(rgb(0x141414))
-            .text_color(rgb(0xd6d6d6))
-            .child(
-                div()
-                    .h(px(44.0))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(rgb(0x2a2a2a))
-                    .text_sm()
-                    .child(header),
-            )
-            .child(
-                div().flex_1().overflow_hidden().child(
-                    uniform_list(
-                        "chat-transcript",
-                        rows_for_list.len(),
-                        cx.processor(
-                            move |_this: &mut ChatApp, range: std::ops::Range<usize>, _w, _c| {
-                                let mut out = Vec::with_capacity(range.len());
-                                for ix in range {
-                                    let row = rows_for_list.get(ix).cloned().unwrap_or(Row {
-                                        main: String::new(),
-                                        sub: None,
-                                        tone: Tone::Assistant,
-                                    });
-                                    let mut cell = div()
-                                        .id(ix)
-                                        .h(px(ROW_HEIGHT))
-                                        .px_4()
-                                        .flex()
-                                        .flex_col()
-                                        .justify_center()
-                                        .border_b_1()
-                                        .border_color(rgb(0x222222))
-                                        .bg(row.tone.background())
-                                        .child(div().text_sm().child(row.main));
-                                    if let Some(sub) = row.sub {
-                                        cell = cell.child(
-                                            div().text_xs().text_color(rgb(0x8f9bb3)).child(sub),
-                                        );
-                                    }
-                                    out.push(cell.into_any_element());
-                                }
-                                out
-                            },
-                        ),
-                    )
-                    .track_scroll(&self.scroll)
-                    .h_full(),
-                ),
-            )
-            .child(
-                div()
-                    .h(px(56.0))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(rgb(0x2a2a2a))
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(px(38.0))
-                            .flex()
-                            .items_center()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(0x3a3a3a))
-                            .bg(rgb(0x1b1b1b))
-                            .text_sm()
-                            .child(self.input.clone()),
-                    )
-                    .children([div()
-                        .id("send-button")
-                        .ml_3()
-                        .px_3()
-                        .py_2()
-                        .rounded_md()
-                        .bg(if self.busy {
-                            rgb(0x5e2a2a)
-                        } else {
-                            rgb(0x243a5e)
-                        })
-                        .cursor_pointer()
-                        .child(if self.busy { "停止" } else { "发送" })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.button_click(window, cx);
-                        }))]),
-            )
+        let theme = self.theme();
+        let p = theme.palette;
+        let mut shell = div().flex().size_full().bg(p.color(p.sidebar_fill));
+        if !self.sidebar_collapsed {
+            shell = shell.child(self.sidebar(&theme, cx));
+        }
+        shell.child(
+            div()
+                .flex_1()
+                .h_full()
+                .min_w(px(0.0))
+                .flex()
+                .flex_col()
+                .rounded_tl(theme.radii.lg)
+                .border_l_1()
+                .border_color(p.color(p.border_l3))
+                .bg(p.color(p.bg_base))
+                .child(self.header(&theme, cx))
+                .child(self.transcript(&theme, cx))
+                .child(self.composer(&theme, cx)),
+        )
     }
 }
 
@@ -794,9 +1340,9 @@ fn selftest() -> i32 {
     println!("[selftest] items={}", items.len());
     for item in &items {
         let row = describe(item);
-        match row.sub {
-            Some(sub) => println!("  {}\n      ↳ {sub}", row.main),
-            None => println!("  {}", row.main),
+        match row.sub_text() {
+            Some(sub) => println!("  {}\n      ↳ {sub}", row.main_text()),
+            None => println!("  {}", row.main_text()),
         }
     }
 
@@ -857,9 +1403,9 @@ fn selftest_cordis() -> i32 {
     println!("[selftest-cordis] items={}", items.len());
     for item in &items {
         let row = describe(item);
-        match row.sub {
-            Some(sub) => println!("  {}\n      ↳ {sub}", row.main),
-            None => println!("  {}", row.main),
+        match row.sub_text() {
+            Some(sub) => println!("  {}\n      ↳ {sub}", row.main_text()),
+            None => println!("  {}", row.main_text()),
         }
     }
 
@@ -930,9 +1476,9 @@ fn selftest_dsh() -> i32 {
     );
     for item in &items {
         let row = describe(item);
-        match row.sub {
-            Some(sub) => println!("  {}\n      ↳ {sub}", row.main),
-            None => println!("  {}", row.main),
+        match row.sub_text() {
+            Some(sub) => println!("  {}\n      ↳ {sub}", row.main_text()),
+            None => println!("  {}", row.main_text()),
         }
     }
 
@@ -997,7 +1543,7 @@ fn live_turn(text: &str) -> i32 {
     let mut first_text = None;
     let reply = state.stream_turn(text, &mut |rows| {
         updates += 1;
-        if first_text.is_none() && rows.last().is_some_and(|row| row.main.contains('▌')) {
+        if first_text.is_none() && rows.last().is_some_and(is_streaming_row) {
             first_text = Some(started.elapsed());
         }
     });
@@ -1030,7 +1576,7 @@ fn selftest_stream() -> i32 {
     let streaming: Vec<&Row> = snapshots
         .iter()
         .filter_map(|rows| rows.last())
-        .filter(|row| row.main.contains('▌'))
+        .filter(|row| is_streaming_row(row))
         .collect();
     let final_row = snapshots.last().and_then(|rows| rows.last());
     println!(
@@ -1039,7 +1585,7 @@ fn selftest_stream() -> i32 {
         streaming.len()
     );
     for row in &streaming {
-        println!("  {}", row.main);
+        println!("  {}", row.main_text());
     }
 
     let reply = reply.unwrap_or_default();
@@ -1047,13 +1593,15 @@ fn selftest_stream() -> i32 {
         && snapshots.len() >= 3
         && streaming.len() >= 2
         // 流式文本单调增长：每个快照都比上一个长。
-        && streaming
-            .windows(2)
-            .all(|pair| pair[0].main.chars().count() < pair[1].main.chars().count())
+        && streaming.windows(2).all(|pair| {
+            streaming_text(pair[0]).chars().count() < streaming_text(pair[1]).chars().count()
+        })
         && items.len() == 2
         && matches!(&items[0], Item::User { .. })
         && matches!(&items[1], Item::Assistant { text } if text == &reply)
-        && final_row.is_some_and(|row| row.main.contains(&reply) && !row.main.contains('▌'));
+        && final_row.is_some_and(|row| {
+            matches!(row, Row::Assistant(text) if text.contains(&reply) && !text.contains('▌'))
+        });
 
     if ok {
         println!("[selftest-stream] PASS");
@@ -1161,7 +1709,8 @@ fn main() {
     application().run(move |cx: &mut App| {
         // 文本输入组件的按键绑定（含回车提交）。
         dshr_ui_gpui::init(cx);
-        let bounds = Bounds::centered(None, size(px(900.0), px(640.0)), cx);
+        // 与 DSH Desktop 的默认窗口尺寸接近（侧栏 280 + 对话区）。
+        let bounds = Bounds::centered(None, size(px(1180.0), px(780.0)), cx);
         let state = state;
         let rows = rows;
         let app_cancel = app_cancel;
@@ -1176,9 +1725,11 @@ fn main() {
                     state,
                     rows,
                     input: input.clone(),
-                    scroll: UniformListScrollHandle::new(),
+                    scroll: ScrollHandle::new(),
                     busy: false,
                     cancel: app_cancel,
+                    theme_kind: ThemeKind::Light,
+                    sidebar_collapsed: false,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();

@@ -666,6 +666,29 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 **边界**：只读 fs；没有 sandbox/approval/session，因此写文件、bash/pwsh、todo、web 等插件暂不可用；
 插件列表硬编码，Loader YAML 组合未接。测试规模仍是 98 个（新增 `--selftest-dsh` 走真实插件，不进 cargo test）。
 
+## A18 界面按 DSH Desktop 对齐（2026-11-11）
+
+问题：GPUI 界面是"能用的调试面板"——深色列表、固定行高、没有侧栏/头部/输入卡片层次，
+和 DSH Desktop 的观感差距很大。
+
+**做法**：
+
+1. 从本机 DSH 安装包的 `app.asar` 抽出设计 token：
+   `@deepseek-ai/dsh-client-ui-theme` 里的 `--dsw-*` 定义（调色板 + 语义别名 + 深色覆盖），
+   以及 chat / sidebar / layout 包的 CSS modules（列宽、输入卡片、气泡、侧栏）。
+2. 解析 var() 链得到浅色/深色两套具体 RGBA，落到 `crates/ui-gpui/src/theme.rs`
+   （`Palette` / `Radii::DSH` / `Typography::DSH` / `Layout::DSH`），用单测锁数值。
+3. chat 重排为 DSH 的壳：280 侧栏（品牌/新建/会话/页脚）+ 76 头部（面包屑/状态/主题切换）
+   + 748 内容列（用户右气泡、助手行、工具卡片、压缩占位）+ 圆角 28 的输入卡片与 34 圆形发送键。
+4. 默认浅色（DSH profile 的 `ui-theme.preference` 是 light），可切深色。
+
+**验证**：`ui-gpui` 3 个 token 单测 + workspace 全绿 + clippy 干净 + 四个 selftest PASS；
+`chat.exe` 启动后进程存活、无 panic。
+
+**边界**：消息仍是纯文本（无 Markdown 渲染）、侧栏只有单会话、无命令面板/模型选择器/
+附件/审批、图标为文字占位、无 Windows 圆角标题栏与动画。**GPUI 窗口无法被桌面截图捕获**
+（远程显示适配器），观感需要人工确认。详见 [`ui-dsh-alignment.md`](ui-dsh-alignment.md)。
+
 ## A8 真实 Cordis 插件（2026-11-09）
 
 **目标**：验证 "compatibility, not captivity" 的第一步——插件写的是 **Cordis API**，
