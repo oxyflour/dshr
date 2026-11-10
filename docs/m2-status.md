@@ -8,7 +8,8 @@
 **已有证据**
 
 - 重试/退避（`docs/m2-stability.md`）：429/5xx/连接类指数退避，流式已交付后不重试；
-- `--selftest-retry`：每第 3 次请求注入 503，20 轮 `succeeded=20 failed=0 provider_calls=29`；
+- `--selftest-retry`：每第 3 次请求注入 503，20 轮、每轮一次工具调用；
+  `succeeded=20 failed=0 tool_executions=20 provider_calls=59`；
 - 严格工具协议（M1 A15）：`role: tool` + `tool_call_id` 配对，多工具轮次已验证；
 - 审批拒绝/工具失败都会落成显式 tool 错误，不会静默丢。
 

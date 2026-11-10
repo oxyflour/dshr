@@ -700,8 +700,8 @@ gate 4（装载/启停/Loader/安装）有证据；gate 2 缺真实 FPS；
    只重试 429/5xx/timeout/连接类错误，指数退避封顶；**流式已交付 delta 后不再重试**。
 3. `select_provider` 支持 `DSHR_PROVIDER=mock|deepseek|openai`，自动选择顺序
    deepseek → openai → mock；真实 provider 统一套重试。
-4. `--selftest-retry`：FlakyProvider 每第 3 次返回 503，20 轮跑出
-   `succeeded=20 failed=0 provider_calls=29`。
+4. `--selftest-retry`：FlakyProvider 每第 3 次返回 503，每轮一次工具调用，
+   20 轮跑出 `succeeded=20 failed=0 tool_executions=20 provider_calls=59`。
 
 **验证**：llm-retry 7 测试、llm-openai 6 测试、workspace 全绿、selftest PASS。
 

@@ -3182,7 +3182,7 @@ fn selftest_install() -> i32 {
         1
     }
 }
-/// 重试/故障注入自检：每第 3 次请求返回 503，20 轮全部应成功。
+/// 重试/故障注入自检：每第 3 次请求返回 503，20 轮工具调用全部应成功。
 struct FlakyProvider {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     fail_every: usize,
@@ -3191,7 +3191,7 @@ struct FlakyProvider {
 impl ModelProvider for FlakyProvider {
     fn complete(
         &mut self,
-        _request: &CompletionRequest,
+        request: &CompletionRequest,
     ) -> Result<dshr_agent_core::ModelReply, String> {
         let call = self
             .calls
@@ -3200,22 +3200,45 @@ impl ModelProvider for FlakyProvider {
         if self.fail_every > 0 && call.is_multiple_of(self.fail_every) {
             return Err(String::from("HTTP 503 temporarily unavailable"));
         }
-        Ok(dshr_agent_core::ModelReply {
-            text: format!("ok-{call}"),
-            tool_calls: Vec::new(),
-        })
+        // 第二轮（已看到工具结果）返回文本收尾；第一轮返回一次工具调用。
+        let saw_tool_result = matches!(request.messages.last(), Some(ChatMessage::Tool { .. }));
+        if saw_tool_result {
+            Ok(dshr_agent_core::ModelReply {
+                text: format!("ok-{call}"),
+                tool_calls: Vec::new(),
+            })
+        } else {
+            Ok(dshr_agent_core::ModelReply {
+                text: String::new(),
+                tool_calls: vec![dshr_agent_core::ModelToolCall {
+                    id: format!("call-{call}"),
+                    name: String::from("probe_native"),
+                    arguments: json!({ "text": "ping" }),
+                }],
+            })
+        }
     }
 }
 
-struct NoopExecutor;
+struct CountingExecutor {
+    executed: usize,
+}
 
-impl ToolExecutor for NoopExecutor {
+impl ToolExecutor for CountingExecutor {
     fn specs(&self) -> Vec<ToolSpec> {
-        Vec::new()
+        vec![ToolSpec {
+            name: String::from("probe_native"),
+            description: String::from("自检用"),
+            parameters: json!({ "type": "object" }),
+        }]
     }
 
-    fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
-        ToolOutcome::failure(format!("unexpected tool {}", call.tool))
+    fn execute(&mut self, _call: &ToolCallRequest) -> ToolOutcome {
+        self.executed += 1;
+        ToolOutcome::success(
+            json!([{ "type": "text", "text": "ok" }]),
+            json!({ "ok": true }),
+        )
     }
 }
 
@@ -3229,10 +3252,11 @@ fn selftest_retry() -> i32 {
         Box::new(flaky),
         RetryPolicy::immediate(4),
     ));
+    let mut executor = CountingExecutor { executed: 0 };
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     for _ in 0..20 {
-        let events = agent.run_turn("继续", &mut NoopExecutor);
+        let events = agent.run_turn("继续", &mut executor);
         if events
             .iter()
             .any(|event| matches!(event, AgentEvent::TurnFailed(_)))
@@ -3244,10 +3268,11 @@ fn selftest_retry() -> i32 {
     }
     let total_calls = calls.load(std::sync::atomic::Ordering::Relaxed);
     println!(
-        "[retry] turns=20 succeeded={succeeded} failed={failed} provider_calls={total_calls} \
-         (fault every 3rd call, max attempts 4)"
+        "[retry] turns=20 succeeded={succeeded} failed={failed} tool_executions={} \
+         provider_calls={total_calls} (fault every 3rd call, max attempts 4)",
+        executor.executed
     );
-    let ok = failed == 0 && succeeded == 20 && total_calls > 20;
+    let ok = failed == 0 && succeeded == 20 && executor.executed == 20 && total_calls > 40;
     if ok {
         println!("[selftest-retry] PASS");
         0

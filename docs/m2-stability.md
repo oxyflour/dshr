@@ -32,16 +32,17 @@ M2 gate 1 要求"20 步 turn 成功率 ≥99%、≥2 家 provider"。这一轮�
 ## 故障注入自检
 
 `chat --selftest-retry`：`FlakyProvider` 每第 3 次请求返回 `HTTP 503`，
-外面套 max_attempts=4 的重试，连续跑 20 轮：
+外面套 max_attempts=4 的重试；每轮先返回一次工具调用（`probe_native`），
+工具结果回来后再返回文本。连续跑 20 轮：
 
 ```text
-[retry] turns=20 succeeded=20 failed=0 provider_calls=29
-       (fault every 3rd call, max attempts 4)
+[retry] turns=20 succeeded=20 failed=0 tool_executions=20
+       provider_calls=59 (fault every 3rd call, max attempts 4)
 ```
 
-29 次 provider 调用 = 20 次成功 + 9 次被重试吃掉的故障；20 轮零失败。
-这不能代替真实网络的 20 步成功率，但把"故障 → 重试 → 成功"的链路变成了
-可重复的本地断言。
+59 次 provider 调用 = 20 轮 × 2 步 + 19 次被重试吃掉的故障；20 次工具执行全部成功，
+20 轮零失败。这不能代替真实网络的 20 步成功率，但把"故障 → 重试 → 工具继续执行 →
+成功收尾"的链路变成了可重复的本地断言。
 
 ## 未做
 
