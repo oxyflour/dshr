@@ -58,12 +58,33 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
 7. **长会话未虚拟化**：`ScrollHandle + overflow_y_scroll` 是普通滚动容器；
    上千条消息需要回到 `uniform_list` 或分段渲染（M2 性能）。
 
+## 窗口尺寸与高 DPI（踩过的坑）
+
+GPUI 的 `WindowBounds` 是**逻辑像素**，平台再乘 `scale_factor` 变成物理窗口。本机是
+1.75 缩放，最初写死 `1180x780` 逻辑 = `2065x1365` 物理，超过可见视口——窗口右侧和底部
+（包括输入框）被裁掉，看起来就像"agent 输出文本消失了"。
+
+修复：先用保守尺寸开窗，拿到 `window.display()` 与 `scale_factor()` 后按
+`visible_bounds / scale` 重设尺寸，保证物理窗口不超过可见区域；窗口逻辑宽 < 600 时自动收起
+侧栏，避免 280 的侧栏把正文挤出窗口。历史会话首次渲染后滚到最新一条（与 DSH 打开会话一致）。
+
 ## 验证与限制
 
 - `cargo test -p dshr-ui-gpui`：token 数值断言（浅/深底色、侧栏色、圆角、布局常量）。
 - `cargo test --workspace` 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 全绿。
 - `chat --selftest` / `--selftest-stream` / `--selftest-cordis` / `--selftest-dsh` 全部 PASS
   （UI 改动没有改变会话/工具/回放行为）。
-- **视觉截图无法自证**：本机是 Microsoft Remote Display Adapter，GPUI 窗口不会被
-  桌面截图捕获（试过 `tools/screen.ps1 shot`，只能截到前台浏览器）。因此"是否像 DSH"
-  需要你在本机肉眼看一次；token 与结构已在代码里锁定。
+- **截图已可用**：桌面截图抓不到 GPUI 窗口，但 `PrintWindow(PW_RENDERFULLCONTENT)` 可以：
+
+  ```powershell
+  # 进程不是 DPI-aware，窗口矩形是虚拟化尺寸，用 -Scale 1.75 抓完整物理窗口
+  node tools/asar.mjs ls dsh/node_modules/@deepseek-ai   # （示例：确认工具可用）
+  tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+  # 另开终端：先 windows 拿 hwnd，再 winshot
+  $env:TMP='C:\Projects\dshr\.tmp'; $env:TEMP=$env:TMP
+  powershell -ExecutionPolicy Bypass -File tools\screen.ps1 windows -ProcessId <pid>
+  powershell -ExecutionPolicy Bypass -File tools\screen.ps1 winshot -Hwnd <hwnd> -Scale 1.75 -Path .tmp\chat.png
+  ```
+
+  已用该方式核对：侧栏、头部、用户气泡、长回复换行、输入卡片与发送键都在正确位置。
+

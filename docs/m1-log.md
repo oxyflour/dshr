@@ -686,8 +686,14 @@ $ chat --live "请用 probe_native 工具把 hello 转成大写"
 `chat.exe` 启动后进程存活、无 panic。
 
 **边界**：消息仍是纯文本（无 Markdown 渲染）、侧栏只有单会话、无命令面板/模型选择器/
-附件/审批、图标为文字占位、无 Windows 圆角标题栏与动画。**GPUI 窗口无法被桌面截图捕获**
-（远程显示适配器），观感需要人工确认。详见 [`ui-dsh-alignment.md`](ui-dsh-alignment.md)。
+附件/审批、图标为文字占位、无 Windows 圆角标题栏与动画。
+
+**踩到的坑（已修）**：窗口按逻辑像素写成 1180x780，在 1.75 缩放下物理尺寸 2065x1365，
+超过可见视口——右侧和底部（包括输入框）被裁掉，看起来就像"输出文本消失了"。
+修复为按 `display.visible_bounds / scale` 兜底，并在窄窗口自动收起侧栏。
+截图问题也解决了：桌面截图抓不到 GPUI，但 `PrintWindow` 可以
+（`tools/screen.ps1 winshot -Hwnd … -Scale 1.75`），已用它核对侧栏/长回复/输入卡片。
+详见 [`ui-dsh-alignment.md`](ui-dsh-alignment.md)。
 
 ## A8 真实 Cordis 插件（2026-11-09）
 

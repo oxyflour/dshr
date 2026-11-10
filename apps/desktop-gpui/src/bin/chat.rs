@@ -471,6 +471,8 @@ struct ChatApp {
     theme_kind: ThemeKind,
     /// 左侧会话栏收起状态（对齐 DSH 的折叠侧栏）。
     sidebar_collapsed: bool,
+    /// 首次渲染后把历史滚到最新一条（DSH 打开会话也是停在底部）。
+    initial_scroll_done: bool,
 }
 
 impl ChatApp {
@@ -757,7 +759,7 @@ impl ChatApp {
             .into_any_element()
     }
 
-    fn header(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn header(&mut self, t: &Theme, collapsed: bool, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
         let (dot, status) = if self.busy {
             (p.state_warn, "生成中…")
@@ -789,7 +791,7 @@ impl ChatApp {
                             .cursor_pointer()
                             .text_color(p.color(p.label_secondary))
                             .hover(|style| style.bg(p.color(p.interactive_hover)))
-                            .child(if self.sidebar_collapsed { "≡" } else { "⟨" })
+                            .child(if collapsed { "≡" } else { "⟨" })
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.toggle_sidebar(cx);
                             })),
@@ -1285,11 +1287,28 @@ fn rows_snapshot(log: &SessionLog, streaming: Option<&str>) -> Vec<Row> {
 }
 
 impl Render for ChatApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::env::var("DSHR_UI_TRACE").as_deref() == Ok("1") {
+            eprintln!(
+                "[ui-trace] bounds={:?} viewport={:?} scale={} rows={} busy={} last={:?}",
+                window.bounds(),
+                window.viewport_size(),
+                window.scale_factor(),
+                self.rows.len(),
+                self.busy,
+                self.rows.last().map(Row::main_text)
+            );
+        }
         let theme = self.theme();
         let p = theme.palette;
+        if !self.initial_scroll_done && !self.rows.is_empty() {
+            self.scroll.scroll_to_bottom();
+            self.initial_scroll_done = true;
+        }
+        // 窄窗口（远程会话 / 小屏）自动收起侧栏，否则 280 的侧栏会把正文挤到窗口外。
+        let collapsed = self.sidebar_collapsed || window.bounds().size.width < px(600.0);
         let mut shell = div().flex().size_full().bg(p.color(p.sidebar_fill));
-        if !self.sidebar_collapsed {
+        if !collapsed {
             shell = shell.child(self.sidebar(&theme, cx));
         }
         shell.child(
@@ -1303,7 +1322,7 @@ impl Render for ChatApp {
                 .border_l_1()
                 .border_color(p.color(p.border_l3))
                 .bg(p.color(p.bg_base))
-                .child(self.header(&theme, cx))
+                .child(self.header(&theme, collapsed, cx))
                 .child(self.transcript(&theme, cx))
                 .child(self.composer(&theme, cx)),
         )
@@ -1709,8 +1728,11 @@ fn main() {
     application().run(move |cx: &mut App| {
         // 文本输入组件的按键绑定（含回车提交）。
         dshr_ui_gpui::init(cx);
-        // 与 DSH Desktop 的默认窗口尺寸接近（侧栏 280 + 对话区）。
-        let bounds = Bounds::centered(None, size(px(1180.0), px(780.0)), cx);
+        // 先用一个保守尺寸开窗，拿到真实 scale / display 后再调整。
+        // 高 DPI（本机 1.75）下 GPUI 把 Bounds 当逻辑像素、平台再乘 scale 变成物理窗口，
+        // 而远程会话的可见视口可能只有显示器逻辑尺寸的一半——直接开 1180x780 会让
+        // 右侧与底部（包括输入框）被裁掉，看起来就像"输出文本消失了"。
+        let bounds = Bounds::centered(None, size(px(640.0), px(480.0)), cx);
         let state = state;
         let rows = rows;
         let app_cancel = app_cancel;
@@ -1720,6 +1742,20 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
+                // 按"可见视口是逻辑尺寸 / scale"来估算，保证物理窗口不超过可见区域。
+                if let Some(display) = window.display(cx) {
+                    let scale = window.scale_factor();
+                    let available = display.visible_bounds().size;
+                    let width = (available.width.as_f32() / scale - 16.0).clamp(560.0, 1180.0);
+                    let height = (available.height.as_f32() / scale - 24.0).clamp(400.0, 780.0);
+                    if std::env::var("DSHR_UI_TRACE").as_deref() == Ok("1") {
+                        eprintln!(
+                            "[ui-trace] display={:?} scale={scale} window={width}x{height}",
+                            available
+                        );
+                    }
+                    window.resize(size(px(width), px(height)));
+                }
                 let input = cx.new(|cx| TextInput::new("输入消息，回车发送", cx));
                 let app = cx.new(|_cx| ChatApp {
                     state,
@@ -1730,6 +1766,7 @@ fn main() {
                     cancel: app_cancel,
                     theme_kind: ThemeKind::Light,
                     sidebar_collapsed: false,
+                    initial_scroll_done: false,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();
