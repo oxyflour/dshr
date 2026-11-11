@@ -1088,6 +1088,7 @@ dependencies = [
  "dshr-plugin-host",
  "dshr-profile",
  "dshr-sandbox",
+ "dshr-session-export",
  "dshr-session-store",
  "dshr-sidecar-guard",
  "dshr-tool-runtime",

@@ -33,8 +33,9 @@ use dshr_agent_context::{
     ContextPlan, SpillPolicy, SpillStore,
 };
 use dshr_agent_core::{
-    Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider, ModelProvider,
-    ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
+    spawn_child_spec, Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider,
+    ModelProvider, SessionTreeRuntime, SpawnChildArgs, SpawnContext, ToolCallRequest, ToolExecutor,
+    ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{HostOptions, SidecarHost};
@@ -46,7 +47,10 @@ use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
 use dshr_profile::{install_package, Profile, ProfileSource};
 use dshr_sandbox::Workspace;
-use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
+use dshr_session_export::{export_session, verify_export, ExportOptions, SpillStoreSource};
+use dshr_session_store::{
+    EventSpec, SessionCreated, SessionIndex, SessionLog, SessionMeta, ToolState,
+};
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
     ApprovalBroker, ApprovalOutcome, ApprovalPolicy, RegistryError, ToolDefinition, ToolOrigin,
@@ -56,6 +60,45 @@ use dshr_ui_gpui::{
 };
 
 const SESSION_ID: &str = "s-chat";
+
+/// 崩溃诊断：panic 时把位置/消息/工作目录追加到 `DSHR_CRASH_LOG`（默认 .tmp/crash.log），
+/// 再交给默认 hook（stderr 照常输出）。GUI 模式下用户能看到"出过什么错"。
+fn install_crash_hook() {
+    use std::io::Write;
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let mut report = format!(
+            "=== panic {} ===\nlocation: {:?}\n",
+            now_ts(),
+            info.location()
+        );
+        if let Some(message) = info.payload().downcast_ref::<&str>() {
+            report.push_str(message);
+            report.push('\n');
+        } else if let Some(message) = info.payload().downcast_ref::<String>() {
+            report.push_str(message);
+            report.push('\n');
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            report.push_str(&format!("cwd: {}\n", cwd.display()));
+        }
+        let path = std::env::var("DSHR_CRASH_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(".tmp/crash.log"));
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = file.write_all(report.as_bytes());
+        }
+        eprintln!("[chat] 已记录崩溃诊断到 {}", path.display());
+        default(info);
+    }));
+}
 
 fn now_ts() -> String {
     let nanos = std::time::SystemTime::now()
@@ -163,6 +206,16 @@ struct ChatState {
     approvals: Arc<ApprovalBroker>,
     /// 上下文外部化存储：超阈值工具结果落盘为内容寻址对象（内容只在磁盘，模型见引用）。
     spill: SpillStore,
+    /// 当前会话 id（会话树事件/子会话父链接使用）。
+    session_id: String,
+    /// 会话目录（子会话文件与导出都基于它）。
+    sessions_dir: PathBuf,
+    /// 与 provider 共享的停止句柄（子会话继承，用户停止会传播）。
+    cancel: Arc<AtomicBool>,
+    /// 是否允许派生子会话（子会话本身为 false，保证默认单层）。
+    allow_spawn: bool,
+    /// sidecar 启动/插件装载阶段上报的错误（插件错误提示用）。
+    plugin_errors: Vec<String>,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
@@ -445,12 +498,24 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
 struct ChatExecutor<'a> {
     plugins: &'a mut PluginHost,
     host: Option<&'a mut SidecarHost>,
-    approvals: &'a ApprovalBroker,
+    approvals: &'a Arc<ApprovalBroker>,
+    /// 父会话日志（与流式回调共享同一个 RefCell：`spawn_child` 要向它追加
+    /// child.spawned/finished，回调同时在追加 tool.call/tool.result）。
+    log: std::rc::Rc<std::cell::RefCell<SessionLog>>,
+    /// 会话目录（子会话文件落在这里）。
+    sessions_dir: &'a std::path::Path,
+    /// 父会话 id。
+    parent_id: &'a str,
+    /// 父会话取消句柄：子轮次共享，用户停止会同时停掉子会话。
+    cancel: &'a Arc<AtomicBool>,
+    /// 是否允许派生子会话（子会话本身不再派发，默认单层）。
+    allow_spawn: bool,
 }
 
 impl ToolExecutor for ChatExecutor<'_> {
     fn specs(&self) -> Vec<ToolSpec> {
-        self.plugins
+        let mut specs: Vec<ToolSpec> = self
+            .plugins
             .registry()
             .list()
             .iter()
@@ -459,10 +524,26 @@ impl ToolExecutor for ChatExecutor<'_> {
                 description: definition.description.clone(),
                 parameters: definition.input_schema.clone(),
             })
-            .collect()
+            .collect();
+        // `spawn_child` 是核心能力，不经过插件注册表；子会话不暴露该工具。
+        if self.allow_spawn {
+            specs.push(spawn_child_spec());
+        }
+        specs
     }
 
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        if self.allow_spawn && call.tool == SPAWN_CHILD_TOOL {
+            let mut log = self.log.borrow_mut();
+            return TreeCoordinator::spawn_child(
+                &mut log,
+                self.parent_id,
+                self.sessions_dir,
+                call,
+                self.approvals,
+                self.cancel,
+            );
+        }
         let definition = match self
             .plugins
             .registry()
@@ -538,6 +619,115 @@ impl ToolExecutor for ChatExecutor<'_> {
     }
 }
 
+/// 会话树产品面接线：`spawn_child` = 建子会话 → 同步跑一轮 → 回写父子日志。
+///
+/// 运行态树由"父会话**内存**日志 + 其余会话磁盘日志"重建
+/// （`SessionTreeRuntime::from_logs`）：磁盘上的父日志可能还缺本轮刚追加的
+/// `tool.call`，直接用磁盘版本会导致 seq 分叉。
+struct TreeCoordinator;
+
+impl TreeCoordinator {
+    fn spawn_child(
+        log: &mut SessionLog,
+        parent_id: &str,
+        sessions_dir: &std::path::Path,
+        call: &ToolCallRequest,
+        approvals: &Arc<ApprovalBroker>,
+        cancel: &Arc<AtomicBool>,
+    ) -> ToolOutcome {
+        let args = match SpawnChildArgs::from_call(call) {
+            Ok(args) => args,
+            Err(err) => return ToolOutcome::failure(format!("spawn_child 参数非法: {err}")),
+        };
+        let store = SessionIndex::new(sessions_dir);
+        let child_id = store.new_id();
+        let ts = now_ts();
+
+        let mut logs: Vec<SessionLog> = Vec::new();
+        for meta in store.scan().unwrap_or_default() {
+            if meta.id == parent_id {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&meta.path) {
+                if let Ok(other) = SessionLog::from_jsonl(&meta.id, &text) {
+                    logs.push(other);
+                }
+            }
+        }
+        let mut runtime = match SessionTreeRuntime::from_logs(logs, DEFAULT_MAX_DEPTH) {
+            Ok(runtime) => runtime,
+            Err(err) => return ToolOutcome::failure(format!("会话树不可用: {err}")),
+        };
+        let workspace = log
+            .created()
+            .map(|created| created.workspace_id.clone())
+            .unwrap_or_else(|| workspace_root().display().to_string());
+        if let Err(err) = runtime.register_root_with_log(parent_id, &workspace, log.clone()) {
+            return ToolOutcome::failure(format!("注册父会话失败: {err}"));
+        }
+        let spawned =
+            match runtime.spawn_child(&child_id, parent_id, &args, &SpawnContext::at(ts.clone())) {
+                Ok(spawned) => spawned,
+                Err(err) => return ToolOutcome::failure(format!("派发子会话失败: {err}")),
+            };
+
+        // 子会话独立日志先落盘（含 session.created 的父链接），再跑它的第一轮。
+        if let Err(err) = store.write_log(&spawned.log) {
+            return ToolOutcome::failure(format!("写入子会话失败: {err}"));
+        }
+        let child_path = store.path_for(&child_id);
+        let mut child = ChatState::open(
+            child_path,
+            &child_id,
+            cancel,
+            approvals.clone(),
+            false,
+            false,
+        );
+        let reply = child.stream_turn(&args.prompt, &mut |_| {});
+        child.save();
+
+        let interrupted = cancel.load(Ordering::Relaxed);
+        let outcome = if interrupted {
+            "interrupted"
+        } else if reply.is_some() {
+            "done"
+        } else {
+            "failed"
+        };
+        // 中断传播：父被停止时给仍活跃的后代写 session.interrupted_by_parent。
+        //
+        // 子日志以 `child.log` 为准（它含子会话自己的对话事件）；runtime 里的子日志副本
+        // 只有 session.created + 中断事件，直接回写会丢掉子会话的回答。
+        if interrupted {
+            let _ = runtime.interrupt_tree(parent_id, "user_stop", &now_ts());
+            let _ = child
+                .log
+                .append_interrupted_by_parent(now_ts(), parent_id, "user_stop");
+        }
+        child.save();
+        let _ = runtime.finish_child(&child_id, outcome, &now_ts());
+        let _ = runtime.sync_log(parent_id, log);
+        // 父日志（含 child.spawned/finished）落盘：会话索引/树查询都从磁盘重建。
+        let _ = store.write_log(log);
+
+        let preview: String = reply
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect();
+        let value = json!({
+            "child_session_id": child_id,
+            "parent_session_id": parent_id,
+            "depth": spawned.depth,
+            "outcome": outcome,
+            "reply": preview,
+        });
+        ToolOutcome::success(json!([{ "type": "json", "value": value.clone() }]), value)
+    }
+}
+
 /// 把 sidecar 注册映射进同一个 ToolRegistry。
 fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
     for definition in host.tool_definitions() {
@@ -555,7 +745,21 @@ impl ChatState {
         cancel: &Arc<AtomicBool>,
         approvals: Arc<ApprovalBroker>,
     ) -> Self {
-        let log = if path.exists() {
+        Self::open(path, session_id, cancel, approvals, true, true)
+    }
+
+    /// 通用构造：
+    /// - `allow_spawn = false`：子会话不再派发（默认单层，深度上限 2）；
+    /// - `with_sidecar = false`：子会话只用原生工具，避免每次派发再起一个 Node 进程。
+    fn open(
+        path: PathBuf,
+        session_id: &str,
+        cancel: &Arc<AtomicBool>,
+        approvals: Arc<ApprovalBroker>,
+        allow_spawn: bool,
+        with_sidecar: bool,
+    ) -> Self {
+        let mut log = if path.exists() {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             SessionLog::from_jsonl(session_id, &text).unwrap_or_else(|err| {
                 eprintln!("[chat] 无法加载历史会话（忽略并从空会话开始）: {err}");
@@ -564,8 +768,21 @@ impl ChatState {
         } else {
             SessionLog::new(session_id)
         };
+        // 新会话：把 `session.created` 作为第一条事件（父链/来源/工作区的权威来源）。
+        let mut wrote_created = false;
+        if log.is_empty() {
+            let workspace = workspace_root().display().to_string();
+            match log.append_created(now_ts(), &SessionCreated::root(workspace)) {
+                Ok(_) => wrote_created = true,
+                Err(err) => eprintln!("[chat] 写入 session.created 失败: {err}"),
+            }
+        }
 
-        let host = spawn_sidecar(Some(approvals.clone()));
+        let host = if with_sidecar {
+            spawn_sidecar(Some(approvals.clone()))
+        } else {
+            None
+        };
         let policy = if std::env::var("DSHR_TOOL_POLICY").as_deref() == Ok("ask-all") {
             ApprovalPolicy::ask_all()
         } else {
@@ -581,8 +798,12 @@ impl ChatState {
         if let Some(sidecar) = &host {
             register_sidecar_tools(&mut plugins, sidecar);
         }
+        let plugin_errors = host
+            .as_ref()
+            .map(|sidecar| sidecar.boot_errors().to_vec())
+            .unwrap_or_default();
 
-        Self {
+        let state = Self {
             log,
             path: path.clone(),
             host,
@@ -591,7 +812,20 @@ impl ChatState {
             seq: 0,
             approvals,
             spill: SpillStore::new(spill_dir_for(&path)),
+            session_id: session_id.to_owned(),
+            sessions_dir: path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".")),
+            cancel: cancel.clone(),
+            allow_spawn,
+            plugin_errors,
+        };
+        // 新建的会话立刻落盘：索引/侧栏/树查询都从磁盘扫描，不能等第一轮才可见。
+        if wrote_created {
+            state.save();
         }
+        state
     }
 
     /// 组装上下文计划：先按阈值把超大工具结果外部化（写对象 + 事件留痕），再重新计划。
@@ -640,6 +874,7 @@ impl ChatState {
             return false;
         };
         register_sidecar_tools(&mut self.plugins, &host);
+        self.plugin_errors = host.boot_errors().to_vec();
         self.host = Some(host);
         true
     }
@@ -767,76 +1002,106 @@ impl ChatState {
             .collect();
 
         let mut reply = String::new();
+        // 父日志临时放进 Rc<RefCell>：流式回调（tool.* 事件）与 spawn_child 执行器
+        // （child.spawned/finished）都要写同一份父日志，单借用无法同时满足。
+        let log_cell = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
+            &mut self.log,
+            SessionLog::new(&self.session_id),
+        )));
         {
-            let Self {
-                agent,
-                plugins,
-                host,
-                log,
-                approvals,
-                ..
-            } = self;
             let mut executor = ChatExecutor {
-                plugins,
-                host: host.as_mut(),
-                approvals: approvals.as_ref(),
+                plugins: &mut self.plugins,
+                host: self.host.as_mut(),
+                approvals: &self.approvals,
+                log: log_cell.clone(),
+                sessions_dir: &self.sessions_dir,
+                parent_id: &self.session_id,
+                cancel: &self.cancel,
+                allow_spawn: self.allow_spawn,
             };
-            agent.run_turn_streaming(&history, text, &mut executor, &mut |event| match event {
-                AgentEvent::TextDelta(delta) => {
-                    reply.push_str(delta);
-                    emit(rows_snapshot(log, Some(&reply)));
-                }
-                AgentEvent::ToolCall(call) => {
-                    let (origin, presentation) = presentations
-                        .get(&call.tool)
-                        .cloned()
-                        .unwrap_or_else(|| ("unknown".to_owned(), "generic".to_owned()));
-                    let _ = log.append(EventSpec::durable(
-                        "tool.call",
-                        &ts,
-                        json!({
-                            "call_id": call.call_id,
-                            "tool": call.tool,
-                            "origin": origin,
-                            // 展示元数据随事件持久化（spec/session-log.md §6）：
-                            // 回放不依赖插件当前版本。
-                            "presentation": presentation,
-                            "arguments": call.arguments
-                        }),
-                    ));
-                    emit(rows_snapshot(log, Some(&reply)));
-                }
-                AgentEvent::ToolResult { call_id, outcome } => {
-                    if outcome.is_error {
-                        let _ = log.append(EventSpec::durable(
-                            "tool.aborted",
-                            &ts,
-                            json!({ "call_id": call_id, "reason": outcome.content.to_string() }),
-                        ));
-                    } else {
-                        let _ = log.append(EventSpec::durable(
-                            "tool.result",
-                            &ts,
-                            json!({
-                                "call_id": call_id,
-                                "is_error": false,
-                                // 对齐 DSH：content 给模型，value/meta 给展示与回放。
-                                "content": outcome.content,
-                                "value": outcome.value,
-                                "meta": outcome.meta,
-                            }),
-                        ));
+            let log_for_events = log_cell.clone();
+            self.agent.run_turn_streaming(
+                &history,
+                text,
+                &mut executor,
+                &mut |event| match event {
+                    AgentEvent::TextDelta(delta) => {
+                        reply.push_str(delta);
+                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
                     }
-                    emit(rows_snapshot(log, Some(&reply)));
-                }
-                AgentEvent::TurnFailed(err) => {
-                    reply.push_str(&format!("处理失败：{err}"));
-                    emit(rows_snapshot(log, Some(&reply)));
-                }
-                AgentEvent::TurnStarted { .. }
-                | AgentEvent::StepStarted { .. }
-                | AgentEvent::TurnEnded { .. } => {}
-            });
+                    AgentEvent::ToolCall(call) => {
+                        let (origin, presentation) = presentations
+                            .get(&call.tool)
+                            .cloned()
+                            .unwrap_or_else(|| ("unknown".to_owned(), "generic".to_owned()));
+                        {
+                            let mut log = log_for_events.borrow_mut();
+                            let _ = log.append(EventSpec::durable(
+                                "tool.call",
+                                &ts,
+                                json!({
+                                    "call_id": call.call_id,
+                                    "tool": call.tool,
+                                    "origin": origin,
+                                    // 展示元数据随事件持久化（spec/session-log.md §6）：
+                                    // 回放不依赖插件当前版本。
+                                    "presentation": presentation,
+                                    "arguments": call.arguments
+                                }),
+                            ));
+                        }
+                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                    }
+                    AgentEvent::ToolResult { call_id, outcome } => {
+                        {
+                            let mut log = log_for_events.borrow_mut();
+                            if outcome.is_error {
+                                let _ = log.append(EventSpec::durable(
+                                    "tool.aborted",
+                                    &ts,
+                                    json!({
+                                        "call_id": call_id,
+                                        "reason": outcome.content.to_string()
+                                    }),
+                                ));
+                            } else {
+                                let _ = log.append(EventSpec::durable(
+                                    "tool.result",
+                                    &ts,
+                                    json!({
+                                        "call_id": call_id,
+                                        "is_error": false,
+                                        // 对齐 DSH：content 给模型，value/meta 给展示与回放。
+                                        "content": outcome.content,
+                                        "value": outcome.value,
+                                        "meta": outcome.meta,
+                                    }),
+                                ));
+                            }
+                        }
+                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                    }
+                    AgentEvent::TurnFailed(err) => {
+                        reply.push_str(&format!("处理失败：{err}"));
+                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                    }
+                    AgentEvent::TurnStarted { .. }
+                    | AgentEvent::StepStarted { .. }
+                    | AgentEvent::TurnEnded { .. } => {}
+                },
+            );
+        }
+        // 还原父日志：spawn_child 可能已往里追加 child.spawned / child.finished。
+        self.log = std::rc::Rc::try_unwrap(log_cell)
+            .map(|cell| cell.into_inner())
+            .unwrap_or_else(|cell| cell.borrow().clone());
+        // 用户中断留痕（回放/审计可见；子会话的中断由 TreeCoordinator 传播）。
+        if self.cancel.load(Ordering::Relaxed) {
+            let _ = self.log.append(EventSpec::durable(
+                "session.interrupted",
+                now_ts(),
+                json!({ "reason": "user_stop", "by_parent": false }),
+            ));
         }
 
         // 审批痕迹落盘（在工具事件之后：审批链用于审计/回放，不影响模型输入）。
@@ -886,12 +1151,26 @@ impl ChatState {
 
     /// 直接执行一次工具调用（自检用；走与真实轮次相同的策略/审批/沙箱路径）。
     fn execute_tool(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        let log_cell = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
+            &mut self.log,
+            SessionLog::new(&self.session_id),
+        )));
         let mut executor = ChatExecutor {
             plugins: &mut self.plugins,
             host: self.host.as_mut(),
-            approvals: self.approvals.as_ref(),
+            approvals: &self.approvals,
+            log: log_cell.clone(),
+            sessions_dir: &self.sessions_dir,
+            parent_id: &self.session_id,
+            cancel: &self.cancel,
+            allow_spawn: self.allow_spawn,
         };
-        executor.execute(call)
+        let outcome = executor.execute(call);
+        drop(executor);
+        self.log = std::rc::Rc::try_unwrap(log_cell)
+            .map(|cell| cell.into_inner())
+            .unwrap_or_else(|cell| cell.borrow().clone());
+        outcome
     }
 }
 
@@ -1138,6 +1417,10 @@ struct ChatApp {
     visible_limit: usize,
     /// 帧探针（DSHR_FRAME_PROBE）：滚动时测量真实帧耗时与呈现间隔。
     frame_probe: Option<FrameProbe>,
+    /// 会话树深度（session id → depth）；侧栏按树顺序展示并缩进子会话。
+    session_depths: std::collections::BTreeMap<String, u32>,
+    /// sidecar 启动/插件装载错误：插件面板顶部提示（避免"插件失败但界面无感"）。
+    plugin_errors: Vec<String>,
 }
 
 impl ChatApp {
@@ -1180,6 +1463,8 @@ impl ChatApp {
             return;
         }
         self.busy = true;
+        // 上一轮的停止信号不能污染这一轮（provider 与 ChatState 共享同一个 Arc）。
+        self.cancel.store(false, Ordering::Relaxed);
         cx.notify();
 
         // 模型调用与工具执行都在工作线程：UI 线程不允许被网络阻塞。
@@ -1284,10 +1569,9 @@ impl ChatApp {
     // ------------------------------------------------------------------
 
     fn reload_sessions(&mut self) {
-        match self.store.scan() {
-            Ok(sessions) => self.sessions = sessions,
-            Err(err) => eprintln!("[chat] 扫描会话目录失败: {err}"),
-        }
+        let (sessions, depths) = ordered_sessions(&self.store);
+        self.sessions = sessions;
+        self.session_depths = depths;
     }
 
     fn active_title(&self) -> String {
@@ -1309,6 +1593,7 @@ impl ChatApp {
         let cancel = Arc::new(AtomicBool::new(false));
         let state = ChatState::new(path, &id, &cancel, self.approvals.clone());
         let rows = rows_snapshot(&state.log, None);
+        self.plugin_errors = state.plugin_errors.clone();
         self.state = Arc::new(Mutex::new(state));
         self.cancel = cancel;
         self.rows = rows;
@@ -1434,6 +1719,7 @@ impl ChatApp {
             if !guard.restart_sidecar() {
                 eprintln!("[chat] 重启 sidecar 失败（插件开关已保存，下次启动生效）");
             }
+            self.plugin_errors = guard.plugin_errors.clone();
         }
         cx.notify();
     }
@@ -1454,6 +1740,43 @@ impl ChatApp {
         };
 
         let mut list = div().flex().flex_col().gap(px(6.0)).w_full();
+        // 插件错误提示：sidecar 在装载阶段上报的 log.emit(error) 直接显示在面板顶部。
+        if !self.plugin_errors.is_empty() {
+            let message = self
+                .plugin_errors
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            list = list.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.state_error))
+                    .bg(p.color(p.bg_layer_1))
+                    .child(
+                        div()
+                            .text_size(t.type_scale.small)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.color(p.state_error))
+                            .child("插件加载失败"),
+                    )
+                    .child(
+                        div()
+                            .text_size(t.type_scale.small)
+                            .line_height(t.type_scale.small_line)
+                            .text_color(p.color(p.label_tertiary))
+                            .child(message),
+                    ),
+            );
+        }
         for (index, entry) in entries.iter().enumerate() {
             let name = entry.name.clone();
             let display = name
@@ -1610,6 +1933,8 @@ impl ChatApp {
         for (index, session) in sessions.iter().enumerate() {
             let is_active = session.id == active_id;
             let is_renaming = self.renaming.as_deref() == Some(session.id.as_str());
+            // 子会话按树深度缩进，父会话保持 0 级。
+            let depth = self.session_depths.get(&session.id).copied().unwrap_or(0);
 
             if is_renaming {
                 let input = self.rename_input.clone();
@@ -1738,7 +2063,8 @@ impl ChatApp {
             let row = div()
                 .id(("session-row", index))
                 .w_full()
-                .px(px(10.0))
+                .pl(px(10.0 + depth as f32 * 14.0))
+                .pr(px(10.0))
                 .py(px(7.0))
                 .flex()
                 .items_center()
@@ -1755,16 +2081,30 @@ impl ChatApp {
                         .flex_1()
                         .child(
                             div()
-                                .text_size(t.type_scale.small)
-                                .line_height(px(18.0))
-                                .font_weight(if is_active {
-                                    FontWeight::MEDIUM
-                                } else {
-                                    FontWeight::NORMAL
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .when(depth > 0, |title| {
+                                    title.child(
+                                        div()
+                                            .text_size(t.type_scale.small)
+                                            .text_color(p.color(p.label_caption))
+                                            .child("↳"),
+                                    )
                                 })
-                                .text_color(p.color(p.label_primary))
-                                .text_overflow(TextOverflow::Truncate("…".into()))
-                                .child(session.title.clone()),
+                                .child(
+                                    div()
+                                        .text_size(t.type_scale.small)
+                                        .line_height(px(18.0))
+                                        .font_weight(if is_active {
+                                            FontWeight::MEDIUM
+                                        } else {
+                                            FontWeight::NORMAL
+                                        })
+                                        .text_color(p.color(p.label_primary))
+                                        .text_overflow(TextOverflow::Truncate("…".into()))
+                                        .child(session.title.clone()),
+                                ),
                         )
                         .child(
                             div()
@@ -3875,6 +4215,185 @@ fn selftest_loader() -> i32 {
 ///
 /// 复制到 `sidecar/dsh-official/node_modules/<name>` 并追加 profile 条目；
 /// 不解析 npm 依赖（包需要在本地已完整）。
+/// 会话树前序顺序 + 深度（父在前、子紧随其后），侧栏与自检共用。
+fn session_tree_order(store: &SessionIndex) -> Vec<(String, u32)> {
+    match store.tree() {
+        Ok(tree) => tree
+            .flatten()
+            .into_iter()
+            .map(|(depth, node)| (node.id.clone(), depth))
+            .collect(),
+        Err(err) => {
+            eprintln!("[chat] 会话树损坏（回退到扁平列表）: {err}");
+            Vec::new()
+        }
+    }
+}
+
+/// 按会话树前序排好的会话列表 + 深度表（侧栏与启动初始化共用）。
+fn ordered_sessions(
+    store: &SessionIndex,
+) -> (Vec<SessionMeta>, std::collections::BTreeMap<String, u32>) {
+    let order = session_tree_order(store);
+    let metas: std::collections::BTreeMap<String, SessionMeta> = store
+        .scan()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|meta| (meta.id.clone(), meta))
+        .collect();
+    if order.is_empty() {
+        return (
+            metas.into_values().collect(),
+            std::collections::BTreeMap::new(),
+        );
+    }
+    let mut ordered = Vec::new();
+    let mut depths = std::collections::BTreeMap::new();
+    for (id, depth) in &order {
+        depths.insert(id.clone(), *depth);
+        if let Some(meta) = metas.get(id) {
+            ordered.push(meta.clone());
+        }
+    }
+    // 树里没有的（索引竞争等极端情况）按 id 补在末尾，保证不丢会话。
+    for (id, meta) in &metas {
+        if !depths.contains_key(id) {
+            ordered.push(meta.clone());
+        }
+    }
+    (ordered, depths)
+}
+
+fn sessions_dir_from_env() -> PathBuf {
+    std::env::var("DSHR_SESSIONS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".tmp/sessions"))
+}
+
+/// `chat --export-session <id> [--export-dir <dir>]`：
+/// 导出 JSONL + 外部化附件 + manifest（sha256），并立刻自校验。
+fn export_session_cli(id: &str, out: Option<PathBuf>) -> i32 {
+    let store = SessionIndex::new(sessions_dir_from_env());
+    let path = store.path_for(id);
+    if !path.exists() {
+        eprintln!("[export] 会话不存在: {}", path.display());
+        return 1;
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("[export] 读取会话失败: {err}");
+            return 1;
+        }
+    };
+    let log = match SessionLog::from_jsonl(id, &text) {
+        Ok(log) => log,
+        Err(err) => {
+            eprintln!("[export] 会话日志损坏: {err}");
+            return 1;
+        }
+    };
+    let spill = SpillStore::new(spill_dir_for(&path));
+    let out_dir = out.unwrap_or_else(|| PathBuf::from(".tmp/exports").join(id));
+    let manifest = match export_session(
+        &log,
+        &SpillStoreSource::new(&spill),
+        &out_dir,
+        &ExportOptions::new(now_ts()),
+    ) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            eprintln!("[export] 导出失败: {err}");
+            return 1;
+        }
+    };
+    println!(
+        "[export] session={} events={} attachments={} missing={} bytes={} out={}",
+        manifest.session_id,
+        manifest.event_count,
+        manifest.attachments.len(),
+        manifest.missing_blobs.len(),
+        manifest.total_bytes,
+        out_dir.display()
+    );
+    match verify_export(&out_dir, id) {
+        Ok(report) if report.is_ok() => {
+            println!(
+                "[export] verify=ok jsonl_ok={} attachments_checked={}",
+                report.jsonl_ok, report.attachments_checked
+            );
+            0
+        }
+        Ok(report) => {
+            eprintln!("[export] 自校验失败: {:?}", report.problems);
+            1
+        }
+        Err(err) => {
+            eprintln!("[export] 自校验失败: {err}");
+            1
+        }
+    }
+}
+
+/// `chat --retention-plan`：只计算、不删除（每个会话一个 JSONL 段）。
+fn retention_plan_cli() -> i32 {
+    use dshr_session_export::{plan_retention, RetentionPolicy, SegmentUsage, SessionUsage};
+    let store = SessionIndex::new(sessions_dir_from_env());
+    let metas = match store.scan() {
+        Ok(metas) => metas,
+        Err(err) => {
+            eprintln!("[retention] 扫描会话失败: {err}");
+            return 1;
+        }
+    };
+    let usages: Vec<SessionUsage> = metas
+        .iter()
+        .map(|meta| {
+            let size = std::fs::metadata(&meta.path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            SessionUsage::new(
+                meta.id.clone(),
+                vec![SegmentUsage {
+                    segment_id: String::from("main"),
+                    relative_path: meta
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    size_bytes: size,
+                    last_modified_secs: meta.updated_at,
+                }],
+                0,
+            )
+        })
+        .collect();
+    let policy = RetentionPolicy::new(2 * 1024 * 1024 * 1024, 90, 1);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let plan = plan_retention(&usages, &policy, now);
+    println!(
+        "[retention] sessions={} bytes_before={} bytes_after={} deletions={} over_cap={} reclaimed={}",
+        usages.len(),
+        plan.bytes_before,
+        plan.bytes_after,
+        plan.deletions.len(),
+        plan.over_cap.len(),
+        plan.bytes_reclaimed()
+    );
+    for deletion in &plan.deletions {
+        println!(
+            "[retention] delete session={} segment={} size={} reason={:?}",
+            deletion.session_id, deletion.segment_id, deletion.size_bytes, deletion.reason
+        );
+    }
+    // 只出计划，不调用 apply_retention：删除必须由用户显式触发。
+    println!("[retention] plan-only（未删除任何文件）");
+    0
+}
+
 fn install_plugin_cli(package: PathBuf) -> i32 {
     let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .unwrap_or_else(|_| PathBuf::from("."));
@@ -3895,6 +4414,8 @@ fn install_plugin_cli(package: PathBuf) -> i32 {
             return 1;
         }
     };
+    // 第三方插件拥有当前用户的代码执行权限：显式确认（命令行主动调用）并留审计记录。
+    println!("[install] 安装第三方插件会在你的用户权限下执行任意代码；继续安装 {package:?}");
     match install_package(&sidecar_dir, &package, &mut profile) {
         Ok(report) => {
             println!(
@@ -3907,12 +4428,340 @@ fn install_plugin_cli(package: PathBuf) -> i32 {
                 "[install] profile={}；重启 chat 后加载",
                 profile.path().display()
             );
+            // 审计日志：安装动作与来源（不记录包内容）。
+            let audit = profile_dir.join("install-audit.jsonl");
+            let entry = json!({
+                "ts": now_ts(),
+                "action": "install",
+                "name": report.name,
+                "source": package.display().to_string(),
+                "destination": report.destination.display().to_string(),
+                "added_to_profile": report.added_to_profile,
+            });
+            let _ = std::fs::create_dir_all(&profile_dir);
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&audit)
+            {
+                use std::io::Write;
+                let _ = writeln!(file, "{entry}");
+            }
+            println!("[install] 审计记录: {}", audit.display());
             0
         }
         Err(err) => {
             eprintln!("[install] 安装失败: {err}");
             1
         }
+    }
+}
+
+/// 会话树产品面自检：spawn_child 真执行（子会话独立日志 + 父链接 + 父子事件）、
+/// 默认单层（子会话不能再派发）、中断传播（interrupted_by_parent）、
+/// 侧栏树顺序/深度、重启后 from_logs 重建。
+fn selftest_tree() -> i32 {
+    let dir = PathBuf::from(".tmp/tree-selftest");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let store = SessionIndex::new(&dir);
+    let approvals = ApprovalBroker::new();
+    let load = |id: &str| -> Option<SessionLog> {
+        let meta = store.scan().ok()?.into_iter().find(|meta| meta.id == id)?;
+        let text = std::fs::read_to_string(&meta.path).ok()?;
+        SessionLog::from_jsonl(&meta.id, &text).ok()
+    };
+
+    // 1) 父会话派发一次子会话；子会话同步跑完一轮并回写父子日志。
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut parent = ChatState::new(
+        dir.join("s-parent.jsonl"),
+        "s-parent",
+        &cancel,
+        approvals.clone(),
+    );
+    let spawn = parent.execute_tool(&ToolCallRequest {
+        call_id: String::from("tree-spawn-1"),
+        tool: SPAWN_CHILD_TOOL.to_owned(),
+        arguments: json!({ "prompt": "你好，子会话只做一句话回答" }),
+    });
+    let child_id = spawn
+        .value
+        .get("child_session_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let depth = spawn
+        .value
+        .get("depth")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let parent_created = parent.log.created().is_some();
+    let parent_spawned = parent
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "child.spawned");
+    let parent_finished = parent
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "child.finished");
+    let child_log = load(&child_id);
+    let child_parent_link = child_log
+        .as_ref()
+        .and_then(|log| log.created())
+        .and_then(|created| created.parent_session_id.clone())
+        .as_deref()
+        == Some("s-parent");
+    let child_has_reply = child_log.as_ref().is_some_and(|log| {
+        log.events()
+            .iter()
+            .any(|event| event.event_type == "message.assistant.settled")
+    });
+    let order = session_tree_order(&store);
+    let parent_index = order.iter().position(|(id, _)| id == "s-parent");
+    let child_index = order.iter().position(|(id, _)| id == &child_id);
+    let tree_ok = depth == 1
+        && child_parent_link
+        && child_has_reply
+        && parent_spawned
+        && parent_finished
+        && parent_created
+        && order
+            .iter()
+            .any(|(id, level)| id == &child_id && *level == 1)
+        && parent_index.is_some()
+        && child_index.is_some()
+        && parent_index < child_index;
+
+    // 2) 子会话不再派发（默认单层）。
+    let mut child_state = ChatState::open(
+        store.path_for(&child_id),
+        &child_id,
+        &cancel,
+        approvals.clone(),
+        false,
+        false,
+    );
+    let nested = child_state.execute_tool(&ToolCallRequest {
+        call_id: String::from("tree-spawn-nested"),
+        tool: SPAWN_CHILD_TOOL.to_owned(),
+        arguments: json!({ "prompt": "孙会话" }),
+    });
+    let nested_rejected = nested.is_error;
+
+    // 2b) 产品链路：mock 模型选择 spawn_child → 执行器派发 → 子会话回写 → 模型拿到结果。
+    let cancel3 = Arc::new(AtomicBool::new(false));
+    let mut parent3 = ChatState::new(
+        dir.join("s-parent3.jsonl"),
+        "s-parent3",
+        &cancel3,
+        approvals.clone(),
+    );
+    let loop_reply = parent3.stream_turn("请派发一个子会话，让它回答：子会话你好", &mut |_| {});
+    let has_event =
+        |log: &SessionLog, kind: &str| log.events().iter().any(|event| event.event_type == kind);
+    let loop_ok = loop_reply
+        .as_deref()
+        .is_some_and(|reply| !reply.is_empty() && !reply.starts_with("处理失败"))
+        && parent3.log.events().iter().any(|event| {
+            event.event_type == "tool.call"
+                && event.payload.get("tool").and_then(|value| value.as_str())
+                    == Some(SPAWN_CHILD_TOOL)
+        })
+        && has_event(&parent3.log, "child.spawned")
+        && has_event(&parent3.log, "tool.result")
+        && has_event(&parent3.log, "child.finished");
+
+    // 3) 中断传播：父取消后派发 → 父 session.interrupted + 子 interrupted_by_parent。
+    let cancel2 = Arc::new(AtomicBool::new(false));
+    let mut parent2 = ChatState::new(
+        dir.join("s-parent2.jsonl"),
+        "s-parent2",
+        &cancel2,
+        approvals.clone(),
+    );
+    cancel2.store(true, Ordering::Relaxed);
+    let interrupted_spawn = parent2.execute_tool(&ToolCallRequest {
+        call_id: String::from("tree-spawn-interrupted"),
+        tool: SPAWN_CHILD_TOOL.to_owned(),
+        arguments: json!({ "prompt": "中断测试" }),
+    });
+    let child2_id = interrupted_spawn
+        .value
+        .get("child_session_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let outcome_interrupted = interrupted_spawn
+        .value
+        .get("outcome")
+        .and_then(|value| value.as_str())
+        == Some("interrupted");
+    let child2_log = load(&child2_id);
+    let child_interrupted = child2_log.as_ref().is_some_and(|log| {
+        log.events()
+            .iter()
+            .any(|event| event.event_type == "session.interrupted_by_parent")
+    });
+    let parent_interrupted = parent2
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "session.interrupted");
+
+    // 4) 重启恢复：从磁盘日志重建运行态树，深度与中断状态一致。
+    let logs: Vec<SessionLog> = store
+        .scan()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|meta| {
+            std::fs::read_to_string(&meta.path)
+                .ok()
+                .and_then(|text| SessionLog::from_jsonl(&meta.id, &text).ok())
+        })
+        .collect();
+    let rebuilt = SessionTreeRuntime::from_logs(logs, DEFAULT_MAX_DEPTH);
+    let (rebuilt_depth, rebuilt_interrupted, replay_equal) = match &rebuilt {
+        Ok(runtime) => (
+            runtime.depth(&child_id),
+            runtime
+                .session(&child2_id)
+                .map(|session| session.status.is_interrupted())
+                .unwrap_or(false),
+            // 父日志回放：新事件不影响对话模型构建（未知事件忽略）。
+            child_log.as_ref().is_some_and(|log| {
+                let jsonl = log.to_jsonl();
+                SessionLog::from_jsonl(log.session_id(), &jsonl)
+                    .map(|reloaded| reloaded.len() == log.len())
+                    .unwrap_or(false)
+            }),
+        ),
+        Err(_) => (None, false, false),
+    };
+    let rebuilt_ok = rebuilt_depth == Some(1) && rebuilt_interrupted && replay_equal;
+
+    let ok = !spawn.is_error
+        && !child_id.is_empty()
+        && tree_ok
+        && nested_rejected
+        && loop_ok
+        && outcome_interrupted
+        && child_interrupted
+        && parent_interrupted
+        && rebuilt_ok;
+    println!(
+        "[tree] child={child_id} depth={depth} tree_ok={tree_ok} nested_rejected={nested_rejected} \
+         loop_ok={loop_ok} interrupted={outcome_interrupted}/{child_interrupted}/{parent_interrupted} \
+         rebuilt_ok={rebuilt_ok} parent_created={parent_created} spawned={parent_spawned} \
+         finished={parent_finished} link={child_parent_link} reply={child_has_reply} \
+         order={:?}",
+        order
+            .iter()
+            .map(|(id, level)| format!("{id}:{level}"))
+            .collect::<Vec<_>>()
+    );
+    if ok {
+        println!("[selftest-tree] PASS");
+        0
+    } else {
+        println!("[selftest-tree] FAIL");
+        1
+    }
+}
+
+/// 导出/保留自检：JSONL + 外部化附件 + manifest sha256，导出后可自校验；
+/// CLI 入口 `--export-session` 也走同一路径。
+fn selftest_export() -> i32 {
+    let root = PathBuf::from(".tmp/export-selftest");
+    let _ = std::fs::remove_dir_all(&root);
+    let sessions = root.join("sessions");
+    let _ = std::fs::create_dir_all(&sessions);
+    std::env::set_var("DSHR_SESSIONS_DIR", &sessions);
+    std::env::set_var("DSHR_SPILL_DIR", root.join("spill"));
+    std::env::set_var("DSHR_CONTEXT_WINDOW", "200000");
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let path = sessions.join("s-export.jsonl");
+    let mut state = ChatState::new(path.clone(), "s-export", &cancel, ApprovalBroker::new());
+    let big = format!("{}导出附件标记", "外部化内容".repeat(6_000));
+    let _ = state.log.append(EventSpec::durable(
+        "tool.call",
+        "t0",
+        json!({ "call_id": "ex-c1", "tool": "probe_echo", "arguments": {} }),
+    ));
+    let _ = state.log.append(EventSpec::durable(
+        "tool.result",
+        "t0",
+        json!({
+            "call_id": "ex-c1", "is_error": false,
+            "content": [{ "type": "text", "text": big }]
+        }),
+    ));
+    state.save();
+    let _ = state.plan_with_spill();
+
+    let out = root.join("out");
+    let manifest = match export_session(
+        &state.log,
+        &SpillStoreSource::new(&state.spill),
+        &out,
+        &ExportOptions::new(now_ts()),
+    ) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            println!("[selftest-export] FAIL: 导出失败 {err}");
+            return 1;
+        }
+    };
+    let verified = match verify_export(&out, "s-export") {
+        Ok(report) => report,
+        Err(err) => {
+            println!("[selftest-export] FAIL: 自校验失败 {err}");
+            return 1;
+        }
+    };
+    let exported_jsonl = out.join(&manifest.jsonl.path);
+    let reloaded = std::fs::read_to_string(&exported_jsonl)
+        .ok()
+        .and_then(|text| SessionLog::from_jsonl("s-export", &text).ok());
+    let reload_equal = reloaded
+        .as_ref()
+        .map(|log| log.len() == state.log.len())
+        .unwrap_or(false);
+    // CLI 入口同样可复现（导出 + 自校验）。
+    let cli_out = root.join("out-cli");
+    let cli_ok = export_session_cli("s-export", Some(cli_out)) == 0;
+
+    let ok = manifest.event_count == state.log.len()
+        && manifest.attachments.len() == 1
+        && manifest.missing_blobs.is_empty()
+        && verified.is_ok()
+        && verified.attachments_checked == 1
+        && reload_equal
+        && cli_ok
+        && manifest.jsonl.size > 0
+        && !manifest.jsonl.sha256.is_empty();
+    println!(
+        "[export] events={} attachments={} missing={} bytes={} verify={} reload_equal={reload_equal} cli={cli_ok}",
+        manifest.event_count,
+        manifest.attachments.len(),
+        manifest.missing_blobs.len(),
+        manifest.total_bytes,
+        verified.is_ok()
+    );
+    // 保留计划：目录里只有本会话、未超限 → 不需要删除。
+    let plan_code = retention_plan_cli();
+    let ok = ok && plan_code == 0;
+    std::env::remove_var("DSHR_SPILL_DIR");
+    std::env::remove_var("DSHR_CONTEXT_WINDOW");
+    if ok {
+        println!("[selftest-export] PASS");
+        0
+    } else {
+        println!("[selftest-export] FAIL");
+        1
     }
 }
 
@@ -4334,6 +5183,7 @@ fn selftest_live_20() -> i32 {
 }
 
 fn main() {
+    install_crash_hook();
     let args: Vec<String> = std::env::args().collect();
     if let Some(index) = args.iter().position(|arg| arg == "--live-chat") {
         let script: Vec<String> = args.iter().skip(index + 1).cloned().collect();
@@ -4412,6 +5262,28 @@ fn main() {
         };
         std::process::exit(install_plugin_cli(PathBuf::from(path)));
     }
+    if let Some(index) = std::env::args().position(|arg| arg == "--export-session") {
+        let Some(id) = std::env::args().nth(index + 1) else {
+            eprintln!("用法: chat --export-session <会话 id> [--export-dir <目录>]");
+            std::process::exit(2);
+        };
+        let out = std::env::args()
+            .position(|arg| arg == "--export-dir")
+            .and_then(|dir_index| std::env::args().nth(dir_index + 1))
+            .map(PathBuf::from);
+        std::process::exit(export_session_cli(&id, out));
+    }
+    if std::env::args().any(|arg| arg == "--retention-plan") {
+        std::process::exit(retention_plan_cli());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-tree") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_tree());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-export") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_export());
+    }
     if std::env::args().any(|arg| arg == "--selftest-dsh-write") {
         std::process::exit(selftest_dsh_write());
     }
@@ -4465,14 +5337,16 @@ fn main() {
         }
     }
 
-    let mut sessions = store.scan().unwrap_or_default();
+    let (mut sessions, mut session_depths) = ordered_sessions(&store);
     if sessions.is_empty() {
         let id = store.new_id();
         if let Err(err) = store.create(&id) {
             eprintln!("[chat] 无法创建初始会话: {err}");
             std::process::exit(1);
         }
-        sessions = store.scan().unwrap_or_default();
+        let rebuilt = ordered_sessions(&store);
+        sessions = rebuilt.0;
+        session_depths = rebuilt.1;
     }
     let active = sessions
         .first()
@@ -4511,11 +5385,11 @@ fn main() {
         approvals.clone(),
     )));
     let app_cancel = cancel.clone();
-    let rows = {
+    let (rows, plugin_errors) = {
         let guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        rows_snapshot(&guard.log, None)
+        (rows_snapshot(&guard.log, None), guard.plugin_errors.clone())
     };
 
     application().run(move |cx: &mut App| {
@@ -4534,6 +5408,8 @@ fn main() {
         let active = active;
         let approvals = approvals;
         let profile = profile;
+        let session_depths = session_depths;
+        let plugin_errors = plugin_errors;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -4577,6 +5453,8 @@ fn main() {
                     plugins_open: false,
                     visible_limit,
                     frame_probe,
+                    session_depths,
+                    plugin_errors,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();

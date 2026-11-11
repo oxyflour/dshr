@@ -427,6 +427,23 @@ impl ModelProvider for MockProvider {
             return Ok(tool_reply(request, "probe_native", &user_text));
         }
 
+        // 会话树：自检用"子会话/spawn_child"触发派发工具（参数是 prompt 而不是 text）。
+        if (user_text.contains("子会话") || lower.contains("spawn_child"))
+            && request
+                .tool_specs
+                .iter()
+                .any(|spec| spec.name == "spawn_child")
+        {
+            return Ok(ModelReply {
+                text: String::new(),
+                tool_calls: vec![ModelToolCall {
+                    id: format!("mock-call-spawn-{}", request.messages.len()),
+                    name: String::from("spawn_child"),
+                    arguments: json!({ "prompt": user_text }),
+                }],
+            });
+        }
+
         if user_text.contains("工具") || lower.contains("tool") {
             if let Some(spec) = request
                 .tool_specs

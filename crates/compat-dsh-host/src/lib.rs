@@ -146,6 +146,8 @@ pub struct SidecarHost {
     ready: Duration,
     host_caps: Vec<String>,
     fs_write: Option<Arc<FsWriteService>>,
+    /// sidecar 在启动/装载阶段上报的错误（`log.emit` level=error），供 UI 提示。
+    boot_errors: Vec<String>,
 }
 
 /// 侧车进程句柄：普通 spawn 或 Job Object 包裹（Windows 隔离）。
@@ -309,6 +311,7 @@ impl SidecarHost {
             ready: Duration::ZERO,
             host_caps: options.effective_caps(),
             fs_write: options.fs_write.clone(),
+            boot_errors: Vec::new(),
         };
 
         // 规范 §5：generation 由宿主分配，sidecar 只回声。
@@ -344,6 +347,11 @@ impl SidecarHost {
 
     pub fn fs_write_enabled(&self) -> bool {
         self.fs_write.is_some()
+    }
+
+    /// sidecar 启动/插件装载阶段上报的错误（最多保留 8 条），供 UI 提示。
+    pub fn boot_errors(&self) -> &[String] {
+        &self.boot_errors
     }
 
     pub fn ready_latency(&self) -> Duration {
@@ -481,6 +489,10 @@ impl SidecarHost {
             if self.maybe_serve_fs_write(&envelope)? {
                 continue;
             }
+            if envelope.kind == "log.emit" {
+                self.note_log_emit(&envelope);
+                continue;
+            }
 
             if envelope.call_id.as_deref() != Some(call_id) {
                 continue;
@@ -519,6 +531,9 @@ impl SidecarHost {
             match self.rx.recv_timeout(remaining) {
                 Ok(envelope) if envelope.kind == KIND_FS_WRITE_REQUEST => {
                     self.maybe_serve_fs_write(&envelope)?;
+                }
+                Ok(envelope) if envelope.kind == "log.emit" => {
+                    self.note_log_emit(&envelope);
                 }
                 Ok(envelope) if envelope.kind == "tool.register" => {
                     let name = envelope.payload["name"]
@@ -574,6 +589,9 @@ impl SidecarHost {
                 Ok(envelope) if envelope.kind == KIND_FS_WRITE_REQUEST => {
                     self.maybe_serve_fs_write(&envelope)?;
                 }
+                Ok(envelope) if envelope.kind == "log.emit" => {
+                    self.note_log_emit(&envelope);
+                }
                 Ok(envelope) if envelope.kind == kind => return Ok(envelope),
                 Ok(envelope) if envelope.kind == "runtime.reject" => {
                     return Err(HostError::Protocol(format!(
@@ -585,6 +603,26 @@ impl SidecarHost {
                 Err(RecvTimeoutError::Timeout) => return Err(HostError::Timeout(kind.to_owned())),
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             }
+        }
+    }
+
+    /// 记录 sidecar 上报的错误日志（`log.emit` level=error），供 UI 插件错误提示。
+    fn note_log_emit(&mut self, envelope: &Envelope) {
+        let level = envelope
+            .payload
+            .get("level")
+            .and_then(Value::as_str)
+            .unwrap_or("info");
+        let message = envelope
+            .payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if level == "error" && !message.is_empty() {
+            if self.boot_errors.len() < 8 {
+                self.boot_errors.push(message.to_owned());
+            }
+            eprintln!("[sidecar] {message}");
         }
     }
 
