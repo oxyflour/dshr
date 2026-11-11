@@ -11,6 +11,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod session_tree;
+
+pub use session_tree::{
+    spawn_child_spec, DrainMode, DrainWait, InterruptAction, InterruptPlan, InterruptTarget,
+    PolicyTightening, SessionPolicy, SessionStatus, SessionTreeRuntime, SpawnChildArgs,
+    SpawnContext, SpawnError, SpawnedChild, TreeSession, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
+};
+
 use serde_json::{json, Value};
 
 /// 一次 run_turn 内允许的最大工具调用次数（防止模型自激循环）。

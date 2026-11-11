@@ -1016,7 +1016,9 @@ dependencies = [
 name = "dshr-agent-core"
 version = "0.0.0"
 dependencies = [
+ "dshr-session-store",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1024,12 +1026,25 @@ name = "dshr-compat-acp"
 version = "0.0.0"
 
 [[package]]
-name = "dshr-compat-dsh-host"
+name = "dshr-compat-dsh-fs"
 version = "0.0.0"
 dependencies = [
  "dshr-compat-dsh-protocol",
+ "dshr-sandbox",
+ "dshr-tool-runtime",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "dshr-compat-dsh-host"
+version = "0.0.0"
+dependencies = [
+ "dshr-compat-dsh-fs",
+ "dshr-compat-dsh-protocol",
  "dshr-conversation-model",
  "dshr-session-store",
+ "dshr-sidecar-guard",
  "dshr-tool-runtime",
  "serde",
  "serde_json",
@@ -1063,6 +1078,7 @@ version = "0.0.0"
 dependencies = [
  "dshr-agent-context",
  "dshr-agent-core",
+ "dshr-compat-dsh-fs",
  "dshr-compat-dsh-host",
  "dshr-conversation-model",
  "dshr-llm-deepseek",
@@ -1073,6 +1089,7 @@ dependencies = [
  "dshr-profile",
  "dshr-sandbox",
  "dshr-session-store",
+ "dshr-sidecar-guard",
  "dshr-tool-runtime",
  "dshr-ui-gpui",
  "gpui",
@@ -1128,6 +1145,7 @@ dependencies = [
 name = "dshr-profile"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "serde",
  "serde_json",
 ]
@@ -1140,12 +1158,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dshr-session-export"
+version = "0.0.0"
+dependencies = [
+ "dshr-agent-context",
+ "dshr-session-store",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "dshr-session-store"
 version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "dshr-sidecar-guard"
+version = "0.0.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

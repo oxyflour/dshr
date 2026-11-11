@@ -43,7 +43,7 @@
 
 | type | durability | 载荷要点 |
 |---|---|---|
-| `session.created` | durable | `workspace_id`, `parent_session_id?`, `spawn_source?`, `preset?` |
+| `session.created` | durable | `workspace_id`（必需）, `parent_session_id?`, `spawn_source?`(`user`/`agent`), `preset?` |
 | `session.title` | durable | `title`, `source` |
 | `session.archived` / `session.unarchived` | durable | — |
 | `turn.started` | durable | `turn_id`, `prompt_message_id` |
@@ -96,9 +96,21 @@
 
 | type | durability | 载荷要点 |
 |---|---|---|
-| `child.spawned` | durable | `child_session_id`, `parent_message_id`, `prompt` |
-| `child.finished` | durable | `child_session_id`, `outcome` |
-| `session.interrupted` | durable | `by_parent: true`, `reason` |
+| `child.spawned` | durable | `child_session_id`, `parent_message_id?`, `prompt` |
+| `child.finished` | durable | `child_session_id`, `outcome`(`completed`/`failed`/`cancelled`/`interrupted`/`killed`) |
+| `session.interrupted` | durable | `reason`, `by_parent: false`（中断发起方自己的日志） |
+| `session.interrupted_by_parent` | durable | `parent_session_id`, `reason`（子会话被父会话中断，即 `interrupted_by_parent`） |
+| `session.killed` | durable | `by_parent: true`, `reason`(`interrupt_timeout`)（中断超时后升级为 kill） |
+
+规则：
+
+- `child.spawned` / `child.finished` 写在**父会话**日志里；子会话自己的日志以
+  `session.created` 开头，`parent_session_id` 只在那里写一次。
+- 中断按树向下传播：发起方写 `session.interrupted`；每个被传播到的子会话**各写一条**
+  `session.interrupted_by_parent`，状态机进入 `aborted`。
+- 执行器先请求 `interrupt`，超时仍未停止时升级为 kill 语义，并补一条 `session.killed`
+  （审计用，不改变"被父中断"的事实）。读取端 MUST 容忍一个会话出现多条中断类事件，
+  以最后一条为准。
 
 ## 4. 不变量
 
@@ -112,8 +124,11 @@
 | I6 | 日志中不得出现凭据明文、绝对路径（工作区外）、原始堆栈 | 写入时脱敏 |
 | I7 | 事件写入成功后才对外可见（先落盘后推送） | 提交路径 |
 | I8 | `session_id`/`call_id` 与插件 generation 无关 | 重载后 ID 不变 |
+| I9 | `session.created` 是会话第一条事件且至多一条；`parent_session_id` 不可变、不能自引用 | 启动/回放校验 |
 
 违反 I1–I5 视为数据损坏：停止加载该会话并提示导出，不猜测修复。
+旧日志（M2 之前）可能没有 `session.created`：读取端必须把它当作根会话（`parent_session_id = None`），
+不得因此拒绝加载。
 
 ## 5. 上下文工程事件
 
@@ -135,7 +150,8 @@
 | 工具卡片 | `tool.call` + 终态（`result`/`aborted`）+ `tool.chunk` 可缺省 |
 | 审批痕迹 | `approval.asked` ↔ `approval.answered` 配对 |
 | Token 曲线 | `context.measured` 时间序列 |
-| 子会话树 | `child.*` + `session.created.parent_session_id` |
+| 子会话树 | `child.*` + `session.created.parent_session_id`；跨日志由 `session_id` 文本引用，不要求父会话在线 |
+| 中断痕迹 | `session.interrupted` / `session.interrupted_by_parent` / `session.killed`，按事件顺序 |
 
 回放 MUST NOT 触发 LLM 请求或工具执行。所有展示元数据（tool card 的 `presentation`）随事件持久化，不依赖插件当前版本。
 
@@ -178,10 +194,22 @@
 
 ## 7. 会话树
 
-- 子会话是完整会话：自己的 `seq` 空间、自己的日志文件、可独立导出。
-- `parent_session_id` 只在 `session.created` 写入一次，不可改。
-- 中断传播由父会话发起：写 `session.interrupted`，子会话状态机进入 `aborted`；子会话自己的日志也要各写一条。
-- 回放子会话不要求父会话在线；跨会话引用通过 `session_id` 文本表示。
+v1 语义（PLAN §6.5，实现见 `crates/session-store` 与 `crates/agent-core`）：
+
+- 子会话是完整会话：自己的 `seq` 空间、自己的日志文件、可独立导出回放。
+- `parent_session_id` / `spawn_source` / `preset` 只在子会话的第一条 `session.created` 写入一次，
+  不可修改；父会话**不保存**子会话树结构，只通过 `child.spawned` 留引用痕迹。
+- 深度从 0 开始（根 0 / 子 1 / 孙 2），默认上限为 2；上限可配置，子会话只能收紧不能放大。
+- 子会话继承父的工作区与策略，且只允许收紧（更小的深度上限、工具白名单子集、黑名单追加）；
+  放宽必须走显式审批，v1 不支持。
+- 中断传播由父会话发起：发起方写 `session.interrupted`，每个被传播到的子会话各写
+  `session.interrupted_by_parent`，子会话状态机进入 `aborted`；先请求 `interrupt`，
+  超时后升级为 kill 语义并补 `session.killed`。
+- 父会话等待子会话（drain）有两种语义：只等直接子级、或等待全部后代。等待期间父会话
+  保持 `active`，不得被 UI/调度器判定为闲置。
+- 回放子会话不要求父会话在线；跨会话引用一律通过 `session_id` 文本表示。
+- 运行态（active / interrupted / drain 等待）不落盘，由事件重建：父链接来自
+  `session.created`，中断状态来自 §3.6 的事件，子会话结束来自父日志的 `child.finished`。
 
 ## 8. 保留、导出与加密
 
@@ -207,6 +235,7 @@
 | `LOG-SETTLE-*` | 结算唯一性、aborted 互斥 |
 | `LOG-REPLAY-*` | 各视图可离线重建、不触发副作用 |
 | `LOG-CTX-*` | 压缩/裁剪区间可重建 |
+| `LOG-TREE-*` | 树字段写入/回放、深度上限、成环拒绝、中断传播与 drain 语义 |
 | `LOG-MIGRATE-*` | 旧版本读取、未知类型跳过 |
 
 ## 11. 未决问题
