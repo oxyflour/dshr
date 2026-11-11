@@ -15,10 +15,20 @@
 //!
 //! 真正的"摘要压缩"（`context.compacted` + LLM 摘要）是下一步，当前是**有损裁剪**：
 //! 被丢掉的消息仍保留在 Session Log 里，只是不再进模型历史。
+//!
+//! 外部化（spill）见 [`spill`] 模块：超过阈值（默认 16 KiB）的工具结果落盘为
+//! 内容寻址引用，模型只见引用 + 开头预览。**既有裁剪/丢弃逻辑保持不变**：
+//! `plan_with_window` 在日志没有 `spill.created` 时与引入外部化前逐字节一致，
+//! 低于 spill 阈值的超长结果仍走原来的 head/tail 裁剪。
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashSet;
+mod sha256;
+pub mod spill;
+
+pub use spill::{PendingSpill, RecordedSpill, Retention, SpillPolicy, SpillRef, SpillStore};
+
+use std::collections::{HashMap, HashSet};
 
 use dshr_agent_core::{ChatMessage, ModelToolCall};
 use dshr_session_store::{Durability, SessionLog};
@@ -115,6 +125,9 @@ pub struct ContextPlan {
     pub dropped: Vec<ChatMessage>,
     /// 被丢弃消息覆盖的事件区间 `[from_seq, to_seq]`；写 `context.compacted` 用。
     pub dropped_range: Option<(u64, u64)>,
+    /// 本次计划**新产生**的外部化（调用方负责落盘并写 `spill.created` /
+    /// `tool.result.pruned`；已留痕的外部化不会再出现在这里）。
+    pub spilled: Vec<PendingSpill>,
 }
 
 impl ContextPlan {
@@ -128,6 +141,11 @@ impl ContextPlan {
     pub fn triggered(&self) -> bool {
         self.pruned_tool_results > 0 || self.dropped_messages > 0
     }
+
+    /// 本次计划刚外部化的结果条数（已留痕的不重复计数）。
+    pub fn spilled_tool_results(&self) -> usize {
+        self.spilled.len()
+    }
 }
 
 /// 按默认策略为下一轮请求生成上下文计划。
@@ -135,15 +153,67 @@ pub fn plan_context(log: &SessionLog, next_user_text: &str) -> ContextPlan {
     plan_with_window(log, next_user_text, context_window_from_env())
 }
 
-/// 可注入窗口的版本（测试/自检用）。
+/// 带外部化的默认策略版本：超过 [`SpillPolicy::threshold_bytes`] 的工具结果落盘为
+/// 内容寻址引用，模型只看到引用 + 开头预览。
+///
+/// 调用方顺序（`chat` 接线）：
+/// 1. `plan_context_with_spill(&log, "", &policy)`；
+/// 2. 对 `plan.spilled` 逐条 `SpillStore::put_pending` → `spill::record_spill` → `save`；
+/// 3. 重新 `plan_context_with_spill`（此时 `spilled` 为空，历史从事件确定性还原）。
+pub fn plan_context_with_spill(
+    log: &SessionLog,
+    next_user_text: &str,
+    policy: &SpillPolicy,
+) -> ContextPlan {
+    plan_with_window_and_spill(log, next_user_text, context_window_from_env(), policy)
+}
+
+/// 可注入窗口的版本（测试/自检用）。行为与引入外部化前完全一致。
 pub fn plan_with_window(log: &SessionLog, next_user_text: &str, window: usize) -> ContextPlan {
+    plan_with_window_and_spill(log, next_user_text, window, &SpillPolicy::disabled())
+}
+
+/// 可注入窗口 + 外部化策略的版本（测试/自检用）。
+///
+/// 日志中已留痕的 `spill.created` / `tool.result.pruned` 始终参与历史重建，即使传
+/// `disabled()` 策略；只有"新产生"的外部化受 `policy` 控制。
+pub fn plan_with_window_and_spill(
+    log: &SessionLog,
+    next_user_text: &str,
+    window: usize,
+    policy: &SpillPolicy,
+) -> ContextPlan {
     let window = window.max(1);
-    let full = history_with_seqs(log);
+    let recorded = spill::recorded_spills(log);
+    let policy = (policy.threshold_bytes != usize::MAX).then_some(policy);
+    let needs_externalization = policy.is_some() || !recorded.is_empty();
+    let mut pending: Vec<PendingSpill> = Vec::new();
+    let full = if needs_externalization {
+        history_with_seqs_spilled(
+            log,
+            Some(SpillStage {
+                policy,
+                recorded: &recorded,
+                pending: &mut pending,
+            }),
+        )
+    } else {
+        history_with_seqs(log)
+    };
     let full_messages: Vec<ChatMessage> =
         full.iter().map(|wrapped| wrapped.message.clone()).collect();
-    let tokens_before = estimate_history_tokens(&full_messages) + estimate_tokens(next_user_text);
+    // `tokens_before` 始终表示"未外部化前"的估算，方便对比外部化省下的量。
+    let tokens_before = if needs_externalization {
+        let raw: Vec<ChatMessage> = history_with_seqs(log)
+            .into_iter()
+            .map(|wrapped| wrapped.message)
+            .collect();
+        estimate_history_tokens(&raw) + estimate_tokens(next_user_text)
+    } else {
+        estimate_history_tokens(&full_messages) + estimate_tokens(next_user_text)
+    };
     let mut working = full.clone();
-    let mut tokens = tokens_before;
+    let mut tokens = estimate_history_tokens(&full_messages) + estimate_tokens(next_user_text);
 
     let trigger = (window as f32 * TRIGGER_RATIO) as usize;
     if tokens <= trigger {
@@ -156,10 +226,11 @@ pub fn plan_with_window(log: &SessionLog, next_user_text: &str, window: usize) -
             dropped_messages: 0,
             dropped: Vec::new(),
             dropped_range: None,
+            spilled: pending,
         };
     }
 
-    // 1. 超长工具结果做头尾裁剪。
+    // 1. 超长工具结果做头尾裁剪（未外部化的长结果，行为与引入 spill 前一致）。
     let mut pruned_tool_results = 0usize;
     for wrapped in &mut working {
         if let ChatMessage::Tool { content, .. } = &mut wrapped.message {
@@ -216,6 +287,7 @@ pub fn plan_with_window(log: &SessionLog, next_user_text: &str, window: usize) -
         dropped_messages: dropped.len(),
         dropped,
         dropped_range,
+        spilled: pending,
     }
 }
 
@@ -277,11 +349,26 @@ struct SeqMessage {
     message: ChatMessage,
 }
 
-/// 从日志重建**带 seq 区间**的消息（不截断），并应用已存在的 `context.compacted`：
-/// - `[from_seq, to_seq]` 内的事件跳过；
-/// - 摘要消息（被 `summary_message_id` 引用的那条）不单独展示；
-/// - 压缩事件本身还原成一条 `System` 摘要消息，插在原来的位置。
+/// 历史重建时的外部化上下文：已留痕的记录（始终生效）+ 新策略（可关闭）+ 待落盘队列。
+struct SpillStage<'a> {
+    policy: Option<&'a SpillPolicy>,
+    recorded: &'a HashMap<String, spill::RecordedSpill>,
+    pending: &'a mut Vec<PendingSpill>,
+}
+
+/// 从日志重建**带 seq 区间**的消息（不截断、不应用外部化，原始视图）。
 fn history_with_seqs(log: &SessionLog) -> Vec<SeqMessage> {
+    history_with_seqs_spilled(log, None)
+}
+
+/// 同 [`history_with_seqs`]，但按 `spill` 把超大工具结果替换成引用 + 预览。
+///
+/// - 已留痕的 `spill.created` / `tool.result.pruned`：确定性还原引用预览；
+/// - 未留痕且超过策略阈值：生成 [`PendingSpill`]，模型消息先用引用（调用方随后落盘 + 写事件）。
+fn history_with_seqs_spilled(
+    log: &SessionLog,
+    mut spill: Option<SpillStage<'_>>,
+) -> Vec<SeqMessage> {
     let mut ranges: Vec<(u64, u64)> = Vec::new();
     let mut summary_ids: HashSet<String> = HashSet::new();
     for event in log.events() {
@@ -405,8 +492,9 @@ fn history_with_seqs(log: &SessionLog) -> Vec<SeqMessage> {
                 let content = if event.event_type == "tool.aborted" {
                     format!("ERROR: 工具已中止（{}）", str_of(&event.payload, "reason"))
                 } else {
-                    let text =
-                        content_text(&event.payload.get("content").cloned().unwrap_or(Value::Null));
+                    let content_value =
+                        event.payload.get("content").cloned().unwrap_or(Value::Null);
+                    let text = content_text(&content_value);
                     if event
                         .payload
                         .get("is_error")
@@ -415,7 +503,7 @@ fn history_with_seqs(log: &SessionLog) -> Vec<SeqMessage> {
                     {
                         format!("ERROR: {text}")
                     } else {
-                        text
+                        externalize_tool_content(&call_id, &text, &content_value, spill.as_mut())
                     }
                 };
                 messages.push(SeqMessage {
@@ -443,16 +531,65 @@ fn history_with_seqs(log: &SessionLog) -> Vec<SeqMessage> {
     messages
 }
 
+/// 模型可见的工具结果文本：已留痕的外部化按事件还原引用；否则按策略判断是否新外部化。
+fn externalize_tool_content(
+    call_id: &str,
+    text: &str,
+    content: &Value,
+    stage: Option<&mut SpillStage<'_>>,
+) -> String {
+    let Some(stage) = stage else {
+        return text.to_owned();
+    };
+    if let Some(recorded) = stage.recorded.get(call_id) {
+        let preview = spill::preview_of(text, recorded.preview_chars);
+        return spill::render_reference(&recorded.spill, &preview);
+    }
+    if let Some(policy) = stage.policy {
+        if let Some((spill_ref, payload)) = policy.classify(content) {
+            let preview = spill::preview_of(text, policy.preview_chars);
+            stage.pending.push(PendingSpill {
+                call_id: call_id.to_owned(),
+                spill: spill_ref.clone(),
+                payload,
+                preview_chars: policy.preview_chars,
+            });
+            return spill::render_reference(&spill_ref, &preview);
+        }
+    }
+    text.to_owned()
+}
+
 fn num_of(payload: &Value, field: &str) -> u64 {
     payload.get(field).and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// 从日志重建全部历史消息（不截断）。
+/// 从日志重建全部历史消息（不截断，原始视图：已外部化的结果仍是完整内容）。
 pub fn history_from_log(log: &SessionLog) -> Vec<ChatMessage> {
     history_with_seqs(log)
         .into_iter()
         .map(|wrapped| wrapped.message)
         .collect()
+}
+
+/// 从日志重建**模型可见**的全部历史：已留痕的外部化结果替换成引用 + 预览。
+///
+/// 与 `plan_with_window(..)` 的重建规则一致（都不新产生外部化），供 UI/自检
+/// 展示"模型当时实际看到的历史"。
+pub fn history_from_log_with_spill(log: &SessionLog) -> Vec<ChatMessage> {
+    let recorded = spill::recorded_spills(log);
+    let mut pending = Vec::new();
+    history_with_seqs_spilled(
+        log,
+        Some(SpillStage {
+            policy: None,
+            recorded: &recorded,
+            pending: &mut pending,
+        }),
+    )
+    .into_iter()
+    .map(|wrapped| wrapped.message)
+    .collect()
 }
 
 /// 对话历史 + 截断，供 Agent 直接使用。

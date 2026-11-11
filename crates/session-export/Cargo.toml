@@ -1,0 +1,12 @@
+[package]
+name = "dshr-session-export"
+description = "会话导出（JSONL + 外部化 blob + sha256 manifest）与保留策略（plan/apply 分离）"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dshr-agent-context = { path = "../agent-context" }
+dshr-session-store = { path = "../session-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
