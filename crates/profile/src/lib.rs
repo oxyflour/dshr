@@ -9,7 +9,7 @@
 //!     "config": { "source": "..." } },
 //!   { "name": "@deepseek-ai/dsh-tool-fs", "enabled": true,
 //!     "inject": ["tools","fs","systemPrompt"],
-//!     "config": { "read": true, "write": false, ... } }
+//!     "config": { "read": true, "write": true, ... } }
 //! ] }
 //! ```
 //!
@@ -18,6 +18,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive;
 pub mod install;
 pub mod loader;
 
@@ -210,9 +211,12 @@ pub fn default_entries() -> Vec<PluginEntry> {
             config: serde_json::json!({
                 "read": true,
                 "readImage": false,
-                "write": false,
-                "edit": false,
-                "applyPatch": false,
+                // 写工具默认值：T3 的 sidecar gating 是"host_caps 含 fs.write 且
+                // config 未显式 false 才装载"；默认 true 让写工具在具备 host
+                // capacity 时可用，没有 capacity 时 sidecar 仍不会注册。
+                "write": true,
+                "edit": true,
+                "applyPatch": true,
             }),
             inject: Some(vec![
                 String::from("tools"),
@@ -301,8 +305,24 @@ mod tests {
             .iter()
             .find(|entry| entry["name"] == "@deepseek-ai/dsh-tool-fs")
             .expect("fs");
-        assert_eq!(fs_entry["config"]["write"], false);
+        assert_eq!(fs_entry["config"]["write"], true);
         assert_eq!(fs_entry["inject"][0], "tools");
+    }
+
+    #[test]
+    fn default_fs_entry_enables_write_tools() {
+        // T3 的 sidecar gating：host_caps 含 fs.write 且 config 未显式 false 才装载
+        // 写工具。默认值必须是 true，否则官方 write/edit/applyPatch 永远装不上。
+        let entries = default_entries();
+        let fs_entry = entries
+            .iter()
+            .find(|entry| entry.name == "@deepseek-ai/dsh-tool-fs")
+            .expect("fs entry");
+        assert_eq!(fs_entry.config["read"], true);
+        assert_eq!(fs_entry.config["write"], true);
+        assert_eq!(fs_entry.config["edit"], true);
+        assert_eq!(fs_entry.config["applyPatch"], true);
+        assert_eq!(fs_entry.config["readImage"], false);
     }
 
     #[test]

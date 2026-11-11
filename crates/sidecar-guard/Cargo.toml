@@ -1,0 +1,16 @@
+[package]
+name = "dshr-sidecar-guard"
+description = "Sidecar OS 级隔离：Windows Job Object、环境变量清洗、独立 profile 目录、Node 运行时解析"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+# 只有 Windows 需要 Job Object FFI；其它平台走普通 spawn（PLAN §7，M4 再做平台隔离）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
