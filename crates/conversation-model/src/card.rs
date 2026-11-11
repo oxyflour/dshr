@@ -16,6 +16,8 @@ use dshr_tool_runtime::Presentation;
 const MAX_PREVIEW_LINES: usize = 6;
 /// 单行最多多少字符（按 char 截断，避免切坏 UTF-8）。
 const MAX_LINE_CHARS: usize = 120;
+/// 原生视图（Diff/Terminal/代码块）可用的完整文本上限。预览只够列表，视图要更多内容。
+const MAX_BODY_CHARS: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardKind {
@@ -39,6 +41,8 @@ pub struct ToolCard {
     pub title: String,
     pub detail: String,
     pub preview: Vec<String>,
+    /// 原生视图用的完整文本（已按 `MAX_BODY_CHARS` 截断）；预览之外的补充。
+    pub body: String,
 }
 
 impl ToolCard {
@@ -98,6 +102,7 @@ pub fn error_card(title: &str, detail: &str) -> ToolCard {
         title: title.to_owned(),
         detail: clip(detail, MAX_LINE_CHARS),
         preview: preview_lines(detail, MAX_PREVIEW_LINES),
+        body: clip_body(detail),
     }
 }
 
@@ -114,6 +119,8 @@ fn generic(tool: &str, value: &Value, content: &Value) -> ToolCard {
             Value::Null => preview_lines(&content_text(content), MAX_PREVIEW_LINES),
             other => pretty_lines(other, MAX_PREVIEW_LINES),
         },
+        // 通用卡片没有专用视图；body 留空避免每张卡片都复制一份 JSON。
+        body: String::new(),
     }
 }
 
@@ -145,6 +152,14 @@ fn terminal(value: &Value) -> Option<ToolCard> {
         );
     }
 
+    let mut body = stdout.to_owned();
+    if !stderr.is_empty() {
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(stderr);
+    }
+
     Some(ToolCard {
         kind: CardKind::Terminal,
         title: match code {
@@ -157,6 +172,8 @@ fn terminal(value: &Value) -> Option<ToolCard> {
             stderr.lines().count()
         ),
         preview,
+        // 终端视图需要 stdout + stderr 的完整输出（有界），供 ANSI 渲染。
+        body: clip_body(&body),
     })
 }
 
@@ -200,6 +217,8 @@ fn diff(value: &Value) -> Option<ToolCard> {
         title: path.to_owned(),
         detail: format!("+{added} −{removed}"),
         preview,
+        // 差异视图需要完整 patch（有界），行号/hunk 由 UI 侧解析。
+        body: clip_body(text.unwrap_or("")),
     })
 }
 
@@ -227,6 +246,7 @@ fn search(value: &Value) -> Option<ToolCard> {
             .take(MAX_PREVIEW_LINES)
             .map(match_line)
             .collect(),
+        body: String::new(),
     })
 }
 
@@ -274,6 +294,7 @@ fn read(value: &Value) -> Option<ToolCard> {
         title: path.to_owned(),
         detail: format!("{} 行", text.lines().count()),
         preview: preview_lines(&text, MAX_PREVIEW_LINES),
+        body: clip_body(&text),
     })
 }
 
@@ -292,6 +313,7 @@ fn web(value: &Value) -> Option<ToolCard> {
         title: title.to_owned(),
         detail: url.to_owned(),
         preview: preview_lines(snippet, 3),
+        body: clip_body(snippet),
     })
 }
 
@@ -357,15 +379,17 @@ fn pretty_lines(value: &Value, limit: usize) -> Vec<String> {
 }
 
 fn clip(text: &str, max_chars: usize) -> String {
-    let mut out = String::new();
-    for (index, ch) in text.chars().enumerate() {
-        if index >= max_chars {
-            out.push('…');
-            break;
-        }
-        out.push(ch);
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
     }
+    let mut out: String = text.chars().take(max_chars).collect();
+    out.push('…');
     out
+}
+
+/// 原生视图正文：有界截断，保留换行（终端/diff 直接消费）。
+fn clip_body(text: &str) -> String {
+    clip(text, MAX_BODY_CHARS)
 }
 
 #[cfg(test)]
@@ -526,5 +550,30 @@ mod tests {
             &Value::Null,
         );
         assert!(long.summary().chars().count() <= 110);
+    }
+
+    #[test]
+    fn body_keeps_full_text_for_native_views() {
+        let terminal = card(
+            Presentation::Terminal,
+            json!({ "exit_code": 0, "stdout": "a\nb", "stderr": "warn" }),
+        );
+        assert_eq!(terminal.body, "a\nb\nwarn");
+
+        let diff = card(
+            Presentation::Diff,
+            json!({ "diff": "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n" }),
+        );
+        assert!(diff.body.contains("@@ -1 +1 @@"));
+        assert_eq!(diff.body.lines().count(), 5);
+
+        // 正文有界：超长输出截断到 MAX_BODY_CHARS + 省略号，避免卡片撑爆内存。
+        let huge = "x".repeat(MAX_BODY_CHARS + 500);
+        let read = card(
+            Presentation::Read,
+            json!({ "path": "big.txt", "text": huge }),
+        );
+        assert_eq!(read.body.chars().count(), MAX_BODY_CHARS + 1);
+        assert!(read.body.ends_with('…'));
     }
 }
