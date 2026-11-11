@@ -85,9 +85,12 @@ max-width 780、链接色/气泡/边框/字体全部取自 DSH 安装包解析�
 （[`crates/ui-gpui/src/theme.rs`](crates/ui-gpui/src/theme.rs)），默认浅色并可切换深色。
 助手正文支持 Markdown 子集；工具卡有 Diff / Terminal 原生视图
 （[`docs/m2-ui-views.md`](docs/m2-ui-views.md)）。侧栏是真实会话列表：新建、切换、
-行内重命名、二次确认删除，重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）。
+行内重命名、二次确认删除，重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）；
+**会话树**按父子缩进展示（子会话带 `↳` 标记），模型可经 `spawn_child` 派发子会话，
+中断会向下传播（[`docs/m2-session-tree.md`](docs/m2-session-tree.md)）。
 transcript 采用**变高行虚拟化**：只排版视口附近几十行，10k 会话（7500 行）滚动
-draw p95 ≈ 3 ms、0 次超预算（release；[`docs/m2-performance.md`](docs/m2-performance.md)）。
+draw p95 ≈ 3 ms、0 次超预算；进程 RSS ≈ 80 MB + sidecar 37 MB
+（release；[`docs/m2-performance.md`](docs/m2-performance.md)）。
 
 **上下文工程。** 请求前计量：超长工具结果头尾裁剪、超预算丢最旧整轮、模型生成摘要并写
 `context.compacted`；超过 16 KiB 的工具结果**外部化**为内容寻址对象，模型只见引用与预览
@@ -100,11 +103,16 @@ draw p95 ≈ 3 ms、0 次超预算（release；[`docs/m2-performance.md`](docs/m
 [`docs/m2-sandbox.md`](docs/m2-sandbox.md)）。官方 `bash` 仍关闭（需要 Node
 `subprocess` 服务与更完整的执行隔离）。
 
-**插件与稳定性。** profile（`plugins.json`）可持久化启停，侧栏插件面板切换后重启 sidecar；
-支持 `cordis.yml` + `cordis.patch.yml` 只读派生（[`docs/m2-loader.md`](docs/m2-loader.md)）；
-`chat --install-plugin <目录|.tgz>` 离线安装（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
+**插件与稳定性。** profile（`plugins.json`）可持久化启停，侧栏插件面板切换后重启 sidecar，
+装载失败的错误会显示在面板顶部；支持 `cordis.yml` + `cordis.patch.yml` 只读派生
+（[`docs/m2-loader.md`](docs/m2-loader.md)）；`chat --install-plugin <目录|.tgz>` 离线安装
+并写安装审计日志（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
 provider 已有 DeepSeek 与 OpenAI 兼容两家，统一重试/退避；真实网络 20 步工具调用
 成功率 20/20（[`docs/m2-stability.md`](docs/m2-stability.md)）。
-M2 四条 gate 的对账见 [`docs/m2-status.md`](docs/m2-status.md)；剩余产品面接线
-（会话树 UI / 导出 CLI / 打包签名）与后移项在文末列出。
+会话可导出（JSONL + 外部化附件 + manifest sha256 自校验）并查看保留计划：
+`chat --export-session <id>` / `chat --retention-plan`；panic 会写入
+`DSHR_CRASH_LOG`（默认 `.tmp/crash.log`）——[`docs/m2-sessions.md`](docs/m2-sessions.md)、
+[`docs/m2-spill.md`](docs/m2-spill.md)。
+M2 四条 gate 的对账与 17 个自检命令见 [`docs/m2-status.md`](docs/m2-status.md)；
+MCP/ACP 与签名/更新通道按 `PLAN.md` 后移 M3/M4。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

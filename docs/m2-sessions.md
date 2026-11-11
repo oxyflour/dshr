@@ -45,9 +45,40 @@ M1 遗留的"只有 `s-chat` 一个会话"到这里补上：侧栏列出目录�
 - 头部面包屑显示当前会话标题（长标题截断到 220 逻辑像素，避免和右侧状态挤在一起）。
 - 新会话给的是空态页（DSH 的"开始对话"引导）。
 
+## 会话树
+
+- 新会话首条事件写 `session.created`（workspace/父链/来源），子会话由 `spawn_child`
+  创建为独立 JSONL 并带 `parent_session_id`。
+- 侧栏按 `SessionTree::flatten()` 的前序排序，子会话缩进 `depth × 14px` 并加 `↳`；
+  模型可在工具链里派发子会话，父日志出现 `child.spawned` / `child.finished`。
+- 中断传播：用户停止时子轮次共享同一个 cancel 句柄，子会话落
+  `session.interrupted_by_parent`，父会话落 `session.interrupted`。
+- 详见 [`m2-session-tree.md`](m2-session-tree.md)；`--selftest-tree` 覆盖端到端链路。
+
+## 导出与保留
+
+```powershell
+# 导出：JSONL + 外部化附件 + manifest（sha256），导出后自动 verify
+chat --export-session <会话 id> --export-dir .tmp\exports
+
+# 保留计划：只计算不删除（默认 2GiB / 90 天 / 保护最新 1 段）
+chat --retention-plan
+```
+
+- 导出走 `crates/session-export`：先写 JSONL，再复制 spill 对象为附件，manifest 记录
+  每份文件的 size/sha256；缺 blob 会记录在 `missing_blobs` 而不是静默丢。
+- `--retention-plan` 只输出计划（plan/apply 分离），删除必须显式调用库 API。
+- `--selftest-export` 覆盖导出 → 自校验 → JSONL 回放 → CLI 入口。
+
+## 崩溃诊断
+
+- panic hook 把时间、位置、消息、cwd 追加到 `DSHR_CRASH_LOG`（默认 `.tmp/crash.log`），
+  再交给默认 hook（stderr 照常）；GUI 模式下可事后排查。
+- sidecar 在装载阶段上报的 `log.emit(error)` 会显示在插件面板顶部（插件错误提示）。
+
 ## 边界
 
-- 侧栏没有按时间分组、搜索、置顶；列表只按 mtime 倒序。
-- 没有跨会话搜索/引用；切换期间不能生成。
+- 侧栏没有按时间分组、搜索、置顶（树顺序优先）；没有跨会话搜索/引用；切换期间不能生成。
 - 每个会话独立 sidecar：会话多、频繁切换会有进程启动开销。
 - 重命名只改 meta；会话 ID 不变（外部引用/日志路径稳定）。
+- 保留策略的附件字节未按会话归属（spill 对象跨会话去重共享），计划只统计会话 JSONL 段。

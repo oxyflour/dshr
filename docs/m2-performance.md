@@ -74,10 +74,22 @@ debug build 同条件对照：draw_work p50 14–30 ms、p95 67–74 ms、missed
 基线落盘：`docs/m2-performance-baseline.json`（`frame-probe.ps1` 用它做
 "avg_fps ≥ 基线 95%、draw p95 ≤ 基线 120%"的判定）。
 
+## 内存基线（10k 会话，release，本机）
+
+打开 10k 事件会话（7500 行全部参与虚拟化）并稳定 14s 后：
+
+| 进程 | RSS | 说明 |
+|---|---:|---|
+| `chat.exe` | **79.8 MB**（private 105.3 MB） | GPUI 窗口 + 索引 + 虚拟化 transcript |
+| `node.exe`（sidecar） | 36.7 MB | 探针/官方插件侧车 |
+| conhost.exe | 17.6 MB | 控制台宿主（开发版） |
+
+结论：10k 会话的内存占用在 100 MB 量级，与历史长度关系不大（虚拟化只保留可见行元素）。
+
 ## 未做 / 已知限制
 
 - `avg_fps` 被本机远端显示刷新率限制（refresh_ns≈31.25ms），不能直接和 60/144 Hz 机器比较；
   判定应以 draw_work 是否超 budget、missed_refresh 是否为 0 为准。
-- 元素树/文本 shaping 缓存**内存**未测（只能用行数与虚拟化窗口间接说明）。
+- 元素树/text shaping 缓存的**细粒度**内存（单行/单元素）未测；上面是进程级基线。
 - 虚拟化行高是估算，滚动条比例与"跳到底部"的像素位置有少量误差；
   真正的等高校验/锚点恢复留给后续。

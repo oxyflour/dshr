@@ -79,7 +79,12 @@ npm pack my-tool && tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin cha
 
 这是**本地/离线安装**：不联网做 npm 解析、不处理依赖树、不校验签名。`.tgz` 里的依赖
 必须已存在于 sidecar 的 `node_modules`（官方包靠 `tools/dsh-vendor.mjs` 预置）。
+安装前会打印"第三方插件可在你的用户权限下执行任意代码"提示（CLI 调用即显式确认），
+安装动作写入 `<DSHR_PROFILE_DIR>/install-audit.jsonl`（时间/名称/来源/目标）。
 `--selftest-install` 覆盖复制、profile 追加、重装去重、tgz 解包与路径逃逸拒绝。
+
+装载失败时 sidecar 发 `log.emit(level=error)`，宿主捕获后显示在侧栏插件面板顶部
+（"插件加载失败" + 前 3 条原因），不需要看 stderr。
 
 ## 边界
 

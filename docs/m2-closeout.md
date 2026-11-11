@@ -1,5 +1,9 @@
 # M2 收尾计划（2026-11-11）
 
+> **状态：已完成（2026-11-11 第二轮）**。W1–W8 全部落地：17 个 `chat` 自检 PASS、
+> workspace 测试全绿、clippy/fmt 干净。最终对账见 [`m2-status.md`](m2-status.md)；
+> 明确后移项（MCP/ACP、Loader `include` 完整语义、签名/更新通道）不在 M2 范围。
+
 目标：把 [`m2-status.md`](m2-status.md) 列出的缺口收掉，让 `PLAN.md` §8 的 M2 四条 exit gate
 全部有**可复现命令 + 数字**，并把 M2 清单项落地（除明确"可后移"的 ACP/MCP）。
 

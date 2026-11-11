@@ -257,39 +257,45 @@ begin_drain(parent, DirectChildren | AllDescendants)
 重启后按 `workspace_id + 运行时 max_depth` 重建；跨重启仍要收紧策略需要新的
 `session.created` 字段（见 §8）。
 
-## 7. 与 chat.rs 的集成建议（Lead 后续接线）
+## 7. 与 chat.rs 的接线（已落地，2026-11-11）
 
-当前 `apps/desktop-gpui/src/bin/chat.rs` 未接树（写域归 Lead）。建议最小接线：
+产品面已按最小接线实现（`TreeCoordinator` + `ChatExecutor` 拦截 + 侧栏缩进）：
 
-1. `ChatState` 持有 `SessionTreeRuntime`；启动时 `register_root_with_log(session_id, workspace, log)`。
-2. `ChatExecutor::specs()` 追加 `spawn_child_spec()`；`execute()` 里在查注册表**之前**
-   拦截 `call.tool == SPAWN_CHILD_TOOL`（否则会报"工具未注册"）。
-3. 宿主若仍以 `ChatState.log` 为写入主体，在 `spawn_child` / `interrupt_tree` /
-   `finish_child` 之后调用 `runtime.sync_log(&session_id, &mut self.log)` 再 `save()`，
-   避免两份日志分叉。
-4. 新建会话改走 `SessionIndex::create_root`（写 `session.created`，`spawn_source: user`）；
-   子会话用 `SessionIndex::create_child` + `write_log`。
-5. `--selftest-tree` 建议断言：
-   - 默认深度 2：根→子→孙成功，孙→曾孙 `DepthExceeded`；
-   - 子日志有 `session.created.parent_session_id`、父日志有 `child.spawned`；
-   - 中断父会话后子日志出现 `session.interrupted_by_parent`，超时升级出现 `session.killed`；
-   - drain 直接子级在子结束后返回、全部后代要等孙结束；
-   - 等待期间 `is_idle(parent) == false`；
-   - 落盘后用 `from_logs` 重建树，父链接/深度/中断状态一致。
-5. UI 树形 Dock：用 `SessionTree::flatten()` 的 `(depth, node)` 前序列表，缩进 = depth；
-   `depth > 0` 的子会话在侧栏/标题前加层级标记，父/子可并排（切换 `open_session`）。
+1. `ChatExecutor::specs()` 在 `allow_spawn` 时追加 `spawn_child_spec()`；`execute()` 在查
+   注册表**之前**拦截 `call.tool == SPAWN_CHILD_TOOL`，交给 `TreeCoordinator::spawn_child`。
+2. 由于流式回调与执行器都要写父日志，`ChatState::stream_turn` 把父日志临时放进
+   `Rc<RefCell<SessionLog>>`（回调写 `tool.*`，执行器写 `child.spawned/finished`），
+   轮次结束后还原；这样不会出现 seq 分叉。
+3. 运行态树**每次派发时重建**：父会话用内存日志（最新），其余会话从磁盘读，
+   再 `SessionTreeRuntime::from_logs` + `register_root_with_log`。不需要在 `ChatState`
+   里长期持有运行时，也就不会与磁盘/内存两份日志不同步。
+4. 子会话：`SessionIndex::write_log` 落盘 → `ChatState::open(..., allow_spawn=false,
+   with_sidecar=false)` 跑一轮 → `finish_child` → `sync_log(parent)` → 父日志落盘。
+   默认单层（子会话工具集里没有 `spawn_child`）；子会话不再起第二个 Node 进程。
+5. 中断传播：父子共享同一个 `cancel` 句柄；`stop()` 置位后，执行器在子轮次结束时
+   调 `interrupt_tree`，并给子日志补 `session.interrupted_by_parent`；
+   `stream_turn` 结束时给父日志补 `session.interrupted`。
+6. UI：`ordered_sessions()` 用 `SessionTree::flatten()` 的前序 + 深度表排序，
+   侧栏子会话缩进 `depth × 14px` 并加 `↳` 标记；`reload_sessions`/启动初始化共用。
+7. `--selftest-tree` 实测（全部通过）：
+   - 子日志有 `session.created.parent_session_id`、父日志有 `child.spawned`/`child.finished`；
+   - 子会话回答落盘（`message.assistant.settled`）；
+   - 子会话再派发被拒（默认单层）；
+   - 真实链路：mock 模型选择 `spawn_child` → 执行器派发 → 子会话完成 → 模型拿到 tool.result；
+   - 父取消后：父 `session.interrupted` + 子 `session.interrupted_by_parent`，outcome=interrupted；
+   - 落盘后 `from_logs` 重建树：深度=1、中断状态一致、JSONL 回放无损。
 
 ## 8. 未做项与风险
 
 | 项 | 说明 | 时点 |
 |---|---|---|
-| 树形 Dock UI / 并排父子视图 | Rust 核心已提供 `flatten`/`children`/`depth`，GPUI 呈现待接线 | M2 集成轮 |
-| 子会话异步调度 | 当前 `spawn_child` 是同步模型（调用方驱动子轮次）；并行子会话/后台执行未做 | M3 |
+| 子会话异步/并行调度 | 当前 `spawn_child` 是同步模型（父工具调用内跑完子轮次）；后台/并行子会话未做 | M3 |
+| 子会话 sidecar 工具集 | 子会话只用原生工具（避免每次派发再起 Node）；继承 sidecar 工具待 M3 | M3 |
 | 策略收紧持久化 | `SessionPolicy` 收紧项只在内存；重启按 workspace + max_depth 重建 | M3 视需要 |
 | 超过深度 2 的树 | 上限可配置，但 UI/调度未验证更深 | M5 |
 | 团队任务板 / 跨会话共享内存 / 子会话直接通信 | PLAN §6.5 明确 M5 | M5 |
 | 远程 Agent 参与同一棵树 | ACP 后移 M3 | M5 |
-| 子会话文件缺失的 UI 占位 | 父日志只存引用；子文件被删时 UI 如何显示未定义 | M2 集成轮 |
+| 子会话文件缺失的 UI 占位 | 父日志只存引用；子文件被删时 UI 如何显示未定义 | M3 |
 | 跨会话搜索/引用 | 不属于树 v1 | M3 |
 
 ## 9. 测试与验收

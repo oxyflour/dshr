@@ -1,9 +1,13 @@
 # M2 状态对账（2026-11-11，收尾轮）
 
 对照 `PLAN.md` §8 的 M2 四条 exit gate 与清单项，逐条列证据与缺口。
-**结论**：四条 gate 均有**可复现命令 + 数字**；M2 清单项除"明确后移"（MCP/ACP、
-WASM、完整签名/更新通道）外已落地。剩余工作集中在**产品面接线**（会话树 spawn 执行与
-树形侧栏、导出/保留 CLI）与**打包分发**。
+**结论**：四条 gate 均有**可复现命令 + 数字**；M2 清单项（除 `PLAN.md` §8 明确允许后移的
+MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树产品面**（spawn 执行 +
+树形侧栏 + 中断传播）、**导出/保留 CLI**、**崩溃诊断**、**插件错误提示**、**内存基线**
+均已在本轮接线并自检。
+
+验证状态（本轮）：**17 个 `chat` 自检全部 PASS**，`cargo test --workspace` 全绿，
+`clippy -D warnings` 干净，`fmt --check` 干净，docs 117 链接 0 broken，sidecar schema 20/20。
 
 ## Gate 1：20 步 Turn 工具调用成功率 ≥99%
 
@@ -87,29 +91,31 @@ WASM、完整签名/更新通道）外已落地。剩余工作集中在**产品�
 | 清单项 | 状态 | 证据/说明 |
 |---|---|---|
 | Agent Loop（≥2 provider / 流式 / 重试 / 取消） | ✅ | `--selftest-live-20`、`--selftest-retry` |
-| Session Store（持久化/索引/重启恢复） | ✅ | 多会话索引、回放自检 |
+| Session Store（持久化/索引/重启恢复） | ✅ | 多会话索引、回放自检；新会话首条写 `session.created` |
 | 未完整结果修复 | ✅ | `tool.aborted` + 回放不变量 |
-| 保留与导出 | 🟡 库已实现（`session-export`），CLI 未接线 | `cargo test -p dshr-session-export` |
+| 保留与导出 | ✅ | `chat --export-session <id> [--export-dir]`、`--retention-plan`（只出计划不删除）、`--selftest-export`（含外部化附件 + manifest sha256 自校验） |
 | 上下文：计量/压缩/裁剪/外部化/一致性 | ✅ | `--selftest-context` / `-long-context` / `-spill` |
-| 会话树（spawn/中断传播/drain/树形 Dock） | 🟡 核心已实现，产品面未接线 | `docs/m2-session-tree.md` |
-| GPUI：多会话/输入/Markdown/代码块/工具卡 | ✅ | 截图与自检 |
+| 会话树（spawn/中断传播/drain/树形 Dock） | ✅ | `--selftest-tree`：真实链路派发 + 父子事件 + 单层限制 + 中断传播 + `from_logs` 重建；侧栏按树缩进（截图核对） |
+| GPUI：多会话/输入/Markdown/代码块/工具卡 | ✅ | 截图与自检；transcript 变高行虚拟化 |
 | GPUI：Diff / Terminal | ✅ 组件 + 工具卡接线 | `docs/m2-ui-views.md` |
 | 工具审批/拒绝/审计 | ✅ | `--selftest-approval`、`--selftest-dsh-write` |
 | DSH L1（注册/调用/取消/流式/卸载/重启） | ✅ | `--selftest-dsh`、`--selftest-cordis` |
-| Node 运行时分发（捆绑/离线/安装确认） | ✅ | `runtime/node` vendor + 解析链；安装确认提示未做 |
+| Node 运行时分发（捆绑/离线/安装确认） | ✅ | `runtime/node` vendor + 解析链 + Job Object；`--install-plugin` 显式确认并写安装审计日志 |
 | Sidecar OS 级隔离（Job Object/独立 profile/env 清洗） | ✅ | `crates/sidecar-guard`；chat 启动已接 |
+| 崩溃诊断 / 插件错误提示 | ✅ | panic 写 `DSHR_CRASH_LOG`（默认 `.tmp/crash.log`）；sidecar `log.emit(error)` 显示在插件面板顶部 |
+| 内存基线 | ✅ | 10k 会话：chat RSS 79.8 MB（private 105.3）+ sidecar 36.7 MB（见 `m2-performance.md`） |
 | MCP / ACP Adapter | ⏭ 后移 M3 | `PLAN.md` §8 转向允许 |
-| Windows 打包（dev） | 🟡 `tools/package-dev.ps1` 可出 zip；签名/更新通道 M3/M4 | `docs/m2-runtime.md` |
+| Windows 打包（dev） | ✅ dev zip；签名/更新通道 M3/M4 | `tools/package-dev.ps1`、`docs/m2-runtime.md` |
 
-## 剩余缺口（进入下一轮）
+## 剩余缺口（M3 / 需人工）
 
-1. **会话树产品面接线**：`spawn_child` 工具执行 + 侧栏树形展示 + 中断传播按钮；
-2. **导出/保留 CLI**：`chat --export-session <id> [--export-dir]`、`--retention-plan`；
-3. **Loader 完整语义**：`include` 展开、group 展开、`!!js` 求值（当前只做 bundle+patch）；
-4. **安装审计与确认 UI**：npm 生命周期脚本确认、安装日志；
-5. **打包分发**：签名、更新通道、干净机器验证；
-6. **内存基线**：元素树/text shaping 缓存未测；
-7. **中文 IME 人工复验**：[`issues/0001`](issues/0001-ime-candidate-first-composition.md)。
+1. **Loader 完整语义**：`include` 展开、group 展开、`!!js` 求值（当前只做 bundle+patch 派生）；
+2. **安装依赖树/生命周期脚本**：不联网解析依赖、不执行 npm install scripts；安装确认目前是
+   CLI 显式调用 + 审计日志，没有交互式 UI 确认；
+3. **打包分发**：签名、更新通道、干净机器验证；
+4. **子会话异步/并行调度**与 sidecar 工具继承（M3）；
+5. **虚拟化锚点/等高校验**、元素级内存细分（优化项，非 gate）；
+6. **中文 IME 人工复验**：[`issues/0001`](issues/0001-ime-candidate-first-composition.md)。
 
 ## 复现命令（全量）
 
@@ -121,11 +127,16 @@ $env:DSHR_SESSIONS_DIR = ".tmp\perf-sessions"
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --seed-perf-session .tmp\perf-sessions
 powershell -ExecutionPolicy Bypass -File tools\frame-probe.ps1
 
-# 功能自检（15 个）
+# 功能自检（17 个）
 foreach ($f in "--selftest","--selftest-stream","--selftest-context","--selftest-long-context",
   "--selftest-spill","--selftest-approval","--selftest-sandbox","--selftest-profile",
   "--selftest-loader","--selftest-install","--selftest-retry","--selftest-perf",
-  "--selftest-dsh","--selftest-dsh-write","--selftest-cordis") {
+  "--selftest-dsh","--selftest-dsh-write","--selftest-cordis","--selftest-tree",
+  "--selftest-export") {
   .\target\debug\chat.exe $f
 }
+
+# 导出 / 保留计划（不需要窗口）
+.\target\debug\chat.exe --export-session <会话 id> --export-dir .tmp\exports
+.\target\debug\chat.exe --retention-plan
 ```

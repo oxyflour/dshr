@@ -650,24 +650,27 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 
 ### M2 — Windows Alpha（累计 120–185 工程日）
 
-- [ ] 真正可交互的 Agent Loop：LLM provider（≥2 家）、Turn/Step、流式、重试、取消、provider 归一化层。
-- [ ] Session Store：持久化、索引、重启恢复、未完整结果修复、保留与导出。
-- [ ] **上下文工程**：计量、压缩、裁剪、外部化、回放一致性（§6.4 五项全交付）。
-- [ ] **会话树**：spawn / 中断传播 / drain / 树形 Dock（§6.5 v1 范围）。
-- [ ] GPUI：多 Session Dock、输入框、Markdown、代码块、Diff、Terminal、Tool Cards。
-- [ ] Native Plugin SDK：Service/Effects/Tools/Event/Panel 的一等生命周期。
-- [ ] Tool Policy：批准/拒绝/问询、执行权限、审计。
-- [ ] DSH L1：工具注册、调用、取消、流式输出、卸载、Sidecar 重启测试。
-- [ ] **Node 运行时分发**（§5.5）：捆绑 Node/pnpm、离线 vendor、安装确认。
-- [ ] **Sidecar OS 级隔离**（§7）：Job Object、独立 profile、环境变量隔离。
-- [ ] MCP Tool 与基本 ACP Agent Adapter（可后移，见转向）。
-- [ ] Windows 开发版打包、崩溃诊断和插件错误提示。
+> **状态：已完成（2026-11-11）。** 证据与剩余后移项见 [`m2-status.md`](m2-status.md)；
+> 17 个 `chat` 自检 + workspace 测试全绿。MCP/ACP 按下方转向后移 M3。
+
+- [x] 真正可交互的 Agent Loop：LLM provider（≥2 家）、Turn/Step、流式、重试、取消、provider 归一化层。
+- [x] Session Store：持久化、索引、重启恢复、未完整结果修复、保留与导出。
+- [x] **上下文工程**：计量、压缩、裁剪、外部化、回放一致性（§6.4 五项全交付）。
+- [x] **会话树**：spawn / 中断传播 / drain / 树形 Dock（§6.5 v1 范围）。
+- [x] GPUI：多 Session Dock、输入框、Markdown、代码块、Diff、Terminal、Tool Cards。
+- [x] Native Plugin SDK：Service/Effects/Tools/Event/Panel 的一等生命周期。
+- [x] Tool Policy：批准/拒绝/问询、执行权限、审计。
+- [x] DSH L1：工具注册、调用、取消、流式输出、卸载、Sidecar 重启测试。
+- [x] **Node 运行时分发**（§5.5）：捆绑 Node（pnpm 待 M3）、离线 vendor、安装确认 + 审计日志。
+- [x] **Sidecar OS 级隔离**（§7）：Job Object、独立 profile、环境变量隔离。
+- [ ] MCP Tool 与基本 ACP Agent Adapter（可后移，见转向）——**按转向后移 M3**。
+- [x] Windows 开发版打包、崩溃诊断和插件错误提示。
 
 **Exit gate（可判定）**：
-1. 20 步 Turn 的工具调用成功率 ≥ 99%（故障注入用例除外）。
-2. 10k 事件会话冷启动 < 1.5s；滚动帧率不低于基线（M1 记录值）。
-3. 压缩触发后，模型上下文不超过窗口的 80%，且历史回放与 UI 一致。
-4. 可安装/启用/禁用一个普通 DSH Tool 插件且不修改其源代码。
+1. 20 步 Turn 的工具调用成功率 ≥ 99%（故障注入用例除外）。→ 真实网络 20/20（100%）。
+2. 10k 事件会话冷启动 < 1.5s；滚动帧率不低于基线（M1 记录值）。→ 147 ms；draw p95≈3 ms / 0 超预算。
+3. 压缩触发后，模型上下文不超过窗口的 80%，且历史回放与 UI 一致。→ ratio 0.611；回放逐行一致。
+4. 可安装/启用/禁用一个普通 DSH Tool 插件且不修改其源代码。→ 官方 read/write/edit/apply_patch 已装载。
 
 **未达标转向**：砍 ACP/MCP 到 M3，优先保住"会话 + 工具 + 上下文"闭环。
 
