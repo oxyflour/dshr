@@ -71,38 +71,40 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 
 **M1 进行中（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
 
-**M2 首个里程碑：官方 DSH 插件可装载（2026-11-11）。** 未修改的官方包
-`@deepseek-ai/dsh-tool-workspace-dependencies` 与只读 `@deepseek-ai/dsh-tool-fs`
-经 Cordis 4.1.0 装载、注册进 Rust Registry，真实 DeepSeek 经官方 `read` 工具读文件成功。
-依赖由 `tools/dsh-vendor.mjs` 从本机安装的 `app.asar` 抽取（不提交仓库）。
-边界（写入/沙箱/会话等 service 未提供、Loader 未接）与复现步骤见
-[`docs/m2-dsh-official.md`](docs/m2-dsh-official.md)。
+**M2 收尾：四条 exit gate 已达标（2026-11-11）。** 官方 DSH 插件不改一行源码装载：
+`@deepseek-ai/dsh-tool-workspace-dependencies` 与 `@deepseek-ai/dsh-tool-fs`（`read`）
+经 Cordis 4.1.0 注册进 Rust Registry；能力协商 `fs.write` 后，官方
+`write`/`edit`/`apply_patch` 的写盘请求回到 Rust → 沙箱边界 → 审批 → 写前快照 →
+原子写（`--selftest-dsh-write`；[`docs/m2-official-write.md`](docs/m2-official-write.md)）。
+依赖由 `tools/dsh-vendor.mjs` 从本机安装的 `app.asar` 抽取（不提交仓库），
+Node 运行时可由 `tools/vendor-node.mjs` 捆绑到 `runtime/node`，sidecar 以
+Windows Job Object 包裹（进程/内存上限、随宿主退出、环境变量清洗）。
 
-**界面：按 DSH Desktop 的设计 token 对齐（2026-11-11）。** 侧栏 280、内容列 748、
-输入卡片圆角 28 / max-width 780、链接色/气泡/边框/字体全部取自 DSH 安装包解析出的
-`--dsw-*` 值（[`crates/ui-gpui/src/theme.rs`](crates/ui-gpui/src/theme.rs)），
-默认浅色并可切换深色。助手正文支持 Markdown 子集（标题/列表/表格/代码块/引用/
-粗斜体/行内代码/链接，[`crates/ui-gpui/src/markdown.rs`](crates/ui-gpui/src/markdown.rs)），
-无语法高亮与图片。侧栏已是真实会话列表：新建、切换、行内重命名、二次确认删除，
-重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）。
-上下文在请求前计量：超长工具结果头尾裁剪、超预算丢最旧整轮，丢弃的旧轮次由模型
-生成摘要并写 `context.compacted`（[`docs/m2-context.md`](docs/m2-context.md)）。
-写文件/执行命令类工具默认需要**用户审批**（`write`/`edit`/`bash` 等），
-审批卡片在输入框上方，痕迹落 `approval.asked` / `approval.answered`
-（[`docs/m2-approval.md`](docs/m2-approval.md)）。
-原生写入工具已接**工作区沙箱**：相对路径根、1 MiB 限制、覆盖前快照、原子写
-（[`docs/m2-sandbox.md`](docs/m2-sandbox.md)）；官方 `write`/`bash` 仍关闭，
-需要 Node 侧 `sandbox`/`userApproval` service 与审批 RPC。
-插件集合改为可持久化的 profile（`plugins.json`），侧栏"插件"面板可启用/禁用，
-切换后重启当前会话的 sidecar（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
-也支持从 DSH 的 `cordis.yml` + `cordis.patch.yml` 派生只读插件列表
-（`DSHR_LOADER_BUNDLE` / `DSHR_LOADER_PATCH`，[`docs/m2-loader.md`](docs/m2-loader.md)）。
-本地插件包可用 `chat --install-plugin <目录>` 离线安装（复制到 sidecar + 写 profile，
-[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
-模型 provider 已有 DeepSeek 与 OpenAI 兼容两家（`DSHR_PROVIDER`），
-统一套重试/退避（429/5xx/连接中断，流式已交付后不重试，
-[`docs/m2-stability.md`](docs/m2-stability.md)）。
-10k 事件冷启动 147ms；长会话只渲染最近 200 行 + "载入更早"
-（[`docs/m2-performance.md`](docs/m2-performance.md)）；M2 四条 gate 的对账见
-[`docs/m2-status.md`](docs/m2-status.md)（尚未全部达标）。
+**界面：按 DSH Desktop 的设计 token 对齐。** 侧栏 280、内容列 748、输入卡片圆角 28 /
+max-width 780、链接色/气泡/边框/字体全部取自 DSH 安装包解析出的 `--dsw-*` 值
+（[`crates/ui-gpui/src/theme.rs`](crates/ui-gpui/src/theme.rs)），默认浅色并可切换深色。
+助手正文支持 Markdown 子集；工具卡有 Diff / Terminal 原生视图
+（[`docs/m2-ui-views.md`](docs/m2-ui-views.md)）。侧栏是真实会话列表：新建、切换、
+行内重命名、二次确认删除，重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）。
+transcript 采用**变高行虚拟化**：只排版视口附近几十行，10k 会话（7500 行）滚动
+draw p95 ≈ 3 ms、0 次超预算（release；[`docs/m2-performance.md`](docs/m2-performance.md)）。
+
+**上下文工程。** 请求前计量：超长工具结果头尾裁剪、超预算丢最旧整轮、模型生成摘要并写
+`context.compacted`；超过 16 KiB 的工具结果**外部化**为内容寻址对象，模型只见引用与预览
+（`spill.created` / `tool.result.pruned`，[`docs/m2-spill.md`](docs/m2-spill.md)）。
+`--selftest-long-context` 连续 8 次叠加压缩：ratio 0.611 ≤ 0.8，回放与 UI 逐行一致。
+
+**审批与沙箱。** 写文件/执行命令类工具默认需要用户审批（审批卡片在输入框上方，
+痕迹落 `approval.asked` / `approval.answered`）；沙箱提供工作区相对路径根、1 MiB 限制、
+写前快照、原子写（[`docs/m2-approval.md`](docs/m2-approval.md)、
+[`docs/m2-sandbox.md`](docs/m2-sandbox.md)）。官方 `bash` 仍关闭（需要 Node
+`subprocess` 服务与更完整的执行隔离）。
+
+**插件与稳定性。** profile（`plugins.json`）可持久化启停，侧栏插件面板切换后重启 sidecar；
+支持 `cordis.yml` + `cordis.patch.yml` 只读派生（[`docs/m2-loader.md`](docs/m2-loader.md)）；
+`chat --install-plugin <目录|.tgz>` 离线安装（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
+provider 已有 DeepSeek 与 OpenAI 兼容两家，统一重试/退避；真实网络 20 步工具调用
+成功率 20/20（[`docs/m2-stability.md`](docs/m2-stability.md)）。
+M2 四条 gate 的对账见 [`docs/m2-status.md`](docs/m2-status.md)；剩余产品面接线
+（会话树 UI / 导出 CLI / 打包签名）与后移项在文末列出。
 差异清单见 [`docs/ui-dsh-alignment.md`](docs/ui-dsh-alignment.md)。

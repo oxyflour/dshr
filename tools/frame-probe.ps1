@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   滚动帧率探针：用 GPUI profiler 的 FrameTiming 测量 10k 事件会话的滚动帧率与帧耗时。
 
@@ -12,12 +12,12 @@
   基线缺失时用 -UpdateBaseline 写入。
 
 .EXAMPLE
-  tools\frame-probe.ps1 -Frames 240 -Rows 400
-  tools\frame-probe.ps1 -UpdateBaseline
+  tools\frame-probe.ps1
+  tools\frame-probe.ps1 -Frames 240 -UpdateBaseline
 #>
 param(
     [int]$Frames = 240,
-    [int]$Rows = 400,
+    [int]$Rows = 0,
     [string]$SessionsDir = ".tmp/perf-sessions",
     [string]$Log = ".tmp/frame-probe.txt",
     [string]$Baseline = "docs/m2-performance-baseline.json",
@@ -29,9 +29,12 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
-    $exe = Join-Path $root "target\debug\chat.exe"
+    $exe = Join-Path $root "target\release\chat.exe"
     if (-not (Test-Path $exe)) {
-        throw "找不到 $exe；先构建：tools\build-env.cmd cargo build -p dshr-desktop-gpui --bin chat"
+        $exe = Join-Path $root "target\debug\chat.exe"
+    }
+    if (-not (Test-Path $exe)) {
+        throw "找不到 chat.exe；先构建：tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin chat"
     }
 
     if (-not (Test-Path $SessionsDir) -or -not (Get-ChildItem $SessionsDir -Filter *.jsonl -ErrorAction SilentlyContinue)) {
@@ -40,7 +43,8 @@ try {
 
     Remove-Item -Force $Log -ErrorAction SilentlyContinue
     $env:DSHR_SESSIONS_DIR = (Resolve-Path $SessionsDir).Path
-    $env:DSHR_VISIBLE_LIMIT = "$Rows"
+    # 默认不限制行数：虚拟化保证渲染成本与历史长度无关；-Rows >0 才回到旧窗口化行为。
+    if ($Rows -gt 0) { $env:DSHR_VISIBLE_LIMIT = "$Rows" } else { Remove-Item Env:DSHR_VISIBLE_LIMIT -ErrorAction SilentlyContinue }
     $env:DSHR_FRAME_PROBE = "$Frames"
     $env:DSHR_FRAME_LOG = (Join-Path $root $Log)
     $env:DSHR_FRAME_QUIT = "1"
@@ -76,13 +80,15 @@ try {
     $measured = Get-Metric "draw_work"
     $missed = [regex]::Match($text, "missed_ratio=([\d.]+)")
     $missedRatio = if ($missed.Success) { [double]$missed.Groups[1].Value } else { 1.0 }
+    $rowsMatch = [regex]::Match($text, "rows=(\d+)")
+    $measuredRows = if ($rowsMatch.Success) { [int]$rowsMatch.Groups[1].Value } else { $Rows }
     $result = [pscustomobject]@{
         frames       = $measured.draws
         elapsed_ms   = $measured.elapsed_ms
         avg_fps      = $measured.fps
         draw_p95_us  = $measured.draw_p95_us
         missed_ratio = $missedRatio
-        rows         = $Rows
+        rows         = $measuredRows
         at           = (Get-Date).ToString("s")
         host         = $env:COMPUTERNAME
     }

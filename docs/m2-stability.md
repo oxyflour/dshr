@@ -44,9 +44,32 @@ M2 gate 1 要求"20 步 turn 成功率 ≥99%、≥2 家 provider"。这一轮�
 20 轮零失败。这不能代替真实网络的 20 步成功率，但把"故障 → 重试 → 工具继续执行 →
 成功收尾"的链路变成了可重复的本地断言。
 
+## 真实网络 20 步成功率（Gate 1 实测，2026-11-11）
+
+`chat --selftest-live-20`：真实 DeepSeek（`deepseek-chat`，SSE 流式），每步要求模型调用
+一次本地工具 `probe_native` 并确认结果；统计口径为"每步一次模型请求 + 至少一次真实工具调用，
+`tool.call`/`tool.result` 配对且无错误/中止"。
+
+```text
+[live-20] provider=auto steps=20 ok=20 failed=0 rate=1.0000
+         tool_calls=20 tool_results=20 tool_errors=0 p50_ms=2697 p95_ms=4847
+[selftest-live-20] PASS
+```
+
+- 成功率 **20/20 = 100%**，达到 Gate 1 的 ≥99%；
+- 每步 1.4–4.8 s（p50 2.7 s、p95 4.8 s），无工具错误、无重试耗尽；
+- 需要 `DEEPSEEK_API_KEY`；没有 key 时自检返回 SKIP（exit 2），不伪装通过；
+- 失败时退出码 1，可以进 CI（有 key 的环境）。
+
+## Sidecar 瞬时错误分类（T3 补充）
+
+`docs/spec/sidecar-rpc.md` §9.2 定义了 sidecar 瞬时错误分类与重试建议：
+`E_TIMEOUT` / `E_BACKPRESSURE` / `E_INTERNAL` 可重试，写工具（`fs.write.request`）
+**不参与自动重试**（避免重复写/半写）。宿主当前对 sidecar 工具失败仍按"显式失败卡片 +
+`tool.aborted` 事件"处理，自动重试留给 Agent 决策（下轮可选）。
+
 ## 未做
 
-- **10k 事件性能基线**（冷启动、滚动、内存）——下一阶段；
-- 工具层瞬时错误分类（sidecar 超时/崩溃）与工具级重试；
-- 真实 provider 上的重试验证（需要 key/网络，留给人工 live 测试）；
+- 工具层自动重试（sidecar 超时/崩溃时由宿主重放只读工具调用）；
+- 真实 provider 上"重试后成功"的注入验证（需要伪造网络故障，目前只有本地 FlakyProvider）；
 - SSE 中途断流后**已产出部分文本**的恢复（当前直接失败，语义上不重放）。

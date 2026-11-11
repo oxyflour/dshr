@@ -1,7 +1,7 @@
 # 性能基线（F，第二阶段，2026-11-11）
 
 M2 gate 2 要求：10k 事件冷启动 < 1.5s，并有滚动/渲染的可重复基线。
-这一轮先把**数据层**测出来，并把 UI 从"每帧构造整段历史"改成**窗口化渲染**。
+这一轮把**数据层**和**滚动帧**都测出来了，并把 transcript 改成**变高行虚拟化**。
 
 ## 数据层数字（本机，debug build）
 
@@ -24,23 +24,60 @@ M2 gate 2 要求：10k 事件冷启动 < 1.5s，并有滚动/渲染的可重复�
 
 结论：数据层不是瓶颈，10k 事件有约 10 倍余量。
 
-## UI：窗口化渲染
+## UI：变高行虚拟化（本轮新增）
 
-之前 transcript 每帧为**全部** rows 构造元素；10k 事件（7.5k 行）在 debug 下每帧
-要构造上万元素，滚动会明显卡。现在：
+之前 transcript 每帧为可见 rows 全部构造元素；10k 会话下 400 行就要
+prepaint 125 ms（debug），滚动只有 ~6 fps。现在：
 
-- 默认只渲染最近 **200 行**；
-- 顶部保留"载入更早的 N 条（每次 200 条）"入口，点一次可见范围 +200；
-- 切换/新建会话时重置为 200；
-- 消息总数仍显示在头部（如 `7500 条`）。
+- 只构造/排版视口附近的几十行（overscan 240px），用上下占位块维持滚动高度；
+- 行高按内容估算（CJK 保守估计每行字符数），估算偏差只影响滚动条比例；
+- 不再每帧克隆整份 `rows`（7500 个 String）；
+- 滚动事件只触发一次重绘（`on_scroll` → `cx.notify()`），不重建历史；
+- `DSHR_VISIBLE_LIMIT` 保留旧的"只看尾部 N 行"开关（默认不限制）。
 
-代价：滚动条不再代表完整历史（这是有意的权衡）；真正的虚拟化（`uniform_list`）
-需要恢复变高行支持，留给后续。
+## 滚动帧探针（真实帧时间，不是 sleep 估算）
 
-## 未做 / 待人工验证
+`chat` 在 `DSHR_FRAME_PROBE=<帧数>` 下启用 GPUI profiler：
+`set_trace_enabled(true)` → 每帧 `window.on_next_frame` 请求下一帧 →
+`FrameTiming` 记录 draw 各阶段耗时与呈现间隔 → 达到目标帧数后写报告并退出。
+滚动由探针自己推进（`ScrollHandle::set_offset` 在 0..1 之间往返）。
 
-- **真实 FPS 数字**：本机 GPUI 窗口只能 `PrintWindow` 截图，无法注入稳定滚动与
-  取帧时间；当前只能证明"渲染行数有上限"（截图：10k 会话打开、只渲染尾部）。
-  A1/A1c 的探针可复用到真实窗口，但需要可交互的桌面会话。
-- 长会话的**内存**（元素树/文本 shaping 缓存）未测。
-- 缩略/虚拟化的完整方案（变高行 + 锚点恢复）未做。
+```powershell
+# 1. 造 10k 事件会话（只需一次）
+.\target\release\chat.exe --seed-perf-session .tmp\perf-sessions
+
+# 2. 自动化测量（脚本读 docs/m2-performance-baseline.json 判定回归）
+tools\frame-probe.ps1 -Frames 240
+
+# 或手动
+$env:DSHR_SESSIONS_DIR = (Resolve-Path .tmp\perf-sessions).Path
+$env:DSHR_FRAME_PROBE = "240"
+$env:DSHR_FRAME_LOG = (Join-Path (Get-Location) ".tmp\frame-probe.txt")
+.\target\release\chat.exe
+```
+
+### 测量结果（本机，2026-11-11）
+
+release build，10k 事件（7500 行全部参与虚拟化），240 帧滚动，3 次重复：
+
+| 指标 | 结果（3 次） |
+|---|---|
+| draw_work p50 | **1.9 / 2.2 / 2.0 ms** |
+| draw_work p95 | **3.1 / 3.4 / 3.2 ms** |
+| prepaint p50 | 1.0 / 1.1 / 1.0 ms |
+| missed_refresh | **0 / 0 / 0**（budget 31.25 ms） |
+| avg_fps | 24.0 / 23.9 / 24.1（受远端显示 ~24 Hz 上限约束） |
+
+debug build 同条件对照：draw_work p50 14–30 ms、p95 67–74 ms、missed 20–48%，
+说明**release 是产品口径基线**，debug 数字只用于相对回归。
+
+基线落盘：`docs/m2-performance-baseline.json`（`frame-probe.ps1` 用它做
+"avg_fps ≥ 基线 95%、draw p95 ≤ 基线 120%"的判定）。
+
+## 未做 / 已知限制
+
+- `avg_fps` 被本机远端显示刷新率限制（refresh_ns≈31.25ms），不能直接和 60/144 Hz 机器比较；
+  判定应以 draw_work 是否超 budget、missed_refresh 是否为 0 为准。
+- 元素树/文本 shaping 缓存**内存**未测（只能用行数与虚拟化窗口间接说明）。
+- 虚拟化行高是估算，滚动条比例与"跳到底部"的像素位置有少量误差；
+  真正的等高校验/锚点恢复留给后续。

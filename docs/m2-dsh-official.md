@@ -97,10 +97,12 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-tool-fs/package.json
 
 ## 边界与已知限制
 
-1. **只读 fs**：`write` / `edit` / `apply_patch` 需要 `sandbox` 服务与版本/审批语义，当前关闭。
-   打开前必须先实现 `sandbox` seam，否则是绕过审批的写文件通道。
-2. **路径基准**是侧车进程的 cwd（仓库根），因为没有 `workingDirectory` 服务；
-   多工作区/多 agent 场景需要 `ctx.workingDirectory` 适配。
+1. **写工具已解锁（2026-11-11 收尾轮）**：能力协商 `fs.write` 后，官方 `write`/`edit`/
+   `apply_patch` 的写盘请求经 `fs.write.request` 回到 Rust，走沙箱 + 审批 + 写前快照 +
+   原子写；无协商时保持只读。见 [`m2-official-write.md`](m2-official-write.md)。
+   `bash`/`pwsh`/`todo` 等仍关闭（缺 `subprocess`/`session` 服务）。
+2. **路径基准**由 `DSHR_WORKSPACE` 决定（host 在握手时下发给 sidecar）；
+   多工作区/多 agent 场景需要 `workingDirectory` service 适配。
 3. **没有 scope / restrict / guard**：官方多 agent 隔离语义不成立，单 agent 场景可用。
 4. **插件列表**默认固定在 `sidecar-dsh.mjs`；可用 `DSHR_DSH_PLUGINS`（JSON 数组）
    覆盖，格式 `[{"name": "...", "config": {...}, "inject": [...]}]`。
@@ -113,7 +115,7 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-tool-fs/package.json
 
 ## 下一步
 
-1. `sandbox` + `userApproval` seam：解锁官方 `write`/`edit`/`bash`/`pwsh` 工具（需要审批 UI 配合）。
-2. `session` / `sessionProjections`：解锁 `todo_write`、`web`、`workflow`。
-3. `workingDirectory`：路径基准与多工作区。
-4. Loader 兼容：解析 profile 的 bundle/patch，按 DSH 的组合方式装载，而不是硬编码列表。
+1. `session` / `sessionProjections`：解锁 `todo_write`、`web`、`workflow`；
+2. `subprocess` + 进程隔离：解锁官方 `bash`/`pwsh`（当前写入已可用，执行类仍关闭）；
+3. `workingDirectory`：路径基准与多工作区；
+4. Loader 兼容：`include`/group 展开、`!!js` 求值（当前只做 bundle/patch 派生）。
