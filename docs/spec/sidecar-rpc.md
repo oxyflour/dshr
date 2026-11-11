@@ -42,6 +42,17 @@ Rust                                    Sidecar
 - `generation` 由 Rust 分配（`node-0007`），Sidecar 不得自增。
 - 握手超时 10 s → 判定启动失败，Rust 继续以 Native-only 模式运行。
 
+### 3.1 host_caps（M2）
+
+| cap | 含义 | Sidecar 行为 |
+|---|---|---|
+| `tool.stream` | Sidecar 可发 `tool.chunk` | 流式工具启用 |
+| `tool.cancel` | Rust 会发 `tool.cancel` | 每个调用挂 `AbortController` |
+| `fs.write` | Sidecar 可发 `fs.write.request`（见 §7.5） | **只有收到时才装载官方 `write`/`edit`/`apply_patch`**；未收到时强制只读 |
+
+未列入的能力一律视为"宿主不支持"；Sidecar 不得凭配置自行打开对应通道。
+`runtime.ready.sidecar_caps` 回声本侧实际启用的能力（含 `fs.write`）。
+
 ## 4. Envelope
 
 ```json
@@ -95,6 +106,7 @@ Rust                                    Sidecar
 | `plugin.unload` / `plugin.unloaded` | ↔ | `plugin_id`, `timeout_ms` | unload 幂等 |
 | `tool.register` / `tool.unregister` | → | `definition`（含 `output_schema?` / `presentation?`，对齐 DSH `output.schema` / `presentResult` 卡片类型）, `registration_id` | 重复注册返回同一 id |
 | `tool.invoke` / `tool.chunk` / `tool.result` / `tool.cancel` | ↔ | 见 §7 | `result` 恰好一次 |
+| `fs.write.request` / `fs.write.result` | ↔ | 见 §7.5 | `result` 恰好一次（按 `request_id` 关联） |
 | `service.publish` / `service.revoke` | → | `service_key`, `methods[]` | key 冲突即 `E_SERVICE_CONFLICT` |
 | `service.invoke` / `service.result` | ↔ | `method`, `args` | 读操作幂等；写操作由方法声明 |
 | `ui.contribute` / `ui.retract` | → | slot 注册（见 [`adc-v1.md`](adc-v1.md)） | 同 `registration_id` 幂等 |
@@ -122,6 +134,47 @@ Rust ◄──tool.result──────  Sidecar
 5. 每个调用都有 `timeout_ms`（Rust 侧裁决，默认 120 s）；超时即 `E_TIMEOUT`，随后发送 `tool.cancel` 兜底。
 6. `tool.result` 载荷为 `{call_id, is_error, content[], value, meta?}`（对齐 DSH `ToolExecutionResult`；字段语义见 [`cpp-v1.md`](cpp-v1.md) §7.3）。Host 只把 `value`/`meta` 落进 Session Log 的事件载荷，卡片由 `presentation` 折叠，不在传输层做渲染。
 
+## 7.5 文件写入回调（`fs.write`）
+
+官方 `@deepseek-ai/dsh-tool-fs` 的 `write`/`edit`/`apply_patch` 不在 Sidecar 直接落盘：
+它们经官方 `ctx.fs` 服务发出写入意图，Sidecar 翻译成 `fs.write.request` 交给 Rust
+裁决（路径边界、审批、写前快照、原子写、版本），结果用 `fs.write.result` 返回。
+
+```text
+Sidecar ──fs.write.request(req)──► Rust（在等待 tool.result 的读循环里同步服务）
+Sidecar ◄──fs.write.result────────── Rust
+```
+
+请求 payload：
+
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `call_id` | 是 | 发起写入的 `tool.invoke.call_id`；审批审计使用同一身份 |
+| `tool` | 是 | `write` / `edit` / `apply_patch`（审批展示用） |
+| `operation` | 是 | `write`（create-or-replace，内容即全文）或 `delete` |
+| `path` | 是 | 工作区相对路径，或工作区内绝对路径；Rust 负责归一化与边界校验 |
+| `workspace_root` | 否 | Sidecar 认为的工作区根；与宿主不一致 → `FS_SANDBOX_DENIED`（防混淆代理） |
+| `content` | 条件 | `write` 必填（UTF-8 全文，≤ 1 MiB）；`delete` 必须缺省 |
+| `expected_version` | 否 | 版本守卫 `mtime_ms:size`；不匹配 → `FS_STALE_VERSION` |
+| `intent` | 否 | 官方 `fs/write-intent` 水位；仅透传审计，不参与裁决 |
+| `mode` | 否 | 说明性字段（当前固定 `workspace-write`；真实约束在 Rust） |
+
+成功答复 payload：`{ok:true, path, operation:create|update|delete, version?, bytes?, snapshot?}`。
+`version` 为写入后的 `mtime_ms:size`；`snapshot` 为覆盖/删除前落进
+`.dshr/snapshots/` 的快照 ID。失败答复：`{ok:false, error:{code,message,retryable}}`，
+错误码见 §9.1。
+
+约束：
+
+1. 每个请求恰好一个答复；Sidecar 在收到答复前**不得**再发同 `request_id` 的请求。
+2. Rust 在 `tool.invoke` 的等待循环里服务该请求（`compat-dsh-host`），因此不会出现
+   "Sidecar 等写入答复、宿主等 tool.result" 的死锁。
+3. Rust 的审批/写盘是同步阻塞的：宿主侧 approval timeout（默认 60 s）必须小于
+   `tool.invoke` 的 `timeout_ms`（默认 120 s），否则工具超时后答复无人消费。
+4. 未协商 `fs.write` 时 Rust 一律回 `E_FS_CAPABILITY`，不做任何写入。
+5. Sidecar 的写方法只在 `host_caps` 含 `fs.write` 时对插件可见（写工具未注册）；
+   即使被直接调用也返回结构化错误。
+
 ## 8. 取消
 
 - 方向：Rust → Sidecar（`tool.cancel`），携带 `reason`。
@@ -147,6 +200,45 @@ Rust ◄──tool.result──────  Sidecar
 
 `error.message` 面向开发者，不得包含凭据、绝对路径或堆栈原文（堆栈进诊断通道）。
 
+### 9.1 `fs.write` 错误码
+
+`fs.write.result.payload.error.code` 采用官方 `@deepseek-ai/dsh-fs` 的 `FS_*` 词表
+（Rust 直接返回；Node 侧再翻译成官方 `FsError`，其中 `FS_SANDBOX_DENIED` 会转成
+`FS_PERMISSION_DENIED`，原因见 [`../m2-official-write.md`](../m2-official-write.md)）：
+
+| 码 | 触发 |
+|---|---|
+| `FS_SANDBOX_DENIED` | 路径越界 / `workspace_root` 不一致 / 审批拒绝或超时 |
+| `FS_PERMISSION_DENIED` | OS 权限拒绝（也是 Node 侧收到的最终码） |
+| `FS_STALE_VERSION` | `expected_version` 不匹配 |
+| `FS_TOO_LARGE` | 内容超过 1 MiB |
+| `FS_NOT_FOUND` | 目标/父目录不存在，或删除不存在的文件 |
+| `FS_NOT_REGULAR_FILE` | 目标是目录 |
+| `FS_IO_ERROR` | 其它 I/O / 请求失败 |
+| `E_FS_REQUEST` | payload 形状错误（协议层，非官方词表） |
+| `E_FS_CAPABILITY` | 未协商 `fs.write` 却收到写请求 |
+
+### 9.2 Sidecar 瞬时错误分类与重试建议
+
+`RpcError.retryable` 与协议实现 `dshr_compat_dsh_protocol::is_retryable_sidecar_error`
+是**建议值**，最终是否重试由工具执行器按"错误分类 × 工具幂等性"裁决：
+
+| 分类 | 错误码 | 建议 |
+|---|---|---|
+| 瞬时（错误本身） | `E_TIMEOUT`、`E_BACKPRESSURE`、`E_INTERNAL` | 可退避后重试；`E_BACKPRESSURE` 必须退避 |
+| 永久（协议/参数） | `E_PROTOCOL`、`E_VERSION`、`E_SCHEMA`、`E_RPC_DEPTH`、`E_TOO_LARGE`、`E_UNKNOWN_PLUGIN`、`E_DUPLICATE_REG` | 不重试；修配置/参数后重新发起 |
+| 取消/已结算 | `E_CANCELLED`、`E_ALREADY_SETTLED` | 不重试 |
+| 崩溃 | `runtime.crashed` / 管道 EOF | 在途调用全部 `aborted` 写日志，**不自动重试**；新 generation 重新注册后由用户/Agent 决定 |
+
+工具幂等性约束：
+
+- 只读工具（`read`/`load_workspace_dependencies` 等）幂等，可自动重试瞬时错误；
+- **写工具（`write`/`edit`/`apply_patch`）不幂等**：重试会重复审批、重复落盘
+  （`edit` 可能第二次找不到 old_string）。它们返回结构化 `tool.result` 错误，
+  由模型重读文件后重新决策；宿主不做自动重试。
+- 重试必须重新走 `tool.invoke`（新 `request_id`/`call_id`），不得复用已结算的调用；
+  流式已交付部分内容时按 §7 的流式安全规则处理。
+
 ## 10. 崩溃与恢复
 
 | 场景 | 行为 |
@@ -164,6 +256,9 @@ Rust ◄──tool.result──────  Sidecar
 3. `depth` 限制阻断互递归；持有核心锁时**禁止**等待远端调用（代码审查 + 运行时断言）。
 4. `tool.invoke` 的 `arguments` 在进入 Sidecar 前已通过 schema 校验；Sidecar 再校验一次属于冗余，不是依赖。
 5. 安装第三方插件必须经过用户确认（见 PLAN §7），协议层不提供"静默安装"。
+6. **写路径走 Rust**（§7.5）：绝对路径只接受工作区内的，相对路径拒绝 `..` 与符号链接
+   逃逸，写前落快照；Sidecar 直接调用 Node `fs` 写文件属于越权（M2 靠代码审查，
+   OS 级隔离见后续 Job Object/沙箱工作）。
 
 ## 12. Conformance
 
@@ -172,6 +267,7 @@ Rust ◄──tool.result──────  Sidecar
 | `RPC-HANDSHAKE-*` | 版本协商、拒绝路径、超时 |
 | `RPC-REG-*` | 注册/撤销/重复注册/generation 失效 |
 | `RPC-EXEC-*` | invoke/chunk/result 顺序、幂等、大小上限 |
+| `RPC-WRITE-*` | `fs.write` 能力协商、审批/越界/版本/快照、读循环不死锁 |
 | `RPC-CANCEL-*` | 取消传播、迟到结果、已结算 |
 | `RPC-CRASH-*` | 崩溃检测、在途 aborted、重注册 |
 | `RPC-LIMIT-*` | 背压、depth、帧上限 |

@@ -5,7 +5,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dshr-compat-dsh-fs = { path = "../compat-dsh-fs" }
 dshr-compat-dsh-protocol = { path = "../compat-dsh-protocol" }
+dshr-sidecar-guard = { path = "../sidecar-guard" }
 dshr-tool-runtime = { path = "../tool-runtime" }
 serde.workspace = true
 serde_json.workspace = true
@@ -14,3 +16,5 @@ thiserror.workspace = true
 [dev-dependencies]
 dshr-session-store = { path = "../session-store" }
 dshr-conversation-model = { path = "../conversation-model" }
+dshr-compat-dsh-fs = { path = "../compat-dsh-fs" }
+dshr-tool-runtime = { path = "../tool-runtime" }

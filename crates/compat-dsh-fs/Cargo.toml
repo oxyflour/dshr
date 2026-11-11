@@ -1,0 +1,12 @@
+[package]
+name = "dshr-compat-dsh-fs"
+description = "Sidecar 写请求的 Rust 裁决：路径归一化、工作区边界、审批、写前快照、原子写、版本"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dshr-compat-dsh-protocol = { path = "../compat-dsh-protocol" }
+dshr-sandbox = { path = "../sandbox" }
+dshr-tool-runtime = { path = "../tool-runtime" }
+serde_json.workspace = true
+thiserror.workspace = true

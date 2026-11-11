@@ -8,21 +8,55 @@
 // 依赖的 node_modules 不提交仓库，由 tools/dsh-vendor.mjs 从本机安装的
 // DeepSeek Harness app.asar 抽取（见 docs/m2-dsh-official.md）。
 //
+// M2 W3 —— 官方写工具（write/edit/apply_patch）在 Rust 审批 + 沙箱下打开：
+//   - 能力协商：runtime.hello.host_caps 含 `fs.write` 才装载写工具（否则保持只读，
+//     --selftest-dsh 不回归）；
+//   - `fs` 服务把官方 dsh-fs 的写方法（writeText/editText/patchText/deleteFile/
+//     moveFile/lstat）翻译成 `fs.write.request`，由 Rust 裁决（路径边界/审批/写前
+//     快照/原子写/版本），结果走 `fs.write.result`；
+//   - 官方 dsh-tool-fs 源码一行不改：sandbox seam 由官方 `FsSandboxController` 在
+//     `fs.sandboxMode === undefined` 时自动退化为 escalationModes=[]（无 escalate、
+//     无 sandboxPolicy 依赖），真实约束全部在 Rust 侧。
+//
 // 环境变量：
-//   DSHR_DSH_PLUGINS  JSON 数组：插件名 + 配置。缺省加载 workspace-dependencies 工具。
+//   DSHR_DSH_PLUGINS  JSON 数组：插件名 + 配置。缺省加载 workspace-dependencies + fs 工具。
 //   DSHR_DSH_SOURCE   primary-runtime 目录（workspace-dependencies 的 source）；
 //                     缺省按 LOCALAPPDATA 下的 DSH 安装路径推断。
+//   DSHR_WORKSPACE    fs 服务的工作区根；缺省为 sidecar 进程 cwd（宿主握手时会设置）。
 
 import { createInterface } from 'node:readline'
 import { existsSync } from 'node:fs'
-import { readFile, stat as fsStat } from 'node:fs/promises'
-import { isAbsolute, join, resolve as resolvePath } from 'node:path'
+import { readFile, stat as fsStat, lstat as fsLstat } from 'node:fs/promises'
+import {
+  isAbsolute,
+  join,
+  relative as relativePath,
+  resolve as resolvePath,
+  sep,
+} from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 
 const PROTOCOL_VERSION = 1
 let generation = 'node-0001'
 const tools = new Map()
 const inflight = new Map()
+
+// 握手协商出的 host_caps；`fs.write` 是官方写工具的唯一门闩。
+const hostCaps = new Set()
+let writeEnabled = false
+
+// 工作区根：宿主在 spawn 时通过 DSHR_WORKSPACE 注入；独立运行时退回 cwd。
+const WORKSPACE_ROOT = resolvePath(process.env.DSHR_WORKSPACE || process.cwd())
+
+// sidecar → host 的请求（当前只有 fs.write.request）；按 request_id 关联答复。
+const pendingHostRequests = new Map()
+let hostRequestSeq = 0
+const HOST_REQUEST_TIMEOUT_MS = 120_000
+
+// 工具调用的执行上下文：官方 fs 方法的签名里没有 call_id，用 AbortSignal 关联
+// 到发起它的 tool.invoke（审批审计需要同一个 call_id）。
+const callContexts = new WeakMap()
+const activeCalls = []
 
 const send = (kind, requestId, payload, extra = {}) => {
   process.stdout.write(
@@ -39,6 +73,9 @@ const send = (kind, requestId, payload, extra = {}) => {
     }) + '\n',
   )
 }
+
+const log = (level, message, extra = {}) =>
+  send('log.emit', `log-${Date.now()}`, { level, message }, extra)
 
 // ---------------------------------------------------------------------------
 // 官方插件的入口：ctx.tools.register(definition)。
@@ -79,34 +116,184 @@ const toolsService = {
 
 // ---------------------------------------------------------------------------
 // 最小服务子集：官方插件通过 `inject`/`ctx.<service>` 使用这些 seam。
-//
-// 实现原则：只做我们真的能兑现的语义（本机只读文件、系统提示段落收集），
-// 不假装支持沙箱/写入/会话——做不到的配置就不要打开（见 loadPluginConfig）。
 // ---------------------------------------------------------------------------
 
-function createFsService() {
-  const describeTarget = (absolutePath) => ({
-    targetKey: absolutePath,
-    displayPath: absolutePath,
-  })
+/**
+ * 构造一个官方 `FsError`。用真实包是为了让 dsh-tool-fs 的 `instanceof FsError`
+ * 判定成立（否则 FS_STALE_VERSION 的"re-read the file"补救提示不会出现）。
+ * 包不存在时退回带 `code` 的普通 Error。
+ */
+async function makeFsError(message, code) {
+  try {
+    const { FsError } = await import('@deepseek-ai/dsh-fs')
+    return new FsError(message, code)
+  } catch {
+    const error = new Error(message)
+    error.code = code
+    return error
+  }
+}
+
+/**
+ * Rust 裁决层的错误码 → 官方 dsh-fs 词表。
+ *
+ * 注意 `FS_SANDBOX_DENIED`：官方 dsh-tool-fs 的 `FsSandboxController.mapError`
+ * 只在"挂载了 confining 后端"（`ctx.fs.sandboxMode !== undefined`）时才有 policy；
+ * 本侧车是非 confining 后端（真实约束在 Rust），收到 `FS_SANDBOX_DENIED` 会
+ * 解引用 undefined 的 policy 而崩溃。因此把 Rust 的沙箱/审批拒绝翻译成
+ * `FS_PERMISSION_DENIED`（消息里保留"denied / approval"细节）。
+ */
+function officialFsErrorCode(code) {
+  switch (code) {
+    case 'FS_SANDBOX_DENIED':
+    case 'E_FS_CAPABILITY':
+      return 'FS_PERMISSION_DENIED'
+    case 'E_FS_REQUEST':
+    case 'E_PROTOCOL':
+      return 'FS_IO_ERROR'
+    default:
+      return code
+  }
+}
+
+function versionOf(info) {
+  // 与 Rust 侧 FsWriteService 的 version_of 同格式：floor(mtime_ms):size。
+  return `${Math.floor(info.mtimeMs)}:${info.size}`
+}
+
+function createFsService(options = {}) {
+  const root = resolvePath(options.root ?? WORKSPACE_ROOT)
+  const targetMeta = new WeakMap()
+
+  const describeTarget = (absolutePath) => {
+    const target = { targetKey: absolutePath, displayPath: absolutePath }
+    targetMeta.set(target, withinRoot(absolutePath))
+    return target
+  }
+
+  const withinRoot = (absolutePath) => {
+    const rel = relativePath(root, absolutePath)
+    const inside =
+      rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+    return { inside, relative: rel }
+  }
+
+  const metaOf = (target) => {
+    const known = targetMeta.get(target)
+    if (known) return known
+    const absolute = resolvePath(String(target?.targetKey ?? target))
+    return withinRoot(absolute)
+  }
+
+  const targetOf = (requestedPath, callOptions = {}) => {
+    const base =
+      typeof callOptions.cwd === 'string' && callOptions.cwd.length > 0
+        ? resolvePath(callOptions.cwd)
+        : root
+    const absolute = isAbsolute(String(requestedPath))
+      ? resolvePath(String(requestedPath))
+      : resolvePath(base, String(requestedPath))
+    return describeTarget(absolute)
+  }
+
+  const callOf = (signal) =>
+    callContexts.get(signal) ??
+    activeCalls.at(-1) ?? { callId: `fs-${Date.now()}`, tool: 'write' }
+
+  const readIfExists = async (target) => {
+    try {
+      return await readFile(target.targetKey, 'utf8')
+    } catch (error) {
+      if (error?.code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  const currentVersion = async (target) => {
+    const info = await fsStat(target.targetKey)
+    return versionOf(info)
+  }
+
+  /**
+   * 所有写操作的唯一出口：把官方 fs 语义翻译成 fs.write.request。
+   * 路径以"工作区相对路径"发送，Rust 再做一次归一化/边界校验与审批。
+   */
+  const performWrite = async ({ operation, target, content, expectedVersion, call, intent }) => {
+    if (!writeEnabled) {
+      throw await makeFsError(
+        'filesystem write is not enabled: host did not negotiate fs.write',
+        'FS_PERMISSION_DENIED',
+      )
+    }
+    const meta = metaOf(target)
+    if (!meta.inside) {
+      throw await makeFsError(
+        `path escapes the workspace root "${root}": ${target.displayPath}`,
+        'FS_PERMISSION_DENIED',
+      )
+    }
+    const payload = {
+      call_id: call.callId,
+      tool: call.tool,
+      operation,
+      path: meta.relative,
+      workspace_root: root,
+      content: operation === 'write' ? content : undefined,
+      expected_version: expectedVersion ?? undefined,
+      intent: intent ?? undefined,
+      mode: 'workspace-write',
+    }
+    const result = await requestHost('fs.write.request', payload, {
+      call_id: call.callId,
+      plugin_id: 'dsh-official',
+    })
+    if (!result?.ok) {
+      const code = result?.error?.code ?? 'FS_IO_ERROR'
+      const message = result?.error?.message ?? `write failed (${code})`
+      throw await makeFsError(message, officialFsErrorCode(code))
+    }
+    return result
+  }
 
   return {
     processPath(target) {
       return target.targetKey
     },
-    async resolve(requestedPath, options = {}) {
-      const base = options.cwd ?? process.cwd()
-      return describeTarget(
-        isAbsolute(requestedPath) ? resolvePath(requestedPath) : resolvePath(base, requestedPath),
-      )
+    /**
+     * 沙箱能力事实：本侧车不挂载 confining 后端（真实约束在 Rust）。
+     * 官方 dsh-tool-fs 的 `FsSandboxController` 因此退化为 escalationModes=[]、
+     * 无 sandboxPolicy 依赖、无 sandbox_permissions 参数——即"无 escalate 模式"。
+     */
+    get sandboxMode() {
+      return undefined
+    },
+    async resolve(requestedPath, callOptions = {}) {
+      return targetOf(requestedPath, callOptions)
     },
     async stat(target, signal) {
       if (signal?.aborted) throw new Error('stat aborted')
       try {
         const info = await fsStat(target.targetKey)
         return {
-          version: `${info.mtimeMs}:${info.size}`,
+          version: versionOf(info),
           type: info.isDirectory() ? 'directory' : 'file',
+          size: info.size,
+        }
+      } catch {
+        return undefined
+      }
+    },
+    async lstat(requestedPath, callOptions = {}) {
+      const target = targetOf(requestedPath, callOptions)
+      try {
+        const info = await fsLstat(target.targetKey)
+        return {
+          version: versionOf(info),
+          type: info.isSymbolicLink()
+            ? 'symlink'
+            : info.isDirectory()
+              ? 'directory'
+              : 'file',
           size: info.size,
         }
       } catch {
@@ -121,7 +308,260 @@ function createFsService() {
       // 工具侧用 `for await` 消费分块；一次返回整块也合法（只是不分块）。
       return [await this.readText(target, signal)]
     },
+    async readBytes(target, signal, cap) {
+      if (signal?.aborted) throw new Error('read aborted')
+      const buffer = await readFile(target.targetKey)
+      return typeof cap === 'number' ? buffer.subarray(0, cap) : buffer
+    },
+    /**
+     * 官方 write 工具调用：无 policy 时是"无条件原子 create-or-overwrite"。
+     * `before/after/operation` 是官方 output schema / diff 卡片需要的字段。
+     */
+    async writeText(target, content, intent, signal) {
+      const call = callOf(signal)
+      const before = await readIfExists(target)
+      if (intent?.kind === 'createIfAbsent' && before !== null) {
+        throw await makeFsError(
+          `cannot overwrite existing "${target.displayPath}" without reading it first`,
+          'FS_NOT_OBSERVED',
+        )
+      }
+      const expectedVersion =
+        typeof intent?.version === 'string' ? intent.version : undefined
+      const operation = before === null ? 'create' : 'update'
+      const result = await performWrite({
+        operation: 'write',
+        target,
+        content,
+        expectedVersion,
+        call,
+        intent,
+      })
+      return {
+        version: result.version,
+        before,
+        after: content,
+        operation: result.operation ?? operation,
+      }
+    },
+    /** 官方 edit 工具调用：唯一匹配（默认）或 replace_all，写前带版本守卫。 */
+    async editText(target, edit, intent, signal) {
+      const call = callOf(signal)
+      const before = await readIfExists(target)
+      if (before === null) {
+        throw await makeFsError(
+          `cannot edit "${target.displayPath}": not found`,
+          'FS_NOT_FOUND',
+        )
+      }
+      const version = await currentVersion(target)
+      if (typeof intent?.version === 'string' && intent.version !== version) {
+        throw await makeFsError(
+          `cannot edit "${target.displayPath}": file changed since it was read`,
+          'FS_STALE_VERSION',
+        )
+      }
+      const occurrences = countOccurrences(before, edit.oldString)
+      if (occurrences === 0) {
+        throw await makeFsError(
+          `cannot edit "${target.displayPath}": old_string was not found`,
+          'FS_EDIT_NOT_FOUND',
+        )
+      }
+      if (occurrences > 1 && !edit.replaceAll) {
+        throw await makeFsError(
+          `cannot edit "${target.displayPath}": old_string appears ${occurrences} times; pass a unique string or replace_all`,
+          'FS_AMBIGUOUS_EDIT',
+        )
+      }
+      const after = edit.replaceAll
+        ? before.split(edit.oldString).join(edit.newString)
+        : replaceOnce(before, edit.oldString, edit.newString)
+      const result = await performWrite({
+        operation: 'write',
+        target,
+        content: after,
+        expectedVersion: version,
+        call,
+        intent,
+      })
+      return { version: result.version, before, after }
+    },
+    /** 官方 apply_patch update 调用：hunks 由官方 dsh-fs-patch 纯函数应用。 */
+    async patchText(target, hunks, intent, signal) {
+      const call = callOf(signal)
+      const before = await readIfExists(target)
+      if (before === null) {
+        throw await makeFsError(
+          `cannot patch "${target.displayPath}": not found`,
+          'FS_NOT_FOUND',
+        )
+      }
+      const version = await currentVersion(target)
+      const { applyHunks } = await import('@deepseek-ai/dsh-fs-patch')
+      const applied = applyHunks(before.replace(/\r\n/g, '\n'), hunks)
+      if (!applied?.ok) {
+        throw await makeFsError(
+          `cannot apply patch to "${target.displayPath}": hunk did not match the current file`,
+          'FS_PATCH_MISMATCH',
+        )
+      }
+      const result = await performWrite({
+        operation: 'write',
+        target,
+        content: applied.after,
+        expectedVersion: version,
+        call,
+        intent,
+      })
+      return { version: result.version, before, after: applied.after }
+    },
+    /** 官方 apply_patch delete 调用。 */
+    async deleteFile(target, intent, signal) {
+      const call = callOf(signal)
+      const before = await readIfExists(target)
+      if (before === null) {
+        throw await makeFsError(
+          `cannot delete "${target.displayPath}": not found`,
+          'FS_NOT_FOUND',
+        )
+      }
+      const version = await currentVersion(target)
+      await performWrite({
+        operation: 'delete',
+        target,
+        expectedVersion: version,
+        call,
+        intent,
+      })
+      return { before }
+    },
+    /**
+     * 官方 apply_patch move 调用：写目标 + 删源。两步各自审批、各自快照；
+     * 目标写成功而源删除失败时按官方契约返回 sourceFailure（不假装原子）。
+     */
+    async moveFile(target, destination, moveOptions = {}, signal) {
+      const call = callOf(signal)
+      const sourceText = await readIfExists(target)
+      if (sourceText === null) {
+        throw await makeFsError(
+          `cannot move "${target.displayPath}": not found`,
+          'FS_NOT_FOUND',
+        )
+      }
+      const sourceVersion = await currentVersion(target)
+      if (
+        typeof moveOptions.expectedSource?.version === 'string' &&
+        moveOptions.expectedSource.version !== sourceVersion
+      ) {
+        throw await makeFsError(
+          `cannot move "${target.displayPath}": file changed since it was read`,
+          'FS_STALE_VERSION',
+        )
+      }
+      let after = sourceText
+      if (Array.isArray(moveOptions.hunks) && moveOptions.hunks.length > 0) {
+        const { applyHunks } = await import('@deepseek-ai/dsh-fs-patch')
+        const applied = applyHunks(sourceText.replace(/\r\n/g, '\n'), moveOptions.hunks)
+        if (!applied?.ok) {
+          throw await makeFsError(
+            `cannot apply patch to "${target.displayPath}": hunk did not match the current file`,
+            'FS_PATCH_MISMATCH',
+          )
+        }
+        after = applied.after
+      }
+      const destinationBefore = await readIfExists(destination)
+      if (
+        moveOptions.expectedDestination?.kind === 'createIfAbsent' &&
+        destinationBefore !== null
+      ) {
+        throw await makeFsError(
+          `cannot overwrite existing "${destination.displayPath}" without reading it first`,
+          'FS_NOT_OBSERVED',
+        )
+      }
+      const writeResult = await performWrite({
+        operation: 'write',
+        target: destination,
+        content: after,
+        expectedVersion:
+          typeof moveOptions.expectedDestination?.version === 'string'
+            ? moveOptions.expectedDestination.version
+            : undefined,
+        call,
+        intent: moveOptions.expectedDestination,
+      })
+      const destinationResult = {
+        version: writeResult.version,
+        before: destinationBefore,
+        after,
+      }
+      try {
+        await performWrite({
+          operation: 'delete',
+          target,
+          expectedVersion: sourceVersion,
+          call,
+          intent: moveOptions.expectedSource,
+        })
+      } catch (error) {
+        return {
+          destination: destinationResult,
+          sourceDeleted: false,
+          sourceBefore: sourceText,
+          sourceFailure: {
+            code: error?.code ?? 'FS_IO_ERROR',
+            message: String(error?.message ?? error),
+          },
+        }
+      }
+      return {
+        destination: destinationResult,
+        sourceDeleted: true,
+        sourceBefore: sourceText,
+      }
+    },
   }
+}
+
+function countOccurrences(text, search) {
+  if (typeof search !== 'string' || search.length === 0) return 0
+  return text.split(search).length - 1
+}
+
+function replaceOnce(text, search, replacement) {
+  const index = text.indexOf(search)
+  if (index < 0) return text
+  return text.slice(0, index) + replacement + text.slice(index + search.length)
+}
+
+/**
+ * sidecar → host 请求。当前只有 `fs.write.request`，答复 kind 为 `fs.write.result`。
+ * Rust 在等待 tool.result 的读循环里同步服务这些请求（不会死锁）。
+ */
+async function requestHost(kind, payload, extra = {}) {
+  hostRequestSeq += 1
+  const requestId = `host-${hostRequestSeq}`
+  const response = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingHostRequests.delete(requestId)
+      reject(
+        Object.assign(new Error(`sidecar request ${kind} timed out`), {
+          code: 'FS_IO_ERROR',
+        }),
+      )
+    }, HOST_REQUEST_TIMEOUT_MS)
+    pendingHostRequests.set(requestId, { resolve, timer, kind })
+    try {
+      send(kind, requestId, payload, extra)
+    } catch (error) {
+      clearTimeout(timer)
+      pendingHostRequests.delete(requestId)
+      reject(error)
+    }
+  })
+  return response
 }
 
 function createSystemPromptService() {
@@ -178,10 +618,14 @@ async function bootPlugins(entries) {
 async function runTool(definition, msg) {
   const controller = new AbortController()
   inflight.set(msg.call_id, controller)
+  const call = { callId: msg.call_id, tool: definition.name }
+  callContexts.set(controller.signal, call)
+  activeCalls.push(call)
   const started = Date.now()
   try {
     // ToolRunContext 在官方实现里由执行器组装；这里给最小可用集合：
-    // 需要 fs/subprocess 等服务的工具暂不支持（边界写在文档里）。
+    // 没有 agent，因此官方工具不会走 workingDirectory / approval / escalation 分支；
+    // 写操作的审批发生在 Rust（fs.write.request 的裁决层）。
     const exec = { signal: controller.signal, callId: msg.call_id }
     const value = await definition.execute(msg.payload?.arguments ?? {}, exec)
 
@@ -222,9 +666,18 @@ async function runTool(definition, msg) {
         value: null,
         meta: null,
       },
-      { call_id: msg.call_id, error: { code: 'E_TOOL', message: String(error?.message ?? error), retryable: false } },
+      {
+        call_id: msg.call_id,
+        error: {
+          code: error?.code ?? 'E_TOOL',
+          message: String(error?.message ?? error),
+          retryable: false,
+        },
+      },
     )
   } finally {
+    const index = activeCalls.indexOf(call)
+    if (index >= 0) activeCalls.splice(index, 1)
     inflight.delete(msg.call_id)
   }
 }
@@ -233,14 +686,25 @@ async function handle(msg) {
   switch (msg.kind) {
     case 'runtime.hello': {
       generation = msg.payload?.generation ?? generation
+      hostCaps.clear()
+      for (const capability of msg.payload?.host_caps ?? []) hostCaps.add(String(capability))
+      writeEnabled = hostCaps.has('fs.write')
       send('runtime.ready', msg.request_id, {
         protocol: PROTOCOL_VERSION,
         dsh_version: '0.2.2-rc.1',
-        sidecar_caps: ['tool.cancel', 'dsh-official'],
+        sidecar_caps: [
+          'tool.cancel',
+          'dsh-official',
+          ...(writeEnabled ? ['fs.write'] : []),
+        ],
         generation,
       })
       // 必须在 ready 之后装载：否则 registration 带着握手前的占位 generation 被丢弃。
       await bootPlugins(loadPluginConfig())
+      send('log.emit', 'boot-capabilities', {
+        level: 'info',
+        message: `host_caps=[${[...hostCaps].join(', ')}] fs.write=${writeEnabled} workspace=${WORKSPACE_ROOT}`,
+      })
       return
     }
     case 'health.ping':
@@ -248,6 +712,24 @@ async function handle(msg) {
         rss_mb: Math.round(process.memoryUsage().rss / 1048576),
       })
       return
+    case 'fs.write.result': {
+      const pending = pendingHostRequests.get(msg.request_id)
+      if (!pending) {
+        send('log.emit', `late-${msg.request_id}`, {
+          level: 'debug',
+          message: `late/unknown fs.write.result ${msg.request_id}`,
+        })
+        return
+      }
+      clearTimeout(pending.timer)
+      pendingHostRequests.delete(msg.request_id)
+      pending.resolve(
+        msg.error
+          ? { ok: false, error: { code: msg.error.code, message: msg.error.message } }
+          : (msg.payload ?? {}),
+      )
+      return
+    }
     case 'tool.invoke': {
       const definition = tools.get(msg.payload?.name)
       if (!definition) {
@@ -283,12 +765,31 @@ function defaultPrimaryRuntime() {
   return join(local, 'Programs', 'DeepSeek Harness', 'resources', 'runtime', 'primary-runtime')
 }
 
+/**
+ * 能力门控：host_caps 不含 fs.write 时强制关闭 write/edit/applyPatch（保持只读）。
+ * 含 fs.write 时，profile 未显式配置的写开关缺省为 true；显式 false 尊重用户意图。
+ */
+function gateToolFsConfig(config, writeAllowed) {
+  const gated = { ...(config ?? {}) }
+  for (const key of ['write', 'edit', 'applyPatch']) {
+    if (!writeAllowed) gated[key] = false
+    else if (gated[key] === undefined) gated[key] = true
+  }
+  return gated
+}
+
+function gateEntry(entry, writeAllowed) {
+  if (entry?.name !== '@deepseek-ai/dsh-tool-fs') return entry
+  return { ...entry, config: gateToolFsConfig(entry.config, writeAllowed) }
+}
+
 function loadPluginConfig() {
+  const writeAllowed = writeEnabled && packageVendored('@deepseek-ai/dsh-tool-fs')
   const raw = process.env.DSHR_DSH_PLUGINS
   if (raw) {
     const entries = JSON.parse(raw)
     if (!Array.isArray(entries)) throw new Error('DSHR_DSH_PLUGINS must be a JSON array')
-    return entries
+    return entries.map((entry) => gateEntry(entry, writeAllowed))
   }
   const source = process.env.DSHR_DSH_SOURCE || defaultPrimaryRuntime()
   if (!source || !existsSync(join(source, 'runtime.json'))) {
@@ -302,14 +803,16 @@ function loadPluginConfig() {
       config: { source },
     },
   ]
-  // 只读 fs：写入/打补丁需要 DSH 的沙箱与版本语义，暂不打开。
   if (packageVendored('@deepseek-ai/dsh-tool-fs')) {
     entries.push({
       name: '@deepseek-ai/dsh-tool-fs',
       // 该插件 apply 里直接访问 systemPrompt/fs，但导出的 inject 只声明了 tools；
       // DSH Loader 通过 entry 级 inject 覆盖补齐，这里照做。
       inject: ['tools', 'fs', 'systemPrompt'],
-      config: { read: true, readImage: false, write: false, edit: false, applyPatch: false },
+      config: gateToolFsConfig(
+        { read: true, readImage: false },
+        writeAllowed,
+      ),
     })
   }
   return entries
