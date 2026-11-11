@@ -20,19 +20,24 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
+use gpui::profiler::{set_trace_enabled, FrameEvent, FrameTimingCollector};
 use gpui::{
-    div, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font, FontWeight, Rgba,
-    ScrollHandle, TextOverflow, Window, WindowBounds, WindowOptions,
+    div, point, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font, FontWeight,
+    Rgba, ScrollHandle, TextOverflow, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
 
-use dshr_agent_context::{estimate_tokens, history_for_model, history_from_log, plan_context};
+use dshr_agent_context::{
+    estimate_tokens, history_for_model, history_from_log, plan_context, plan_context_with_spill,
+    ContextPlan, SpillPolicy, SpillStore,
+};
 use dshr_agent_core::{
     Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider, ModelProvider,
     ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
 };
-use dshr_compat_dsh_host::SidecarHost;
+use dshr_compat_dsh_fs::FsWriteService;
+use dshr_compat_dsh_host::{HostOptions, SidecarHost};
 use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_llm_openai::OpenAiProvider;
@@ -42,10 +47,13 @@ use dshr_plugin_host::PluginHost;
 use dshr_profile::{install_package, Profile, ProfileSource};
 use dshr_sandbox::Workspace;
 use dshr_session_store::{EventSpec, SessionIndex, SessionLog, SessionMeta, ToolState};
+use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
     ApprovalBroker, ApprovalOutcome, ApprovalPolicy, RegistryError, ToolDefinition, ToolOrigin,
 };
-use dshr_ui_gpui::{markdown_view, TextInput, Theme, ThemeKind};
+use dshr_ui_gpui::{
+    diff_view_from_text, markdown_view, terminal_view_from_text, TextInput, Theme, ThemeKind,
+};
 
 const SESSION_ID: &str = "s-chat";
 
@@ -55,6 +63,19 @@ fn now_ts() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("t{nanos}")
+}
+
+/// 上下文外部化对象目录：默认在会话目录旁的 `spill/`，可用 `DSHR_SPILL_DIR` 覆盖。
+fn spill_dir_for(session_path: &std::path::Path) -> PathBuf {
+    if let Ok(dir) = std::env::var("DSHR_SPILL_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    session_path
+        .parent()
+        .map(|parent| parent.join("spill"))
+        .unwrap_or_else(|| PathBuf::from(".tmp/spill"))
 }
 
 /// 侧栏的相对时间（不引入日期库）。
@@ -140,6 +161,8 @@ struct ChatState {
     seq: u64,
     /// 审批 broker：工作线程阻塞等待 UI 决定；不属于大锁保护范围。
     approvals: Arc<ApprovalBroker>,
+    /// 上下文外部化存储：超阈值工具结果落盘为内容寻址对象（内容只在磁盘，模型见引用）。
+    spill: SpillStore,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
@@ -269,6 +292,13 @@ impl Plugin for ProbeWritePlugin {
     }
 }
 
+/// 工具/写入的工作区根（默认当前目录，可用 `DSHR_WORKSPACE` 覆盖）。
+fn workspace_root() -> PathBuf {
+    std::env::var("DSHR_WORKSPACE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
 /// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
 ///
 /// 三种运行时（`DSHR_SIDECAR`）：
@@ -276,7 +306,13 @@ impl Plugin for ProbeWritePlugin {
 /// - `cordis`：真实 Cordis 4.0.5 + 只注册 `ctx.bridge.tool` 的探针插件；
 /// - `dsh`：真实 Cordis 4.1.0 + **未修改的官方 DSH 插件**（依赖由 `tools/dsh-vendor.mjs`
 ///   从本机 DSH 安装中抽取，见 `docs/m2-dsh-official.md`）。
-fn spawn_sidecar() -> Option<SidecarHost> {
+///
+/// 启动路径统一走：
+/// 1. Node 解析 `DSHR_NODE` → 捆绑 `runtime/node` → PATH（`dshr-sidecar-guard`）；
+/// 2. Job Object 包裹（进程数/内存上限 + 随宿主退出，Windows）；
+/// 3. 官方 DSH 侧车额外协商 `fs.write`：官方 write/edit/apply_patch 的写盘请求
+///    回到 Rust 走审批 + 沙箱（见 `docs/m2-official-write.md`）。
+fn spawn_sidecar(approvals: Option<Arc<ApprovalBroker>>) -> Option<SidecarHost> {
     let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .unwrap_or_else(|_| PathBuf::from("."));
     let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
@@ -302,7 +338,34 @@ fn spawn_sidecar() -> Option<SidecarHost> {
             root.join("sidecar/probe-plugin.mjs"),
         ),
     };
-    SidecarHost::spawn(script, plugin)
+
+    let mut options = HostOptions::default();
+    match dshr_sidecar_guard::resolve_node() {
+        Some(node) => {
+            eprintln!(
+                "[chat] sidecar node={}（{:?}）",
+                node.program.display(),
+                node.source
+            );
+            options = options.with_program(node.program);
+        }
+        None => eprintln!("[chat] 未找到捆绑 Node，回退到 PATH 上的 node"),
+    }
+    // 只有官方 DSH 侧车实现了 fs.write.request；其它侧车保持只读能力集。
+    // `DSHR_FS_WRITE=0` 可显式关闭官方写工具（只读自检/受限环境），默认开启。
+    let write_enabled = std::env::var("DSHR_FS_WRITE")
+        .map(|value| value != "0")
+        .unwrap_or(true);
+    if mode == "dsh" && write_enabled {
+        if let Some(approvals) = approvals {
+            match FsWriteService::open(workspace_root(), approvals) {
+                Ok(service) => options = options.with_fs_write(Arc::new(service)),
+                Err(err) => eprintln!("[chat] 官方写工具不可用（沙箱初始化失败）: {err}"),
+            }
+        }
+    }
+    options = options.with_guard(GuardLimits::sidecar_default());
+    SidecarHost::spawn_with(script, plugin, options)
         .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
         .ok()
 }
@@ -502,7 +565,7 @@ impl ChatState {
             SessionLog::new(session_id)
         };
 
-        let host = spawn_sidecar();
+        let host = spawn_sidecar(Some(approvals.clone()));
         let policy = if std::env::var("DSHR_TOOL_POLICY").as_deref() == Ok("ask-all") {
             ApprovalPolicy::ask_all()
         } else {
@@ -521,13 +584,42 @@ impl ChatState {
 
         Self {
             log,
-            path,
+            path: path.clone(),
             host,
             plugins,
             agent: Agent::new(select_provider(cancel)),
             seq: 0,
             approvals,
+            spill: SpillStore::new(spill_dir_for(&path)),
         }
+    }
+
+    /// 组装上下文计划：先按阈值把超大工具结果外部化（写对象 + 事件留痕），再重新计划。
+    /// 外部化后模型只看到"引用 + 预览"，原始内容可从内容寻址对象无损取回。
+    fn plan_with_spill(&mut self) -> ContextPlan {
+        let policy = SpillPolicy::from_env();
+        let mut plan = plan_context_with_spill(&self.log, "", &policy);
+        if plan.spilled.is_empty() {
+            return plan;
+        }
+        let ts = now_ts();
+        let mut recorded = 0usize;
+        for pending in &plan.spilled {
+            match self.spill.put_pending(pending) {
+                Ok(_) => {
+                    if dshr_agent_context::spill::record_spill(&mut self.log, pending, &ts).is_ok()
+                    {
+                        recorded += 1;
+                    }
+                }
+                Err(err) => eprintln!("[chat] 外部化工具结果失败: {err}"),
+            }
+        }
+        if recorded > 0 {
+            self.save();
+            plan = plan_context_with_spill(&self.log, "", &policy);
+        }
+        plan
     }
 
     /// 模拟 Sidecar 崩溃：销毁进程 + 撤销该 generation 的全部工具。
@@ -544,7 +636,7 @@ impl ChatState {
         if let Some(old) = self.host.take() {
             self.plugins.invalidate_generation(old.generation());
         }
-        let Some(host) = spawn_sidecar() else {
+        let Some(host) = spawn_sidecar(Some(self.approvals.clone())) else {
             return false;
         };
         register_sidecar_tools(&mut self.plugins, &host);
@@ -588,8 +680,8 @@ impl ChatState {
         emit(rows_snapshot(&self.log, None));
 
         // 历史从 durable 事件重建：多轮记忆靠它，重开应用也能接上。
-        // 上下文预算在这里做：超长工具结果头尾裁剪、超预算丢最旧，且不拆配对。
-        let mut plan = plan_context(&self.log, "");
+        // 上下文预算在这里做：超大结果先外部化、超长工具结果头尾裁剪、超预算丢最旧，且不拆配对。
+        let mut plan = self.plan_with_spill();
         if let Some((from_seq, to_seq)) = plan.dropped_range {
             // 丢弃了旧轮次：先让模型生成摘要，写 context.compacted，再按压缩后的历史请求。
             let summary = {
@@ -617,7 +709,7 @@ impl ChatState {
                 }),
             ));
             self.save();
-            plan = plan_context(&self.log, "");
+            plan = self.plan_with_spill();
             eprintln!(
                 "[chat] 已压缩 seq {from_seq}..{to_seq}：{} -> {} tokens",
                 plan.tokens_before, plan.tokens_after
@@ -637,6 +729,7 @@ impl ChatState {
                 "ratio": plan.ratio(),
                 "pruned_tool_results": plan.pruned_tool_results,
                 "dropped_messages": plan.dropped_messages,
+                "spilled_tool_results": plan.spilled_tool_results(),
             }),
         ));
         self.save();
@@ -802,6 +895,210 @@ impl ChatState {
     }
 }
 
+/// 滚动帧探针：用 GPUI profiler 的 `FrameTiming` 记录真实帧耗时与呈现间隔。
+///
+/// 由 `DSHR_FRAME_PROBE=<帧数>` 开启：每帧推进滚动位置、请求下一帧，达到目标帧数后
+/// 把统计写到 `DSHR_FRAME_LOG`（默认 `.tmp/frame-probe.txt`）并按 `DSHR_FRAME_QUIT`
+/// （默认 1）退出。这是 Gate 2 的测量手段：时间戳来自渲染管线，不是伪造的 sleep。
+struct FrameProbe {
+    target: usize,
+    dir: f32,
+    scroll_pos: f32,
+    step: f32,
+    collector: FrameTimingCollector,
+    draw_work_ns: Vec<u64>,
+    layout_ns: Vec<u64>,
+    prepaint_ns: Vec<u64>,
+    paint_ns: Vec<u64>,
+    present_interval_ns: Vec<u64>,
+    refresh_ns: Option<u64>,
+    viewport: Option<(f32, f32)>,
+    scale: f32,
+    scroll_max: f32,
+    rows: usize,
+    started: std::time::Instant,
+    log_path: PathBuf,
+    quit: bool,
+    ticks: usize,
+    debug: bool,
+}
+
+impl FrameProbe {
+    fn from_env() -> Option<Self> {
+        let target = std::env::var("DSHR_FRAME_PROBE")
+            .ok()?
+            .parse::<usize>()
+            .ok()?;
+        if target == 0 {
+            return None;
+        }
+        let step = std::env::var("DSHR_FRAME_STEP")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(0.01);
+        let log_path = std::env::var("DSHR_FRAME_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(".tmp/frame-probe.txt"));
+        let quit = std::env::var("DSHR_FRAME_QUIT")
+            .map(|value| value != "0")
+            .unwrap_or(true);
+        Some(Self {
+            target,
+            dir: 1.0,
+            scroll_pos: 0.0,
+            step,
+            collector: FrameTimingCollector::new(),
+            draw_work_ns: Vec::new(),
+            layout_ns: Vec::new(),
+            prepaint_ns: Vec::new(),
+            paint_ns: Vec::new(),
+            present_interval_ns: Vec::new(),
+            refresh_ns: None,
+            viewport: None,
+            scale: 1.0,
+            scroll_max: 0.0,
+            rows: 0,
+            started: std::time::Instant::now(),
+            log_path,
+            quit,
+            ticks: 0,
+            debug: std::env::var("DSHR_FRAME_DEBUG").is_ok(),
+        })
+    }
+
+    /// 收集上一帧的 profiler 事件并推进滚动；返回 true 表示达到目标帧数。
+    fn tick(
+        &mut self,
+        scroll: &ScrollHandle,
+        viewport: gpui::Size<gpui::Pixels>,
+        scale: f32,
+        rows: usize,
+    ) -> bool {
+        for event in self.collector.collect_unseen() {
+            match event {
+                FrameEvent::Draw(timing) => {
+                    self.draw_work_ns.push(
+                        timing
+                            .draw_end
+                            .saturating_duration_since(timing.draw_start)
+                            .as_nanos() as u64,
+                    );
+                    self.layout_ns
+                        .push(timing.phases.request_layout.as_nanos() as u64);
+                    self.prepaint_ns
+                        .push(timing.phases.prepaint.as_nanos() as u64);
+                    self.paint_ns.push(timing.phases.paint.as_nanos() as u64);
+                    if self.refresh_ns.is_none() {
+                        self.refresh_ns = timing.refresh_interval.map(|d| d.as_nanos() as u64);
+                    }
+                }
+                FrameEvent::Present(present) => {
+                    if let Some(interval) = present.animation_interval {
+                        self.present_interval_ns.push(interval.as_nanos() as u64);
+                    }
+                }
+            }
+        }
+        // 滚动范围按当前窗口（逻辑像素）计算；看不到内容时仍以 1px 兜底，避免除零。
+        let max = scroll.max_offset().y.as_f32().max(1.0);
+        self.scroll_pos = (self.scroll_pos + self.dir * self.step).clamp(0.0, 1.0);
+        if self.scroll_pos >= 1.0 {
+            self.dir = -1.0;
+        }
+        if self.scroll_pos <= 0.0 {
+            self.dir = 1.0;
+        }
+        scroll.set_offset(point(px(0.0), px(-self.scroll_pos * max)));
+        self.viewport = Some((viewport.width.as_f32(), viewport.height.as_f32()));
+        self.scale = scale;
+        self.scroll_max = max;
+        self.rows = rows;
+        self.ticks += 1;
+        if self.debug && self.ticks.is_multiple_of(60) {
+            eprintln!(
+                "[probe] ticks={} draws={} trace={}",
+                self.ticks,
+                self.draw_work_ns.len(),
+                gpui::profiler::trace_enabled()
+            );
+        }
+        // 安全阀：120s 内一帧都没完成说明内容量让首帧无法收敛（例如一次性展开上万行），
+        // 记录空报告并退出，避免探针把窗口挂死。
+        if self.draw_work_ns.is_empty() && self.started.elapsed() > Duration::from_secs(120) {
+            return true;
+        }
+        self.draw_work_ns.len() >= self.target
+    }
+
+    fn report(&self) -> String {
+        let draws = self.draw_work_ns.len();
+        let elapsed = self.started.elapsed();
+        let fps = if elapsed.as_secs_f64() > 0.0 {
+            draws as f64 / elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        let mut out = String::new();
+        out.push_str(&format!(
+            "[frame-probe] draws={} elapsed_ms={} avg_fps={:.1} rows={} viewport={:?} scale={} scroll_max={:.0}\n",
+            draws,
+            elapsed.as_millis(),
+            fps,
+            self.rows,
+            self.viewport,
+            self.scale,
+            self.scroll_max
+        ));
+        for (name, values) in [
+            ("draw_work", &self.draw_work_ns),
+            ("request_layout", &self.layout_ns),
+            ("prepaint", &self.prepaint_ns),
+            ("paint", &self.paint_ns),
+            ("present_interval", &self.present_interval_ns),
+        ] {
+            if values.is_empty() {
+                continue;
+            }
+            out.push_str(&format!(
+                "[frame-probe] {} p50_us={:.2} p95_us={:.2} max_us={:.2} samples={}\n",
+                name,
+                percentile_ns(values, 0.50) as f64 / 1_000.0,
+                percentile_ns(values, 0.95) as f64 / 1_000.0,
+                values.iter().copied().max().unwrap_or(0) as f64 / 1_000.0,
+                values.len()
+            ));
+        }
+        let budget = self.refresh_ns.unwrap_or(16_666_667);
+        let missed = self
+            .draw_work_ns
+            .iter()
+            .filter(|&&work| work > budget)
+            .count();
+        out.push_str(&format!(
+            "[frame-probe] refresh_ns={:?} budget_us={:.2} missed_refresh={} missed_ratio={:.4}\n",
+            self.refresh_ns,
+            budget as f64 / 1_000.0,
+            missed,
+            if draws == 0 {
+                0.0
+            } else {
+                missed as f64 / draws as f64
+            }
+        ));
+        out
+    }
+}
+
+fn percentile_ns(values: &[u64], pct: f64) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let index = ((sorted.len() as f64 - 1.0) * pct).round() as usize;
+    sorted[index.min(sorted.len() - 1)]
+}
+
 struct ChatApp {
     /// Agent / 工具 / 日志都在工作线程里改；UI 只读快照，所以这里必须加锁。
     state: Arc<Mutex<ChatState>>,
@@ -839,6 +1136,8 @@ struct ChatApp {
     plugins_open: bool,
     /// 长会话只渲染最近 N 条（点"载入更早"每次 +200），避免每帧构造上万元素。
     visible_limit: usize,
+    /// 帧探针（DSHR_FRAME_PROBE）：滚动时测量真实帧耗时与呈现间隔。
+    frame_probe: Option<FrameProbe>,
 }
 
 impl ChatApp {
@@ -1016,7 +1315,7 @@ impl ChatApp {
         self.session_id = id;
         self.busy = false;
         self.initial_scroll_done = false;
-        self.visible_limit = 200;
+        self.visible_limit = usize::MAX;
         self.renaming = None;
         self.rename_input = None;
         self.pending_delete = None;
@@ -1829,6 +2128,7 @@ impl ChatApp {
                 detail,
                 is_error,
                 pending,
+                card,
             } => {
                 let dot = if *pending {
                     p.state_warn
@@ -1892,6 +2192,21 @@ impl ChatApp {
                                 .child(detail.clone()),
                         )
                     })
+                    // 有专用视图的工具结果：diff / terminal 用原生组件渲染正文，
+                    // 不再只有一行摘要（正文已按卡片上限截断）。
+                    .when_some(
+                        card.as_ref().filter(|card| {
+                            matches!(card.kind, CardKind::Diff | CardKind::Terminal)
+                                && !card.body.is_empty()
+                        }),
+                        |el, card| {
+                            let view = match card.kind {
+                                CardKind::Diff => diff_view_from_text(t, &card.body),
+                                _ => terminal_view_from_text(t, &card.body),
+                            };
+                            el.child(view)
+                        },
+                    )
                     .into_any_element()
             }
             Row::Meta(text) => div()
@@ -1915,7 +2230,8 @@ impl ChatApp {
         let text_style = window.text_style();
         let base_font = text_style.font();
         let base_color: Rgba = text_style.color.into();
-        let rows = self.rows.clone();
+        // 不 clone 整份 rows：10k 会话下每帧克隆 7500 个 String 是纯浪费。
+        let rows = &self.rows;
         let mut column = div()
             .flex()
             .flex_col()
@@ -1985,8 +2301,41 @@ impl ChatApp {
                     })),
             );
         }
-        for row in &rows[start..] {
+        // 变高行虚拟化：只构造/排版视口附近的几十行，用上下占位块维持滚动高度。
+        // 实测 400 行全量渲染时 prepaint 要 125ms（debug），滚动只有 ~6fps；虚拟化后
+        // 帧成本与历史长度基本无关，这是 Gate 2 "滚动帧率不低于基线" 的实现基础。
+        let visible = &rows[start..];
+        let mut cumulative = Vec::with_capacity(visible.len() + 1);
+        cumulative.push(0.0f32);
+        for (index, row) in visible.iter().enumerate() {
+            let gap = if index == 0 { 0.0 } else { ROW_GAP };
+            let next = cumulative[index] + estimated_row_height(row) + gap;
+            cumulative.push(next);
+        }
+        let total_height = cumulative[visible.len()];
+        let viewport_height = self.scroll.bounds().size.height.as_f32().max(240.0);
+        let offset = (-self.scroll.offset().y.as_f32()).clamp(0.0, total_height);
+        const OVERSCAN: f32 = 240.0;
+        let top_edge = (offset - OVERSCAN).max(0.0);
+        let bottom_edge = (offset + viewport_height + OVERSCAN).min(total_height);
+        let first = cumulative
+            .partition_point(|edge| *edge < top_edge)
+            .saturating_sub(1)
+            .min(visible.len().saturating_sub(1));
+        let mut last = cumulative.partition_point(|edge| *edge < bottom_edge);
+        if last <= first {
+            last = (first + 1).min(visible.len());
+        }
+        let top_spacer = (cumulative[first] - ROW_GAP).max(0.0);
+        let bottom_spacer = (total_height - cumulative[last] - ROW_GAP).max(0.0);
+        if top_spacer > 0.5 {
+            column = column.child(div().w_full().h(px(top_spacer)));
+        }
+        for row in &visible[first..last] {
             column = column.child(self.render_row(row, t, &base_font, base_color));
+        }
+        if bottom_spacer > 0.5 {
+            column = column.child(div().w_full().h(px(bottom_spacer)));
         }
         let _ = cx;
         div()
@@ -1996,6 +2345,12 @@ impl ChatApp {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(px(24.0))
+            // 滚动只改变窗口位置：重绘一次（只排版可见行）而不是重新构造整段历史。
+            .on_scroll(
+                cx.listener(|_this, _event: &gpui::ScrollEvent, _window, cx| {
+                    cx.notify();
+                }),
+            )
             .child(column)
             .into_any_element()
     }
@@ -2241,6 +2596,8 @@ enum Row {
         detail: String,
         is_error: bool,
         pending: bool,
+        /// 结构化卡片（Diff/Terminal 的原生视图从这里取正文）。
+        card: Option<ToolCard>,
     },
     Meta(String),
 }
@@ -2271,6 +2628,30 @@ impl Row {
 /// 判断一行是否是"正在生成的助手回复"（以光标块结尾）。
 fn is_streaming_row(row: &Row) -> bool {
     matches!(row, Row::Assistant(text) if text.contains('▌'))
+}
+
+/// 虚拟化列表的行间距（必须与 transcript 列容器的 `gap` 一致）。
+const ROW_GAP: f32 = 16.0;
+
+/// 估计一行的高度（逻辑像素）。用于虚拟化的滚动占位；估算偏差只影响滚动条比例，
+/// 不影响可见行之间的真实排版。按 CJK 宽度保守估计每行字符数。
+fn estimated_row_height(row: &Row) -> f32 {
+    const LINE: f32 = 23.0;
+    match row {
+        Row::User(text) => {
+            let chars = text.chars().count() as f32;
+            (chars / 28.0).ceil().max(1.0) * LINE + 20.0
+        }
+        Row::Assistant(text) => {
+            let chars = text.chars().count() as f32;
+            (chars / 36.0).ceil().max(1.0) * LINE + 12.0
+        }
+        Row::Tool { detail, .. } => {
+            let chars = detail.chars().count() as f32;
+            46.0 + (chars / 60.0).ceil() * 18.0
+        }
+        Row::Meta(_) => 30.0,
+    }
 }
 
 fn streaming_text(row: &Row) -> &str {
@@ -2307,6 +2688,7 @@ fn describe(item: &Item) -> Row {
                     .unwrap_or_default(),
                 is_error: matches!(tool.state, ToolState::Settled { is_error: true }),
                 pending,
+                card: tool.card.clone(),
             }
         }
         Item::Compaction { from_seq, to_seq } => {
@@ -2344,6 +2726,47 @@ impl Render for ChatApp {
         if !self.initial_scroll_done && !self.rows.is_empty() {
             self.scroll.scroll_to_bottom();
             self.initial_scroll_done = true;
+        }
+        // 帧探针：每帧推进滚动位置并请求下一帧；达到目标帧数后写报告（可选退出）。
+        // 时间戳全部来自 GPUI 渲染管线，测量的是真实滚动帧率而不是估算。
+        let mut probe_report = None;
+        if let Some(probe) = self.frame_probe.as_mut() {
+            self.initial_scroll_done = true;
+            let finished = probe.tick(
+                &self.scroll,
+                window.viewport_size(),
+                window.scale_factor(),
+                self.visible_limit.min(self.rows.len()),
+            );
+            if finished {
+                probe_report = Some(probe.report());
+            } else {
+                let entity = cx.entity();
+                window.on_next_frame(move |_, cx| {
+                    entity.update(cx, |_this, cx| cx.notify());
+                });
+            }
+        }
+        if let Some(report) = probe_report {
+            let quit = self
+                .frame_probe
+                .as_ref()
+                .map(|probe| probe.quit)
+                .unwrap_or(false);
+            let log_path = self
+                .frame_probe
+                .as_ref()
+                .map(|probe| probe.log_path.clone())
+                .unwrap_or_else(|| PathBuf::from(".tmp/frame-probe.txt"));
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&log_path, &report);
+            print!("{report}");
+            self.frame_probe = None;
+            if quit {
+                cx.quit();
+            }
         }
         // 窄窗口（远程会话 / 小屏）自动收起侧栏，否则 280 的侧栏会把正文挤到窗口外；
         // 插件面板打开时同理，否则 280+300 会吃掉正文宽度。
@@ -2515,6 +2938,8 @@ fn selftest_dsh() -> i32 {
     let path = PathBuf::from(".tmp/chat-dsh.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
     let _ = std::fs::remove_file(&path);
+    // 本自检只验证"只读官方插件 + 回放"；写工具由 --selftest-dsh-write 覆盖。
+    std::env::set_var("DSHR_FS_WRITE", "0");
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -2798,6 +3223,364 @@ fn selftest_context() -> i32 {
         0
     } else {
         println!("[selftest-context] FAIL");
+        1
+    }
+}
+
+/// 长会话压缩自检（Gate 3）：连续多轮注入超预算历史，验证
+/// (1) 每次超预算都累积一条 `context.compacted`（可叠加多次压缩）；
+/// (2) 每轮压缩后 `context.measured.ratio ≤ 0.8`、不再丢消息、配对合法；
+/// (3) 重新读 JSONL 的 UI 行与模型历史与在线日志逐行一致（回放一致）。
+fn selftest_long_context() -> i32 {
+    let path = PathBuf::from(".tmp/chat-long-context.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+
+    let mut failures = 0usize;
+    let mut compactions = 0usize;
+    // 每轮写入的历史量是窗口的 2 倍以上，保证"每轮都触发一次压缩"。
+    for round in 0..8 {
+        for index in 0..20 {
+            let user = format!("长会话第 {round}-{index} 轮：{}", "长内容".repeat(60));
+            let _ = state.log.append(EventSpec::durable(
+                "message.user",
+                "t0",
+                json!({ "message_id": format!("lc-u{round}-{index}"), "text": user }),
+            ));
+            let call_id = format!("lc-c{round}-{index}");
+            let _ = state.log.append(EventSpec::durable(
+                "tool.call",
+                "t0",
+                json!({ "call_id": call_id, "tool": "probe_echo", "arguments": {} }),
+            ));
+            let _ = state.log.append(EventSpec::durable(
+                "tool.result",
+                "t0",
+                json!({
+                    "call_id": call_id, "is_error": false,
+                    "content": [{ "type": "text", "text": "输出".repeat(800) }]
+                }),
+            ));
+            let _ = state.log.append(EventSpec::durable(
+                "message.assistant.settled",
+                "t0",
+                json!({ "message_id": format!("lc-a{round}-{index}"), "text": "收到" }),
+            ));
+        }
+        let reply = state.stream_turn("继续", &mut |_| {});
+        if reply.is_none() {
+            failures += 1;
+        }
+
+        let latest_compacted = state
+            .log
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "context.compacted")
+            .cloned();
+        let Some(compacted) = latest_compacted else {
+            println!("[long-context] round={round} FAIL: 没有 context.compacted");
+            return 1;
+        };
+        compactions = state
+            .log
+            .events()
+            .iter()
+            .filter(|event| event.event_type == "context.compacted")
+            .count();
+
+        let measured_ratio = state
+            .log
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "context.measured")
+            .and_then(|event| event.payload.get("ratio"))
+            .and_then(|value| value.as_f64())
+            .unwrap_or(1.0);
+        let measured_window = state
+            .log
+            .events()
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "context.measured")
+            .and_then(|event| event.payload.get("window"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let plan = plan_context(&state.log, "");
+        let legal = !matches!(plan.messages.first(), Some(ChatMessage::Tool { .. }));
+
+        // 回放一致性：JSONL → 事件 → 行/历史，必须与在线状态逐项一致。
+        let rebuilt =
+            SessionLog::from_jsonl(SESSION_ID, &state.log.to_jsonl()).expect("replay log");
+        let live_rows = rows_snapshot(&state.log, None);
+        let replay_rows = rows_snapshot(&rebuilt, None);
+        let rows_equal = live_rows.len() == replay_rows.len()
+            && live_rows
+                .iter()
+                .zip(replay_rows.iter())
+                .all(|(live, replay)| live.main_text() == replay.main_text());
+        let live_history = history_from_log(&state.log);
+        let replay_history = history_from_log(&rebuilt);
+        let history_equal = live_history.len() == replay_history.len()
+            && live_history
+                .iter()
+                .zip(replay_history.iter())
+                .all(|(live, replay)| format!("{live:?}") == format!("{replay:?}"));
+        let has_summary = live_history
+            .iter()
+            .any(|message| matches!(message, ChatMessage::System(text) if text.contains("摘要")));
+        let compaction_rows = live_rows
+            .iter()
+            .filter(|row| row.main_text().contains("上下文已压缩"))
+            .count();
+        let ok = measured_ratio <= 0.8
+            && measured_window > 0
+            && plan.tokens_after <= plan.window
+            && plan.dropped_messages == 0
+            && legal
+            && rows_equal
+            && history_equal
+            && has_summary
+            // UI 只显示"最近一次压缩"标记（更早的压缩事件被后续压缩区间覆盖，属预期），
+            // 一致性由 rows_equal/history_equal 保证。
+            && compaction_rows >= 1
+            && compacted.payload.get("tokens_after").is_some();
+        if !ok {
+            failures += 1;
+        }
+        println!(
+            "[long-context] round={round} compactions={compactions} ratio={measured_ratio:.3} \
+             tokens={}/{} dropped={} rows={} history={} rows_equal={rows_equal} \
+             history_equal={history_equal} summary={has_summary} ok={ok}",
+            plan.tokens_after,
+            plan.window,
+            plan.dropped_messages,
+            live_rows.len(),
+            live_history.len(),
+        );
+    }
+
+    let ok = failures == 0 && compactions >= 5;
+    if ok {
+        println!("[selftest-long-context] PASS compactions={compactions}");
+        0
+    } else {
+        println!("[selftest-long-context] FAIL failures={failures} compactions={compactions}");
+        1
+    }
+}
+
+/// 上下文外部化自检（PLAN §6.4）：超大工具结果 → 内容寻址对象 + 两条事件留痕；
+/// 模型历史只剩引用 + 预览；对象可无损取回；重复计划不重复外部化；回放一致。
+fn selftest_spill() -> i32 {
+    let path = PathBuf::from(".tmp/chat-spill.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let spill_dir = PathBuf::from(".tmp/chat-spill-objects");
+    let _ = std::fs::remove_dir_all(&spill_dir);
+    std::env::set_var("DSHR_SPILL_DIR", &spill_dir);
+    // 窗口放大，避免压缩/丢弃与外部化互相干扰；阈值用默认 16 KiB。
+    std::env::set_var("DSHR_CONTEXT_WINDOW", "200000");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+
+    let big = format!("{}结尾唯一标记XYZ", "外部化内容".repeat(6_000));
+    let _ = state.log.append(EventSpec::durable(
+        "tool.call",
+        "t0",
+        json!({ "call_id": "sp-c1", "tool": "probe_echo", "arguments": {} }),
+    ));
+    let _ = state.log.append(EventSpec::durable(
+        "tool.result",
+        "t0",
+        json!({
+            "call_id": "sp-c1", "is_error": false,
+            "content": [{ "type": "text", "text": big }]
+        }),
+    ));
+    state.save();
+
+    let plan = state.plan_with_spill();
+    let created = state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type == "spill.created")
+        .count();
+    let pruned = state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type == "tool.result.pruned")
+        .count();
+    let refs = dshr_agent_context::spill::spill_refs_in_log(&state.log);
+    let object = refs
+        .first()
+        .and_then(|spill| state.spill.get_verified(spill).ok());
+    let lossless = object
+        .as_ref()
+        .map(|bytes| String::from_utf8_lossy(bytes).contains("外部化内容"))
+        .unwrap_or(false);
+    // 模型看到的是 plan.messages（由 plan_context_with_spill 生成）；history_from_log
+    // 不含外部化替换，不能用来断言"模型看到什么"。
+    let history_text = format!("{:?}", plan.messages);
+    let model_sees_reference = history_text.contains("工具结果已外部化");
+    // 预览允许出现开头 512 字符；结尾标记只能由"完整内容泄漏"带进模型历史。
+    let model_body_hidden = !history_text.contains("结尾唯一标记XYZ");
+
+    // 重复计划：事件不重复，且第二次不再产生待外部化项。
+    let plan_again = state.plan_with_spill();
+    let created_again = state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type == "spill.created")
+        .count();
+
+    // 回放一致：从 JSONL 重建后外部化已生效、模型历史条数一致。
+    let rebuilt =
+        SessionLog::from_jsonl(SESSION_ID, &state.log.to_jsonl()).expect("replay spill log");
+    let policy = SpillPolicy::from_env();
+    let replay_plan = plan_context_with_spill(&rebuilt, "", &policy);
+    let live_plan = plan_context_with_spill(&state.log, "", &policy);
+    let replay_consistent = replay_plan.spilled.is_empty()
+        && replay_plan.messages.len() == live_plan.messages.len()
+        && replay_plan.spilled_tool_results() == 0;
+
+    let ok = created == 1
+        && pruned == 1
+        && refs.len() == 1
+        && lossless
+        && model_sees_reference
+        && model_body_hidden
+        && plan.spilled.is_empty()
+        && plan_again.spilled.is_empty()
+        && created_again == created
+        && replay_consistent
+        && plan.tokens_after < plan.tokens_before;
+    println!(
+        "[spill] created={created} pruned={pruned} objects={} lossless={lossless} \
+         reference={model_sees_reference} hidden={model_body_hidden} \
+         tokens={}->{} replay={replay_consistent} history_chars={}",
+        refs.len(),
+        plan.tokens_before,
+        plan.tokens_after,
+        history_text.chars().count(),
+    );
+    std::env::remove_var("DSHR_SPILL_DIR");
+    std::env::remove_var("DSHR_CONTEXT_WINDOW");
+    if ok {
+        println!("[selftest-spill] PASS");
+        0
+    } else {
+        println!("[selftest-spill] FAIL");
+        1
+    }
+}
+
+/// Gate 4 证据（最关键分界线）：官方 `dsh-tool-fs` 的 write/edit/apply_patch 在
+/// "Rust 审批 + 沙箱"约束下真正可用，官方插件源码一行未改。
+///
+/// 校验：能力协商后四个工具都注册 → write/edit/apply_patch 真实落盘 → 越界被拒 →
+/// 审批 deny 时工具报错且文件不变 → 写前快照存在。
+fn selftest_dsh_write() -> i32 {
+    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    if !root.join("sidecar/dsh-official/node_modules").exists() {
+        println!("[selftest-dsh-write] SKIP: 先运行 `node tools/dsh-vendor.mjs`");
+        return 2;
+    }
+    let ws = std::path::absolute(".tmp/dsh-write-ws")
+        .unwrap_or_else(|_| PathBuf::from(".tmp/dsh-write-ws"));
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::create_dir_all(&ws);
+    std::env::set_var("DSHR_WORKSPACE", &ws);
+    std::env::set_var("DSHR_SIDECAR", "dsh");
+    std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+    // 用全新 profile：旧 profile 文件可能还留着 write:false 的历史默认值。
+    let profile_dir = PathBuf::from(".tmp/profile-dsh-write");
+    let _ = std::fs::remove_dir_all(&profile_dir);
+    let profile = Profile::defaults(&profile_dir);
+    std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
+
+    let path = PathBuf::from(".tmp/chat-dsh-write.jsonl");
+    let _ = std::fs::remove_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
+
+    let registered: Vec<String> = state
+        .plugins
+        .registry()
+        .list()
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect();
+    let has = |name: &str| registered.iter().any(|candidate| candidate == name);
+    if !(has("write") && has("edit") && has("apply_patch") && has("read")) {
+        println!("[dsh-write] registered={registered:?}");
+        println!("[selftest-dsh-write] FAIL: 写工具未注册（host_caps/能力协商问题）");
+        return 1;
+    }
+
+    let call = |tool: &str, arguments: serde_json::Value| ToolCallRequest {
+        call_id: format!("dw-{tool}-{}", now_ts()),
+        tool: tool.to_owned(),
+        arguments,
+    };
+    let read_file = |name: &str| std::fs::read_to_string(ws.join(name)).unwrap_or_default();
+
+    let write = state.execute_tool(&call(
+        "write",
+        json!({ "file_path": "hello.txt", "content": "hello dsh write" }),
+    ));
+    let wrote = !write.is_error && read_file("hello.txt") == "hello dsh write";
+
+    let edit = state.execute_tool(&call(
+        "edit",
+        json!({ "file_path": "hello.txt", "old_string": "hello", "new_string": "hi" }),
+    ));
+    let edited = !edit.is_error && read_file("hello.txt") == "hi dsh write";
+
+    let patch = state.execute_tool(&call(
+        "apply_patch",
+        json!({ "input": "*** Begin Patch\n*** Add File: notes.txt\n+patch line\n*** End Patch\n" }),
+    ));
+    let patched = !patch.is_error && read_file("notes.txt").contains("patch line");
+
+    // 越界写：Rust 沙箱必须拒绝，且不落盘。
+    let escaped = state.execute_tool(&call(
+        "write",
+        json!({ "file_path": "../escape.txt", "content": "nope" }),
+    ));
+    let escaped_rejected = escaped.is_error && !ws.join("../escape.txt").exists();
+
+    // 审批拒绝：工具报错、文件内容不变。
+    std::env::set_var("DSHR_APPROVAL_MODE", "deny");
+    let denied = state.execute_tool(&call(
+        "write",
+        json!({ "file_path": "hello.txt", "content": "should not land" }),
+    ));
+    let denied_kept = denied.is_error && read_file("hello.txt") == "hi dsh write";
+
+    let snapshots = std::fs::read_dir(ws.join(".dshr").join("snapshots"))
+        .map(|dir| dir.count())
+        .unwrap_or(0);
+    let ok = wrote && edited && patched && escaped_rejected && denied_kept && snapshots > 0;
+    println!(
+        "[dsh-write] registered={registered:?} write={wrote} edit={edited} patch={patched} \
+         escape_rejected={escaped_rejected} deny_kept={denied_kept} snapshots={snapshots}"
+    );
+    std::env::remove_var("DSHR_APPROVAL_MODE");
+    if ok {
+        println!("[selftest-dsh-write] PASS");
+        0
+    } else {
+        println!("[selftest-dsh-write] FAIL");
         1
     }
 }
@@ -3283,8 +4066,9 @@ fn selftest_retry() -> i32 {
 }
 
 /// 10k 事件性能基线：冷加载 + 回放 + 快照 + 历史重建（M2 gate 2 的数据层）。
-fn selftest_perf() -> i32 {
-    let mut log = SessionLog::new("s-perf");
+/// 生成 10k 事件会话（2500 轮 user/assistant/tool.call/tool.result），供性能自检与帧探针复用。
+fn build_perf_log(session_id: &str) -> SessionLog {
+    let mut log = SessionLog::new(session_id);
     for index in 0..2_500 {
         let user = format!("第 {index} 轮问题：帮我检查一下这个方案的风险点与回滚方式。");
         let assistant = format!("第 {index} 轮回答：已完成检查，主要风险在并发写入与持久化顺序。");
@@ -3321,6 +4105,39 @@ fn selftest_perf() -> i32 {
         ))
         .expect("append tool.result");
     }
+    log
+}
+
+/// 把 10k 事件会话写进会话目录，返回会话 id（供窗口帧探针/截图复用）。
+fn seed_perf_session(dir: &std::path::Path) -> i32 {
+    let store = SessionIndex::new(dir);
+    if let Err(err) = store.ensure_dir() {
+        eprintln!("[seed] 无法创建会话目录: {err}");
+        return 1;
+    }
+    let id = store.new_id();
+    if let Err(err) = store.create(&id) {
+        eprintln!("[seed] 无法创建会话: {err}");
+        return 1;
+    }
+    let log = build_perf_log(&id);
+    let jsonl = log.to_jsonl();
+    let path = store.path_for(&id);
+    if let Err(err) = std::fs::write(&path, jsonl.as_bytes()) {
+        eprintln!("[seed] 写入会话失败: {err}");
+        return 1;
+    }
+    println!(
+        "[seed] id={id} events={} bytes={} path={}",
+        log.len(),
+        jsonl.len(),
+        path.display()
+    );
+    0
+}
+
+fn selftest_perf() -> i32 {
+    let log = build_perf_log("s-perf");
     assert_eq!(log.len(), 10_000);
 
     let jsonl = log.to_jsonl();
@@ -3409,6 +4226,113 @@ fn live_chat(script: &[String]) -> i32 {
     }
 }
 
+/// Gate 1 真实网络自检：真实 provider 连跑 20 轮，每轮要求模型调用一次本地工具。
+///
+/// 统计口径：以"每轮一次模型请求 + 至少一次真实工具调用"为一步；一步成功 =
+/// 有回复、无失败标记、`tool.call`/`tool.result` 配对且无错误/中止。
+/// 需要 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`；两者都没有时返回 2（SKIP，不伪装通过）。
+fn selftest_live_20() -> i32 {
+    if DeepSeekProvider::from_env().is_none() && OpenAiProvider::from_env().is_none() {
+        println!("[selftest-live-20] SKIP: 没有 DEEPSEEK_API_KEY / OPENAI_API_KEY");
+        return 2;
+    }
+    let path = PathBuf::from(".tmp/chat-live-20.jsonl");
+    let _ = std::fs::create_dir_all(".tmp");
+    let _ = std::fs::remove_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    // 这一步只统计"网络 + 模型 + 工具执行"链路；审批链由 --selftest-approval 覆盖。
+    std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+
+    let count = |state: &ChatState, kind: &str| {
+        state
+            .log
+            .events()
+            .iter()
+            .filter(|event| event.event_type == kind)
+            .count()
+    };
+    let count_errors = |state: &ChatState| {
+        state
+            .log
+            .events()
+            .iter()
+            .filter(|event| {
+                event.event_type == "tool.result"
+                    && event
+                        .payload
+                        .get("is_error")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)
+            })
+            .count()
+    };
+
+    let steps = 20usize;
+    let mut ok_steps = 0usize;
+    let mut failed_steps = 0usize;
+    let mut total_calls = 0usize;
+    let mut total_results = 0usize;
+    let mut total_errors = 0usize;
+    let mut latencies = Vec::new();
+
+    for step in 0..steps {
+        let prompt = format!(
+            "第 {step} 步：只调用一次 probe_native 工具，参数 text 为 \"step-{step}\"，\
+             不要调用其它工具；拿到工具结果后用一句中文确认。"
+        );
+        let before_calls = count(&state, "tool.call");
+        let before_results = count(&state, "tool.result");
+        let before_errors = count_errors(&state);
+        let started = std::time::Instant::now();
+        let reply = state.stream_turn(&prompt, &mut |_| {});
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        latencies.push(elapsed_ms);
+
+        let calls = count(&state, "tool.call") - before_calls;
+        let results = count(&state, "tool.result") - before_results;
+        let errors = count_errors(&state) - before_errors;
+        let aborted = count(&state, "tool.aborted");
+        total_calls += calls;
+        total_results += results;
+        total_errors += errors;
+
+        let reply_ok = reply
+            .as_deref()
+            .is_some_and(|text| !text.is_empty() && !text.starts_with("处理失败"));
+        let step_ok = reply_ok && calls >= 1 && results >= 1 && errors == 0 && aborted == 0;
+        if step_ok {
+            ok_steps += 1;
+        } else {
+            failed_steps += 1;
+        }
+        println!(
+            "[live-20] step={step} ok={step_ok} calls={calls} results={results} \
+             errors={errors} ms={elapsed_ms} reply={}",
+            reply.unwrap_or_default()
+        );
+    }
+
+    latencies.sort_unstable();
+    let p50 = latencies[latencies.len() / 2];
+    let p95 = latencies[(latencies.len() * 95 / 100).min(latencies.len() - 1)];
+    let rate = ok_steps as f64 / steps as f64;
+    let provider = std::env::var("DSHR_PROVIDER").unwrap_or_else(|_| String::from("auto"));
+    println!(
+        "[live-20] provider={provider} steps={steps} ok={ok_steps} failed={failed_steps} \
+         rate={rate:.4} tool_calls={total_calls} tool_results={total_results} \
+         tool_errors={total_errors} p50_ms={p50} p95_ms={p95}"
+    );
+    std::env::remove_var("DSHR_APPROVAL_MODE");
+    if rate >= 0.99 {
+        println!("[selftest-live-20] PASS");
+        0
+    } else {
+        println!("[selftest-live-20] FAIL");
+        1
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(index) = args.iter().position(|arg| arg == "--live-chat") {
@@ -3427,6 +4351,9 @@ fn main() {
         std::process::exit(live_turn(&text));
     }
 
+    if std::env::args().any(|arg| arg == "--selftest-live-20") {
+        std::process::exit(selftest_live_20());
+    }
     if std::env::args().any(|arg| arg == "--selftest-stream") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_stream());
@@ -3434,6 +4361,14 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-context") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_context());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-long-context") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_long_context());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-spill") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_spill());
     }
     if std::env::args().any(|arg| arg == "--selftest-approval") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
@@ -3463,12 +4398,22 @@ fn main() {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_perf());
     }
+    if let Some(index) = std::env::args().position(|arg| arg == "--seed-perf-session") {
+        let dir = std::env::args()
+            .nth(index + 1)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".tmp/sessions"));
+        std::process::exit(seed_perf_session(&dir));
+    }
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {
             eprintln!("用法: chat --install-plugin <本地包目录>");
             std::process::exit(2);
         };
         std::process::exit(install_plugin_cli(PathBuf::from(path)));
+    }
+    if std::env::args().any(|arg| arg == "--selftest-dsh-write") {
+        std::process::exit(selftest_dsh_write());
     }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
         std::env::set_var("DSHR_SIDECAR", "dsh");
@@ -3489,6 +4434,17 @@ fn main() {
     let dir = std::env::var("DSHR_SESSIONS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".tmp/sessions"));
+    // 帧探针：必须在第一帧之前开启 profiler trace，否则 FrameTiming 不会被记录。
+    let frame_probe = FrameProbe::from_env();
+    if frame_probe.is_some() {
+        set_trace_enabled(true);
+    }
+    // 行窗口上限：默认不限制（虚拟化负责渲染成本），仅压力/对比实验用
+    // DSHR_VISIBLE_LIMIT 保留"只看尾部 N 行"的旧行为。
+    let visible_limit = std::env::var("DSHR_VISIBLE_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
     let store = SessionIndex::new(dir);
     if let Err(err) = store.ensure_dir() {
         eprintln!("[chat] 无法创建会话目录: {err}");
@@ -3619,7 +4575,8 @@ fn main() {
                     pending_approvals: 0,
                     profile,
                     plugins_open: false,
-                    visible_limit: 200,
+                    visible_limit,
+                    frame_probe,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();

@@ -24,6 +24,12 @@ path = "../../crates/profile"
 [dependencies.dshr-compat-dsh-host]
 path = "../../crates/compat-dsh-host"
 
+[dependencies.dshr-compat-dsh-fs]
+path = "../../crates/compat-dsh-fs"
+
+[dependencies.dshr-sidecar-guard]
+path = "../../crates/sidecar-guard"
+
 [dependencies.serde_json]
 workspace = true
 
