@@ -1,3 +1,8 @@
+// release 构建是 Windows GUI 子系统：双击/快捷方式启动不弹命令行窗口。
+// debug 构建保留控制台子系统，方便 `cargo run` 直接看日志。
+// CLI 用法（--selftest 等）在 release 下通过 AttachConsole 接回父控制台（见 win_console）。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! 基本对话：输入框 + 会话流 + 工具调用 + 落盘恢复 + 真流式。
 //!
 //! 这是 M1 的产品面：能打字、能发送、能看到工具卡片、关掉再开会话还在。
@@ -16,7 +21,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
@@ -61,8 +66,278 @@ use dshr_ui_gpui::{
 
 const SESSION_ID: &str = "s-chat";
 
-/// 崩溃诊断：panic 时把位置/消息/工作目录追加到 `DSHR_CRASH_LOG`（默认 .tmp/crash.log），
-/// 再交给默认 hook（stderr 照常输出）。GUI 模式下用户能看到"出过什么错"。
+/// 非空环境变量 → 路径。空字符串按"未设置"处理（Windows 上 `set VAR=` 是常见写法）。
+fn non_empty_env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// 只在用户没显式设置时写入默认值；自检/测试里显式设置的 env 永远优先。
+fn set_env_default(key: &str, value: impl Into<std::ffi::OsString>) {
+    let missing = std::env::var_os(key)
+        .map(|existing| existing.is_empty())
+        .unwrap_or(true);
+    if missing {
+        std::env::set_var(key, value.into());
+    }
+}
+
+/// 目录可写探测：创建一个短命探针文件。Program Files 等位置会在这里被排除。
+fn is_writable_dir(dir: &std::path::Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".dshr-write-probe-{}", std::process::id()));
+    let writable = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&probe)
+        .is_ok();
+    if writable {
+        let _ = std::fs::remove_file(&probe);
+    }
+    writable
+}
+
+/// 数据根来源（诊断/单测用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataRootSource {
+    /// 用户显式 `DSHR_HOME`。
+    Home,
+    /// 打包布局：exe 旁边有 `sidecar/` 且目录可写。
+    ExeDir,
+    /// 默认 `%LOCALAPPDATA%\dshr`。
+    LocalAppData,
+}
+
+/// 纯选择逻辑：`DSHR_HOME` 优先；打包布局（exe 目录含 `sidecar/` 且可写）其次；
+/// 否则 `%LOCALAPPDATA%\dshr`。创建/回退不在这个函数里做，便于单测。
+fn pick_data_root(
+    dshr_home: Option<&std::path::Path>,
+    exe_dir: Option<&std::path::Path>,
+    local_app_data: Option<&std::path::Path>,
+    exe_dir_usable: bool,
+) -> Option<(DataRootSource, PathBuf)> {
+    if let Some(home) = dshr_home {
+        return Some((DataRootSource::Home, home.to_path_buf()));
+    }
+    if exe_dir_usable {
+        if let Some(dir) = exe_dir {
+            return Some((DataRootSource::ExeDir, dir.to_path_buf()));
+        }
+    }
+    local_app_data.map(|base| (DataRootSource::LocalAppData, base.join("dshr")))
+}
+
+/// 兜底数据根：exe 目录（可写）→ 当前目录（可写）→ 系统临时目录。
+fn fallback_data_root(exe_dir: Option<&std::path::Path>) -> PathBuf {
+    if let Some(dir) = exe_dir.filter(|dir| is_writable_dir(dir)) {
+        return dir.to_path_buf();
+    }
+    if let Some(cwd) = std::env::current_dir()
+        .ok()
+        .filter(|dir| is_writable_dir(dir))
+    {
+        return cwd;
+    }
+    std::env::temp_dir()
+}
+
+/// 解析可写数据根：与 CWD 完全解耦。
+///
+/// 旧实现把状态目录建在 CWD 下（`.tmp/sessions`）。桌面快捷方式"起始位置"为空时
+/// CWD 可能落到 `C:\Windows\System32`，或 exe 被放进 Program Files 等只读位置，
+/// 于是建目录直接 `拒绝访问 (os error 5)` 退出——这就是"被 Windows 权限拦住"的可复现根因。
+fn resolve_data_root() -> PathBuf {
+    let home = non_empty_env_path("DSHR_HOME");
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let exe_dir_usable = exe_dir
+        .as_deref()
+        .is_some_and(|dir| dir.join("sidecar").is_dir() && is_writable_dir(dir));
+    let local_app_data = non_empty_env_path("LOCALAPPDATA");
+
+    if let Some((source, path)) = pick_data_root(
+        home.as_deref(),
+        exe_dir.as_deref(),
+        local_app_data.as_deref(),
+        exe_dir_usable,
+    ) {
+        match source {
+            DataRootSource::Home => {
+                // 显式覆盖优先：创建失败也尊重用户选择，让后面的错误指向用户指定路径。
+                if let Err(err) = std::fs::create_dir_all(&path) {
+                    eprintln!(
+                        "[chat] DSHR_HOME 数据目录不可用: {}（{err}）",
+                        path.display()
+                    );
+                }
+                return path;
+            }
+            _ => {
+                // 不只是"能创建"：已存在但当前完整性级别/ACL 不可写的目录也要换。
+                let unavailable = match std::fs::create_dir_all(&path) {
+                    Ok(()) if is_writable_dir(&path) => return path,
+                    Ok(()) => "目录存在但不可写".to_owned(),
+                    Err(err) => format!("无法创建: {err}"),
+                };
+                eprintln!("[chat] 数据目录 {} 不可用（{unavailable}）", path.display());
+            }
+        }
+    }
+
+    let fallback = fallback_data_root(exe_dir.as_deref());
+    eprintln!(
+        "[chat] 数据根回退到 {}（不依赖当前工作目录；可用 DSHR_HOME 显式指定）",
+        fallback.display()
+    );
+    fallback
+}
+
+/// 进程级数据根缓存：`prepare_data_env` 解析一次，其它地方（工具工作区兜底）复用。
+static DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// 已解析的数据根；`prepare_data_env` 之前调用时现场解析（单测/非 main 入口）。
+fn data_root() -> PathBuf {
+    DATA_ROOT.get().cloned().unwrap_or_else(resolve_data_root)
+}
+
+/// 把默认状态目录挂到数据根上；必须在 `install_crash_hook()` 之前调用（hook 读 env）。
+fn prepare_data_env() {
+    let root = resolve_data_root();
+    let _ = DATA_ROOT.set(root.clone());
+    set_env_default("DSHR_SESSIONS_DIR", root.join("sessions"));
+    set_env_default("DSHR_PROFILE_DIR", root.join("profile"));
+    set_env_default("DSHR_SPILL_DIR", root.join("spill"));
+    set_env_default("DSHR_CRASH_LOG", root.join("crash.log"));
+}
+
+/// 判断本次是命令行用法（自检/导出/安装/显式 --console）还是纯 GUI 双击。
+///
+/// GUI 启动永远是零参数；任何 `--` 开关都意味着用户从终端跑：需要把输出接回控制台。
+fn is_cli_invocation(args: &[String]) -> bool {
+    args.iter().skip(1).any(|arg| arg.starts_with("--"))
+}
+
+/// 应用资源根：`DSHR_APP_ROOT` → exe 旁含 `sidecar/` 的目录 → 编译期仓库根（开发机）。
+/// 打包后整目录拷走即可运行，不再依赖构建机上的源码树。
+fn app_root() -> PathBuf {
+    if let Some(root) = non_empty_env_path("DSHR_APP_ROOT") {
+        return root;
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    {
+        if dir.join("sidecar").is_dir() {
+            return dir;
+        }
+    }
+    std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Windows release 构建的控制台重建（GUI 子系统没有控制台，CLI 仍要能打印）。
+#[cfg(windows)]
+#[cfg_attr(debug_assertions, allow(dead_code))]
+mod win_console {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        AttachConsole, FreeConsole, GetConsoleWindow, GetStdHandle, SetConsoleOutputCP,
+        SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    fn wide(value: &str) -> Vec<u16> {
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// 打开当前控制台的屏幕缓冲区/输入缓冲区设备（`CONOUT$` / `CONIN$`）。
+    fn open_console_device(name: &str) -> Option<HANDLE> {
+        let handle = unsafe {
+            CreateFileW(
+                wide(name).as_ptr(),
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        // windows-sys 的 HANDLE 是 *mut c_void，INVALID_HANDLE_VALUE 就是 -1。
+        (!handle.is_null() && handle != INVALID_HANDLE_VALUE).then_some(handle)
+    }
+
+    fn handle_is_valid(handle: HANDLE) -> bool {
+        !handle.is_null() && handle != INVALID_HANDLE_VALUE
+    }
+
+    /// 挂到父进程（PowerShell/cmd）的控制台，并把标准句柄装回去。
+    ///
+    /// - 从终端运行：挂上父控制台 → stdout/stderr 可打印（UTF-8 代码页修中文乱码）；
+    /// - 双击启动：父进程是 explorer，挂不上 → 不显示控制台、继续开窗；
+    /// - 已被重定向（`Start-Process -RedirectStandardOutput`）：保留继承的管道句柄；
+    /// - 启动时已经带控制台（少见）：不再 `FreeConsole`，只补装标准句柄——释放后再
+    ///   `AttachConsole(ATTACH_PARENT_PROCESS)` 会被 Windows 拒绝（ERROR_ACCESS_DENIED）。
+    ///
+    /// 返回是否成功得到可用的控制台（失败不影响 GUI 启动）。
+    pub fn attach_parent_console() -> bool {
+        if unsafe { GetConsoleWindow() }.is_null() {
+            unsafe {
+                FreeConsole();
+            }
+            if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 {
+                return false;
+            }
+        }
+
+        // 关键：Rust std 每次写 stdio 都会 GetStdHandle，所以 SetStdHandle 立即生效。
+        // 已重定向（继承到有效管道）的句柄保持不动。
+        for (std_handle, device) in [
+            (STD_OUTPUT_HANDLE, "CONOUT$"),
+            (STD_ERROR_HANDLE, "CONOUT$"),
+            (STD_INPUT_HANDLE, "CONIN$"),
+        ] {
+            let current = unsafe { GetStdHandle(std_handle) };
+            if handle_is_valid(current) {
+                continue;
+            }
+            if let Some(handle) = open_console_device(device) {
+                unsafe { SetStdHandle(std_handle, handle) };
+            }
+        }
+        // 默认代码页（中文系统是 936）会把 Rust 写出的 UTF-8 字节显示成乱码。
+        unsafe { SetConsoleOutputCP(65001) };
+        true
+    }
+}
+
+/// release GUI 构建里，命令行用法先接回父控制台；debug/非 Windows 保持原样。
+#[cfg(all(windows, not(debug_assertions)))]
+fn prepare_cli_console(is_cli: bool) {
+    if is_cli {
+        win_console::attach_parent_console();
+    }
+}
+
+#[cfg(not(all(windows, not(debug_assertions))))]
+fn prepare_cli_console(_is_cli: bool) {}
+
+/// 崩溃诊断：panic 时把位置/消息/工作目录追加到 `DSHR_CRASH_LOG`
+/// （默认落在数据根下，见 `prepare_data_env`），再交给默认 hook（stderr 照常输出）。
+/// GUI 模式下用户能看到"出过什么错"。
 fn install_crash_hook() {
     use std::io::Write;
     let default = std::panic::take_hook();
@@ -278,10 +553,11 @@ struct ProbeWritePlugin {
 
 impl ProbeWritePlugin {
     fn new() -> Self {
-        let root = std::env::var("DSHR_WORKSPACE").unwrap_or_else(|_| String::from("."));
+        // 工作区根与状态目录同源：CWD 不可写时回退到数据根，避免沙箱初始化 panic。
+        let root = workspace_root();
         let workspace = Workspace::new(&root).unwrap_or_else(|err| {
-            eprintln!("[chat] 沙箱工作区不可用（回退到当前目录）: {err}");
-            Workspace::new(".").expect("cwd workspace")
+            eprintln!("[chat] 沙箱工作区不可用（回退到数据根）: {err}");
+            Workspace::new(data_root().join("workspace")).expect("data root workspace")
         });
         Self { workspace }
     }
@@ -345,11 +621,27 @@ impl Plugin for ProbeWritePlugin {
     }
 }
 
-/// 工具/写入的工作区根（默认当前目录，可用 `DSHR_WORKSPACE` 覆盖）。
+/// 工具/写入的工作区根：`DSHR_WORKSPACE` → **可写的**当前目录 → 数据根下的 `workspace/`。
+///
+/// 和状态目录一样必须与 CWD 解耦：桌面快捷方式"起始位置"为空时 CWD 可能是
+/// `C:\Windows\System32`，或 exe 被放进 Program Files。旧实现把工具工作区钉在 CWD，
+/// 沙箱初始化在不可写的 CWD 上直接失败（`os error 5`），用户看到的就是"启动即退出"。
 fn workspace_root() -> PathBuf {
-    std::env::var("DSHR_WORKSPACE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    if let Some(dir) = non_empty_env_path("DSHR_WORKSPACE") {
+        return dir;
+    }
+    if let Some(cwd) = std::env::current_dir()
+        .ok()
+        .filter(|dir| is_writable_dir(dir))
+    {
+        return cwd;
+    }
+    let fallback = data_root().join("workspace");
+    eprintln!(
+        "[chat] 当前工作目录不可写，工具工作区改用 {}（可用 DSHR_WORKSPACE 指定）",
+        fallback.display()
+    );
+    fallback
 }
 
 /// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
@@ -366,8 +658,8 @@ fn workspace_root() -> PathBuf {
 /// 3. 官方 DSH 侧车额外协商 `fs.write`：官方 write/edit/apply_patch 的写盘请求
 ///    回到 Rust 走审批 + 沙箱（见 `docs/m2-official-write.md`）。
 fn spawn_sidecar(approvals: Option<Arc<ApprovalBroker>>) -> Option<SidecarHost> {
-    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .unwrap_or_else(|_| PathBuf::from("."));
+    // 资源根按 exe 相对解析：`dist/dshr-dev` 整目录拷走后仍能找到 sidecar/（见 `app_root`）。
+    let root = app_root();
     let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
     let (script, plugin) = match mode.as_str() {
         "cordis" => (
@@ -494,6 +786,20 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
     Box::new(MockProvider)
 }
 
+/// sidecar 工具调用超时：按工具声明（`ToolDefinition.timeout_ms`，对齐 DSH 的 `timeoutMs`）
+/// 而不是写死 5s。`DSHR_TOOL_TIMEOUT_MS` 可整体覆盖（诊断/慢机器），统一 clamp。
+fn sidecar_tool_timeout(definition: &ToolDefinition) -> Duration {
+    let override_ms = std::env::var("DSHR_TOOL_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    clamp_tool_timeout_ms(override_ms.unwrap_or(definition.timeout_ms))
+}
+
+/// 超时夹到 1s..=600s：太小会误伤正常工具，太大（或 0）会让界面像卡死。
+fn clamp_tool_timeout_ms(millis: u64) -> Duration {
+    Duration::from_millis(millis.clamp(1_000, 600_000))
+}
+
 /// Agent 的工具执行器：authorize 之后按来源分发给 PluginHost（native）或 Sidecar。
 struct ChatExecutor<'a> {
     plugins: &'a mut PluginHost,
@@ -586,12 +892,10 @@ impl ToolExecutor for ChatExecutor<'_> {
                 let Some(host) = self.host.as_mut() else {
                     return ToolOutcome::failure("sidecar unavailable");
                 };
-                match host.invoke_as(
-                    &call.call_id,
-                    &call.tool,
-                    call.arguments.clone(),
-                    Duration::from_secs(5),
-                ) {
+                // 超时用工具声明的 `timeout_ms`（对齐 DSH 的 per-tool timeoutMs），
+                // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
+                let timeout = sidecar_tool_timeout(&definition);
+                match host.invoke_as(&call.call_id, &call.tool, call.arguments.clone(), timeout) {
                     Ok(outcome) if outcome.terminal.kind == "tool.result" => {
                         let payload = &outcome.terminal.payload;
                         let content = payload["content"].clone();
@@ -3268,8 +3572,8 @@ fn selftest_cordis() -> i32 {
 /// 依赖 `sidecar/dsh-official/node_modules`（`node tools/dsh-vendor.mjs` 从本机 DSH 抽取）。
 /// 缺失时打印 SKIP 并返回 0：CI 环境不一定装了 DSH。
 fn selftest_dsh() -> i32 {
-    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .unwrap_or_else(|_| PathBuf::from("."));
+    // 资源根按 exe 相对解析（打包后不依赖源码树）。
+    let root = app_root();
     if !root.join("sidecar/dsh-official/node_modules").exists() {
         println!("[selftest-dsh] SKIP: 先运行 `node tools/dsh-vendor.mjs` 准备官方插件依赖");
         return 0;
@@ -3829,8 +4133,8 @@ fn selftest_spill() -> i32 {
 /// 校验：能力协商后四个工具都注册 → write/edit/apply_patch 真实落盘 → 越界被拒 →
 /// 审批 deny 时工具报错且文件不变 → 写前快照存在。
 fn selftest_dsh_write() -> i32 {
-    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .unwrap_or_else(|_| PathBuf::from("."));
+    // 资源根按 exe 相对解析（打包后不依赖源码树）。
+    let root = app_root();
     if !root.join("sidecar/dsh-official/node_modules").exists() {
         println!("[selftest-dsh-write] SKIP: 先运行 `node tools/dsh-vendor.mjs`");
         return 2;
@@ -4395,8 +4699,8 @@ fn retention_plan_cli() -> i32 {
 }
 
 fn install_plugin_cli(package: PathBuf) -> i32 {
-    let root = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .unwrap_or_else(|_| PathBuf::from("."));
+    // 资源根按 exe 相对解析（打包后不依赖源码树）。
+    let root = app_root();
     let sidecar_dir = std::env::var("DSHR_SIDECAR_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("sidecar/dsh-official"));
@@ -5183,8 +5487,12 @@ fn selftest_live_20() -> i32 {
 }
 
 fn main() {
-    install_crash_hook();
     let args: Vec<String> = std::env::args().collect();
+    // 1. 先把命令行用法的输出来路接好（release GUI 子系统没有控制台）。
+    prepare_cli_console(is_cli_invocation(&args));
+    // 2. 数据根必须在崩溃 hook 之前解析：hook 通过 DSHR_CRASH_LOG 写日志。
+    prepare_data_env();
+    install_crash_hook();
     if let Some(index) = args.iter().position(|arg| arg == "--live-chat") {
         let script: Vec<String> = args.iter().skip(index + 1).cloned().collect();
         if script.is_empty() {
@@ -5485,4 +5793,139 @@ fn main() {
         .expect("failed to open window");
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        // 第 0 个元素模拟 exe 路径，与 `std::env::args()` 一致。
+        std::iter::once("chat.exe")
+            .chain(values.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn gui_launch_is_not_cli() {
+        assert!(!is_cli_invocation(&args(&[])));
+    }
+
+    #[test]
+    fn cli_switches_attach_console() {
+        for flag in [
+            "--selftest",
+            "--selftest-stream",
+            "--selftest-dsh",
+            "--selftest-dsh-write",
+            "--live",
+            "--live-chat",
+            "--export-session",
+            "--retention-plan",
+            "--install-plugin",
+            "--seed-perf-session",
+            "--console",
+        ] {
+            assert!(
+                is_cli_invocation(&args(&[flag])),
+                "{flag} 应识别为 CLI 用法"
+            );
+        }
+    }
+
+    #[test]
+    fn dshr_home_wins_over_packaged_layout() {
+        let home = Path::new("D:\\dshr-home");
+        let picked = pick_data_root(
+            Some(home),
+            Some(Path::new("C:\\app")),
+            Some(Path::new("C:\\Users\\me\\AppData\\Local")),
+            true,
+        );
+        assert_eq!(picked, Some((DataRootSource::Home, home.to_path_buf())));
+    }
+
+    #[test]
+    fn packaged_layout_prefers_exe_dir() {
+        let exe = Path::new("C:\\app");
+        let picked = pick_data_root(
+            None,
+            Some(exe),
+            Some(Path::new("C:\\Users\\me\\AppData\\Local")),
+            true,
+        );
+        assert_eq!(picked, Some((DataRootSource::ExeDir, exe.to_path_buf())));
+    }
+
+    #[test]
+    fn dev_layout_uses_local_app_data() {
+        // 从 target/release 跑（exe 旁没有 sidecar/）→ 数据落 %LOCALAPPDATA%\dshr。
+        let local = Path::new("C:\\Users\\me\\AppData\\Local");
+        let picked = pick_data_root(
+            None,
+            Some(Path::new("C:\\repo\\target\\release")),
+            Some(local),
+            false,
+        );
+        assert_eq!(
+            picked,
+            Some((DataRootSource::LocalAppData, local.join("dshr")))
+        );
+    }
+
+    #[test]
+    fn without_any_candidate_there_is_no_pick() {
+        assert_eq!(pick_data_root(None, None, None, false), None);
+        // 打包布局标记不可用（不可写）时也不能选 exe 目录。
+        assert_eq!(
+            pick_data_root(None, Some(Path::new("C:\\app")), None, false),
+            None
+        );
+    }
+
+    #[test]
+    fn tool_timeout_is_clamped_to_sane_range() {
+        assert_eq!(clamp_tool_timeout_ms(0), Duration::from_secs(1));
+        assert_eq!(clamp_tool_timeout_ms(999), Duration::from_secs(1));
+        assert_eq!(clamp_tool_timeout_ms(120_000), Duration::from_secs(120));
+        assert_eq!(clamp_tool_timeout_ms(601_000), Duration::from_secs(600));
+        assert_eq!(clamp_tool_timeout_ms(u64::MAX), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn sidecar_tool_timeout_follows_declaration_without_override() {
+        if std::env::var_os("DSHR_TOOL_TIMEOUT_MS").is_some() {
+            // 显式覆盖存在时以覆盖为准（clamp 后）。
+            let definition = ToolDefinition::new(
+                "x",
+                "x",
+                ToolOrigin::Native {
+                    plugin_id: "p".into(),
+                },
+            );
+            assert_eq!(
+                sidecar_tool_timeout(&definition),
+                clamp_tool_timeout_ms(
+                    std::env::var("DSHR_TOOL_TIMEOUT_MS")
+                        .expect("present")
+                        .parse()
+                        .expect("number")
+                )
+            );
+            return;
+        }
+        let mut definition = ToolDefinition::new(
+            "bash",
+            "run shell",
+            ToolOrigin::Native {
+                plugin_id: "p".into(),
+            },
+        );
+        definition.timeout_ms = 30_000;
+        assert_eq!(sidecar_tool_timeout(&definition), Duration::from_secs(30));
+        definition.timeout_ms = 120_000;
+        assert_eq!(sidecar_tool_timeout(&definition), Duration::from_secs(120));
+    }
 }
