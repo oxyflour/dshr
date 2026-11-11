@@ -21,10 +21,54 @@ pub use session_tree::{
 
 use serde_json::{json, Value};
 
-/// 一次 run_turn 内允许的最大工具调用次数（防止模型自激循环）。
+/// 一轮内的可选预算（默认**不限制**，对齐官方 DSH）。
 ///
-/// 8 是"够用且能兜住死循环"的经验值：真实多工具任务常见 2–6 次。
-pub const MAX_TOOL_CALLS: usize = 8;
+/// 官方 DSH 0.2.2-rc.1 的 `@deepseek-ai/dsh-agent-loop` 只声明
+/// `maxParallelToolCalls`（默认 10），**没有**每轮工具调用总数或 step 上限：
+/// 一个 step 里模型发多少 `tool_calls` 就分批全执行，循环由模型自己收敛。
+/// dshr 早期用 `MAX_TOOL_CALLS = 8` 直接 `TurnFailed`，把"一步并发 9 个调用"
+/// 这类正常场景判成整轮失败；现在默认放开，预算只保留为**可选**的兜底：
+///
+/// - [`ToolBudget::max_tool_calls`]：一轮内最多真正执行的工具调用数。超出的调用
+///   **不执行**，但事件流仍然发 `ToolCall` + `is_error` 的 `ToolResult`（降级而非
+///   失败），并记入本轮的 `tool` 消息；本步剩余调用逐条标记失败后结束该步，然后
+///   直接 `TurnEnded`（不再给模型继续发工具调用的机会，避免预算外的"空转步"无限
+///   循环）。
+/// - [`ToolBudget::max_steps`]：一轮内最多 step 数。命中后不再发起新的模型请求，
+///   直接 `TurnEnded`（同样不是 `TurnFailed`）。
+///
+/// 两者都可以用环境变量显式收紧（`DSHR_MAX_TOOL_CALLS` / `DSHR_MAX_STEPS`）；
+/// 空值、`0`、非法值都表示"不限制"，与 DSH 默认一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolBudget {
+    pub max_tool_calls: Option<usize>,
+    pub max_steps: Option<usize>,
+}
+
+/// 解析预算环境变量的值：空/`0`/非法值都返回 `None`（即不限制）。
+pub fn parse_positive_limit(raw: &str) -> Option<usize> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<usize>().ok().filter(|limit| *limit > 0)
+}
+
+impl ToolBudget {
+    /// 从 `DSHR_MAX_TOOL_CALLS` / `DSHR_MAX_STEPS` 读取可选预算。
+    pub fn from_env() -> Self {
+        Self {
+            max_tool_calls: parse_budget_env("DSHR_MAX_TOOL_CALLS"),
+            max_steps: parse_budget_env("DSHR_MAX_STEPS"),
+        }
+    }
+}
+
+fn parse_budget_env(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_positive_limit(&value))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolSpec {
@@ -232,15 +276,34 @@ pub enum AgentEvent {
 pub struct Agent<P> {
     provider: P,
     turn: u64,
+    budget: ToolBudget,
 }
 
 impl<P: ModelProvider> Agent<P> {
+    /// 默认预算来自环境变量；默认（未设置）与 DSH 一致：不限制工具调用次数/step 数。
     pub fn new(provider: P) -> Self {
-        Self { provider, turn: 0 }
+        Self {
+            provider,
+            turn: 0,
+            budget: ToolBudget::from_env(),
+        }
+    }
+
+    /// 显式注入预算：测试与需要确定性上限的调用方用。
+    pub fn with_budget(provider: P, budget: ToolBudget) -> Self {
+        Self {
+            provider,
+            turn: 0,
+            budget,
+        }
     }
 
     pub fn turn_count(&self) -> u64 {
         self.turn
+    }
+
+    pub fn budget(&self) -> ToolBudget {
+        self.budget
     }
 
     /// 访问 provider：上下文压缩需要在 Agent 之外调用一次模型（摘要）。
@@ -248,10 +311,13 @@ impl<P: ModelProvider> Agent<P> {
         &mut self.provider
     }
 
-    /// 跑一轮：最多 `1 + MAX_TOOL_CALLS` 个 step。无历史版本（测试与单轮场景）。
+    /// 跑一轮（无历史版本，测试与单轮场景）。
+    ///
+    /// step 数只受 [`ToolBudget::max_steps`] 约束（默认无限）；工具调用总数只受
+    /// [`ToolBudget::max_tool_calls`] 约束（默认无限，与官方 DSH 一致）。
     ///
     /// 事件顺序保证：`TurnStarted` → (`StepStarted` → `TextDelta`* → (`ToolCall` → `ToolResult`)*)? →
-    /// `TurnEnded` 或 `TurnFailed`。
+    /// `TurnEnded` 或 `TurnFailed`。预算命中是**降级**，不会产生 `TurnFailed`。
     pub fn run_turn(
         &mut self,
         user_text: &str,
@@ -294,8 +360,16 @@ impl<P: ModelProvider> Agent<P> {
         let mut step: u32 = 1;
         let mut calls = 0usize;
         let mut text = String::new();
+        // 命中 max_tool_calls 后置位：本步剩余调用全部标记失败，本步结束后直接收尾。
+        let mut budget_exhausted = false;
 
         loop {
+            if let Some(max_steps) = self.budget.max_steps {
+                if step as usize > max_steps {
+                    // 优雅结束：不再发起模型请求，也不把整轮判失败。
+                    break;
+                }
+            }
             on_event(&AgentEvent::StepStarted { turn_id, step });
 
             let request = CompletionRequest {
@@ -342,21 +416,24 @@ impl<P: ModelProvider> Agent<P> {
             }
 
             for tool_call in &reply.tool_calls {
-                if calls >= MAX_TOOL_CALLS {
-                    on_event(&AgentEvent::TurnFailed(format!(
-                        "tool call budget exhausted ({MAX_TOOL_CALLS})"
-                    )));
-                    return;
-                }
-                calls += 1;
-
                 let call = ToolCallRequest {
                     call_id: tool_call.id.clone(),
                     tool: tool_call.name.clone(),
                     arguments: tool_call.arguments.clone(),
                 };
+                // 预算耗尽也是"事件完整"的：调用与结果都要发，模型/UI 才能看到配对。
                 on_event(&AgentEvent::ToolCall(call.clone()));
-                let outcome = executor.execute(&call);
+
+                let over_budget = self.budget.max_tool_calls.filter(|max| calls >= *max);
+                let outcome = if let Some(max) = over_budget {
+                    budget_exhausted = true;
+                    ToolOutcome::failure(format!(
+                        "tool call budget exhausted ({max}): 本次调用未执行"
+                    ))
+                } else {
+                    calls += 1;
+                    executor.execute(&call)
+                };
                 on_event(&AgentEvent::ToolResult {
                     call_id: call.call_id.clone(),
                     outcome: outcome.clone(),
@@ -367,6 +444,10 @@ impl<P: ModelProvider> Agent<P> {
                 });
             }
             step += 1;
+            if budget_exhausted {
+                // 不再给模型"继续发工具调用"的 step：预算已用尽，直接收尾。
+                break;
+            }
         }
 
         on_event(&AgentEvent::TurnEnded { text });
@@ -603,30 +684,223 @@ mod tests {
         assert_eq!(executor.calls[0].tool, "probe_native");
     }
 
-    #[test]
-    fn tool_budget_is_enforced() {
-        struct LoopProvider;
-        impl ModelProvider for LoopProvider {
-            fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
-                Ok(ModelReply {
-                    text: String::new(),
-                    tool_calls: vec![ModelToolCall {
-                        id: "loop-call".to_owned(),
+    /// 每次回复都发工具调用（可限制次数），用来验证预算语义。
+    struct LoopProvider {
+        /// `None` = 永远发工具调用；`Some(n)` = 前 n 次回复发工具调用，之后回纯文本。
+        tool_steps: Option<usize>,
+        /// 每次回复里发几个工具调用。
+        per_reply: usize,
+        invocations: Arc<Mutex<usize>>,
+    }
+
+    impl ModelProvider for LoopProvider {
+        fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+            let index = {
+                let mut invocations = self
+                    .invocations
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let index = *invocations;
+                *invocations += 1;
+                index
+            };
+            let emit_tools = self.tool_steps.is_none_or(|steps| index < steps);
+            if !emit_tools {
+                return Ok(ModelReply::text_only("done"));
+            }
+            Ok(ModelReply {
+                text: String::new(),
+                tool_calls: (0..self.per_reply)
+                    .map(|call| ModelToolCall {
+                        id: format!("call-{index}-{call}"),
                         name: "probe_native".to_owned(),
                         arguments: json!({}),
-                    }],
-                })
-            }
+                    })
+                    .collect(),
+            })
         }
+    }
 
-        let mut agent = Agent::new(LoopProvider);
+    fn loop_provider(tool_steps: Option<usize>, per_reply: usize) -> LoopProvider {
+        LoopProvider {
+            tool_steps,
+            per_reply,
+            invocations: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn tool_call_ids(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ToolCall(call) => Some(call.call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn tool_results(events: &[AgentEvent]) -> Vec<(String, bool)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ToolResult { call_id, outcome } => {
+                    Some((call_id.clone(), outcome.is_error))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn step_count(events: &[AgentEvent]) -> usize {
+        events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::StepStarted { .. }))
+            .count()
+    }
+
+    fn has_turn_failed(events: &[AgentEvent]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::TurnFailed(_)))
+    }
+
+    /// 显式预算：命中后**降级**而不是整轮失败（PLAN §6.4 第 3 条）。
+    #[test]
+    fn tool_budget_is_enforced() {
+        let mut agent = Agent::with_budget(
+            loop_provider(None, 1),
+            ToolBudget {
+                max_tool_calls: Some(2),
+                max_steps: None,
+            },
+        );
         let mut executor = EchoExecutor::new();
         let events = agent.run_turn("loop", &mut executor);
 
-        assert!(events
-            .iter()
-            .any(|event| matches!(event, AgentEvent::TurnFailed(_))));
-        assert_eq!(executor.calls.len(), MAX_TOOL_CALLS);
+        assert!(
+            !has_turn_failed(&events),
+            "预算耗尽必须是降级，不能 TurnFailed: {events:?}"
+        );
+        assert!(matches!(
+            events.last().unwrap(),
+            AgentEvent::TurnEnded { .. }
+        ));
+        assert_eq!(executor.calls.len(), 2, "预算内只执行 2 次");
+
+        // 事件完整：第 3 次调用也要发 ToolCall + 配对的失败 ToolResult。
+        let calls = tool_call_ids(&events);
+        let results = tool_results(&events);
+        assert_eq!(calls.len(), 3, "超预算的调用仍要发 ToolCall: {events:?}");
+        assert_eq!(results.len(), 3, "每个 ToolCall 必须有配对结果");
+        for (index, call_id) in calls.iter().enumerate() {
+            assert_eq!(&results[index].0, call_id, "结果顺序必须与调用一致");
+        }
+        assert!(!results[0].1 && !results[1].1, "预算内调用应成功");
+        assert!(results[2].1, "超出预算的调用必须 is_error");
+    }
+
+    /// 默认预算（未设置 env）与 DSH 一致：20 次循环工具调用全部执行，不失败。
+    #[test]
+    fn default_budget_does_not_cap_tool_calls() {
+        let mut agent = Agent::with_budget(loop_provider(Some(20), 1), ToolBudget::default());
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("loop", &mut executor);
+
+        assert!(!has_turn_failed(&events), "{events:?}");
+        assert_eq!(executor.calls.len(), 20, "默认预算下 20 次调用必须全部执行");
+        assert_eq!(tool_results(&events).len(), 20);
+        assert_eq!(step_count(&events), 21, "20 个工具 step + 1 个收尾 step");
+        assert_eq!(turn_text(&events), "done");
+    }
+
+    /// 用户现场场景：一个 step 里 10 个工具调用（原实现第 9 个就 TurnFailed）。
+    #[test]
+    fn many_tool_calls_in_one_turn_are_not_capped() {
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 10), ToolBudget::default());
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("从 1 数到 10", &mut executor);
+
+        assert!(!has_turn_failed(&events), "{events:?}");
+        assert_eq!(executor.calls.len(), 10, "一步里的 10 个调用都要执行");
+        assert_eq!(tool_call_ids(&events).len(), 10);
+        let results = tool_results(&events);
+        assert_eq!(results.len(), 10);
+        assert!(results.iter().all(|(_, is_error)| !is_error));
+        assert_eq!(step_count(&events), 2);
+        assert_eq!(turn_text(&events), "done");
+    }
+
+    /// 一步内超出预算：剩余调用逐条标记失败，仍然发事件并结束本步。
+    #[test]
+    fn over_budget_calls_in_one_step_are_marked_failed() {
+        let mut agent = Agent::with_budget(
+            loop_provider(Some(1), 5),
+            ToolBudget {
+                max_tool_calls: Some(2),
+                max_steps: None,
+            },
+        );
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("parallel", &mut executor);
+
+        assert!(!has_turn_failed(&events), "{events:?}");
+        assert_eq!(executor.calls.len(), 2);
+        let results = tool_results(&events);
+        assert_eq!(results.len(), 5, "5 个调用都要有配对结果");
+        assert_eq!(
+            results.iter().filter(|(_, is_error)| *is_error).count(),
+            3,
+            "超出预算的 3 个调用标失败"
+        );
+        assert!(matches!(
+            events.last().unwrap(),
+            AgentEvent::TurnEnded { .. }
+        ));
+    }
+
+    /// 命中 max_steps：优雅结束 TurnEnded，不是 TurnFailed。
+    #[test]
+    fn max_steps_ends_turn_without_failure() {
+        let mut agent = Agent::with_budget(
+            loop_provider(None, 1),
+            ToolBudget {
+                max_tool_calls: None,
+                max_steps: Some(3),
+            },
+        );
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("loop", &mut executor);
+
+        assert!(!has_turn_failed(&events), "{events:?}");
+        assert_eq!(step_count(&events), 3);
+        assert_eq!(executor.calls.len(), 3);
+        assert!(matches!(
+            events.last().unwrap(),
+            AgentEvent::TurnEnded { .. }
+        ));
+    }
+
+    /// 空 / 0 / 非法 env 都表示"不限制"（与 DSH 默认一致）；不依赖全局 env。
+    #[test]
+    fn zero_or_unset_env_means_unlimited() {
+        assert_eq!(
+            ToolBudget::default(),
+            ToolBudget {
+                max_tool_calls: None,
+                max_steps: None,
+            }
+        );
+        assert_eq!(parse_positive_limit(""), None);
+        assert_eq!(parse_positive_limit("   "), None);
+        assert_eq!(parse_positive_limit("0"), None);
+        assert_eq!(parse_positive_limit("abc"), None);
+        assert_eq!(parse_positive_limit("-1"), None);
+        assert_eq!(parse_positive_limit("12"), Some(12));
+        assert_eq!(parse_positive_limit(" 7 "), Some(7));
+
+        // Agent::new 的默认预算就是环境读取结果（两者同一时刻读，无写入竞争）。
+        let agent = Agent::new(MockProvider);
+        assert_eq!(agent.budget(), ToolBudget::from_env());
     }
 
     #[test]

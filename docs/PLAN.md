@@ -652,6 +652,15 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 
 > **状态：已完成（2026-11-11）。** 证据与剩余后移项见 [`m2-status.md`](m2-status.md)；
 > 17 个 `chat` 自检 + workspace 测试全绿。MCP/ACP 按下方转向后移 M3。
+>
+> **复核补丁（2026-11-11 晚，真机双击复测）**：发现两处 M2 遗留并已修复——
+> ① `chat.exe` 是 Console 子系统（双击弹命令行窗口），且会话/状态目录相对 CWD：
+> 从桌面快捷方式（"起始位置"为空 → CWD=`C:\Windows\System32`）或只读目录启动会
+> `os error 5` 退出，这就是"被 Windows 权限拦住"；同时打包资源根误用编译期源码树、
+> sidecar 工具写死 5s 超时。② 默认配置与官方 DSH `0.2.2-rc.1` 有偏差，最严重的是
+> `MAX_TOOL_CALLS=8`：一步发起 9 个工具调用即整轮 `TurnFailed`（官方 DSH 没有每轮
+> 工具调用上限）。修复见 [`m2-windows-launch.md`](m2-windows-launch.md) 与
+> [`m2-dsh-defaults.md`](m2-dsh-defaults.md)。
 
 - [x] 真正可交互的 Agent Loop：LLM provider（≥2 家）、Turn/Step、流式、重试、取消、provider 归一化层。
 - [x] Session Store：持久化、索引、重启恢复、未完整结果修复、保留与导出。
@@ -665,6 +674,12 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 - [x] **Sidecar OS 级隔离**（§7）：Job Object、独立 profile、环境变量隔离。
 - [ ] MCP Tool 与基本 ACP Agent Adapter（可后移，见转向）——**按转向后移 M3**。
 - [x] Windows 开发版打包、崩溃诊断和插件错误提示。
+- [x] **启动面复核**：release 为 GUI 子系统（双击无控制台；CLI 用 `AttachConsole` 保留输出）、
+      数据根与 CWD 解耦（`DSHR_HOME` / `%LOCALAPPDATA%\dshr` / 包内）、资源根 exe 相对、
+      sidecar 工具超时改用工具声明（`ToolDefinition.timeout_ms`）。
+- [x] **默认配置对齐 DSH 0.2.2-rc.1**：工具调用预算默认不限制（命中上限时降级而非
+      `TurnFailed`，`DSHR_MAX_TOOL_CALLS` / `DSHR_MAX_STEPS` 可收紧）、retry 6 次/500ms/
+      10s/±10% jitter、temperature 默认不发送、context window 按模型分档。
 
 **Exit gate（可判定）**：
 1. 20 步 Turn 的工具调用成功率 ≥ 99%（故障注入用例除外）。→ 真实网络 20/20（100%）。

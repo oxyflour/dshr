@@ -9,6 +9,10 @@ MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树�
 验证状态（本轮）：**17 个 `chat` 自检全部 PASS**，`cargo test --workspace` 全绿，
 `clippy -D warnings` 干净，`fmt --check` 干净，docs 117 链接 0 broken，sidecar schema 20/20。
 
+**复核补丁（2026-11-11 晚）**：真机双击复测发现 Windows 启动面与 DSH 默认配置两处遗留，
+已修复并补文档：[`m2-windows-launch.md`](m2-windows-launch.md)、
+[`m2-dsh-defaults.md`](m2-dsh-defaults.md)。详见本文末尾「复核补丁」一节。
+
 ## Gate 1：20 步 Turn 工具调用成功率 ≥99%
 
 **证据**
@@ -107,6 +111,79 @@ MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树�
 | MCP / ACP Adapter | ⏭ 后移 M3 | `PLAN.md` §8 转向允许 |
 | Windows 打包（dev） | ✅ dev zip；签名/更新通道 M3/M4 | `tools/package-dev.ps1`、`docs/m2-runtime.md` |
 
+## 复核补丁：Windows 启动面与 DSH 默认配置（2026-11-11 晚）
+
+用户真机双击 `target\release\chat.exe` 后报告两个问题；本轮均已定位到可复现根因并修复。
+
+### 1. Windows 权限被拦 + 命令行窗口
+
+**现象**：双击/快捷方式启动时出现命令行窗口；某些启动方式下进程直接退出，像是"被 Windows
+权限拦住"。
+
+**根因（全部实测）**：
+
+| 症状 | 根因 | 证据 |
+|---|---|---|
+| 双击弹控制台 | release 二进制 PE `Subsystem=3 (Console)` | 读 PE 头；修复后 `Subsystem=2` |
+| "权限拦住"、一闪而过 | 会话/状态目录是 CWD 相对 `.tmp/sessions`；快捷方式"起始位置"为空时 CWD=`C:\Windows\System32`，`create_dir_all` 报 `os error 5` 后 `exit(1)` | `Start-Process target\release\chat.exe -WorkingDirectory C:\Windows\System32` → `[chat] 无法创建会话目录: 拒绝访问。(os error 5)` |
+| 打包目录换机器 sidecar 起不来 | `spawn_sidecar()` 用编译期 `CARGO_MANIFEST_DIR` 拼仓库根 | 旧代码；dist 拷走后仍指向 `C:\Projects\dshr` |
+| 慢工具约 5s 必失败 | sidecar 调用写死 `Duration::from_secs(5)` | 旧 `ChatExecutor`；`ToolDefinition.timeout_ms` 默认 120s |
+
+**修复**：release 改为 GUI 子系统，CLI 用法（`--selftest*` 等）用 `AttachConsole` 接回父控制台并
+设 UTF-8 代码页；数据根与 CWD 解耦（`DSHR_HOME` → 包内可写目录 → `%LOCALAPPDATA%\dshr`）；
+资源根改为 exe 相对（`DSHR_APP_ROOT` 可覆盖）；sidecar 工具超时改用工具声明
+（`DSHR_TOOL_TIMEOUT_MS` 可覆盖，clamp 1–600s）。详见
+[`m2-windows-launch.md`](m2-windows-launch.md)。
+
+### 2. 默认配置与官方 DSH 的偏差（工具调用只有 8 次）
+
+**现象**：在 `chat.exe` 输入"从 1 数到 10，间隔 2 s"，模型一步发起 9 个 `probe_slow` 调用，
+第 9 个触发 `tool call budget exhausted (8)`，整轮返回"12345678处理失败：…"。
+
+**根因**：`crates/agent-core` 的 `pub const MAX_TOOL_CALLS: usize = 8`，超出即
+`AgentEvent::TurnFailed`。官方 DSH `0.2.2-rc.1` 的 `@deepseek-ai/dsh-agent-loop` **没有每轮
+工具调用上限**（只有 `maxParallelToolCalls=10`）。
+
+**修复**：新增 `ToolBudget{max_tool_calls,max_steps}`（默认 `None`=不限制，env
+`DSHR_MAX_TOOL_CALLS`/`DSHR_MAX_STEPS` 可收紧）；命中上限改为**降级**：未执行的调用仍发
+`ToolCall`+`is_error` 的 `ToolResult`，随后 `TurnEnded`，不再整轮失败。同时对齐
+retry（6 次/500ms/10s/±10% jitter）、temperature（默认不发送）、context window（按模型分档：
+flash/v4-pro → 1M、deepseek-chat → 128K、OpenAI → 128K、其余 64K）。完整差异表与证据索引见
+[`m2-dsh-defaults.md`](m2-dsh-defaults.md)。
+
+### 复核验收命令
+
+```powershell
+# 构建 release 与 debug
+tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo build -p dshr-desktop-gpui --bin chat
+
+# 1) PE 子系统应为 2（GUI）；双击无控制台
+#    用 EnumWindows 枚举该 PID 顶层窗口：只有 Zed::Window，无 ConsoleWindowClass
+# 2) release CLI 仍能打印（AttachConsole）
+.\target\release\chat.exe --selftest        # 期望 [selftest] PASS
+# 3) 不可写 CWD 不再退出（无 DSHR_* 时数据落 %LOCALAPPDATA%\dshr）
+Start-Process .\target\release\chat.exe -WorkingDirectory C:\Windows\System32 `
+  -RedirectStandardOutput .tmp\launch-out.txt -RedirectStandardError .tmp\launch-err.txt
+# 4) 工具预算：默认下 20 次循环调用 / 一步 10 个调用全部执行（agent-core 单测）
+tools\build-env.cmd cargo test -p dshr-agent-core -p dshr-agent-context -p dshr-llm-retry
+```
+
+**本轮实测结果（2026-11-11 晚，复核补丁后）**：
+
+```text
+cargo test --workspace                      -> 49 suites, 329 passed, 0 failed
+cargo clippy --workspace --all-targets -D warnings -> clean
+cargo fmt --all -- --check                  -> clean
+node schema/check.mjs                       -> 20/20 cases passed
+node tools/check-links.mjs                  -> 130 links, 0 broken
+chat --selftest（release，GUI 子系统）       -> [selftest] PASS, exit 0
+17 个 chat 自检（debug）                     -> 17/17 PASS, exit 0
+release GUI 启动（DSHR_HOME 临时）           -> 顶层窗口只有 Zed::Window / PlatformWindow；无 ConsoleWindowClass
+release 从 C:\Windows\System32 启动           -> 进程存活、有窗口；数据落 %LOCALAPPDATA%\dshr\{sessions,profile,workspace}
+dist/dshr-dev.zip                            -> 42.3 MiB；chat.exe Subsystem=2；含 RUNNING.txt；包内 --selftest PASS
+```
+
 ## 剩余缺口（M3 / 需人工）
 
 1. **Loader 完整语义**：`include` 展开、group 展开、`!!js` 求值（当前只做 bundle+patch 派生）；
@@ -116,6 +193,13 @@ MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树�
 4. **子会话异步/并行调度**与 sidecar 工具继承（M3）；
 5. **虚拟化锚点/等高校验**、元素级内存细分（优化项，非 gate）；
 6. **中文 IME 人工复验**：[`issues/0001`](issues/0001-ime-candidate-first-composition.md)。
+7. **工具并行执行**：dshr 仍串行；DSH 每步 `maxParallelToolCalls=10`（M3）。
+8. **默认差异（不阻塞 M2）**：reasoning effort 档位、LLM 摘要压缩、重复工具调用软提醒
+   （DSH `thresholds [3,5,8]`）、`EMPTY_RESPONSE` 重试码、approval 的
+   `read-only`/`danger-full-access` 模式切换；见 [`m2-dsh-defaults.md`](m2-dsh-defaults.md)。
+9. **Windows 分发**：代码签名/安装器（消除 SmartScreen/Defender 提示）、
+   sidecar 协议透传插件声明的 `timeoutMs`、受限 token/AppContainer（M3/M4）；
+   sidecar 注册协议当前不带 timeout，Rust 侧用 `ToolDefinition.timeout_ms` 默认 120s。
 
 ## 复现命令（全量）
 
@@ -123,6 +207,10 @@ MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树�
 tools\build-env.cmd cargo test --workspace
 tools\build-env.cmd cargo clippy --workspace --all-targets -- -D warnings
 tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo build -p dshr-desktop-gpui --bin chat
+
+# 启动面（复核补丁）：PE 子系统=2、release --selftest 仍有输出、不可写 CWD 可启动
+# 详见「复核验收命令」一节
 $env:DSHR_SESSIONS_DIR = ".tmp\perf-sessions"
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --seed-perf-session .tmp\perf-sessions
 powershell -ExecutionPolicy Bypass -File tools\frame-probe.ps1

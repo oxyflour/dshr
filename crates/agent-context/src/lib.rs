@@ -37,9 +37,22 @@ use serde_json::Value;
 /// 默认保留的历史消息条数（无预算信息时的兜底）。
 pub const DEFAULT_MAX_MESSAGES: usize = 60;
 
-/// 默认上下文窗口（token）。DeepSeek `deepseek-chat` 为 64K，可用
-/// `DSHR_CONTEXT_WINDOW` 覆盖。
-pub const DEFAULT_CONTEXT_WINDOW: usize = 64_000;
+/// 默认上下文窗口（token）的兜底值：模型名无法识别时用它。
+///
+/// 官方 DSH 0.2.2-rc.1 的 DeepSeek 适配器对 `deepseek-flash` / `deepseek-v4-pro`
+/// 使用 `OFFICIAL_CONTEXT_WINDOW = 1_048_576`；dshr 的两个默认模型
+/// （`deepseek-chat` / `gpt-4o-mini`）都是 128K，所以未知模型也按 128K 兜底。
+/// 更小窗口的模型请显式设置 `DSHR_CONTEXT_WINDOW`。
+pub const DEFAULT_CONTEXT_WINDOW: usize = 131_072;
+
+/// DSH 官方 1M 模型窗口（`@deepseek-ai/dsh-llm-deepseek` 的 `OFFICIAL_CONTEXT_WINDOW`）。
+pub const DSH_OFFICIAL_CONTEXT_WINDOW: usize = 1_048_576;
+
+/// DeepSeek 现行 API 的 128K 上下文上限（`deepseek-chat` / `deepseek-reasoner`）。
+pub const DEEPSEEK_API_CONTEXT_WINDOW: usize = 131_072;
+
+/// OpenAI 主流模型（gpt-4o / gpt-4.1 / o3 / o4）的 128K 窗口。
+pub const OPENAI_CONTEXT_WINDOW: usize = 128_000;
 
 /// 触发裁剪的窗口占比。
 pub const TRIGGER_RATIO: f32 = 0.8;
@@ -54,13 +67,64 @@ pub const TOOL_RESULT_TOKEN_LIMIT: usize = 800;
 const TOOL_RESULT_HEAD_CHARS: usize = 1_200;
 const TOOL_RESULT_TAIL_CHARS: usize = 400;
 
-/// 从环境变量读上下文窗口。
+/// 从环境变量解析上下文窗口：
+///
+/// 1. 显式 `DSHR_CONTEXT_WINDOW`（>= 4000）优先；
+/// 2. 否则按已配置的模型名给默认（`DSHR_MODEL` > `DEEPSEEK_MODEL` > `OPENAI_MODEL`）：
+///    `flash` / `v4-pro` / `v4.1` → 1M（DSH 官方窗口），
+///    `deepseek-chat` / `deepseek-reasoner` → 128K（DeepSeek API 上限），
+///    `gpt-4o` / `gpt-4.1` / `o3` / `o4` → 128K；
+/// 3. 其余（含未配置模型）回退 [`DEFAULT_CONTEXT_WINDOW`]（128K，两家当前默认模型口径）。
 pub fn context_window_from_env() -> usize {
-    std::env::var("DSHR_CONTEXT_WINDOW")
-        .ok()
-        .and_then(|value| value.parse().ok())
+    let explicit = std::env::var("DSHR_CONTEXT_WINDOW").ok();
+    let generic_model = std::env::var("DSHR_MODEL").ok();
+    let deepseek_model = std::env::var("DEEPSEEK_MODEL").ok();
+    let openai_model = std::env::var("OPENAI_MODEL").ok();
+    resolve_context_window(
+        explicit.as_deref(),
+        generic_model.as_deref(),
+        deepseek_model.as_deref(),
+        openai_model.as_deref(),
+    )
+}
+
+/// 纯函数版窗口解析（测试与显式注入用；不读环境）。
+pub fn resolve_context_window(
+    explicit: Option<&str>,
+    generic_model: Option<&str>,
+    deepseek_model: Option<&str>,
+    openai_model: Option<&str>,
+) -> usize {
+    if let Some(window) = explicit
+        .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|window| *window >= 4_000)
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW)
+    {
+        return window;
+    }
+    let model = [generic_model, deepseek_model, openai_model]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|model| !model.is_empty());
+    model.map_or(DEFAULT_CONTEXT_WINDOW, context_window_for_model)
+}
+
+/// 单个模型名 → 上下文窗口。
+fn context_window_for_model(model: &str) -> usize {
+    let model = model.to_ascii_lowercase();
+    if model.contains("flash") || model.contains("v4-pro") || model.contains("v4.1") {
+        DSH_OFFICIAL_CONTEXT_WINDOW
+    } else if model.contains("deepseek-chat") || model.contains("deepseek-reasoner") {
+        DEEPSEEK_API_CONTEXT_WINDOW
+    } else if model.contains("gpt-4o")
+        || model.contains("gpt-4.1")
+        || model.contains("o3")
+        || model.contains("o4")
+    {
+        OPENAI_CONTEXT_WINDOW
+    } else {
+        DEFAULT_CONTEXT_WINDOW
+    }
 }
 
 /// 估算一段文本的 token 数。CJK 按字计，其它按 4 字符/token，再加少量消息开销。
@@ -674,6 +738,114 @@ mod tests {
                         if tool_calls.iter().any(|call| &call.id == call_id)),
                     "位置 {index} 的 Tool({call_id}) 没有配对的 assistant.tool_calls"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn model_names_select_context_window_defaults() {
+        // DSH 官方 1M 档。
+        for model in ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4.1"] {
+            assert_eq!(
+                resolve_context_window(None, None, Some(model), None),
+                DSH_OFFICIAL_CONTEXT_WINDOW,
+                "{model} 应使用 DSH 官方 1M 窗口"
+            );
+        }
+        // DeepSeek 现行 128K API 上限。
+        for model in ["deepseek-chat", "deepseek-reasoner"] {
+            assert_eq!(
+                resolve_context_window(None, None, Some(model), None),
+                DEEPSEEK_API_CONTEXT_WINDOW,
+                "{model} 应使用 128K"
+            );
+        }
+        // OpenAI 128K 档。
+        for model in ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3", "o4-mini"] {
+            assert_eq!(
+                resolve_context_window(None, None, None, Some(model)),
+                OPENAI_CONTEXT_WINDOW,
+                "{model} 应使用 128K"
+            );
+        }
+        // 未知 / 未配置 → 默认 128K 兜底（两家默认模型都是 128K）。
+        assert_eq!(
+            resolve_context_window(None, None, Some("some-unknown-model"), None),
+            DEFAULT_CONTEXT_WINDOW
+        );
+        assert_eq!(
+            resolve_context_window(None, None, None, None),
+            DEFAULT_CONTEXT_WINDOW
+        );
+        assert_eq!(
+            resolve_context_window(None, Some("  "), Some(""), None),
+            DEFAULT_CONTEXT_WINDOW
+        );
+    }
+
+    #[test]
+    fn generic_model_env_wins_over_provider_specific() {
+        assert_eq!(
+            resolve_context_window(
+                None,
+                Some("deepseek-flash"),
+                Some("deepseek-chat"),
+                Some("gpt-4o"),
+            ),
+            DSH_OFFICIAL_CONTEXT_WINDOW,
+            "DSHR_MODEL 应优先于 DEEPSEEK_MODEL / OPENAI_MODEL"
+        );
+        assert_eq!(
+            resolve_context_window(None, None, Some("deepseek-chat"), Some("gpt-4o")),
+            DEEPSEEK_API_CONTEXT_WINDOW,
+            "没有 DSHR_MODEL 时 DeepSeek 优先"
+        );
+    }
+
+    #[test]
+    fn explicit_dshr_context_window_wins_and_invalid_falls_through() {
+        assert_eq!(
+            resolve_context_window(Some("8000"), Some("deepseek-flash"), None, None),
+            8_000,
+            "Gate 3 自检显式 DSHR_CONTEXT_WINDOW=8000 必须原样生效"
+        );
+        // < 4000 视为无效（沿用既有语义），回退到模型档位。
+        assert_eq!(
+            resolve_context_window(Some("100"), Some("deepseek-flash"), None, None),
+            DSH_OFFICIAL_CONTEXT_WINDOW
+        );
+        assert_eq!(
+            resolve_context_window(Some("not-a-number"), None, Some("deepseek-chat"), None),
+            DEEPSEEK_API_CONTEXT_WINDOW
+        );
+    }
+
+    #[test]
+    fn context_window_from_env_reads_the_four_variables() {
+        // 本 crate 只有这个测试读写这些变量，并行安全；结束后恢复。
+        const KEYS: [&str; 4] = [
+            "DSHR_CONTEXT_WINDOW",
+            "DSHR_MODEL",
+            "DEEPSEEK_MODEL",
+            "OPENAI_MODEL",
+        ];
+        let previous: Vec<Option<String>> =
+            KEYS.iter().map(|key| std::env::var(key).ok()).collect();
+
+        std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
+        std::env::set_var("DEEPSEEK_MODEL", "deepseek-flash");
+        assert_eq!(context_window_from_env(), 8_000, "显式窗口优先");
+
+        std::env::remove_var("DSHR_CONTEXT_WINDOW");
+        assert_eq!(context_window_from_env(), DSH_OFFICIAL_CONTEXT_WINDOW);
+
+        std::env::set_var("DEEPSEEK_MODEL", "deepseek-chat");
+        assert_eq!(context_window_from_env(), DEEPSEEK_API_CONTEXT_WINDOW);
+
+        for (key, value) in KEYS.iter().zip(previous) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
             }
         }
     }

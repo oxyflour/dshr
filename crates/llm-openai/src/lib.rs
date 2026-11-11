@@ -5,6 +5,8 @@
 //! - 配置：`OPENAI_API_KEY`（或 `DSHR_OPENAI_API_KEY`）、
 //!   `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）、
 //!   `OPENAI_MODEL`（默认 `gpt-4o-mini`）；
+//! - 采样参数对齐官方 DSH 0.2.2-rc.1：**默认不发送 temperature / max_tokens**，
+//!   只有显式设置 `OPENAI_TEMPERATURE` / `OPENAI_MAX_TOKENS` 时才写进请求体；
 //! - 同步 HTTP（`ureq`），非流式；`complete_streaming` 用默认实现，
 //!   整段文本作为一个 delta 回放（UI 仍能显示，只是不分段）；
 //! - 工具调用按 OpenAI `tool_calls` 解析。
@@ -26,6 +28,10 @@ pub struct OpenAiProvider {
     api_key: String,
     base_url: String,
     model: String,
+    /// 显式采样温度；`None` = 不发送（对齐 DSH，由服务端默认）。
+    temperature: Option<f64>,
+    /// 显式输出上限；`None` = 不发送（保持 provider 默认）。
+    max_tokens: Option<u64>,
     timeout: Duration,
     cancel: Option<Arc<AtomicBool>>,
 }
@@ -36,6 +42,8 @@ impl OpenAiProvider {
             api_key: api_key.into(),
             base_url: std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE.to_owned()),
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned()),
+            temperature: parse_env_number("OPENAI_TEMPERATURE"),
+            max_tokens: parse_env_number("OPENAI_MAX_TOKENS"),
             timeout: Duration::from_secs(60),
             cancel: None,
         }
@@ -53,6 +61,18 @@ impl OpenAiProvider {
 
     pub fn with_cancel(mut self, token: Arc<AtomicBool>) -> Self {
         self.cancel = Some(token);
+        self
+    }
+
+    /// 显式设置采样温度；`None` = 不发送（服务端默认，对齐 DSH）。
+    pub fn with_temperature(mut self, temperature: Option<f64>) -> Self {
+        self.temperature = temperature;
+        self
+    }
+
+    /// 显式设置输出 token 上限；`None` = 不发送（服务端默认）。
+    pub fn with_max_tokens(mut self, max_tokens: Option<u64>) -> Self {
+        self.max_tokens = max_tokens;
         self
     }
 
@@ -81,6 +101,13 @@ impl OpenAiProvider {
             messages.insert(0, json!({ "role": "system", "content": SYSTEM_PROMPT }));
         }
         let mut body = json!({ "model": self.model, "messages": messages });
+        // 对齐 DSH：默认不带采样参数，只有显式配置才发送。
+        if let Some(temperature) = self.temperature {
+            body["temperature"] = json!(temperature);
+        }
+        if let Some(max_tokens) = self.max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
         if !request.tool_specs.is_empty() {
             body["tools"] = Value::Array(
                 request
@@ -121,6 +148,11 @@ impl OpenAiProvider {
             .read_json::<Value>()
             .map_err(|err| format!("openai body read failed: {err}"))
     }
+}
+
+/// 读取可选数值型 env：未设置 / 空白 / 非法都返回 `None`（= 不发送该参数）。
+fn parse_env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
+    std::env::var(name).ok()?.trim().parse().ok()
 }
 
 impl ModelProvider for OpenAiProvider {
@@ -267,6 +299,47 @@ mod tests {
         }];
         let body = provider.request_body(&req);
         assert_eq!(body["tools"][0]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn request_body_omits_temperature_and_max_tokens_by_default() {
+        let provider = OpenAiProvider::new("k")
+            .with_temperature(None)
+            .with_max_tokens(None);
+        let body = provider.request_body(&request(vec![ChatMessage::user("hi")]));
+        assert!(
+            body.get("temperature").is_none(),
+            "默认不发送 temperature（对齐 DSH）: {body}"
+        );
+        assert!(
+            body.get("max_tokens").is_none(),
+            "默认不发送 max_tokens（provider 默认）: {body}"
+        );
+    }
+
+    #[test]
+    fn request_body_sends_explicit_temperature_and_max_tokens() {
+        let provider = OpenAiProvider::new("k")
+            .with_temperature(Some(0.2))
+            .with_max_tokens(Some(4_096));
+        let body = provider.request_body(&request(vec![ChatMessage::user("hi")]));
+        assert_eq!(body["temperature"], json!(0.2));
+        assert_eq!(body["max_tokens"], json!(4_096));
+    }
+
+    #[test]
+    fn parse_env_number_treats_blank_and_garbage_as_unset() {
+        // 用本测试专属变量名，避免并行测试读到彼此的 env 写入。
+        const VAR: &str = "DSHR_TEST_ONLY_OPENAI_MAX_TOKENS";
+        std::env::remove_var(VAR);
+        assert_eq!(parse_env_number::<u64>(VAR), None, "未设置 = 不发送");
+        std::env::set_var(VAR, "4096");
+        assert_eq!(parse_env_number::<u64>(VAR), Some(4_096));
+        std::env::set_var(VAR, "  ");
+        assert_eq!(parse_env_number::<u64>(VAR), None, "空白 = 不发送");
+        std::env::set_var(VAR, "abc");
+        assert_eq!(parse_env_number::<u64>(VAR), None, "非法 = 不发送");
+        std::env::remove_var(VAR);
     }
 
     #[test]

@@ -8,6 +8,13 @@
 //! - 工具结果的第二轮请求用 `role: user` 传递（简化）。严格的 OpenAI 兼容做法要求
 //!   回放 assistant 的 `tool_calls` + `role: tool` + `tool_call_id`，留作后续修正。
 //! - API key 只从环境变量或 `~/.dsh/.env` 读取，绝不打印、不写日志。
+//! - 采样参数对齐官方 DSH 0.2.2-rc.1：**默认不发送 temperature / max_tokens**，
+//!   让服务的默认值生效；只有显式设置 `DEEPSEEK_TEMPERATURE` / `DEEPSEEK_MAX_TOKENS`
+//!   时才写进请求体（DSH 的 `@deepseek-ai/dsh-llm-deepseek` 也是
+//!   `temperature === void 0 ? {} : { temperature }`）。
+//! - 模型名仍默认 `deepseek-chat`（保持既有行为）；DSH desktop 默认是
+//!   `deepseek-flash`（1M 上下文），需要时用 `DEEPSEEK_MODEL=deepseek-flash` +
+//!   `DSHR_CONTEXT_WINDOW=1048576` 显式选择。
 
 #![forbid(unsafe_code)]
 
@@ -29,6 +36,10 @@ pub struct DeepSeekProvider {
     api_key: String,
     base_url: String,
     model: String,
+    /// 显式采样温度；`None` = 不发送（对齐 DSH，由服务端默认）。
+    temperature: Option<f64>,
+    /// 显式输出上限；`None` = 不发送（保持 provider 默认）。
+    max_tokens: Option<u64>,
     timeout: Duration,
     /// UI 置 true 即请求停止生成；provider 在每次请求开始时清零。
     cancel: Option<Arc<AtomicBool>>,
@@ -41,6 +52,8 @@ impl DeepSeekProvider {
             base_url: std::env::var("DEEPSEEK_BASE_URL")
                 .unwrap_or_else(|_| DEFAULT_BASE.to_owned()),
             model: std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned()),
+            temperature: parse_env_number("DEEPSEEK_TEMPERATURE"),
+            max_tokens: parse_env_number("DEEPSEEK_MAX_TOKENS"),
             timeout: Duration::from_secs(60),
             cancel: None,
         }
@@ -54,6 +67,22 @@ impl DeepSeekProvider {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    /// 显式设置采样温度；`None` = 不发送（服务端默认，对齐 DSH）。
+    pub fn with_temperature(mut self, temperature: Option<f64>) -> Self {
+        self.temperature = temperature;
+        self
+    }
+
+    /// 显式设置输出 token 上限；`None` = 不发送（服务端默认）。
+    ///
+    /// 官方 DSH 的 DeepSeek 适配器默认 `maxTokens = 256_000`，但 dshr 默认模型是
+    /// `deepseek-chat`（与 DSH desktop 的 `deepseek-flash` 不同），故不盲目照抄，
+    /// 只在显式配置时发送。
+    pub fn with_max_tokens(mut self, max_tokens: Option<u64>) -> Self {
+        self.max_tokens = max_tokens;
         self
     }
 
@@ -102,8 +131,14 @@ impl DeepSeekProvider {
         let mut body = json!({
             "model": self.model,
             "messages": messages,
-            "temperature": 0.3,
         });
+        // 对齐 DSH：默认不带采样参数，只有显式配置才发送。
+        if let Some(temperature) = self.temperature {
+            body["temperature"] = json!(temperature);
+        }
+        if let Some(max_tokens) = self.max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
             body["tool_choice"] = json!("auto");
@@ -165,6 +200,11 @@ fn message_json(message: &ChatMessage) -> Value {
             "content": content,
         }),
     }
+}
+
+/// 读取可选数值型 env：未设置 / 空白 / 非法都返回 `None`（= 不发送该参数）。
+fn parse_env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
+    std::env::var(name).ok()?.trim().parse().ok()
 }
 
 fn load_key_from_dsh_env() -> Option<String> {
@@ -629,6 +669,47 @@ mod tests {
         let messages = body["messages"].as_array().expect("messages");
         assert_eq!(messages.len(), 2, "不应重复追加 system");
         assert_eq!(messages[0]["content"], "自定义提示");
+    }
+
+    #[test]
+    fn request_body_omits_temperature_and_max_tokens_by_default() {
+        let provider = DeepSeekProvider::new("test-key")
+            .with_temperature(None)
+            .with_max_tokens(None);
+        let body = provider.request_body(&request(vec![ChatMessage::user("hi")]), false);
+        assert!(
+            body.get("temperature").is_none(),
+            "默认不发送 temperature（对齐 DSH）: {body}"
+        );
+        assert!(
+            body.get("max_tokens").is_none(),
+            "默认不发送 max_tokens（provider 默认）: {body}"
+        );
+    }
+
+    #[test]
+    fn request_body_sends_explicit_temperature_and_max_tokens() {
+        let provider = DeepSeekProvider::new("test-key")
+            .with_temperature(Some(0.7))
+            .with_max_tokens(Some(8_192));
+        let body = provider.request_body(&request(vec![ChatMessage::user("hi")]), false);
+        assert_eq!(body["temperature"], json!(0.7));
+        assert_eq!(body["max_tokens"], json!(8_192));
+    }
+
+    #[test]
+    fn parse_env_number_treats_blank_and_garbage_as_unset() {
+        // 用本测试专属变量名，避免并行测试读到彼此的 env 写入。
+        const VAR: &str = "DSHR_TEST_ONLY_DEEPSEEK_TEMPERATURE";
+        std::env::remove_var(VAR);
+        assert_eq!(parse_env_number::<f64>(VAR), None, "未设置 = 不发送");
+        std::env::set_var(VAR, "0.25");
+        assert_eq!(parse_env_number::<f64>(VAR), Some(0.25));
+        std::env::set_var(VAR, "  ");
+        assert_eq!(parse_env_number::<f64>(VAR), None, "空白 = 不发送");
+        std::env::set_var(VAR, "abc");
+        assert_eq!(parse_env_number::<f64>(VAR), None, "非法 = 不发送");
+        std::env::remove_var(VAR);
     }
 
     #[test]

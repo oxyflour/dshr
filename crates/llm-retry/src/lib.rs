@@ -4,8 +4,14 @@
 //! 并且流式请求必须满足"还没有向 UI 交付任何 delta"才能重试——否则重试会把
 //! 已经显示过的文本再吐一遍，用户会看到重复内容。
 //!
-//! 参数：`DSHR_RETRY_ATTEMPTS`（1–10，默认 3）、`DSHR_RETRY_BASE_MS`（默认 200）、
-//! `DSHR_RETRY_MAX_MS`（默认 2000）。指数退避：base * 2^(n-1)，封顶 max。
+//! 参数默认对齐官方 DSH 0.2.2-rc.1 的 `@deepseek-ai/dsh-llm` retry-policy：
+//! `maxRetries=5`（**总尝试 6 次**）、`initialDelayMs=500`、`maxDelayMs=10000`、
+//! `jitterRatio=0.1`（±10% 抖动）。可用 `DSHR_RETRY_ATTEMPTS`（1–10）、
+//! `DSHR_RETRY_BASE_MS`、`DSHR_RETRY_MAX_MS`、`DSHR_RETRY_JITTER`（0–1）覆盖。
+//! 指数退避：base * 2^(n-1)，封顶 max，再叠加 ±jitter。
+//!
+//! 与 DSH 的差异：DSH 的 retryableCodes 还包含 `EMPTY_RESPONSE`，dshr 的 provider
+//! 目前不产生这个错误码，故 [`is_retryable_error`] 未处理（M3 补）。
 
 #![forbid(unsafe_code)]
 
@@ -15,19 +21,23 @@ use std::time::Duration;
 
 use dshr_agent_core::{CompletionRequest, ModelProvider, ModelReply};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryPolicy {
+    /// 总尝试次数（含首次）；DSH `maxRetries=5` 对应 6。
     pub max_attempts: u32,
     pub base_delay: Duration,
     pub max_delay: Duration,
+    /// 抖动比例：实际延迟 ∈ `[delay*(1-r), delay*(1+r)]`，再封顶 `max_delay`。
+    pub jitter_ratio: f64,
 }
 
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            max_attempts: 3,
-            base_delay: Duration::from_millis(200),
-            max_delay: Duration::from_millis(2_000),
+            max_attempts: 6,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_millis(10_000),
+            jitter_ratio: 0.1,
         }
     }
 }
@@ -53,6 +63,12 @@ impl RetryPolicy {
         {
             policy.max_delay = Duration::from_millis(max);
         }
+        if let Some(jitter) = std::env::var("DSHR_RETRY_JITTER")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+        {
+            policy.jitter_ratio = jitter.clamp(0.0, 1.0);
+        }
         policy
     }
 
@@ -62,9 +78,11 @@ impl RetryPolicy {
             max_attempts: max_attempts.clamp(1, 10),
             base_delay: Duration::ZERO,
             max_delay: Duration::ZERO,
+            jitter_ratio: 0.0,
         }
     }
 
+    /// 指数退避的确定性值（不含抖动）：`base * 2^(attempt-1)`，封顶 `max_delay`。
     pub fn delay_for(&self, attempt: u32) -> Duration {
         if attempt == 0 {
             return Duration::ZERO;
@@ -72,6 +90,29 @@ impl RetryPolicy {
         let factor = 2u32.saturating_pow(attempt.saturating_sub(1).min(6));
         self.base_delay.saturating_mul(factor).min(self.max_delay)
     }
+
+    /// 在 [`RetryPolicy::delay_for`] 上叠加 ±`jitter_ratio` 抖动。
+    ///
+    /// `unit` 是 `[0, 1]` 的随机数（测试可注入以断言上下界）。
+    pub fn jittered_delay_for(&self, attempt: u32, unit: f64) -> Duration {
+        let base = self.delay_for(attempt);
+        if base.is_zero() || self.jitter_ratio == 0.0 {
+            return base;
+        }
+        let unit = unit.clamp(0.0, 1.0);
+        let factor = 1.0 + (unit * 2.0 - 1.0) * self.jitter_ratio;
+        base.mul_f64(factor).min(self.max_delay)
+    }
+}
+
+/// 无 rand 依赖的伪随机 `[0,1)`：用时钟纳秒的低位，够抖动即可。
+fn random_unit() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or(0);
+    f64::from(nanos % 1_000_000) / 1_000_000.0
 }
 
 /// 错误字符串是否属于"值得重试"的瞬时错误。
@@ -119,7 +160,7 @@ impl RetryingProvider {
     }
 
     fn sleep_before_retry(&self, attempt: u32) {
-        let delay = self.policy.delay_for(attempt);
+        let delay = self.policy.jittered_delay_for(attempt, random_unit());
         if !delay.is_zero() {
             std::thread::sleep(delay);
         }
@@ -292,12 +333,91 @@ mod tests {
     }
 
     #[test]
+    fn defaults_match_dsh_retry_policy() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_attempts, 6, "DSH maxRetries=5 → 总尝试 6 次");
+        assert_eq!(policy.base_delay, Duration::from_millis(500));
+        assert_eq!(policy.max_delay, Duration::from_millis(10_000));
+        assert_eq!(policy.jitter_ratio, 0.1);
+    }
+
+    #[test]
+    fn from_env_overrides_defaults_and_clamps() {
+        // 本 crate 只有这个测试读写 DSHR_RETRY_*，并行安全；结束后恢复。
+        const KEYS: [&str; 4] = [
+            "DSHR_RETRY_ATTEMPTS",
+            "DSHR_RETRY_BASE_MS",
+            "DSHR_RETRY_MAX_MS",
+            "DSHR_RETRY_JITTER",
+        ];
+        let previous: Vec<Option<String>> =
+            KEYS.iter().map(|key| std::env::var(key).ok()).collect();
+        std::env::set_var("DSHR_RETRY_ATTEMPTS", "4"); // chat --selftest-retry 的口径
+        std::env::set_var("DSHR_RETRY_BASE_MS", "100");
+        std::env::set_var("DSHR_RETRY_MAX_MS", "1200");
+        std::env::set_var("DSHR_RETRY_JITTER", "2.0"); // 越界 → clamp 到 1.0
+
+        let policy = RetryPolicy::from_env();
+        assert_eq!(policy.max_attempts, 4);
+        assert_eq!(policy.base_delay, Duration::from_millis(100));
+        assert_eq!(policy.max_delay, Duration::from_millis(1_200));
+        assert_eq!(policy.jitter_ratio, 1.0);
+
+        for (key, value) in KEYS.iter().zip(previous) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn jitter_stays_within_bounds_and_respects_cap() {
+        let policy = RetryPolicy {
+            max_attempts: 6,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_millis(2_000),
+            jitter_ratio: 0.1,
+        };
+        for attempt in 1..=6 {
+            let base = policy.delay_for(attempt);
+            for unit in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let delay = policy.jittered_delay_for(attempt, unit);
+                assert!(
+                    delay <= policy.max_delay,
+                    "attempt={attempt} 抖动后不能超过封顶: {delay:?}"
+                );
+                let lower = base.mul_f64(1.0 - policy.jitter_ratio);
+                let upper = base.mul_f64(1.0 + policy.jitter_ratio);
+                assert!(
+                    delay >= lower && delay <= upper,
+                    "attempt={attempt} unit={unit} delay={delay:?} 应在 {lower:?}..={upper:?}"
+                );
+            }
+            // 极端 unit 的边界：0.0 = -jitter，1.0 = +jitter。
+            assert_eq!(
+                policy.jittered_delay_for(attempt, 0.0),
+                base.mul_f64(1.0 - policy.jitter_ratio)
+                    .min(policy.max_delay)
+            );
+            assert_eq!(
+                policy.jittered_delay_for(attempt, 1.0),
+                base.mul_f64(1.0 + policy.jitter_ratio)
+                    .min(policy.max_delay)
+            );
+        }
+        assert_eq!(policy.jittered_delay_for(0, 0.5), Duration::ZERO);
+    }
+
+    #[test]
     fn backoff_grows_and_is_capped() {
         let policy = RetryPolicy {
             max_attempts: 5,
             base_delay: Duration::from_millis(100),
             max_delay: Duration::from_millis(300),
+            jitter_ratio: 0.0,
         };
+        assert_eq!(policy.delay_for(0), Duration::ZERO);
         assert_eq!(policy.delay_for(1), Duration::from_millis(100));
         assert_eq!(policy.delay_for(2), Duration::from_millis(200));
         assert_eq!(policy.delay_for(3), Duration::from_millis(300));
