@@ -39,7 +39,7 @@ assistant 文本：12345678处理失败：tool call budget exhausted (8)
 | reasoning effort | `off` / `low` / `high` / `max`；desktop profile 配 `high` | 不支持 | 不支持（**M3**） | 输出质量/成本与 DSH desktop 有差异 |
 | retry | `maxRetries=5`（总尝试 **6**）、`initialDelayMs=500`、`maxDelayMs=10000`、`jitterRatio=0.1`；可重试码含 `EMPTY_RESPONSE`/`RATE_LIMIT`/`SERVER`/`TIMEOUT`/`TRANSPORT` | 3 次尝试、200ms 起、2s 封顶、无抖动 | **6 次尝试、500ms 起、10s 封顶、±10% 抖动**；`DSHR_RETRY_*` 可覆盖 | 瞬时错误更耐扛；抖动降低多客户端同刻重试风暴 |
 | 历史条数 | 无条数上限（按 token 触发压缩） | `DEFAULT_MAX_MESSAGES = 60` 兜底 | 未改（兜底仍在，正常路径先按 token 触发裁剪） | 保持既有回放语义 |
-| 压缩触发 / 保留 | `thresholdRatio=0.8`、`headroomTokens=65536`、`maxTokens=headroomTokens`、`retainRatio=0.16`（保留约 16% 消息）+ LLM 摘要；`compactionRetries=1`、`maxOverflowRetries=1` | 触发 `0.8`、裁到 `0.6`，**无摘要**（有损丢最旧消息） | 未改 | 比例接近；dshr 目前是丢消息而非摘要，**M3 补 LLM 压缩** |
+| 压缩触发 / 保留 | `thresholdRatio=0.8`、`headroomTokens=65536`、`maxTokens=headroomTokens`、`retainRatio=0.16`（保留约 16% 消息）+ LLM 摘要；`compactionRetries=1`、`maxOverflowRetries=1` | 触发 `0.8`、裁到 `0.6`，**有 LLM 摘要**（`chat.rs summarize_dropped` 生成摘要消息 + `context.compacted` 留痕） | 未改 | 都有摘要；差异在保留比（0.6 vs 0.16）与 overflow/重试策略，M3 可对齐 |
 | 工具结果裁剪 | `thresholdChars=8192`、`headChars=4096`、`tailChars=1024`（按字符） | `TOOL_RESULT_TOKEN_LIMIT=800` tokens，头 1200 / 尾 400 字符（按估算 token） | 未改 | 口径不同（token vs char），效果同量级 |
 | 大结果 spill | `maxInlineTokens=12500` → 大结果外部化 | `SpillPolicy::default()`：**16 KiB 字节**阈值，内容寻址落盘 + 512 字符预览 | 未改 | 阈值口径不同，均为"超阈值落盘 + 模型只见引用" |
 | 工具超时 | 每个工具声明 `timeoutMs`（`dsh-tool-call-timeout-policy` 按声明执行，无声明则不设限） | sidecar 工具固定 **5s** | 按工具声明 `timeout_ms`，clamp 到 1s–600s，`DSHR_TOOL_TIMEOUT_MS` 可整体覆盖（**由并行任务修复，见 `chat.rs`**） | 慢工具不再被 5s 误杀 |
@@ -172,7 +172,7 @@ tools\build-env.cmd cargo build -p dshr-desktop-gpui --bin chat
 - 默认模型/Provider：`deepseek-chat` / `gpt-4o-mini` vs DSH desktop 的 `deepseek-flash`
   （不假设 API key 有 flash 权限）；要 1M 按上面的 env 显式切换。
 - output `max_tokens` 不默认发送（不照抄 256k）。
-- 工具执行仍串行（DSH 每步并发 10）；压缩仍是有损裁剪而非 LLM 摘要；spill/裁剪阈值口径不同。
+- 工具执行仍串行（DSH 每步并发 10）；压缩已有 LLM 摘要但保留比/溢出重试与 DSH 不同；spill/裁剪阈值口径不同。
 
 **M3 再做**
 

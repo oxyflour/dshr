@@ -130,9 +130,9 @@ impl OpenAiProvider {
     }
 
     fn send(&self, body: &Value) -> Result<Value, String> {
-        if let Some(token) = &self.cancel {
-            token.store(false, Ordering::Relaxed);
-        }
+        // 注意：这里**不能**清零 cancel token。清零只由 UI 在每轮开始时做
+        // （chat.rs 的 `start_turn`）；provider 在请求开头清零会让"工具执行期间
+        // 按停止"被下一次请求悄悄丢弃（M2 review P1-2）。
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(self.timeout))
             .build()
@@ -155,16 +155,22 @@ fn parse_env_number<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name).ok()?.trim().parse().ok()
 }
 
+/// 取消 token 是否已置位。无句柄 = 永不取消。
+fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|token| token.load(Ordering::Relaxed))
+}
+
 impl ModelProvider for OpenAiProvider {
     fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
         self.cancel.clone()
     }
 
     fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
-        if let Some(token) = &self.cancel {
-            if token.load(Ordering::Relaxed) {
-                return Err(String::from("cancelled"));
-            }
+        // 非流式请求无法中途停止：请求前检查一次，已置位直接返回 cancelled。
+        // Agent 会把"token 已置位时 provider 返回的 Err"收敛成 TurnCancelled，
+        // 而不是 TurnFailed（见 agent-core / M2 review P2-10）。
+        if is_cancelled(self.cancel.as_deref()) {
+            return Err(String::from("cancelled"));
         }
         let body = self.send(&self.request_body(request))?;
         parse_reply(&body)
@@ -366,6 +372,30 @@ mod tests {
     #[test]
     fn missing_choices_is_an_error() {
         assert!(parse_reply(&json!({ "error": { "message": "bad key" } })).is_err());
+    }
+
+    /// token 预置位：非流式 provider 直接返回 `Err("cancelled")`，不发请求、不清零 token。
+    #[test]
+    fn preset_cancel_token_returns_cancelled_without_a_request() {
+        let token = Arc::new(AtomicBool::new(true));
+        let mut provider = OpenAiProvider::new("k").with_cancel(token.clone());
+        let err = provider
+            .complete(&request(vec![ChatMessage::user("hi")]))
+            .expect_err("取消应返回 Err(cancelled)");
+        assert!(err.contains("cancelled"), "{err}");
+        assert!(
+            token.load(Ordering::Relaxed),
+            "provider 不得清零 token（清零只由 UI 在每轮开始时做）"
+        );
+    }
+
+    #[test]
+    fn is_cancelled_reads_only_a_set_token() {
+        assert!(!is_cancelled(None));
+        let token = AtomicBool::new(false);
+        assert!(!is_cancelled(Some(&token)));
+        token.store(true, Ordering::Relaxed);
+        assert!(is_cancelled(Some(&token)));
     }
 
     #[test]

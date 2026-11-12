@@ -41,7 +41,11 @@ pub struct DeepSeekProvider {
     /// 显式输出上限；`None` = 不发送（保持 provider 默认）。
     max_tokens: Option<u64>,
     timeout: Duration,
-    /// UI 置 true 即请求停止生成；provider 在每次请求开始时清零。
+    /// UI 置 true 即请求停止生成。
+    ///
+    /// provider 只**读**它：清零只由 UI 在每轮开始时做（chat.rs 的 `start_turn`）。
+    /// 若 provider 在请求开头清零，"工具执行期间按停止"会被下一次请求悄悄丢弃
+    /// （M2 review P1-2）。
     cancel: Option<Arc<AtomicBool>>,
 }
 
@@ -228,6 +232,41 @@ fn load_key_from_dsh_env() -> Option<String> {
     None
 }
 
+/// 取消 token 是否已置位。无句柄 = 永不取消。
+fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|token| token.load(Ordering::Relaxed))
+}
+
+/// 读 SSE 流，直到 `[DONE]`、EOF 或取消。
+///
+/// 取消语义是**部分成功**：停止读取后返回已生成的部分 `ModelReply`（`Ok` 而不是
+/// `Err`），由 Agent 的取消路径收尾（`TurnCancelled`）。每个 chunk 处理完之后都
+/// 再检查一次 token，保证"停止"最多延后一个 chunk；预置位时连第一行都不读。
+fn read_sse_stream(
+    reader: impl BufRead,
+    cancel: Option<&AtomicBool>,
+    on_delta: &mut dyn FnMut(&str),
+) -> Result<ModelReply, String> {
+    let mut decoder = SseDecoder::default();
+    for line in reader.lines() {
+        if is_cancelled(cancel) {
+            break;
+        }
+        let line = line.map_err(|err| format!("deepseek stream read failed: {err}"))?;
+        if let Some(chunk) = decoder.feed(&line)? {
+            on_delta(&chunk);
+        }
+        if decoder.is_done() {
+            break;
+        }
+        // chunk 之后立即检查：取消后不再读下一行（不阻塞在网络等待上）。
+        if is_cancelled(cancel) {
+            break;
+        }
+    }
+    Ok(decoder.finish())
+}
+
 impl ModelProvider for DeepSeekProvider {
     fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
         self.cancel.clone()
@@ -248,32 +287,22 @@ impl ModelProvider for DeepSeekProvider {
         request: &CompletionRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelReply, String> {
-        // 新一轮开始前清零：上一轮的停止请求不能误伤这一轮。
-        if let Some(token) = &self.cancel {
-            token.store(false, Ordering::Relaxed);
+        // 取消 token 只由 UI 在每轮开始时清零，provider 绝不清零（P1-2）：
+        // 否则上一轮/工具执行期间的停止请求会被这一次请求悄悄吞掉。
+        // 已置位时不再发起 HTTP 请求，直接返回"已生成的部分"（这里为空）。
+        if is_cancelled(self.cancel.as_deref()) {
+            return Ok(ModelReply {
+                text: String::new(),
+                tool_calls: Vec::new(),
+            });
         }
         let body = self.request_body(request, true);
         let response = self.post(&body)?;
-        let reader = BufReader::new(response.into_reader());
-        let mut decoder = SseDecoder::default();
-        for line in reader.lines() {
-            if self
-                .cancel
-                .as_ref()
-                .is_some_and(|token| token.load(Ordering::Relaxed))
-            {
-                // 停止 = 不再接收；已生成的部分按正常回复返回。
-                break;
-            }
-            let line = line.map_err(|err| format!("deepseek stream read failed: {err}"))?;
-            if let Some(chunk) = decoder.feed(&line)? {
-                on_delta(&chunk);
-            }
-            if decoder.is_done() {
-                break;
-            }
-        }
-        Ok(decoder.finish())
+        read_sse_stream(
+            BufReader::new(response.into_reader()),
+            self.cancel.as_deref(),
+            on_delta,
+        )
     }
 }
 
@@ -722,6 +751,70 @@ mod tests {
         );
         assert!(DeepSeekProvider::new("k").cancel_token().is_none());
         assert!(!token.load(Ordering::Relaxed));
+    }
+
+    /// token 预置位：streaming 不发起请求，直接返回"已生成的部分"（空），且不清零 token。
+    #[test]
+    fn preset_cancel_returns_partial_without_a_request() {
+        let token = Arc::new(AtomicBool::new(true));
+        let mut provider = DeepSeekProvider::new("k").with_cancel(token.clone());
+        let request = request(vec![ChatMessage::user("hi")]);
+        let mut deltas: Vec<String> = Vec::new();
+        let reply = provider
+            .complete_streaming(&request, &mut |delta| deltas.push(delta.to_owned()))
+            .expect("取消是部分成功（Ok），不是 Err");
+        assert!(reply.text.is_empty());
+        assert!(reply.tool_calls.is_empty());
+        assert!(deltas.is_empty());
+        assert!(
+            token.load(Ordering::Relaxed),
+            "provider 不得清零 token（清零只由 UI 在每轮开始时做）"
+        );
+    }
+
+    /// 流到一半取消：只保留已生成的部分文本，剩余 chunk 不再读取/回调。
+    #[test]
+    fn streaming_stops_after_cancel_and_keeps_partial_text() {
+        let token = Arc::new(AtomicBool::new(false));
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"呀\"}}]}\n",
+            "data: [DONE]\n",
+        );
+        let mut deltas: Vec<String> = Vec::new();
+        let reply = read_sse_stream(
+            BufReader::new(std::io::Cursor::new(sse)),
+            Some(&token),
+            &mut |chunk| {
+                deltas.push(chunk.to_owned());
+                // 第一段文本到达后用户按停止：后续 chunk 不能再回调。
+                token.store(true, Ordering::Relaxed);
+            },
+        )
+        .expect("部分成功");
+        assert_eq!(deltas, vec!["你"]);
+        assert_eq!(reply.text, "你");
+        assert!(reply.tool_calls.is_empty());
+    }
+
+    /// 没有取消 token（或 token 未置位）时，整个流都要读完。
+    #[test]
+    fn streaming_without_cancel_reads_every_chunk() {
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n",
+            "data: [DONE]\n",
+        );
+        let mut deltas: Vec<String> = Vec::new();
+        let reply = read_sse_stream(
+            BufReader::new(std::io::Cursor::new(sse)),
+            None,
+            &mut |chunk| deltas.push(chunk.to_owned()),
+        )
+        .expect("正常读完");
+        assert_eq!(deltas, vec!["你", "好"]);
+        assert_eq!(reply.text, "你好");
     }
 
     #[test]

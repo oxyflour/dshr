@@ -9,7 +9,7 @@
 
 - CJK 字符按 1 token/字，其它按 1 token/4 字符，再叠加消息开销（保守估计，不引入 tokenizer）；
 - `estimate_history_tokens` 汇总 `system/user/assistant(+tool_calls 的 name+arguments)/tool`；
-- 窗口默认 64000（DeepSeek `deepseek-chat`），可用 `DSHR_CONTEXT_WINDOW` 覆盖。
+- 窗口默认 131072（按模型名分档：`deepseek-chat`/`deepseek-reasoner` 128K、`deepseek-flash`/`v4-pro` 1M、OpenAI 128K、未知 128K），可用 `DSHR_CONTEXT_WINDOW` 覆盖。
 
 ## 计划与策略
 

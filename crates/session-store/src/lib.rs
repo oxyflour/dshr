@@ -11,6 +11,9 @@
 //! - I8 稳定 ID（`session_id` / `call_id`）与插件 generation 无关；
 //! - I9 `session.created` 是第一条事件，`parent_session_id` 写入一次后不可改（会话树，§7）。
 //!
+//! 崩溃安全写入原语见 [`save_atomic`] / [`quarantine_corrupt`] / [`recover_backup`]
+//! （M2 review P1-1：损坏日志不得被静默覆盖）。
+//!
 //! 尚未实现：I5 压缩区间校验（需要 context 事件模型）、I6 脱敏、I7 落盘先于可见。
 
 #![forbid(unsafe_code)]
@@ -18,7 +21,9 @@
 pub mod session_index;
 pub mod session_tree;
 
-pub use session_index::{SessionIndex, SessionMeta};
+pub use session_index::{
+    quarantine_corrupt, recover_backup, save_atomic, SessionIndex, SessionMeta,
+};
 pub use session_tree::{SessionNode, SessionTree, TreeError, DEFAULT_MAX_DEPTH};
 
 use std::collections::{HashMap, HashSet};

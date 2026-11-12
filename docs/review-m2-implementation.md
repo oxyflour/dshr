@@ -21,6 +21,18 @@ DSH 默认值）两笔复核补丁的回归面。**未照抄 `docs/m2-status.md`
   把对应 ✅ 降级为「已知缺陷/后移」并写清条件），再按完成对外；不建议按「完全完成、无已知
   缺陷」口径进入 M3。
 
+> **2026-11-12 修复状态**：P1-1（会话日志原子写/损坏隔离/`.bak` 恢复/读失败禁写）、
+> P1-2（Agent 取消事件 + provider token 不再清零 + 审批可取消 + sidecar `tool.cancel`）、
+> P1-3（普通工具错误改回 `tool.result(is_error)`）、P1-4（frame-probe 元数据/判定加固与
+> 环境标注）已修复并回归：`cargo test --workspace` 49 suites / 352 passed，
+> 19 个 `chat` 自检全 PASS（新增 `--selftest-corrupt-session`、`--selftest-cancel`）。
+> 详见 [`m2-status.md`](m2-status.md)「P1 修复轮」。剩余 P2 项按该节列表后移 M3/后续。
+>
+> P1-4 的两次 FAIL 已定位为**测量环境**（当前是 RDP `RDP-Tcp#0` + 评审时并行跑构建/自检的
+> 后台负载），不是代码回归：frame-probe 现在记录 host/session/gpu/refresh budget 并按
+> 「missed_refresh=0 + p95 ≤ budget」判定，当前环境 13 次复测全部通过（p95 2.52–9.14ms，
+> budget 31.25ms）；跨 host 不再做相对回归。见 [`m2-performance.md`](m2-performance.md)。
+
 ## 本轮验证清单（命令 + 实测结果）
 
 | # | 命令 | 结果 |

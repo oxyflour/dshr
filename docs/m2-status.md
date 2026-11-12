@@ -6,8 +6,8 @@ MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树�
 树形侧栏 + 中断传播）、**导出/保留 CLI**、**崩溃诊断**、**插件错误提示**、**内存基线**
 均已在本轮接线并自检。
 
-验证状态（本轮）：**17 个 `chat` 自检全部 PASS**，`cargo test --workspace` 全绿，
-`clippy -D warnings` 干净，`fmt --check` 干净，docs 117 链接 0 broken，sidecar schema 20/20。
+验证状态（本轮）：**19 个 `chat` 自检全部 PASS**，`cargo test --workspace` 全绿，
+`clippy -D warnings` 干净，`fmt --check` 干净，docs 147 链接 0 broken，sidecar schema 20/20。
 
 **复核补丁（2026-11-11 晚）**：真机双击复测发现 Windows 启动面与 DSH 默认配置两处遗留，
 已修复并补文档：[`m2-windows-launch.md`](m2-windows-launch.md)、
@@ -96,7 +96,7 @@ MCP/ACP，以及 M3/M4 的签名与更新通道）已全部落地。**会话树�
 |---|---|---|
 | Agent Loop（≥2 provider / 流式 / 重试 / 取消） | ✅ | `--selftest-live-20`、`--selftest-retry` |
 | Session Store（持久化/索引/重启恢复） | ✅ | 多会话索引、回放自检；新会话首条写 `session.created` |
-| 未完整结果修复 | ✅ | `tool.aborted` + 回放不变量 |
+| 未完整结果修复 | ✅ | `tool.aborted` + 回放不变量；损坏/读失败的会话日志改为**隔离 + 禁止覆盖 + `.bak` 恢复**（P1-1，`--selftest-corrupt-session`） |
 | 保留与导出 | ✅ | `chat --export-session <id> [--export-dir]`、`--retention-plan`（只出计划不删除）、`--selftest-export`（含外部化附件 + manifest sha256 自校验） |
 | 上下文：计量/压缩/裁剪/外部化/一致性 | ✅ | `--selftest-context` / `-long-context` / `-spill` |
 | 会话树（spawn/中断传播/drain/树形 Dock） | ✅ | `--selftest-tree`：真实链路派发 + 父子事件 + 单层限制 + 中断传播 + `from_logs` 重建；侧栏按树缩进（截图核对） |
@@ -172,17 +172,35 @@ tools\build-env.cmd cargo test -p dshr-agent-core -p dshr-agent-context -p dshr-
 **本轮实测结果（2026-11-11 晚，复核补丁后）**：
 
 ```text
-cargo test --workspace                      -> 49 suites, 329 passed, 0 failed
+cargo test --workspace                      -> 49 suites, 352 passed, 0 failed
 cargo clippy --workspace --all-targets -D warnings -> clean
 cargo fmt --all -- --check                  -> clean
 node schema/check.mjs                       -> 20/20 cases passed
-node tools/check-links.mjs                  -> 130 links, 0 broken
+node tools/check-links.mjs                  -> 147 links, 0 broken
 chat --selftest（release，GUI 子系统）       -> [selftest] PASS, exit 0
-17 个 chat 自检（debug）                     -> 17/17 PASS, exit 0
+19 个 chat 自检（debug）                     -> 19/19 PASS, exit 0
 release GUI 启动（DSHR_HOME 临时）           -> 顶层窗口只有 Zed::Window / PlatformWindow；无 ConsoleWindowClass
 release 从 C:\Windows\System32 启动           -> 进程存活、有窗口；数据落 %LOCALAPPDATA%\dshr\{sessions,profile,workspace}
 dist/dshr-dev.zip                            -> 42.3 MiB；chat.exe Subsystem=2；含 RUNNING.txt；包内 --selftest PASS
 ```
+
+## P1 修复轮（2026-11-12，独立 review 后）
+
+`docs/review-m2-implementation.md` 给出「有条件接受」，其中 P1-1/P1-2/P1-3/P1-4 已在
+本轮修复；P0=0。修复范围与证据：
+
+| review 项 | 修复内容 | 回归证据 |
+|---|---|---|
+| P1-1 损坏会话被静默覆盖（数据丢失） | `session-store` 新增 `save_atomic`（临时文件 + `sync_all` + 替换 + 上一版 `.bak`）、`quarantine_corrupt`（原字节隔离为 `<file>.corrupt-<ts>`）、`recover_backup`（启动时恢复 `.bak`）；`chat.rs` 读失败时禁止写入（`save_blocked`），损坏时隔离后新建空会话；GUI 顶部显示「启动/加载错误」横幅 | 新增 `--selftest-corrupt-session`（历史 → 截断加载失败 → 隔离文件字节保留、新文件只有 1 条 `session.created`）；session-store 39 tests |
+| P1-2 取消不完整 | `agent-core` 新增 `ToolCancelled`/`TurnCancelled` 事件与 4 个取消检查点（步间、reply 后、调用前/后），取消不再 `TurnFailed`；provider 删除每次请求的 `cancel.store(false)`（由每轮开始统一重置）；审批 `request_cancellable`（100ms 轮询、取消即 Deny/清 pending）、`cancel_pending`；sidecar `invoke_as_cancellable`（取消发 `tool.cancel` + 2s 宽限）；UI `stop()` 清 pending 审批 | `--selftest-cancel`（token 预置 → TurnCancelled + session.interrupted、无“处理失败”/空 settled）；agent-core/tool-runtime/compat-dsh-host/provider 单测 + 2 条真实 Node E2E（慢工具取消、忽略 cancel 的 fake sidecar） |
+| P1-3 普通工具错误伪装成 `tool.aborted` | 普通失败（审批 Deny/工具报错/预算耗尽）写 `tool.result(is_error=true)`；只有取消写 `tool.aborted(reason="cancel")`；`--selftest-approval` 断言更新 | `--selftest-approval` PASS（denied_tool_result=true、denied_tool_aborted=false）；`--selftest-live-20` 的 `tool_errors` 指标恢复有效 |
+| P1-4 Gate 2 滚动帧证据不可复现 | `tools/frame-probe.ps1` 记录 host/session/gpu/binary/commit/refresh_ns 元数据；判定 = `missed_refresh=0` + `draw p95 ≤ refresh budget`（report `refresh_ns/1000`，缺失回退 31250us）；跨 host 只告警、不做相对回归（`-CompareAcrossHosts` 可显式对照）；`-UpdateBaseline` 只在硬性条件通过后写入 | 当前 RDP 会话（`RDP-Tcp#0`）13 次 240 帧复测：missed_refresh=0/13、draw p95 2.52–9.14ms（budget 31.25ms）、同机相对判定 PASS；旧基线按 `-CompareAcrossHosts` 对照 PASS；热路径 `4fe0d2a..HEAD` 逐行 0 差异，详见 [`m2-performance.md`](m2-performance.md) |
+| P2-2 自检在只读 CWD 下用相对 `.tmp` 失败 | `--selftest*` 把 `.tmp` 相对路径切到数据根（`DSHR_WORKSPACE` 仍保留原 CWD/仓库根），打包 exe 从 System32 也能自检 | 从 `C:\Windows\System32` 跑 `dist` 包 `--selftest`（修复前后对照） |
+| P2-6/P2-8 审批 pending 泄漏、错误不可见 | `resolve` 只接受 pending 中的 call_id、`cancel_pending` 清理；GUI 主界面顶部渲染启动/加载错误横幅 | 审批单测 + corrupt-session 自检（`reported=true`） |
+
+**仍属 M3/后续**：P2-1（append + 周期 compact，当前仍是全量原子重写）、P2-5/P2-7/P2-9/P2-10/P2-11
+（子会话结局判定、Job Object 竞态窗口、超长单条消息、OpenAI 取消语义统一、按能力而非工具名
+审批）、Gate 1 的真实网络夜间样本与 Gate 2 目标桌面重测。
 
 ## 剩余缺口（M3 / 需人工）
 

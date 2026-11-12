@@ -10,6 +10,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread;
@@ -32,6 +33,9 @@ pub enum HostError {
     Protocol(String),
     #[error("timeout waiting for {0}")]
     Timeout(String),
+    /// 调用被宿主取消（已发 `tool.cancel`，宽限期内 sidecar 仍未给出终态）。
+    #[error("cancelled waiting for {0}")]
+    Cancelled(String),
     #[error("sidecar closed the pipe")]
     Closed,
     #[error("rpc error {code}: {message}")]
@@ -436,6 +440,24 @@ impl SidecarHost {
         arguments: Value,
         timeout: Duration,
     ) -> Result<InvokeOutcome, HostError> {
+        self.invoke_as_cancellable(call_id, tool, arguments, timeout, None)
+    }
+
+    /// 可取消的 [`SidecarHost::invoke_as`]。
+    ///
+    /// 等待期间每 100ms 轮询一次 `cancel`；置位时发送一次 `tool.cancel`
+    /// （`tool.cancel` RPC 之前只有定义、没有调用点），再给 sidecar 最多 2s 宽限
+    /// 等 `tool.aborted` / `tool.result`；宽限期满仍无终态则返回
+    /// [`HostError::Cancelled`]。正常等待的片段超时**不再**直接判 `Timeout`，
+    /// 绝对 deadline 语义保持不变。
+    pub fn invoke_as_cancellable(
+        &mut self,
+        call_id: &str,
+        tool: &str,
+        arguments: Value,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<InvokeOutcome, HostError> {
         self.seq += 1;
         let request_id = format!("req-invoke-{}", self.seq);
         let envelope = Envelope::host(
@@ -447,7 +469,7 @@ impl SidecarHost {
         .with_call(call_id.to_owned())
         .with_session("s-probe");
         self.write(&envelope)?;
-        self.wait_terminal(call_id, timeout)
+        self.wait_terminal_cancellable(call_id, timeout, cancel)
     }
 
     pub fn cancel(&mut self, call_id: &str) -> Result<(), HostError> {
@@ -468,19 +490,48 @@ impl SidecarHost {
         call_id: &str,
         timeout: Duration,
     ) -> Result<InvokeOutcome, HostError> {
+        self.wait_terminal_cancellable(call_id, timeout, None)
+    }
+
+    /// [`SidecarHost::wait_terminal`] 的可取消版本。
+    fn wait_terminal_cancellable(
+        &mut self,
+        call_id: &str,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<InvokeOutcome, HostError> {
+        /// 取消后给 sidecar 收尾的宽限（它的取消检查周期是 200ms 级）。
+        const CANCEL_GRACE: Duration = Duration::from_secs(2);
+        /// 等待片段：既保证及时检查 cancel，又不让循环空转。
+        const WAIT_SLICE: Duration = Duration::from_millis(100);
+
         let started = Instant::now();
         let deadline = started + timeout;
         let mut chunks = Vec::new();
+        // `tool.cancel` 只发一次；置位后改用"宽限 deadline"收尾。
+        let mut cancel_deadline: Option<Instant> = None;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(HostError::Timeout(format!("tool {call_id}")));
+            if cancel_deadline.is_none()
+                && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
+            {
+                self.cancel(call_id)?;
+                cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
             }
-            let envelope = match self.rx.recv_timeout(remaining) {
+            let now = Instant::now();
+            let effective_deadline = cancel_deadline.map_or(deadline, |grace| grace.min(deadline));
+            let remaining = effective_deadline.saturating_duration_since(now);
+            if remaining.is_zero() {
+                return if cancel_deadline.is_some() {
+                    Err(HostError::Cancelled(format!("tool {call_id}")))
+                } else {
+                    Err(HostError::Timeout(format!("tool {call_id}")))
+                };
+            }
+
+            // 100ms 片段超时不是失败：回到循环头部重新检查 cancel / deadline。
+            let envelope = match self.rx.recv_timeout(remaining.min(WAIT_SLICE)) {
                 Ok(envelope) => envelope,
-                Err(RecvTimeoutError::Timeout) => {
-                    return Err(HostError::Timeout(format!("tool {call_id}")))
-                }
+                Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             };
 

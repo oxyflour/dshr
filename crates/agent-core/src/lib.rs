@@ -19,7 +19,13 @@ pub use session_tree::{
     SpawnContext, SpawnError, SpawnedChild, TreeSession, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use serde_json::{json, Value};
+
+/// 取消原因字符串：与 `session.interrupted` / sidecar `tool.cancel` 的 reason 对齐。
+const CANCEL_REASON: &str = "cancel";
 
 /// 一轮内的可选预算（默认**不限制**，对齐官方 DSH）。
 ///
@@ -210,9 +216,11 @@ pub trait ModelProvider: Send {
 
     /// 停止生成的句柄：UI 无需持有 provider 就能请求中断。
     ///
-    /// 约定：provider 在每次请求开始时清零，读到 true 后尽快返回**已生成的部分**，
-    /// 由 Agent 按正常轮次收尾（会话日志里会是一条不完整的回复）。
-    fn cancel_token(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    /// 约定：token 的清零**只由 UI 在每轮开始时做**（chat.rs 的 `start_turn`），
+    /// provider 自己绝不清零——否则"工具执行期间按下停止"会被下一次模型请求悄悄
+    /// 丢弃（M2 review P1-2）。provider 读到 true 后尽快返回**已生成的部分**，
+    /// 由 Agent 走取消语义收尾（`ToolCancelled` / `TurnCancelled`，不是 `TurnFailed`）。
+    fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
         None
     }
 
@@ -239,7 +247,7 @@ impl ModelProvider for Box<dyn ModelProvider> {
         (**self).complete(request)
     }
 
-    fn cancel_token(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+    fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
         (**self).cancel_token()
     }
 
@@ -267,7 +275,17 @@ pub enum AgentEvent {
         call_id: String,
         outcome: ToolOutcome,
     },
+    /// 工具调用被取消（**未执行**，或执行中被打断）。每个 `ToolCall` 要么有配对的
+    /// `ToolResult`，要么有配对的 `ToolCancelled`，UI/会话日志不会出现孤立调用。
+    ToolCancelled {
+        call_id: String,
+        reason: String,
+    },
     TurnFailed(String),
+    /// 本轮因取消而结束（不是失败）：已产生的文本/工具结果保留，不再发起新请求。
+    TurnCancelled {
+        reason: String,
+    },
     TurnEnded {
         text: String,
     },
@@ -316,8 +334,10 @@ impl<P: ModelProvider> Agent<P> {
     /// step 数只受 [`ToolBudget::max_steps`] 约束（默认无限）；工具调用总数只受
     /// [`ToolBudget::max_tool_calls`] 约束（默认无限，与官方 DSH 一致）。
     ///
-    /// 事件顺序保证：`TurnStarted` → (`StepStarted` → `TextDelta`* → (`ToolCall` → `ToolResult`)*)? →
-    /// `TurnEnded` 或 `TurnFailed`。预算命中是**降级**，不会产生 `TurnFailed`。
+    /// 事件顺序保证：`TurnStarted` → (`StepStarted` → `TextDelta`* → (`ToolCall` →
+    /// `ToolResult` | `ToolCancelled`)*)? → `TurnEnded` / `TurnFailed` / `TurnCancelled`。
+    /// 预算命中是**降级**，不会产生 `TurnFailed`；取消产生 `TurnCancelled`（含未执行
+    /// 调用的 `ToolCancelled`），同样不是失败。
     pub fn run_turn(
         &mut self,
         user_text: &str,
@@ -343,6 +363,17 @@ impl<P: ModelProvider> Agent<P> {
     ///
     /// `history` 由调用方从 Session Log 重建（`agent-context`），Agent 自己只维护**本轮**
     /// 产生的 assistant/tool 消息，保证 `role: tool` 与 `tool_call_id` 严格配对。
+    ///
+    /// 取消语义（M2 review P1-2）：UI 通过 provider 的 [`ModelProvider::cancel_token`]
+    /// 置位 token；本函数在四个检查点读它（`Relaxed` 足够：只关心最终可见性）：
+    /// 1. 每步开始前（发 `StepStarted` 之前）；
+    /// 2. 拿到模型回复之后、执行本步工具之前；
+    /// 3. 每个工具调用执行前；
+    /// 4. 每个工具调用执行后。
+    ///
+    /// 命中取消时：未执行的调用逐个发 `ToolCall` + `ToolCancelled`（事件配对），
+    /// 已执行的调用保留其 `ToolResult`，最后以 `TurnCancelled` 收尾——**不会**产生
+    /// `TurnFailed`。预算命中仍是"降级"（`ToolResult(is_error)`），与取消无关。
     pub fn run_turn_streaming(
         &mut self,
         history: &[ChatMessage],
@@ -354,6 +385,10 @@ impl<P: ModelProvider> Agent<P> {
         let turn_id = self.turn;
         on_event(&AgentEvent::TurnStarted { turn_id });
 
+        // 取消句柄只读：清零由 UI 在每轮开始时做（见 trait 注释）。
+        // 测试/Mock provider 没暴露句柄时，取消检查恒为 false。
+        let cancel = self.provider.cancel_token();
+
         let mut messages: Vec<ChatMessage> = history.to_vec();
         messages.push(ChatMessage::User(user_text.to_owned()));
 
@@ -364,6 +399,13 @@ impl<P: ModelProvider> Agent<P> {
         let mut budget_exhausted = false;
 
         loop {
+            // 取消检查点 1：步与步之间，StepStarted 之前。
+            if cancel_requested(cancel.as_ref()) {
+                on_event(&AgentEvent::TurnCancelled {
+                    reason: CANCEL_REASON.to_owned(),
+                });
+                return;
+            }
             if let Some(max_steps) = self.budget.max_steps {
                 if step as usize > max_steps {
                     // 优雅结束：不再发起模型请求，也不把整轮判失败。
@@ -391,7 +433,15 @@ impl<P: ModelProvider> Agent<P> {
                 match self.provider.complete_streaming(&request, &mut forward) {
                     Ok(reply) => reply,
                     Err(err) => {
-                        on_event(&AgentEvent::TurnFailed(err));
+                        // provider 在取消后返回 Err（如 openai 非流式的 cancelled）不算失败：
+                        // 统一收敛为 TurnCancelled，避免 UI 显示"处理失败：cancelled"（P2-10）。
+                        if cancel_requested(cancel.as_ref()) {
+                            on_event(&AgentEvent::TurnCancelled {
+                                reason: CANCEL_REASON.to_owned(),
+                            });
+                        } else {
+                            on_event(&AgentEvent::TurnFailed(err));
+                        }
                         return;
                     }
                 }
@@ -411,18 +461,38 @@ impl<P: ModelProvider> Agent<P> {
                 });
             }
 
+            // 取消检查点 2：模型回复之后、执行工具之前。本步所有调用都不执行，
+            // 但每个调用仍发 ToolCall + ToolCancelled，保持事件配对。
+            if cancel_requested(cancel.as_ref()) {
+                cancel_calls(&reply.tool_calls, on_event);
+                on_event(&AgentEvent::TurnCancelled {
+                    reason: CANCEL_REASON.to_owned(),
+                });
+                return;
+            }
+
             if reply.tool_calls.is_empty() {
                 break;
             }
 
-            for tool_call in &reply.tool_calls {
-                let call = ToolCallRequest {
-                    call_id: tool_call.id.clone(),
-                    tool: tool_call.name.clone(),
-                    arguments: tool_call.arguments.clone(),
-                };
+            for (index, tool_call) in reply.tool_calls.iter().enumerate() {
+                let call = tool_call_request(tool_call);
                 // 预算耗尽也是"事件完整"的：调用与结果都要发，模型/UI 才能看到配对。
                 on_event(&AgentEvent::ToolCall(call.clone()));
+
+                // 取消检查点 3：执行前。当前调用不执行，发配对的 ToolCancelled；
+                // 本步剩余调用同样补 ToolCall + ToolCancelled（配平事件流）。
+                if cancel_requested(cancel.as_ref()) {
+                    on_event(&AgentEvent::ToolCancelled {
+                        call_id: call.call_id.clone(),
+                        reason: CANCEL_REASON.to_owned(),
+                    });
+                    cancel_calls(&reply.tool_calls[index + 1..], on_event);
+                    on_event(&AgentEvent::TurnCancelled {
+                        reason: CANCEL_REASON.to_owned(),
+                    });
+                    return;
+                }
 
                 let over_budget = self.budget.max_tool_calls.filter(|max| calls >= *max);
                 let outcome = if let Some(max) = over_budget {
@@ -442,6 +512,16 @@ impl<P: ModelProvider> Agent<P> {
                     call_id: call.call_id.clone(),
                     content: tool_content_for_model(&outcome),
                 });
+
+                // 取消检查点 4：执行后。已执行调用的 ToolResult 保留；本步剩余调用
+                // 不再执行，逐条补 ToolCall + ToolCancelled，然后 TurnCancelled。
+                if cancel_requested(cancel.as_ref()) {
+                    cancel_calls(&reply.tool_calls[index + 1..], on_event);
+                    on_event(&AgentEvent::TurnCancelled {
+                        reason: CANCEL_REASON.to_owned(),
+                    });
+                    return;
+                }
             }
             step += 1;
             if budget_exhausted {
@@ -451,6 +531,31 @@ impl<P: ModelProvider> Agent<P> {
         }
 
         on_event(&AgentEvent::TurnEnded { text });
+    }
+}
+
+/// 取消 token 是否已置位。无句柄（Mock/测试 provider）= 永不取消。
+fn cancel_requested(cancel: Option<&Arc<AtomicBool>>) -> bool {
+    cancel.is_some_and(|token| token.load(Ordering::Relaxed))
+}
+
+/// `ModelToolCall` → 事件用请求（id 是配对依据，必须原样保留）。
+fn tool_call_request(tool_call: &ModelToolCall) -> ToolCallRequest {
+    ToolCallRequest {
+        call_id: tool_call.id.clone(),
+        tool: tool_call.name.clone(),
+        arguments: tool_call.arguments.clone(),
+    }
+}
+
+/// 取消后本步剩余的调用：只发 `ToolCall` + `ToolCancelled`，一个都不执行。
+fn cancel_calls(calls: &[ModelToolCall], on_event: &mut dyn FnMut(&AgentEvent)) {
+    for tool_call in calls {
+        on_event(&AgentEvent::ToolCall(tool_call_request(tool_call)));
+        on_event(&AgentEvent::ToolCancelled {
+            call_id: tool_call.id.clone(),
+            reason: CANCEL_REASON.to_owned(),
+        });
     }
 }
 
@@ -764,6 +869,22 @@ mod tests {
             .any(|event| matches!(event, AgentEvent::TurnFailed(_)))
     }
 
+    fn has_turn_cancelled(events: &[AgentEvent]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::TurnCancelled { .. }))
+    }
+
+    fn tool_cancelled_ids(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::ToolCancelled { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// 显式预算：命中后**降级**而不是整轮失败（PLAN §6.4 第 3 条）。
     #[test]
     fn tool_budget_is_enforced() {
@@ -929,6 +1050,220 @@ mod tests {
         assert!(matches!(
             events.last().unwrap(),
             AgentEvent::TurnFailed(message) if message.contains("503")
+        ));
+    }
+
+    /// 每次回复都发工具调用、且暴露取消 token 的 provider（取消语义测试专用）。
+    struct CancelAwareProvider {
+        token: Arc<AtomicBool>,
+        per_reply: usize,
+        /// 返回 reply 之前先置位取消：模拟"模型流式回复期间按了停止"。
+        cancel_before_reply: bool,
+        invocations: Arc<Mutex<usize>>,
+    }
+
+    impl CancelAwareProvider {
+        fn new(token: Arc<AtomicBool>, per_reply: usize) -> Self {
+            Self {
+                token,
+                per_reply,
+                cancel_before_reply: false,
+                invocations: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn cancel_before_reply(mut self) -> Self {
+            self.cancel_before_reply = true;
+            self
+        }
+    }
+
+    impl ModelProvider for CancelAwareProvider {
+        fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+            let index = {
+                let mut invocations = self
+                    .invocations
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let index = *invocations;
+                *invocations += 1;
+                index
+            };
+            if self.cancel_before_reply {
+                self.token.store(true, Ordering::Relaxed);
+            }
+            Ok(ModelReply {
+                text: String::new(),
+                tool_calls: (0..self.per_reply)
+                    .map(|call| ModelToolCall {
+                        id: format!("cancel-call-{index}-{call}"),
+                        name: "probe_native".to_owned(),
+                        arguments: json!({}),
+                    })
+                    .collect(),
+            })
+        }
+
+        fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
+            Some(self.token.clone())
+        }
+    }
+
+    /// 执行第一个工具时置位取消：覆盖"执行后取消 → 已执行结果保留、剩余调用配平"。
+    struct CancellingExecutor {
+        token: Arc<AtomicBool>,
+        calls: Vec<ToolCallRequest>,
+    }
+
+    impl CancellingExecutor {
+        fn new(token: Arc<AtomicBool>) -> Self {
+            Self {
+                token,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl ToolExecutor for CancellingExecutor {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+
+        fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+            self.calls.push(call.clone());
+            if self.calls.len() == 1 {
+                // 模拟"用户在这个工具执行完之后按了停止"。
+                self.token.store(true, Ordering::Relaxed);
+            }
+            ToolOutcome::success(
+                json!([{ "type": "text", "text": "ok" }]),
+                json!({ "ok": true }),
+            )
+        }
+    }
+
+    /// turn 中途取消：不发 TurnFailed、不再发起模型请求；已执行调用保留 ToolResult，
+    /// 未执行调用逐个发配对的 ToolCancelled。
+    #[test]
+    fn cancel_stops_turn_without_failure() {
+        let token = Arc::new(AtomicBool::new(false));
+        let provider = CancelAwareProvider::new(token.clone(), 3);
+        let mut agent = Agent::new(provider);
+        let mut executor = CancellingExecutor::new(token.clone());
+        let events = agent.run_turn("loop", &mut executor);
+
+        assert!(
+            !has_turn_failed(&events),
+            "取消不是失败，不能 TurnFailed: {events:?}"
+        );
+        assert!(
+            has_turn_cancelled(&events),
+            "必须发 TurnCancelled: {events:?}"
+        );
+        assert_eq!(executor.calls.len(), 1, "取消后不应再执行剩余工具");
+        assert_eq!(step_count(&events), 1, "取消后不应再发起模型请求");
+
+        // 事件配对：3 个 ToolCall、1 个 ToolResult、2 个 ToolCancelled（id 一致）。
+        let calls = tool_call_ids(&events);
+        assert_eq!(calls.len(), 3, "{events:?}");
+        let results = tool_results(&events);
+        assert_eq!(results.len(), 1, "已执行调用保留 ToolResult: {events:?}");
+        assert_eq!(results[0].0, calls[0]);
+        assert_eq!(
+            tool_cancelled_ids(&events),
+            vec![calls[1].clone(), calls[2].clone()],
+            "未执行调用必须逐条配对 ToolCancelled: {events:?}"
+        );
+        // 事件顺序：ToolCall 先于对应的 ToolCancelled。
+        let cancelled_pos = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolCancelled { .. }))
+            .expect("tool cancelled");
+        let call_pos = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolCall(_)))
+            .expect("tool call");
+        assert!(call_pos < cancelled_pos);
+    }
+
+    /// 第一轮开始前 token 已置位：不发 StepStarted、不请求模型，只有 TurnCancelled。
+    #[test]
+    fn cancel_before_first_step() {
+        let token = Arc::new(AtomicBool::new(true));
+        let provider = CancelAwareProvider::new(token.clone(), 1);
+        let invocations = provider.invocations.clone();
+        let mut agent = Agent::new(provider);
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("x", &mut executor);
+
+        assert_eq!(
+            events.len(),
+            2,
+            "只有 TurnStarted + TurnCancelled: {events:?}"
+        );
+        assert!(matches!(events[0], AgentEvent::TurnStarted { turn_id: 1 }));
+        assert!(matches!(
+            events[1],
+            AgentEvent::TurnCancelled { ref reason } if reason == "cancel"
+        ));
+        assert!(!has_turn_failed(&events));
+        assert!(executor.calls.is_empty());
+        assert_eq!(
+            *invocations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            0,
+            "取消后不应发起模型请求"
+        );
+    }
+
+    /// 模型回复之后、执行工具之前置位取消：本步所有调用发 ToolCall + ToolCancelled，
+    /// 但一个都不执行。
+    #[test]
+    fn cancel_after_reply_pairs_calls_without_executing() {
+        let token = Arc::new(AtomicBool::new(false));
+        let provider = CancelAwareProvider::new(token.clone(), 2).cancel_before_reply();
+        let mut agent = Agent::new(provider);
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("loop", &mut executor);
+
+        assert!(!has_turn_failed(&events), "{events:?}");
+        assert!(has_turn_cancelled(&events), "{events:?}");
+        assert!(executor.calls.is_empty(), "取消后不得执行任何工具");
+        let calls = tool_call_ids(&events);
+        assert_eq!(calls.len(), 2, "{events:?}");
+        assert_eq!(tool_cancelled_ids(&events), calls, "每个 ToolCall 都要配对");
+        assert!(tool_results(&events).is_empty());
+    }
+
+    /// provider 在取消状态下返回 Err：收敛为 TurnCancelled，不是 TurnFailed（P2-10）。
+    #[test]
+    fn cancelled_provider_error_is_not_a_failure() {
+        struct CancelledThenFailingProvider {
+            token: Arc<AtomicBool>,
+        }
+
+        impl ModelProvider for CancelledThenFailingProvider {
+            fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+                self.token.store(true, Ordering::Relaxed);
+                Err("cancelled".to_owned())
+            }
+
+            fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
+                Some(self.token.clone())
+            }
+        }
+
+        let mut agent = Agent::new(CancelledThenFailingProvider {
+            token: Arc::new(AtomicBool::new(false)),
+        });
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("x", &mut executor);
+
+        assert!(!has_turn_failed(&events), "取消不能报失败: {events:?}");
+        assert!(matches!(
+            events.last().unwrap(),
+            AgentEvent::TurnCancelled { .. }
         ));
     }
 

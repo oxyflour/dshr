@@ -680,6 +680,10 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 - [x] **默认配置对齐 DSH 0.2.2-rc.1**：工具调用预算默认不限制（命中上限时降级而非
       `TurnFailed`，`DSHR_MAX_TOOL_CALLS` / `DSHR_MAX_STEPS` 可收紧）、retry 6 次/500ms/
       10s/±10% jitter、temperature 默认不发送、context window 按模型分档。
+- [x] **M2 独立 review 的 P1 修复**：会话日志原子写 + 损坏隔离 + `.bak` 恢复（防数据丢失）、
+      取消语义（Agent `TurnCancelled` / provider token / 审批可取消 / sidecar `tool.cancel`）、
+      工具错误改回 `tool.result(is_error)`（不再伪装成 `tool.aborted`）、Gate 2 frame-probe
+      元数据与环境标注；见 [`m2-status.md`](m2-status.md)「P1 修复轮」。
 
 **Exit gate（可判定）**：
 1. 20 步 Turn 的工具调用成功率 ≥ 99%（故障注入用例除外）。→ 真实网络 20/20（100%）。

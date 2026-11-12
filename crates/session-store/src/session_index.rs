@@ -10,8 +10,9 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::session_tree::{SessionTree, TreeError};
 use crate::{SessionCreated, SessionLog, SpawnSource};
@@ -195,7 +196,8 @@ impl SessionIndex {
     pub fn write_log(&self, log: &SessionLog) -> io::Result<PathBuf> {
         self.ensure_dir()?;
         let path = self.path_for(log.session_id());
-        fs::write(&path, log.to_jsonl())?;
+        // 原子落盘 + 保留 `.bak`：全量重写也必须可回滚（M2 review P1-1）。
+        save_atomic(&path, log.to_jsonl().as_bytes())?;
         Ok(path)
     }
 
@@ -292,6 +294,232 @@ impl SessionIndex {
         }
         candidate
     }
+}
+
+// ---------------------------------------------------------------------------
+// 崩溃安全落盘原语（M2 review P1-1）
+//
+// 背景：`std::fs::write` 全量重写**不是原子操作**，断电/崩溃恰好发生在写入中间
+// 会留下截断文件；而加载端若把损坏日志当成空会话、随后再全量保存，就会用一行新
+// 文件覆盖掉历史（实测 5830B → 222B，见 `docs/review-m2-implementation.md` P1-1）。
+//
+// 这里提供三个原语，供 `chat.rs` 接线：
+// - [`save_atomic`]：临时文件 + `sync_all` + rename，并保留上一版 `.bak`；
+// - [`quarantine_corrupt`]：把损坏日志原字节隔离到 `.corrupt-<unix 秒>`，绝不覆盖；
+// - [`recover_backup`]：仅在目标缺失时用 `.bak` 恢复（覆盖 Windows 替换窗口）。
+//
+// 约束：不引入新依赖、不使用 unsafe（crate 级 `#![forbid(unsafe_code)]`）。
+// ---------------------------------------------------------------------------
+
+/// 备份后缀：`<path>.bak` 保存**上一次**成功落盘的内容。
+const BACKUP_SUFFIX: &str = ".bak";
+
+/// 损坏文件隔离名的前缀：`<path>.corrupt-<unix 秒>`。
+const CORRUPT_SUFFIX_PREFIX: &str = ".corrupt-";
+
+/// 判定"陈旧临时文件"的年龄阈值；比它新的 `.tmp-*` 可能属于并发写入者，不能删。
+const STALE_TEMP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// 原子落盘：同目录临时文件 + `sync_all` + rename 替换，并保留上一版 `.bak`。
+///
+/// 步骤：
+/// 1. 确保父目录存在（首次启动/新建子目录）；
+/// 2. 写同目录临时文件 `.<file>.tmp-<pid>-<nanos>`（同目录保证 rename 不跨卷）；
+/// 3. `sync_all`：数据真正落盘后才替换，避免崩溃后得到"空/半截"的新文件；
+/// 4. 目标已存在时 best-effort 复制为 `<path>.bak`（保留上一版；复制失败不阻止保存，
+///    因为 rename 本身不会把旧文件写坏）；
+/// 5. 用临时文件替换目标；成功后清理陈旧的 `.tmp-*` 残留。任何一步失败都返回
+///    `Err`（不 panic），并清理本次临时文件。
+///
+/// **Windows 替换窗口**：`std::fs::rename` 在 Windows 上底层是
+/// `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)`，正常情况可覆盖已有目标；但它仍可能
+/// 因目标被其它进程占用（杀毒/索引器/编辑器持有句柄）而失败。此时退化为
+/// `remove_file(dest)` + `rename`：两步之间**不是严格原子替换**，若崩溃恰好落在窗口里，
+/// 目标文件会短暂缺失——由 `<path>.bak` 兜底（启动时调用 [`recover_backup`]）。
+/// 之所以不直接调 `ReplaceFileW`/`MoveFileExW`，是因为需要 unsafe FFI 且不允许新增依赖。
+pub fn save_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    let tmp = temp_path_for(path)?;
+    if let Err(err) = write_synced(&tmp, contents) {
+        let _ = remove_if_exists(&tmp);
+        return Err(err);
+    }
+
+    if path.exists() {
+        // 备份是止损手段：失败不阻断保存（`rename` 不会破坏旧文件）。
+        let _ = fs::copy(path, backup_path_for(path));
+    }
+
+    match replace(&tmp, path) {
+        Ok(()) => {
+            cleanup_stale_temps(path);
+            Ok(())
+        }
+        Err(err) => {
+            let _ = remove_if_exists(&tmp);
+            Err(err)
+        }
+    }
+}
+
+/// 隔离损坏日志：把原文件**原字节**改名到同目录 `<path>.corrupt-<unix 秒>`。
+///
+/// - `rename` 不读写内容，损坏文件一个字节都不会变，方便用户事后导出/取证；
+/// - 目标已存在（同一秒内重复隔离）时追加序号，**绝不覆盖**已有隔离文件；
+/// - 返回隔离后的路径，调用方（`chat.rs`）应提示用户该文件位置，而不是静默继续
+///   从空会话开始。
+///
+/// 注意：本函数不校验内容；调用方应在 `SessionLog::from_jsonl` 失败后调用。
+pub fn quarantine_corrupt(path: &Path) -> io::Result<PathBuf> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let mut target = with_suffix(path, &format!("{CORRUPT_SUFFIX_PREFIX}{stamp}"));
+    let mut seq = 0u32;
+    while target.exists() {
+        seq += 1;
+        target = with_suffix(path, &format!("{CORRUPT_SUFFIX_PREFIX}{stamp}-{seq}"));
+    }
+    fs::rename(path, &target)?;
+    Ok(target)
+}
+
+/// 从 `<path>.bak` 恢复：**仅当** `path` 不存在且备份存在时执行，返回是否恢复。
+///
+/// 用于 [`save_atomic`] 的 Windows `remove_file` → `rename` 窗口崩溃之后：启动时先
+/// 调用本函数，`true` 说明发生过"目标缺失"，备份已**原子**恢复为新文件（备份本身
+/// 保留）。目标存在时一律返回 `false`，绝不覆盖当前文件（避免把新内容降级成旧备份）。
+pub fn recover_backup(path: &Path) -> io::Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    let backup = backup_path_for(path);
+    if !backup.exists() {
+        return Ok(false);
+    }
+    let contents = fs::read(&backup)?;
+    // 复用 `save_atomic`：恢复过程本身也要 fsync + rename，避免恢复时再被截断。
+    save_atomic(path, &contents)?;
+    Ok(true)
+}
+
+/// 把 `contents` 写进 `path` 并 `sync_all`。
+fn write_synced(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(contents)?;
+    // 先 fsync 数据与元数据，再让调用方 rename：崩溃后要么是旧版，要么是完整新版。
+    file.sync_all()
+}
+
+/// 用临时文件替换目标（平台相关）。
+///
+/// - Unix：`rename(2)` 对同一文件系统内的已存在目标是**原子覆盖**，直接改名；
+/// - Windows：优先 `rename`（`MoveFileExW` 带替换语义）；失败且目标存在时退化为
+///   先删后改名（非严格原子，窗口由 `.bak` 兜底）。改名仍失败则尽力把 `.bak`
+///   复制回目标，避免留下"目标缺失"状态。
+#[cfg(not(windows))]
+fn replace(tmp: &Path, dest: &Path) -> io::Result<()> {
+    fs::rename(tmp, dest)
+}
+
+#[cfg(windows)]
+fn replace(tmp: &Path, dest: &Path) -> io::Result<()> {
+    match fs::rename(tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(_) if dest.exists() => {
+            fs::remove_file(dest)?;
+            match fs::rename(tmp, dest) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    let backup = backup_path_for(dest);
+                    if backup.exists() {
+                        let _ = fs::copy(&backup, dest);
+                    }
+                    Err(err)
+                }
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// 同目录临时文件名：`.<file>.tmp-<pid>-<纳秒>`。
+fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("路径缺少可用文件名: {}", path.display()),
+        ));
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    Ok(parent.join(format!(".{file_name}.tmp-{pid}-{nanos}")))
+}
+
+/// `<path>.bak`。
+fn backup_path_for(path: &Path) -> PathBuf {
+    with_suffix(path, BACKUP_SUFFIX)
+}
+
+/// 在完整路径后追加后缀（保留扩展名，如 `s-1.jsonl` → `s-1.jsonl.bak`）。
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// 清理同目录遗留的 `.<file>.tmp-*`（只清陈旧的，见 [`STALE_TEMP_MAX_AGE`]）。
+///
+/// 清理是卫生工作，失败一律忽略，不能影响保存结果。
+fn cleanup_stale_temps(path: &Path) {
+    let _ = cleanup_stale_temps_older_than(path, STALE_TEMP_MAX_AGE);
+}
+
+/// [`cleanup_stale_temps`] 的可测试实现：删除年龄不小于 `max_age` 的遗留临时文件，
+/// 返回删除个数。
+fn cleanup_stale_temps_older_than(path: &Path, max_age: Duration) -> io::Result<usize> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(0);
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(0);
+    };
+    let prefix = format!(".{file_name}.tmp-");
+    let mut removed = 0;
+    for entry in fs::read_dir(parent)?.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&prefix) {
+            continue;
+        }
+        // 只清旧文件：刚创建的可能属于并发写入者，删掉会毁掉别人的保存。
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= max_age);
+        if stale && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// 一次扫描从 JSONL 内容里提取的派生信息。
@@ -620,5 +848,279 @@ mod tests {
         assert_eq!(restored.parent_session_id(), Some("s-root"));
         assert_eq!(restored.len(), 2);
         fs::remove_dir_all(index.dir()).ok();
+    }
+
+    // ------------------------------------------------------------------
+    // 崩溃安全落盘（M2 review P1-1）
+    // ------------------------------------------------------------------
+
+    /// 测试用临时目录：路径 = `std::env::temp_dir()/dshr-session-store-<label>-<pid>-<纳秒>`，
+    /// `Drop` 时递归清理（不引入 tempfile 依赖）。
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "dshr-session-store-{label}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("创建测试临时目录");
+            Self { path }
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+
+        fn entries(&self) -> Vec<String> {
+            fs::read_dir(&self.path)
+                .expect("读取测试临时目录")
+                .flatten()
+                .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+                .collect()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.path).ok();
+        }
+    }
+
+    #[test]
+    fn save_atomic_creates_missing_parents_and_writes_bytes() {
+        let dir = TempDir::new("atomic-create");
+        let path = dir.path.join("nested").join("deeper").join("s-1.jsonl");
+
+        save_atomic(&path, b"first").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"first".to_vec());
+        assert!(
+            !backup_path_for(&path).exists(),
+            "首次写入没有旧版本，不应生成 .bak"
+        );
+        assert!(
+            dir.entries().iter().all(|name| !name.contains(".tmp-")),
+            "成功路径不应残留临时文件: {:?}",
+            dir.entries()
+        );
+    }
+
+    #[test]
+    fn save_atomic_overwrite_keeps_previous_version_in_backup() {
+        let dir = TempDir::new("atomic-overwrite");
+        let path = dir.join("s-1.jsonl");
+
+        save_atomic(&path, b"v1").unwrap();
+        save_atomic(&path, b"v2").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"v2".to_vec());
+        assert_eq!(
+            fs::read(backup_path_for(&path)).unwrap(),
+            b"v1".to_vec(),
+            ".bak 必须保留上一版内容"
+        );
+
+        save_atomic(&path, b"v3").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"v3".to_vec());
+        assert_eq!(
+            fs::read(backup_path_for(&path)).unwrap(),
+            b"v2".to_vec(),
+            ".bak 每次保存刷新为紧邻的上一版"
+        );
+        assert!(
+            dir.entries().iter().all(|name| !name.contains(".tmp-")),
+            "成功路径不应残留临时文件: {:?}",
+            dir.entries()
+        );
+    }
+
+    #[test]
+    fn quarantine_corrupt_moves_file_and_preserves_exact_bytes() {
+        let dir = TempDir::new("quarantine");
+        let path = dir.join("s-1.jsonl");
+        // 含非法 UTF-8 / 非法 JSON 的字节序列：隔离必须原字节搬运，不做解码。
+        let corrupt: Vec<u8> = (0u8..=255).rev().take(97).collect();
+        fs::write(&path, &corrupt).unwrap();
+
+        let moved = quarantine_corrupt(&path).unwrap();
+
+        assert!(!path.exists(), "隔离后原路径必须消失，防止后续保存覆盖");
+        assert_eq!(fs::read(&moved).unwrap(), corrupt, "隔离文件必须原字节一致");
+        let name = moved
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("隔离文件名可读");
+        assert!(
+            name.starts_with("s-1.jsonl.corrupt-"),
+            "隔离名应为 <path>.corrupt-<秒>，实际: {name}"
+        );
+
+        // 二次隔离：同一秒内也不能覆盖上一个隔离文件。
+        fs::write(&path, b"second-corrupt").unwrap();
+        let moved_again = quarantine_corrupt(&path).unwrap();
+        assert_ne!(moved, moved_again);
+        assert!(moved.exists() && moved_again.exists());
+        assert_eq!(fs::read(&moved_again).unwrap(), b"second-corrupt".to_vec());
+        assert_eq!(fs::read(&moved).unwrap(), corrupt);
+    }
+
+    #[test]
+    fn recover_backup_only_restores_when_target_is_missing() {
+        let dir = TempDir::new("recover");
+        let path = dir.join("s-1.jsonl");
+        let backup = backup_path_for(&path);
+
+        // 目标与备份都不存在：什么都不做。
+        assert!(!recover_backup(&path).unwrap());
+        assert!(!path.exists());
+
+        // 只有备份（模拟 Windows 替换窗口崩溃）：原子恢复，备份保留供取证。
+        fs::write(&backup, b"backup-content").unwrap();
+        assert!(recover_backup(&path).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), b"backup-content".to_vec());
+        assert!(backup.exists(), ".bak 恢复后应保留，方便用户再次取证");
+
+        // 目标存在：绝不覆盖（哪怕备份内容不同）。
+        fs::write(&path, b"current-content").unwrap();
+        assert!(!recover_backup(&path).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), b"current-content".to_vec());
+
+        // 目标缺失且无备份：返回 false，不报错。
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&backup).unwrap();
+        assert!(!recover_backup(&path).unwrap());
+    }
+
+    #[test]
+    fn save_atomic_returns_err_when_parent_cannot_be_created() {
+        let dir = TempDir::new("atomic-bad-parent");
+        let blocker = dir.join("blocker");
+        fs::write(&blocker, b"i am a regular file").unwrap();
+        // 父路径是普通文件：create_dir_all 必然失败 → 返回 Err 且不 panic。
+        let path = blocker.join("s-1.jsonl");
+
+        let err = save_atomic(&path, b"new").expect_err("父目录不可创建时必须返回 Err");
+
+        assert!(!err.to_string().is_empty());
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read(&blocker).unwrap(),
+            b"i am a regular file".to_vec(),
+            "失败路径不能破坏已有文件"
+        );
+    }
+
+    #[test]
+    fn save_atomic_cleans_temp_when_replace_fails() {
+        let dir = TempDir::new("atomic-replace-fail");
+        let path = dir.join("s-1.jsonl");
+        // 目标位置被同名目录占用：临时文件写入成功，但替换必然失败。
+        fs::create_dir(&path).unwrap();
+
+        let err = save_atomic(&path, b"new").expect_err("目标被目录占用时替换必须失败");
+
+        assert!(!err.to_string().is_empty());
+        assert!(path.is_dir(), "失败时不能破坏原目标");
+        let leftovers: Vec<String> = dir
+            .entries()
+            .into_iter()
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "失败必须清理临时文件，残留: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn cleanup_removes_only_stale_own_temp_files() {
+        let dir = TempDir::new("temp-cleanup");
+        let path = dir.join("s-1.jsonl");
+        fs::write(&path, b"current").unwrap();
+        let ours = dir.join(".s-1.jsonl.tmp-999-1");
+        let foreign = dir.join("s-1.jsonl.tmp-999-1"); // 少一个点：不是本函数的命名
+        let other_session = dir.join(".s-2.jsonl.tmp-999-1");
+        fs::write(&ours, b"leftover").unwrap();
+        fs::write(&foreign, b"not-ours").unwrap();
+        fs::write(&other_session, b"not-ours").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        // 年轻阈值：刚创建的文件可能属于并发写入者，不能删。
+        assert_eq!(
+            cleanup_stale_temps_older_than(&path, Duration::from_secs(3600)).unwrap(),
+            0
+        );
+        assert!(ours.exists());
+
+        // 年龄阈值为 0：只删本会话自己的遗留临时文件。
+        assert_eq!(
+            cleanup_stale_temps_older_than(&path, Duration::ZERO).unwrap(),
+            1
+        );
+        assert!(!ours.exists());
+        assert!(foreign.exists(), "不能删非本命名的文件");
+        assert!(other_session.exists(), "不能删其它会话的临时文件");
+    }
+
+    /// Windows 文件名含 `:` 时 `File::create` 必然失败：验证错误传播 + 不 panic。
+    #[cfg(windows)]
+    #[test]
+    fn save_atomic_reports_invalid_windows_path_without_panicking() {
+        let dir = TempDir::new("atomic-invalid-name");
+        let path = dir.join("bad:name.jsonl");
+        let err = save_atomic(&path, b"x").expect_err("非法 Windows 文件名必须返回 Err");
+        assert!(!err.to_string().is_empty());
+        assert!(
+            dir.entries().iter().all(|name| !name.contains(".tmp-")),
+            "失败时必须清理临时文件: {:?}",
+            dir.entries()
+        );
+    }
+
+    /// P1-1 回归：损坏日志 → 隔离 → 新会话落盘，历史字节必须仍在。
+    ///
+    /// 旧行为（`chat.rs` 直接 `fs::write`）会把截断文件改写成 1 行新日志；这里锁定
+    /// 新流程：隔离文件保留**截断时的原始字节**，可导出取证，新文件是干净新会话。
+    #[test]
+    fn quarantine_then_save_never_destroys_history() {
+        let dir = TempDir::new("p11-regression");
+        let path = dir.join("s-1.jsonl");
+
+        // 1) 正常写入一段历史（对应 review 里 5830B 的有效日志）。
+        save_atomic(&path, root_log("s-1", "原始历史").to_jsonl().as_bytes()).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(original.len() > 100);
+
+        // 2) 模拟崩溃产生的截断文件：回放失败。
+        let truncated = original[..original.len() / 2].to_vec();
+        fs::write(&path, &truncated).unwrap();
+        assert!(SessionLog::from_jsonl("s-1", &fs::read_to_string(&path).unwrap()).is_err());
+
+        // 3) 隔离损坏文件，再用新空会话落盘（接线后的 chat.rs 流程）。
+        let quarantined = quarantine_corrupt(&path).unwrap();
+        assert_eq!(fs::read(&quarantined).unwrap(), truncated);
+        let mut fresh = SessionLog::new("s-1");
+        fresh
+            .append_created("t1", &SessionCreated::root("ws-1"))
+            .unwrap();
+        save_atomic(&path, fresh.to_jsonl().as_bytes()).unwrap();
+
+        // 4) 历史字节可取证；当前文件是干净的新会话。
+        assert_eq!(fs::read(&quarantined).unwrap(), truncated);
+        let reloaded = SessionLog::from_jsonl("s-1", &fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert!(
+            SessionLog::from_jsonl("s-1", &fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .created()
+                .is_some()
+        );
     }
 }

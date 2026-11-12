@@ -1,12 +1,40 @@
 {
-    "frames": 240,
-    "elapsed_ms": 10015,
-    "avg_fps": 24.0,
-    "draw_p95_us": 3178.9,
-    "missed_ratio": 0.0,
-    "rows": 7500,
-    "at": "2026-11-11T21:10:00",
-    "host": "DESKTOP-5J5JM4L",
-    "binary": "target/release/chat.exe",
-    "note": "10k 事件会话（7500 行全部参与虚拟化），240 帧滚动；avg_fps 受远端显示约 24Hz 上限约束，判定看 draw_work p95 与 missed_ratio"
+    "frames":  240,
+    "elapsed_ms":  10171,
+    "avg_fps":  23.6,
+    "draw_p50_us":  4238.9,
+    "draw_p95_us":  8405.7,
+    "missed_refresh":  0,
+    "missed_ratio":  0,
+    "rows":  7500,
+    "refresh_ns":  31250000,
+    "budget_us":  31250,
+    "at":  "2026-11-12T08:27:58+08:00",
+    "host":  "OXYFLOUR-PC11",
+    "sessionName":  "RDP-Tcp#0",
+    "remoteSession":  true,
+    "gpu":  {
+                "name":  "Microsoft Remote Display Adapter",
+                "driverVersion":  "10.0.26100.8972",
+                "resolution":  "2256x1504",
+                "adapters":  [
+                                 {
+                                     "name":  "Parsec Virtual Display Adapter",
+                                     "driverVersion":  "0.45.0.0"
+                                 },
+                                 {
+                                     "name":  "Microsoft Remote Display Adapter",
+                                     "driverVersion":  "10.0.26100.8972"
+                                 },
+                                 {
+                                     "name":  "NVIDIA GeForce RTX 3090 Ti",
+                                     "driverVersion":  "32.0.15.9649"
+                                 }
+                             ]
+            },
+    "binary":  "target/release/chat.exe",
+    "binaryMtime":  "2026-11-12T08:27:43+08:00",
+    "gitCommit":  "f4226dc",
+    "treeDirty":  true,
+    "note":  "自动生成：240 帧滚动、10k 事件会话（7500 行全部虚拟化）、release build；Gate 2 判定口径见 docs/m2-performance.md。当前为远程会话（RDP-Tcp#0），draw 数字不代表本地控制台基线。"
 }

@@ -69,5 +69,6 @@ tools\build-env.cmd cargo test --workspace
 tools\build-env.cmd cargo clippy --workspace --all-targets -- -D warnings
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest
 # + 每个 feature selftest：stream / context / long-context / approval / sandbox /
-#   profile / loader / install / retry / perf / dsh / dsh-write / tree / frame
+#   profile / loader / install / retry / perf / dsh / dsh-write / tree / export
+# 帧探针不是 selftest 开关：powershell -File tools\frame-probe.ps1（内部用 DSHR_FRAME_PROBE）
 ```

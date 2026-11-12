@@ -39,8 +39,8 @@ use dshr_agent_context::{
 };
 use dshr_agent_core::{
     spawn_child_spec, Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider,
-    ModelProvider, SessionTreeRuntime, SpawnChildArgs, SpawnContext, ToolCallRequest, ToolExecutor,
-    ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
+    ModelProvider, ModelReply, SessionTreeRuntime, SpawnChildArgs, SpawnContext, ToolCallRequest,
+    ToolExecutor, ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{HostOptions, SidecarHost};
@@ -54,7 +54,8 @@ use dshr_profile::{install_package, Profile, ProfileSource};
 use dshr_sandbox::Workspace;
 use dshr_session_export::{export_session, verify_export, ExportOptions, SpillStoreSource};
 use dshr_session_store::{
-    EventSpec, SessionCreated, SessionIndex, SessionLog, SessionMeta, ToolState,
+    quarantine_corrupt, recover_backup, save_atomic, EventSpec, SessionCreated, SessionIndex,
+    SessionLog, SessionMeta, ToolState,
 };
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
@@ -213,6 +214,28 @@ fn prepare_data_env() {
     set_env_default("DSHR_PROFILE_DIR", root.join("profile"));
     set_env_default("DSHR_SPILL_DIR", root.join("spill"));
     set_env_default("DSHR_CRASH_LOG", root.join("crash.log"));
+}
+
+/// 自检从只读 CWD（`C:\Windows\System32`、受限打包目录等）启动时，`--selftest*`
+/// 使用的 `.tmp/...` 相对路径会失败。自检不依赖用户 CWD，统一切到数据根（可写、与
+/// 用户数据同源）；GUI 与 `--install-plugin`/`--export-session` 等命令不切。
+fn prepare_selftest_cwd(args: &[String]) {
+    if !args.iter().skip(1).any(|arg| arg.starts_with("--selftest")) {
+        return;
+    }
+    // 自检里的工具工作区必须仍是“用户当前目录/仓库根”（dsh 自检会 read README.md），
+    // 只把 `.tmp/...` 这类相对路径切到数据根；两者不能一起切。
+    if std::env::var_os("DSHR_WORKSPACE").is_none() {
+        let workspace = std::env::current_dir()
+            .ok()
+            .filter(|dir| is_writable_dir(dir))
+            .unwrap_or_else(app_root);
+        std::env::set_var("DSHR_WORKSPACE", workspace);
+    }
+    let root = data_root();
+    if std::fs::create_dir_all(&root).is_ok() {
+        let _ = std::env::set_current_dir(&root);
+    }
 }
 
 /// 判断本次是命令行用法（自检/导出/安装/显式 --console）还是纯 GUI 双击。
@@ -396,6 +419,28 @@ fn spill_dir_for(session_path: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".tmp/spill"))
 }
 
+/// 自检重置会话夹具：主文件 + `.bak` + `.corrupt-*` 全部清掉。
+///
+/// 只删主文件的话，`recover_backup()` 会在下一次自检启动时把上次的备份恢复回来，
+/// 造成“新会话里混入旧事件”的测试污染（P1-1 恢复机制的副作用）。
+fn reset_session_file(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(format!("{}.bak", path.display()));
+    if let (Some(parent), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) {
+        let prefix = format!("{name}.corrupt-");
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
 /// 侧栏的相对时间（不引入日期库）。
 fn relative_time(updated_at: u64) -> String {
     let now = SystemTime::now()
@@ -489,8 +534,10 @@ struct ChatState {
     cancel: Arc<AtomicBool>,
     /// 是否允许派生子会话（子会话本身为 false，保证默认单层）。
     allow_spawn: bool,
-    /// sidecar 启动/插件装载阶段上报的错误（插件错误提示用）。
+    /// sidecar 启动/插件装载/会话加载阶段上报的错误（启动错误提示用）。
     plugin_errors: Vec<String>,
+    /// 原会话文件存在但读不出来时置位：禁止 save 覆盖（否则会把读失败当成空会话写回）。
+    save_blocked: Option<String>,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
@@ -715,6 +762,43 @@ fn spawn_sidecar(approvals: Option<Arc<ApprovalBroker>>) -> Option<SidecarHost> 
         .ok()
 }
 
+/// 给没有取消概念的 provider（mock）补上取消 token。
+///
+/// 无 key/自检场景仍要验证“停止”：Agent 通过 `provider.cancel_token()` 检查取消，
+/// MockProvider 自己不带 token，所以在这里包一层（真实 provider 使用各自的 token）。
+struct CancelAwareProvider<P> {
+    inner: P,
+    cancel: Arc<AtomicBool>,
+}
+
+impl<P: ModelProvider> ModelProvider for CancelAwareProvider<P> {
+    fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+        self.inner.complete(request)
+    }
+
+    fn cancel_token(&self) -> Option<Arc<AtomicBool>> {
+        Some(self.cancel.clone())
+    }
+
+    fn complete_streaming(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelReply, String> {
+        self.inner.complete_streaming(request, on_delta)
+    }
+}
+
+fn cancel_aware(
+    provider: impl ModelProvider + 'static,
+    cancel: &Arc<AtomicBool>,
+) -> Box<dyn ModelProvider> {
+    Box::new(CancelAwareProvider {
+        inner: provider,
+        cancel: cancel.clone(),
+    })
+}
+
 /// provider 选择：`DSHR_PROVIDER` 显式指定（mock/deepseek/openai），否则按 key 自动。
 ///
 /// 真实 provider 统一包一层 `RetryingProvider`（429/5xx/连接中断指数退避）；
@@ -723,7 +807,7 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
     // 自检必须确定性：显式要求 mock 时不看环境里的 key。
     if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
         println!("[chat] provider=mock（DSHR_FORCE_MOCK=1）");
-        return Box::new(MockProvider);
+        return cancel_aware(MockProvider, cancel);
     }
     let requested = std::env::var("DSHR_PROVIDER").unwrap_or_default();
     let with_retries = |provider: Box<dyn ModelProvider>, name: &str, model: &str| {
@@ -737,7 +821,7 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
     match requested.as_str() {
         "mock" => {
             println!("[chat] provider=mock（DSHR_PROVIDER=mock）");
-            return Box::new(MockProvider);
+            return cancel_aware(MockProvider, cancel);
         }
         "openai" => {
             if let Some(provider) = OpenAiProvider::from_env() {
@@ -749,7 +833,7 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
                 );
             }
             println!("[chat] provider=mock（DSHR_PROVIDER=openai 但缺少 OPENAI_API_KEY）");
-            return Box::new(MockProvider);
+            return cancel_aware(MockProvider, cancel);
         }
         "deepseek" => {
             if let Some(provider) = DeepSeekProvider::from_env() {
@@ -761,7 +845,7 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
                 );
             }
             println!("[chat] provider=mock（DSHR_PROVIDER=deepseek 但缺少 DEEPSEEK_API_KEY）");
-            return Box::new(MockProvider);
+            return cancel_aware(MockProvider, cancel);
         }
         _ => {}
     }
@@ -783,7 +867,7 @@ fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
         );
     }
     println!("[chat] provider=mock（未找到 DEEPSEEK_API_KEY / OPENAI_API_KEY）");
-    Box::new(MockProvider)
+    cancel_aware(MockProvider, cancel)
 }
 
 /// sidecar 工具调用超时：按工具声明（`ToolDefinition.timeout_ms`，对齐 DSH 的 `timeoutMs`）
@@ -858,11 +942,13 @@ impl ToolExecutor for ChatExecutor<'_> {
             Ok(definition) => definition.clone(),
             Err(RegistryError::NeedsApproval { tool }) => {
                 // 策略说"要确认"：阻塞等工作线程外的 UI 决定（或超时按拒绝）。
-                let outcome = self.approvals.request(
+                // 停止生成必须能打断审批等待：request_cancellable 每 100ms 检查一次取消标志。
+                let outcome = self.approvals.request_cancellable(
                     &call.call_id,
                     &tool,
                     &call.arguments,
                     Duration::from_secs(300),
+                    self.cancel.as_ref(),
                 );
                 match outcome {
                     ApprovalOutcome::AllowOnce => {
@@ -894,8 +980,15 @@ impl ToolExecutor for ChatExecutor<'_> {
                 };
                 // 超时用工具声明的 `timeout_ms`（对齐 DSH 的 per-tool timeoutMs），
                 // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
+                // 可取消版本在用户停止时发 tool.cancel 给 sidecar（慢工具不再等待完整超时）。
                 let timeout = sidecar_tool_timeout(&definition);
-                match host.invoke_as(&call.call_id, &call.tool, call.arguments.clone(), timeout) {
+                match host.invoke_as_cancellable(
+                    &call.call_id,
+                    &call.tool,
+                    call.arguments.clone(),
+                    timeout,
+                    Some(self.cancel.as_ref()),
+                ) {
                     Ok(outcome) if outcome.terminal.kind == "tool.result" => {
                         let payload = &outcome.terminal.payload;
                         let content = payload["content"].clone();
@@ -1063,12 +1156,53 @@ impl ChatState {
         allow_spawn: bool,
         with_sidecar: bool,
     ) -> Self {
+        let mut boot_errors: Vec<String> = Vec::new();
+        // 上次保存若在 Windows remove→rename 窗口崩溃，主文件会缺失而 .bak 完整：
+        // 先尝试恢复，避免把可恢复的历史当成“新会话”重写。
+        if !path.exists() {
+            match recover_backup(&path) {
+                Ok(true) => eprintln!("[chat] 已从备份恢复会话日志 {}", path.display()),
+                Ok(false) => {}
+                Err(err) => boot_errors.push(format!("会话备份恢复失败：{err}")),
+            }
+        }
+        let mut save_blocked: Option<String> = None;
         let mut log = if path.exists() {
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            SessionLog::from_jsonl(session_id, &text).unwrap_or_else(|err| {
-                eprintln!("[chat] 无法加载历史会话（忽略并从空会话开始）: {err}");
-                SessionLog::new(session_id)
-            })
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match SessionLog::from_jsonl(session_id, &text) {
+                    Ok(log) => log,
+                    // 损坏：隔离原文件（字节保留供导出排查），绝不覆盖。
+                    Err(err) => {
+                        match quarantine_corrupt(&path) {
+                            Ok(quarantined) => {
+                                let message = format!(
+                                    "会话日志损坏，已隔离为 {}（原文件保留，可导出排查）: {err}",
+                                    quarantined.display()
+                                );
+                                eprintln!("[chat] {message}");
+                                boot_errors.push(message);
+                            }
+                            Err(quarantine_err) => {
+                                let message = format!(
+                                    "会话日志损坏且隔离失败（为避免覆盖，已停止写入）: {err}; {quarantine_err}"
+                                );
+                                eprintln!("[chat] {message}");
+                                boot_errors.push(message);
+                                save_blocked = Some(String::from("会话日志损坏且无法隔离"));
+                            }
+                        }
+                        SessionLog::new(session_id)
+                    }
+                },
+                Err(err) => {
+                    // 文件存在但读失败（锁定/权限）：绝不能当空会话重写。
+                    let message = format!("读取会话日志失败（为避免覆盖，已停止写入）: {err}");
+                    eprintln!("[chat] {message}");
+                    boot_errors.push(message);
+                    save_blocked = Some(format!("读取会话日志失败: {err}"));
+                    SessionLog::new(session_id)
+                }
+            }
         } else {
             SessionLog::new(session_id)
         };
@@ -1102,10 +1236,11 @@ impl ChatState {
         if let Some(sidecar) = &host {
             register_sidecar_tools(&mut plugins, sidecar);
         }
-        let plugin_errors = host
+        let mut plugin_errors = host
             .as_ref()
             .map(|sidecar| sidecar.boot_errors().to_vec())
             .unwrap_or_default();
+        plugin_errors.extend(boot_errors);
 
         let state = Self {
             log,
@@ -1124,6 +1259,7 @@ impl ChatState {
             cancel: cancel.clone(),
             allow_spawn,
             plugin_errors,
+            save_blocked,
         };
         // 新建的会话立刻落盘：索引/侧栏/树查询都从磁盘扫描，不能等第一轮才可见。
         if wrote_created {
@@ -1184,10 +1320,16 @@ impl ChatState {
     }
 
     fn save(&self) {
+        if let Some(reason) = &self.save_blocked {
+            eprintln!("[chat] 跳过保存（{reason}）: {}", self.path.display());
+            return;
+        }
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(err) = std::fs::write(&self.path, self.log.to_jsonl()) {
+        // 临时文件 + 替换 + 上一版 .bak：崩溃/断电不会留下半截文件；
+        // Windows 上 remove→rename 的极短窗口由 recover_backup 兜底。
+        if let Err(err) = save_atomic(&self.path, self.log.to_jsonl().as_bytes()) {
             eprintln!("[chat] 保存会话失败: {err}");
         }
     }
@@ -1306,6 +1448,8 @@ impl ChatState {
             .collect();
 
         let mut reply = String::new();
+        // 非失败结束原因（用户取消）：决定 TurnEnded 后写 session.interrupted 而不是“处理失败”。
+        let mut cancelled: Option<String> = None;
         // 父日志临时放进 Rc<RefCell>：流式回调（tool.* 事件）与 spawn_child 执行器
         // （child.spawned/finished）都要写同一份父日志，单借用无法同时满足。
         let log_cell = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
@@ -1359,13 +1503,15 @@ impl ChatState {
                     AgentEvent::ToolResult { call_id, outcome } => {
                         {
                             let mut log = log_for_events.borrow_mut();
-                            if outcome.is_error {
+                            // P1-3：普通工具失败（拒绝/报错/预算耗尽）必须写 tool.result(is_error)，
+                            // 只有“真正被取消”的调用才写 tool.aborted（reason 用 spec 枚举）。
+                            if outcome.is_error && self.cancel.load(Ordering::Relaxed) {
                                 let _ = log.append(EventSpec::durable(
                                     "tool.aborted",
                                     &ts,
                                     json!({
                                         "call_id": call_id,
-                                        "reason": outcome.content.to_string()
+                                        "reason": "cancel"
                                     }),
                                 ));
                             } else {
@@ -1374,7 +1520,7 @@ impl ChatState {
                                     &ts,
                                     json!({
                                         "call_id": call_id,
-                                        "is_error": false,
+                                        "is_error": outcome.is_error,
                                         // 对齐 DSH：content 给模型，value/meta 给展示与回放。
                                         "content": outcome.content,
                                         "value": outcome.value,
@@ -1383,6 +1529,21 @@ impl ChatState {
                                 ));
                             }
                         }
+                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                    }
+                    AgentEvent::ToolCancelled { call_id, reason } => {
+                        {
+                            let mut log = log_for_events.borrow_mut();
+                            let _ = log.append(EventSpec::durable(
+                                "tool.aborted",
+                                &ts,
+                                json!({ "call_id": call_id, "reason": reason }),
+                            ));
+                        }
+                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                    }
+                    AgentEvent::TurnCancelled { reason } => {
+                        cancelled = Some(reason.clone());
                         emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::TurnFailed(err) => {
@@ -1400,11 +1561,16 @@ impl ChatState {
             .map(|cell| cell.into_inner())
             .unwrap_or_else(|cell| cell.borrow().clone());
         // 用户中断留痕（回放/审计可见；子会话的中断由 TreeCoordinator 传播）。
-        if self.cancel.load(Ordering::Relaxed) {
+        // 取消可能由 Agent 的 TurnCancelled 上报，也可能发生在工具返回后，两个来源都覆盖。
+        let cancelled_by_flag = self.cancel.load(Ordering::Relaxed);
+        if cancelled.is_some() || cancelled_by_flag {
+            let reason = cancelled
+                .clone()
+                .unwrap_or_else(|| String::from("user_stop"));
             let _ = self.log.append(EventSpec::durable(
                 "session.interrupted",
                 now_ts(),
-                json!({ "reason": "user_stop", "by_parent": false }),
+                json!({ "reason": reason, "by_parent": false }),
             ));
         }
 
@@ -1434,11 +1600,15 @@ impl ChatState {
 
         self.seq += 1;
         let ts = now_ts();
-        let _ = self.log.append(EventSpec::durable(
-            "message.assistant.settled",
-            &ts,
-            json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
-        ));
+        // 取消且没有任何产出时不写空的 assistant 消息（避免 UI 出现空白气泡）。
+        let cancelled_turn = cancelled_by_flag || cancelled.is_some();
+        if !(cancelled_turn && reply.trim().is_empty()) {
+            let _ = self.log.append(EventSpec::durable(
+                "message.assistant.settled",
+                &ts,
+                json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
+            ));
+        }
         self.save();
         emit(rows_snapshot(&self.log, None));
         Some(reply)
@@ -1734,6 +1904,9 @@ impl ChatApp {
             return;
         }
         self.cancel.store(true, Ordering::Relaxed);
+        // 审批等待中的调用立即结束（否则 UI 的审批条会一直挂到 300s 超时）。
+        self.approvals.cancel_pending();
+        self.pending_approvals = 0;
         cx.notify();
     }
 
@@ -2070,7 +2243,7 @@ impl ChatApp {
                             .text_size(t.type_scale.small)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(p.color(p.state_error))
-                            .child("插件加载失败"),
+                            .child("启动/插件错误"),
                     )
                     .child(
                         div()
@@ -3341,6 +3514,47 @@ fn describe(item: &Item) -> Row {
     }
 }
 
+impl ChatApp {
+    /// 启动/加载错误横幅：GUI 双击没有控制台，eprintln 用户看不到，必须画在界面上。
+    /// 覆盖 sidecar 装载错误、会话日志损坏/隔离、备份恢复失败等。
+    fn error_banner(&self, theme: &Theme) -> AnyElement {
+        let t = theme;
+        let p = theme.palette;
+        let message = self
+            .plugin_errors
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .border_b_1()
+            .border_color(p.color(p.state_error))
+            .bg(p.color(p.bg_layer_1))
+            .child(
+                div()
+                    .text_size(t.type_scale.small)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.color(p.state_error))
+                    .child("启动/加载错误"),
+            )
+            .child(
+                div()
+                    .text_size(t.type_scale.small)
+                    .line_height(t.type_scale.small_line)
+                    .text_color(p.color(p.label_tertiary))
+                    .child(message),
+            )
+            .into_any_element()
+    }
+}
+
 /// 从当前日志生成整份快照；`streaming` 非空时把"正在生成的回复"追加为最后一行。
 ///
 /// 快照而不是增量：UI 只做覆盖，不用维护事件合并逻辑，也不会因为丢一条消息就错位。
@@ -3432,6 +3646,10 @@ impl Render for ChatApp {
                 .border_color(p.color(p.border_l3))
                 .bg(p.color(p.bg_base))
                 .child(self.header(&theme, collapsed, cx))
+                // 启动/加载错误在 GUI 主界面可见（双击启动没有控制台可看 stderr）。
+                .when(!self.plugin_errors.is_empty(), |el| {
+                    el.child(self.error_banner(&theme))
+                })
                 .child(self.transcript(&theme, window, cx))
                 .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
                 .child(self.composer(&theme, cx)),
@@ -3444,7 +3662,7 @@ fn selftest() -> i32 {
     // 不用系统 TEMP：本机 TEMP 对部分子进程不可写（见 docs/m0-runbook.md）。
     let path = PathBuf::from(".tmp/chat-selftest.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -3523,7 +3741,7 @@ fn selftest() -> i32 {
 fn selftest_cordis() -> i32 {
     let path = PathBuf::from(".tmp/chat-cordis.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -3581,7 +3799,7 @@ fn selftest_dsh() -> i32 {
 
     let path = PathBuf::from(".tmp/chat-dsh.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     // 本自检只验证"只读官方插件 + 回放"；写工具由 --selftest-dsh-write 覆盖。
     std::env::set_var("DSHR_FS_WRITE", "0");
     let cancel = Arc::new(AtomicBool::new(false));
@@ -3666,7 +3884,7 @@ fn selftest_dsh() -> i32 {
 fn live_turn(text: &str) -> i32 {
     let path = PathBuf::from(".tmp/chat-live.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -3697,7 +3915,7 @@ fn live_turn(text: &str) -> i32 {
 fn selftest_stream() -> i32 {
     let path = PathBuf::from(".tmp/chat-stream.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -3750,7 +3968,7 @@ fn selftest_stream() -> i32 {
 fn selftest_context() -> i32 {
     let path = PathBuf::from(".tmp/chat-context.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
@@ -3878,7 +4096,7 @@ fn selftest_context() -> i32 {
 fn selftest_long_context() -> i32 {
     let path = PathBuf::from(".tmp/chat-long-context.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
@@ -4024,7 +4242,7 @@ fn selftest_long_context() -> i32 {
 fn selftest_spill() -> i32 {
     let path = PathBuf::from(".tmp/chat-spill.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let spill_dir = PathBuf::from(".tmp/chat-spill-objects");
     let _ = std::fs::remove_dir_all(&spill_dir);
     std::env::set_var("DSHR_SPILL_DIR", &spill_dir);
@@ -4153,7 +4371,7 @@ fn selftest_dsh_write() -> i32 {
     std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
 
     let path = PathBuf::from(".tmp/chat-dsh-write.jsonl");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -4237,7 +4455,7 @@ fn selftest_approval() -> i32 {
     std::env::set_var("DSHR_TOOL_POLICY", "ask-all");
 
     let denied_path = PathBuf::from(".tmp/chat-approval-deny.jsonl");
-    let _ = std::fs::remove_file(&denied_path);
+    reset_session_file(&denied_path);
     std::env::set_var("DSHR_APPROVAL_MODE", "deny");
     let cancel = Arc::new(AtomicBool::new(false));
     let mut denied_state = ChatState::new(denied_path, SESSION_ID, &cancel, ApprovalBroker::new());
@@ -4251,11 +4469,17 @@ fn selftest_approval() -> i32 {
             .filter(|event| event.event_type == kind)
             .count()
     };
-    let denied_tool = denied_state
-        .log
-        .events()
-        .iter()
-        .any(|event| event.event_type == "tool.aborted");
+    // P1-3：审批 Deny 属于“工具执行失败”，必须写 tool.result(is_error=true)，
+    // 而不是 tool.aborted（aborted 留给真正的取消/崩溃语义）。
+    let denied_tool_result = denied_state.log.events().iter().any(|event| {
+        event.event_type == "tool.result"
+            && event
+                .payload
+                .get("is_error")
+                .and_then(|value| value.as_bool())
+                == Some(true)
+    });
+    let denied_tool_aborted = event_count(&denied_state, "tool.aborted") > 0;
     let asked = event_count(&denied_state, "approval.asked");
     let answered = event_count(&denied_state, "approval.answered");
     let deny_outcome = denied_state.log.events().iter().any(|event| {
@@ -4264,16 +4488,19 @@ fn selftest_approval() -> i32 {
     });
 
     let allowed_path = PathBuf::from(".tmp/chat-approval-allow.jsonl");
-    let _ = std::fs::remove_file(&allowed_path);
+    reset_session_file(&allowed_path);
     std::env::set_var("DSHR_APPROVAL_MODE", "allow");
     let mut allowed_state =
         ChatState::new(allowed_path, SESSION_ID, &cancel, ApprovalBroker::new());
     let allowed_reply = allowed_state.stream_turn("用工具试一下", &mut |_| {});
-    let allowed_tool = allowed_state
-        .log
-        .events()
-        .iter()
-        .any(|event| event.event_type == "tool.result");
+    let allowed_tool = allowed_state.log.events().iter().any(|event| {
+        event.event_type == "tool.result"
+            && event
+                .payload
+                .get("is_error")
+                .and_then(|value| value.as_bool())
+                == Some(false)
+    });
     let allow_outcome = allowed_state.log.events().iter().any(|event| {
         event.event_type == "approval.answered"
             && event.payload.get("outcome").and_then(|v| v.as_str()) == Some("allow_once")
@@ -4283,12 +4510,14 @@ fn selftest_approval() -> i32 {
     std::env::remove_var("DSHR_TOOL_POLICY");
 
     println!(
-        "[approval] asked={asked} answered={answered} denied_tool={denied_tool} \
-         deny_outcome={deny_outcome} allowed_tool={allowed_tool} allow_outcome={allow_outcome}"
+        "[approval] asked={asked} answered={answered} denied_tool_result={denied_tool_result} \
+         denied_tool_aborted={denied_tool_aborted} deny_outcome={deny_outcome} \
+         allowed_tool={allowed_tool} allow_outcome={allow_outcome}"
     );
     let ok = denied_reply.is_some()
         && allowed_reply.is_some()
-        && denied_tool
+        && denied_tool_result
+        && !denied_tool_aborted
         && asked == 1
         && answered == 1
         && deny_outcome
@@ -4303,6 +4532,131 @@ fn selftest_approval() -> i32 {
     }
 }
 
+/// 损坏会话日志自检：加载失败必须**隔离原文件**并新建空会话，绝不能把原文件覆盖成
+/// 1 行 `session.created`（review P1-1）。
+fn selftest_corrupt_session() -> i32 {
+    let root = PathBuf::from(".tmp/chat-corrupt-selftest");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+
+    // 先造一份合法日志，再追加半截记录模拟中断写入。
+    let valid = {
+        let mut log = SessionLog::new("s-corrupt");
+        let _ = log.append_created(now_ts(), &SessionCreated::root(String::from(".")));
+        log.to_jsonl()
+    };
+    let corrupt_bytes = format!("{valid}{{\"session_id\":\"s-corrupt\",\"seq\":2");
+    let path = root.join("s-corrupt.jsonl");
+    std::fs::write(&path, &corrupt_bytes).expect("write corrupt fixture");
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let state = ChatState::open(
+        path.clone(),
+        "s-corrupt",
+        &cancel,
+        ApprovalBroker::new(),
+        false,
+        false,
+    );
+
+    // 原文件被隔离，字节完整保留。
+    let quarantined: Vec<PathBuf> = std::fs::read_dir(&root)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|candidate| {
+                    candidate
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| name.contains(".corrupt-"))
+                        .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let quarantined_bytes = quarantined
+        .first()
+        .and_then(|candidate| std::fs::read_to_string(candidate).ok())
+        .unwrap_or_default();
+
+    // 新会话文件存在且只含一条 session.created（未被损坏内容污染）。
+    let fresh_text = std::fs::read_to_string(&path).unwrap_or_default();
+    let fresh_ok = SessionLog::from_jsonl("s-corrupt", &fresh_text)
+        .map(|log| log.events().len() == 1 && log.events()[0].event_type == "session.created")
+        .unwrap_or(false);
+
+    let reported = state
+        .plugin_errors
+        .iter()
+        .any(|message| message.contains("会话日志损坏") && message.contains("隔离"));
+    let preserved = quarantined_bytes == corrupt_bytes;
+
+    println!(
+        "[corrupt-session] quarantined={} preserved={preserved} fresh_ok={fresh_ok} reported={reported}",
+        quarantined.len()
+    );
+    let ok = quarantined.len() == 1 && preserved && fresh_ok && reported;
+    if ok {
+        println!("[selftest-corrupt-session] PASS");
+        0
+    } else {
+        println!("[selftest-corrupt-session] FAIL");
+        1
+    }
+}
+
+/// 取消语义自检（P1-2）：turn 开始前置位 cancel → 必须走 TurnCancelled + session.interrupted，
+/// 不出现“处理失败”，也不写空的 assistant 消息。
+fn selftest_cancel() -> i32 {
+    let _ = std::fs::create_dir_all(".tmp");
+    std::env::set_var("DSHR_FORCE_MOCK", "1");
+    let path = PathBuf::from(".tmp/chat-cancel.jsonl");
+    reset_session_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::open(
+        path,
+        SESSION_ID,
+        &cancel,
+        ApprovalBroker::new(),
+        false,
+        false,
+    );
+    cancel.store(true, Ordering::Relaxed);
+    let reply = state.stream_turn("你好", &mut |_| {});
+    let interrupted = state
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "session.interrupted");
+    let failed = reply
+        .as_deref()
+        .map(|text| text.contains("处理失败"))
+        .unwrap_or(false);
+    let settled = state
+        .log
+        .events()
+        .iter()
+        .any(|event| event.event_type == "message.assistant.settled");
+    let tool_events = state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type.starts_with("tool."))
+        .count();
+    println!(
+        "[cancel] interrupted={interrupted} failed={failed} settled={settled} tool_events={tool_events}"
+    );
+    let ok = interrupted && !failed && !settled && tool_events == 0 && reply.as_deref() == Some("");
+    if ok {
+        println!("[selftest-cancel] PASS");
+        0
+    } else {
+        println!("[selftest-cancel] FAIL");
+        1
+    }
+}
+
 /// 沙箱 seam 自检：原型写工具走"策略 Ask → 自动批准 → 沙箱写入/快照/路径拒绝"。
 fn selftest_sandbox() -> i32 {
     let root =
@@ -4312,7 +4666,7 @@ fn selftest_sandbox() -> i32 {
     std::env::set_var("DSHR_APPROVAL_MODE", "allow");
     let path = PathBuf::from(".tmp/chat-sandbox.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -5339,7 +5693,7 @@ fn selftest_perf() -> i32 {
 fn live_chat(script: &[String]) -> i32 {
     let path = PathBuf::from(".tmp/chat-live-chat.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
@@ -5391,7 +5745,7 @@ fn selftest_live_20() -> i32 {
     }
     let path = PathBuf::from(".tmp/chat-live-20.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
-    let _ = std::fs::remove_file(&path);
+    reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
     // 这一步只统计"网络 + 模型 + 工具执行"链路；审批链由 --selftest-approval 覆盖。
     std::env::set_var("DSHR_APPROVAL_MODE", "allow");
@@ -5493,6 +5847,8 @@ fn main() {
     // 2. 数据根必须在崩溃 hook 之前解析：hook 通过 DSHR_CRASH_LOG 写日志。
     prepare_data_env();
     install_crash_hook();
+    // 3. 自检的 `.tmp` 相对路径与用户 CWD 解耦（只读 CWD 下也能跑）。
+    prepare_selftest_cwd(&args);
     if let Some(index) = args.iter().position(|arg| arg == "--live-chat") {
         let script: Vec<String> = args.iter().skip(index + 1).cloned().collect();
         if script.is_empty() {
@@ -5531,6 +5887,13 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-approval") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_approval());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-corrupt-session") {
+        std::process::exit(selftest_corrupt_session());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-cancel") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_cancel());
     }
     if std::env::args().any(|arg| arg == "--selftest-sandbox") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
@@ -5820,6 +6183,9 @@ mod tests {
             "--selftest-stream",
             "--selftest-dsh",
             "--selftest-dsh-write",
+            "--selftest-approval",
+            "--selftest-corrupt-session",
+            "--selftest-cancel",
             "--live",
             "--live-chat",
             "--export-session",
