@@ -194,6 +194,7 @@ mod imp {
     use std::io;
     use std::mem::{size_of, zeroed};
     use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
@@ -203,6 +204,7 @@ mod imp {
         JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_JOB_TIME,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     use super::{cpu_limit_ticks, GuardLimits, GuardedChild};
     use crate::GuardError;
@@ -228,6 +230,10 @@ mod imp {
     ) -> Result<GuardedChild, GuardError> {
         let job = create_job()?;
         configure(&job, limits)?;
+        // 关键：release 是 GUI 子系统（没有控制台）。给 console 子系统的 node.exe 设
+        // CREATE_NO_WINDOW，否则 Windows 会给每个 sidecar 新开一个黑色命令行窗口
+        // （用户可见“每新建会话弹一个 node 窗口”，issue P1-5）。
+        command.creation_flags(CREATE_NO_WINDOW);
         let child = command.spawn()?;
         let process_handle = child.as_raw_handle() as HANDLE;
         let assigned = unsafe { AssignProcessToJobObject(job.0, process_handle) };

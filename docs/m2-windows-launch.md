@@ -100,6 +100,27 @@ Get-Content .tmp\launch-err.txt
 未签名 dev 构建被 SmartScreen/Defender 拦截时的说明与 `Unblock-File` 建议、CLI 自检入口），
 `MANIFEST.txt` 注明 release `chat.exe` 是 GUI 子系统、无控制台；debug 打包会额外提示会弹窗。
 
+### F. sidecar 子进程不弹控制台（2026-11-12 复报）
+
+release 是 GUI 子系统（没有控制台），而随包 `node.exe` 是 **console 子系统**。Windows 在
+"无控制台的父进程 spawn console 子程序且没有 `CREATE_NO_WINDOW`"时会新分配一个控制台窗口——
+表现就是**每新建/切换一个会话（会 spawn 一个 sidecar）弹出一个 node 命令行窗口**。
+
+修复：`crates/sidecar-guard` 的 Windows guarded spawn（`spawn_guarded_with` 唯一的 `Command::spawn`
+入口）加 `command.creation_flags(CREATE_NO_WINDOW)`；`crates/compat-dsh-host` 的非 guard 兜底
+spawn 路径同样处理。Job Object、环境清洗、stdio 协议都不受影响。
+
+验证（release）：
+
+```powershell
+# 启动 release，枚举其 node 子进程的顶层窗口：修复前有 ConsoleWindowClass，修复后为 0
+Start-Process .\target\release\chat.exe -WorkingDirectory <目录> `
+  -RedirectStandardOutput .tmp\out.txt -RedirectStandardError .tmp\err.txt
+# node 子进程应存活（sidecar 正常），但窗口列表为空；关掉 chat 后 node 被 Job 清理
+```
+
+`--selftest` / `--selftest-dsh` 在 release 下仍 PASS（sidecar 协议、工具注册与写盘不受影响）。
+
 ## 4. 复现与验证
 
 ```powershell

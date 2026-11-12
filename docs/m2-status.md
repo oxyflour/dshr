@@ -197,6 +197,7 @@ dist/dshr-dev.zip                            -> 42.3 MiB；chat.exe Subsystem=2�
 | P1-4 Gate 2 滚动帧证据不可复现 | `tools/frame-probe.ps1` 记录 host/session/gpu/binary/commit/refresh_ns 元数据；判定 = `missed_refresh=0` + `draw p95 ≤ refresh budget`（report `refresh_ns/1000`，缺失回退 31250us）；跨 host 只告警、不做相对回归（`-CompareAcrossHosts` 可显式对照）；`-UpdateBaseline` 只在硬性条件通过后写入 | 当前 RDP 会话（`RDP-Tcp#0`）13 次 240 帧复测：missed_refresh=0/13、draw p95 2.52–9.14ms（budget 31.25ms）、同机相对判定 PASS；旧基线按 `-CompareAcrossHosts` 对照 PASS；热路径 `4fe0d2a..HEAD` 逐行 0 差异，详见 [`m2-performance.md`](m2-performance.md) |
 | P2-2 自检在只读 CWD 下用相对 `.tmp` 失败 | `--selftest*` 把 `.tmp` 相对路径切到数据根（`DSHR_WORKSPACE` 仍保留原 CWD/仓库根），打包 exe 从 System32 也能自检 | 从 `C:\Windows\System32` 跑 `dist` 包 `--selftest`（修复前后对照） |
 | P2-6/P2-8 审批 pending 泄漏、错误不可见 | `resolve` 只接受 pending 中的 call_id、`cancel_pending` 清理；GUI 主界面顶部渲染启动/加载错误横幅 | 审批单测 + corrupt-session 自检（`reported=true`） |
+| **release 每个新会话弹 node 控制台窗口**（2026-11-12 用户复报） | release 是 GUI 子系统，而 `node.exe` 是 console 子系统：`sidecar-guard` 的 guarded spawn 未带 `CREATE_NO_WINDOW`，Windows 会给每个 sidecar 新开控制台窗口。已在 Windows guarded spawn（及 `compat-dsh-host` 非 guard 兜底路径）加 `CREATE_NO_WINDOW` | release 启动后 node 子进程顶层窗口数 = 0（修复前可见 `ConsoleWindowClass`，title=`node.exe`）；sidecar 存活、`--selftest`/`--selftest-dsh` 在 release 下均 PASS；chat 退出后 node 被 Job 清理 |
 
 **仍属 M3/后续**：P2-1（append + 周期 compact，当前仍是全量原子重写）、P2-5/P2-7/P2-9/P2-10/P2-11
 （子会话结局判定、Job Object 竞态窗口、超长单条消息、OpenAI 取消语义统一、按能力而非工具名

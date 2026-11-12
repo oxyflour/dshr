@@ -138,6 +138,19 @@ pub struct InvokeOutcome {
     pub elapsed: Duration,
 }
 
+/// Windows：GUI 子系统父进程 spawn console 子程序（node）时默认会新开一个控制台窗口；
+/// 设置 `CREATE_NO_WINDOW` 让 sidecar 静默运行（release 双击时不再每个会话弹黑框）。
+#[cfg(windows)]
+fn hide_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    /// `CREATE_NO_WINDOW`（winbase.h）。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console_window(_command: &mut Command) {}
+
 pub struct SidecarHost {
     child: ChildHandle,
     stdin: ChildStdin,
@@ -251,6 +264,7 @@ impl SidecarHost {
             );
         }
         command.envs(env.iter().map(|(key, value)| (key, value)));
+        hide_console_window(&mut command);
         let mut child = command.spawn()?;
 
         let stdin = child
