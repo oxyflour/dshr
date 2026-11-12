@@ -2,44 +2,84 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dshr.local/schema/adc-v1/slot-registration.schema.json",
   "title": "ADC-v1 slot registration",
-  "description": "One registration entry submitted by a plugin into a host-declared slot.",
-  "type": "object",
-  "required": ["slot_id", "plugin_id", "id", "view"],
-  "additionalProperties": false,
-  "properties": {
-    "slot_id": {
-      "type": "string",
-      "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$"
+  "description": "One registration entry submitted by a plugin into a host-declared slot. 本 schema 只做载荷形状（kind 级）校验，按 v1 的四种注册形态分派：unkeyed-view（list/single，挂 view）、unkeyed-run（list，挂 run/keys，如 command）、keyed-view（keyed，挂 view）、keyed-run（keyed，挂 id/label/run，如 menu.item）。字段级契约（每个 slot 的 required/optional、label/location/run 取值）以 schema/adc-v1/slots.v1.json 为唯一事实源，Host 按 slot_id 查目录后校验；未知 slot 直接拒绝。",
+  "$ref": "#/$defs/registration",
+  "$defs": {
+    "registration": {
+      "oneOf": [
+        { "$ref": "#/$defs/unkeyedView" },
+        { "$ref": "#/$defs/unkeyedRun" },
+        { "$ref": "#/$defs/keyedView" },
+        { "$ref": "#/$defs/keyedRun" }
+      ]
     },
-    "plugin_id": {
-      "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    "unkeyedView": {
+      "type": "object",
+      "required": ["slot_id", "plugin_id", "id", "view"],
+      "additionalProperties": false,
+      "properties": {
+        "slot_id": { "$ref": "#/$defs/field/slotId" },
+        "plugin_id": { "$ref": "#/$defs/field/pluginId" },
+        "id": { "$ref": "#/$defs/field/registrationId" },
+        "order": { "$ref": "#/$defs/field/order" },
+        "label": { "$ref": "#/$defs/field/label" },
+        "view": { "$ref": "#/$defs/field/view" },
+        "location": { "$ref": "#/$defs/field/location" }
+      }
     },
-    "id": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9._-]+$"
+    "unkeyedRun": {
+      "type": "object",
+      "required": ["slot_id", "plugin_id", "id", "run"],
+      "additionalProperties": false,
+      "properties": {
+        "slot_id": { "$ref": "#/$defs/field/slotId" },
+        "plugin_id": { "$ref": "#/$defs/field/pluginId" },
+        "id": { "$ref": "#/$defs/field/registrationId" },
+        "label": { "$ref": "#/$defs/field/label" },
+        "run": { "$ref": "#/$defs/field/run" },
+        "keys": { "$ref": "#/$defs/field/keys" }
+      }
     },
-    "order": {
-      "type": "number"
+    "keyedView": {
+      "type": "object",
+      "required": ["slot_id", "plugin_id", "key", "view"],
+      "additionalProperties": false,
+      "properties": {
+        "slot_id": { "$ref": "#/$defs/field/slotId" },
+        "plugin_id": { "$ref": "#/$defs/field/pluginId" },
+        "key": { "$ref": "#/$defs/field/key" },
+        "view": { "$ref": "#/$defs/field/view" }
+      }
     },
-    "label": {
-      "type": "string",
-      "maxLength": 128
+    "keyedRun": {
+      "type": "object",
+      "required": ["slot_id", "plugin_id", "key", "id", "label", "run"],
+      "additionalProperties": false,
+      "properties": {
+        "slot_id": { "$ref": "#/$defs/field/slotId" },
+        "plugin_id": { "$ref": "#/$defs/field/pluginId" },
+        "key": { "$ref": "#/$defs/field/key" },
+        "id": { "$ref": "#/$defs/field/registrationId" },
+        "order": { "$ref": "#/$defs/field/order" },
+        "label": { "$ref": "#/$defs/field/label" },
+        "run": { "$ref": "#/$defs/field/run" }
+      }
     },
-    "key": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64
-    },
-    "view": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9._-]+$"
-    },
-    "location": {
-      "type": "string",
-      "enum": ["left", "right", "bottom", "center"]
+    "field": {
+      "slotId": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)*$" },
+      "pluginId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$" },
+      "registrationId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._-]+$" },
+      "order": { "type": "number", "minimum": 0, "maximum": 1000000 },
+      "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "key": { "type": "string", "minLength": 1, "maxLength": 64 },
+      "view": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+      "location": { "type": "string", "enum": ["left", "right", "bottom", "center"] },
+      "keys": {
+        "type": "array",
+        "maxItems": 8,
+        "items": { "type": "string", "pattern": "^[A-Za-z0-9+.-]+$" }
+      },
+      "run": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" }
     }
   }
 }

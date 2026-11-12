@@ -1,0 +1,294 @@
+{
+  "catalog": "adc.slots/v1",
+  "version": 1,
+  "status": "Review",
+  "spec": "docs/spec/adc-v1.md#5-slot-目录-v1",
+  "note": "slot 目录是 ADC-v1 的唯一事实源：Host 按 slot_id 查目录做注册校验（字段级 required/optional + field_types），插件不能声明新 slot。docs/spec/adc-v1.md §5 的表格是本文件的逐个镜像，二者必须逐项一致。",
+  "kinds": {
+    "single": {
+      "seats": "one",
+      "required_signature": ["id"],
+      "conflict": "后注册者替换前者；exclusive=true 时拒绝后注册者并诊断"
+    },
+    "list": {
+      "seats": "many",
+      "required_signature": ["id"],
+      "conflict": "按 order 升序（同值按 registration_id 升序）；同一作用域内 id 重复即拒绝"
+    },
+    "keyed": {
+      "seats": "one-per-key",
+      "required_signature": ["key"],
+      "conflict": "同一 key 后注册者替换（single 语义）；闭合 key 域非法 key 拒绝"
+    },
+    "chain": {
+      "seats": "pipeline",
+      "required_signature": [],
+      "conflict": "按 order 形成管道：返回 null 交给下一个，抛错短路为默认值"
+    }
+  },
+  "scopes": {
+    "root": "应用级，全局一份",
+    "session": "每个 Session 一份；会话关闭即销毁",
+    "session-maybe": "同 session，但允许尚未创建 Session 的空态存在"
+  },
+  "replacement_risks": ["none", "shadows-shipped-ui"],
+  "contributions": {
+    "panel": {
+      "doc": "面板（PLAN §4.6.2 的 panel）",
+      "slots": ["workspace.panel"]
+    },
+    "tool_renderer": {
+      "doc": "工具调用结果渲染器（PLAN §4.6.2 的 tool_renderer）",
+      "slots": ["tool.call.toolview"]
+    },
+    "widget": {
+      "doc": "会话内节点小组件（PLAN §4.6.2 的 widget）",
+      "slots": ["conversation.chat.node"]
+    },
+    "command": {
+      "doc": "命令注册表（PLAN §4.6.2 的 command）",
+      "slots": ["command"]
+    },
+    "menu": {
+      "doc": "菜单项（PLAN §4.6.2 的 menu）",
+      "slots": ["menu.item"]
+    },
+    "viewer": {
+      "doc": "文件查看器（PLAN §4.6.2 的 viewer）",
+      "slots": ["viewer.tab"]
+    },
+    "settings": {
+      "doc": "设置页（PLAN §4.6.2 的 settings）",
+      "slots": ["settings.section", "settings.general.item"]
+    },
+    "input": {
+      "doc": "v1 追加：输入框左右两侧（PLAN §4.6.2 的“新增输入框两侧”）",
+      "slots": ["conversation.input.left", "conversation.input.right"]
+    },
+    "tool_extra": {
+      "doc": "v1 追加：工具卡附加区（PLAN §4.6.2 的“新增工具卡附加区”）",
+      "slots": ["tool.result.extra"]
+    },
+    "status": {
+      "doc": "v1 追加：状态栏（文档分组，非运行时原子）",
+      "slots": ["status.bar.item"]
+    }
+  },
+  "field_types": {
+    "id": {
+      "kind": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "doc": "注册 ID：插件自拟，作用域内唯一"
+    },
+    "plugin_id": {
+      "kind": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$",
+      "doc": "插件 ID（形态见 docs/spec/README.md §3）"
+    },
+    "order": {
+      "kind": "number",
+      "minimum": 0,
+      "maximum": 1000000,
+      "doc": "list 排序键，升序；同值按 registration_id 升序"
+    },
+    "label": {
+      "kind": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "doc": "用户可见标签"
+    },
+    "view": {
+      "kind": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "doc": "已 declareView 的视图名"
+    },
+    "location": {
+      "kind": "enum",
+      "values": ["left", "right", "bottom", "center"],
+      "doc": "面板位置"
+    },
+    "keys": {
+      "kind": "string[]",
+      "maxItems": 8,
+      "items": { "pattern": "^[A-Za-z0-9+.-]+$" },
+      "doc": "可选快捷键序列，最多 8 个"
+    },
+    "run": {
+      "kind": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "doc": "插件方法名（command 的执行目标）"
+    },
+    "key": {
+      "kind": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "doc": "keyed slot 的分派键"
+    }
+  },
+  "slots": [
+    {
+      "slot_id": "workspace.panel",
+      "kind": "list",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "panel",
+      "registration": {
+        "required": ["id", "label", "location", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "viewer.tab",
+      "kind": "keyed",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "viewer",
+      "registration": {
+        "required": ["key", "view"],
+        "optional": []
+      },
+      "key_domain": {
+        "mode": "open",
+        "doc": "文件类型：由查看器注册表决定（插件可为自己产生的文件类型注册查看器）"
+      }
+    },
+    {
+      "slot_id": "settings.section",
+      "kind": "list",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "settings",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "settings.general.item",
+      "kind": "list",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "settings",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "command",
+      "kind": "list",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "command",
+      "registration": {
+        "required": ["id", "label", "run"],
+        "optional": ["keys"]
+      },
+      "note": "契约按 spec §5 不含 order；此 list 按 registration_id 稳定排序"
+    },
+    {
+      "slot_id": "menu.item",
+      "kind": "keyed",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "menu",
+      "registration": {
+        "required": ["key", "id", "label", "run"],
+        "optional": ["order"]
+      },
+      "key_domain": {
+        "mode": "closed",
+        "source": "host",
+        "doc": "菜单名由 Host 菜单目录声明；非法 key 由 Host 拒绝（具体菜单名不在 catalog 固化，避免与宿主菜单演进耦合）"
+      }
+    },
+    {
+      "slot_id": "conversation.chat.node",
+      "kind": "keyed",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "widget",
+      "registration": {
+        "required": ["key", "view"],
+        "optional": []
+      },
+      "key_domain": {
+        "mode": "open",
+        "doc": "node id：由会话树节点决定"
+      }
+    },
+    {
+      "slot_id": "conversation.input.left",
+      "kind": "list",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "input",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "conversation.input.right",
+      "kind": "list",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "input",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "tool.call.toolview",
+      "kind": "keyed",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "tool_renderer",
+      "registration": {
+        "required": ["key", "view"],
+        "optional": []
+      },
+      "key_domain": {
+        "mode": "open",
+        "doc": "工具名：来自工具注册表"
+      }
+    },
+    {
+      "slot_id": "tool.result.extra",
+      "kind": "list",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "tool_extra",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "status.bar.item",
+      "kind": "list",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "status",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    }
+  ]
+}

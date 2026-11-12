@@ -1129,6 +1129,7 @@ name = "dshr-plugin-api"
 version = "0.0.0"
 dependencies = [
  "dshr-tool-runtime",
+ "serde",
  "serde_json",
  "thiserror",
 ]

@@ -36,3 +36,5 @@
 | [0004-adc-slot-contract.md](0004-adc-slot-contract.md) | ADC-v1 采用 slot 注册表而非组件清单 | Accepted | M0 |
 | [0005-no-web-shell.md](0005-no-web-shell.md) | 不做 Web 壳捷径 | Accepted | M0 |
 | [0006-next-step-native-plugin-registry.md](0006-next-step-native-plugin-registry.md) | M1 收尾顺序：先 Native Plugin + Tool Registry，LLM 往后 | Accepted | M1 |
+| [0007-m3-scope.md](0007-m3-scope.md) | M3 范围锁定、M2 后移债务处置、3 条 gate 与砍单顺序 | Accepted | M3 启动 |
+| [0008-script-ui-spike.md](0008-script-ui-spike.md) | Script UI 5 日 spike 的时间盒、判定标准与退路 | Accepted | M3 W1 |

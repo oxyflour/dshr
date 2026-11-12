@@ -1,4 +1,4 @@
-﻿# 设计规范（docs/spec）
+# 设计规范（docs/spec）
 
 这里是**对外承诺的契约**。`docs/PLAN.md` 说明为什么做、什么时候做；本目录说明**做什么、边界在哪、怎么验证**。实现与规范冲突时，以规范为准；改行为必须先改规范。
 
@@ -6,11 +6,11 @@
 
 | 文件 | 内容 | 状态 | 冻结时点 |
 |---|---|---|---|
-| [`adc-v1.md`](adc-v1.md) | Agent Desktop Client API v1：slot 注册表、元素词汇表、绑定与动作 | Draft | M3 |
-| [`cpp-v1.md`](cpp-v1.md) | Cordis Portable Profile v1：Rust 插件 manifest、生命周期、Service/Effect/Tool | Draft | M3 |
-| [`sidecar-rpc.md`](sidecar-rpc.md) | Rust ↔ Node DSH Sidecar 的跨进程协议 | Draft | M2 |
-| [`session-log.md`](session-log.md) | Session 事件日志：信封、事件类型、回放与上下文事件 | Draft | M2 |
-| [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 与 DSH 真实契约的逐字段对照：哪些刻意不同、哪些必须补齐 | Draft | M2 |
+| [`adc-v1.md`](adc-v1.md) | Agent Desktop Client API v1：slot 注册表、元素词汇表、绑定与动作 | Review | M3（G1） |
+| [`cpp-v1.md`](cpp-v1.md) | Cordis Portable Profile v1：Rust 插件 manifest、生命周期、Service/Effect/Tool | Draft | M3（G2） |
+| [`sidecar-rpc.md`](sidecar-rpc.md) | Rust ↔ Node DSH Sidecar 的跨进程协议 | Review | M3（v2：host-service 代理） |
+| [`session-log.md`](session-log.md) | Session 事件日志：信封、事件类型、回放与上下文事件 | Review | M2 已实现；M3 复核 |
+| [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 与 DSH 真实契约的逐字段对照：哪些刻意不同、哪些必须补齐 | Draft | 随实现更新 |
 
 状态含义：
 
@@ -68,8 +68,8 @@ session-log.md  ◄── adc-v1.md（回放需要展示元数据）
 
 | 计划文件 | 内容 | 时点 |
 |---|---|---|
-| `context-engineering.md` | 压缩/裁剪/外部化的算法与阈值 | M2 |
-| `approval-policy.md` | 审批策略、answerer 链、审计字段 | M2 |
-| `acp-bridge.md` | 外部 Agent 接入与状态同步 | M3 |
-| `mcp-tools.md` | MCP 工具发现与权限映射 | M2 |
+| `context-engineering.md` | 压缩/裁剪/外部化的算法与阈值 | M2（待补，实现已在 m2-context.md） |
+| `approval-policy.md` | 审批策略、answerer 链、审计字段 | M2（待补，实现已在 m2-approval.md） |
+| `acp-bridge.md` | 外部 Agent 接入与状态同步 | M4 |
+| `mcp-tools.md` | MCP 工具发现与权限映射 | M3 |
 | `plugin-trust.md` | 签名、来源校验、安装风险提示 | M3 |

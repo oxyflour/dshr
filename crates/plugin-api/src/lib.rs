@@ -5,9 +5,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod manifest;
+
 use dshr_tool_runtime::ToolDefinition;
 use serde_json::Value;
 use thiserror::Error;
+
+pub use manifest::{HostVersion, Manifest};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PluginError {
@@ -19,6 +23,16 @@ pub enum PluginError {
     UnknownTool { plugin: String, tool: String },
     #[error("tool `{tool}` failed: {reason}")]
     ToolFailed { tool: String, reason: String },
+
+    // ---- CPP-v1 manifest（spec/cpp-v1.md §3；错误里不携带 serde_json::Value，保持 Eq）----
+    #[error("manifest error at `{path}`: {reason}")]
+    Manifest { path: String, reason: String },
+    #[error("unsupported plugin api `{actual}`, expected `{expected}`")]
+    UnsupportedApi { expected: String, actual: String },
+    #[error("plugin requires host version >= {required}, but host is {actual}")]
+    HostTooOld { required: String, actual: String },
+    #[error("invalid manifest: {0}")]
+    InvalidManifest(String),
 }
 
 /// 一个 UI 贡献（当前只承载元数据；渲染由 ui-contributions 在 M2 接）。

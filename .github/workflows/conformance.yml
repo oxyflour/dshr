@@ -1,0 +1,75 @@
+name: conformance
+
+# M3 起：把 exit gate 证据变成 CI 产物（PLAN.md §10.1）。
+# 注意：本 workflow 是本仓库首个 GitHub Actions 配置，尚未在 GitHub Actions 实跑；
+# 本地等价命令见 docs/conformance.md §5。首次启用时请先手动 workflow_dispatch 验证。
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Windows conformance matrix
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Show toolchain versions
+        run: |
+          node --version
+          rustc --version
+          cargo --version
+
+      # 等价于本地 tools/build-env.cmd：Windows runner 的 %TEMP% 可写，无需重定向
+      # TMP/TEMP；rust-toolchain.toml 已把工具链固定到 1.99.1。
+      - name: Contract fixtures (schema/check.mjs)
+        run: node schema/check.mjs
+
+      - name: Markdown links (tools/check-links.mjs)
+        run: node tools/check-links.mjs
+
+      - name: Fetch cargo dependencies
+        run: cargo fetch
+
+      - name: Rust workspace tests
+        run: cargo test --offline --workspace
+
+      - name: Conformance quick matrix
+        if: always()
+        run: node tools/conformance.mjs --quick --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md
+
+      - name: Upload conformance matrix artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-matrix
+          path: |
+            docs/conformance-matrix.json
+            docs/conformance-matrix.md
+          if-no-files-found: error
+          retention-days: 30

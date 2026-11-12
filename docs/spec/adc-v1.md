@@ -1,6 +1,6 @@
 # ADC-v1 — Agent Desktop Client API
 
-> 状态：Draft（M3 冻结） · 版本：`adc/v1` · 依赖：[`session-log.md`](session-log.md)
+> 状态：Review（M3 冻结中） · 版本：`adc/v1` · 冻结工件：[`schema/adc-v1/slots.v1.json`](../../schema/adc-v1/slots.v1.json) · 依赖：[`session-log.md`](session-log.md)
 > 适用对象：所有希望向 GPUI Shell 提交 UI 的插件——原生 Rust、脚本（QuickJS）、隔离 WebView。
 
 ---
@@ -83,8 +83,8 @@ const off = ctx.ui.register('workspace.panel', {
 Host 在注册时校验，任一失败即拒绝并上报 `adc.registration.rejected`：
 
 - slot 存在且插件有权限注册；
-- 必填字段齐备且类型正确；
-- `view` 已通过 `declareView` 声明；
+- 必填字段齐备且类型正确（字段集与取值以 §5.1 的 slot 目录为准；`command`/`menu.item` 用 `run` 而不是 `view`）；
+- 契约含 `view` 时，`view` 已在 `declareView` 中声明；
 - `id`/`key` 在作用域内唯一（`single`/`keyed` 的覆盖是允许的，需记录告警）。
 
 ## 5. Slot 目录 v1
@@ -106,7 +106,28 @@ slot 全集由 Host 维护；下表是 v1 的首批集合，后续只增不改�
 | `tool.result.extra` | list | session | `id, order?, label, view` | none |
 | `status.bar.item` | list | root | `id, order?, label, view` | none |
 
-Contribution 分组（用于文档与权限归类，不参与运行时分派）：`panel` → `workspace.panel`；`tool_renderer` → `tool.call.toolview`；`widget` → `conversation.chat.node`；`command`/`menu` → `command` 与 `menu.item`；`viewer` → `viewer.tab`；`settings` → `settings.section` 与 `settings.general.item`。
+Contribution 分组（用于文档与权限归类，不参与运行时分派）：`panel` → `workspace.panel`；`tool_renderer` → `tool.call.toolview`；`widget` → `conversation.chat.node`；`command`/`menu` → `command` 与 `menu.item`；`viewer` → `viewer.tab`；`settings` → `settings.section` 与 `settings.general.item`。v1 追加（PLAN §4.6.2 的"新增"两行与状态栏）：`input` → `conversation.input.left`/`conversation.input.right`；`tool_extra` → `tool.result.extra`；`status` → `status.bar.item`。
+
+### 5.1 目录 JSON 是唯一事实源
+
+机器可读的 slot 目录是 [`schema/adc-v1/slots.v1.json`](../../schema/adc-v1/slots.v1.json)；本节表格是它的人读镜像，二者必须逐项一致（`node schema/check.mjs` 同时校验目录自检与注册契约）。
+
+目录每项字段：
+
+| 字段 | 含义 |
+|---|---|
+| `slot_id` | 点分小写标识（`command` 为 v1 保留的历史短名）；规则见 [`README.md`](README.md) §3 |
+| `kind` | `single` / `list` / `keyed` / `chain`，语义见 §4.2 |
+| `scope` | `root` / `session` / `session-maybe`，语义见 §4.3 |
+| `exclusive` | 仅影响覆盖语义：`true` 时拒绝后注册者；v1 的 12 个 slot 全部为 `false` |
+| `replacement_risk` | `none` / `shadows-shipped-ui`；v1 全部为 `none` |
+| `contribution` | 文档与权限分组，取值见本节末段 |
+| `registration` | 注册契约：`required` / `optional` 字段名；字段类型与取值范围见目录的 `field_types` |
+| `key_domain` | 仅 keyed：`{"mode":"open"}` 或 `{"mode":"closed","source":"host"}` |
+
+注册校验分两层，缺一不可：① [`slot-registration.schema.json`](../../schema/adc-v1/slot-registration.schema.json) 做 kind 级载荷形状校验（view 型必须带 `view`；run 型必须带 `run`，如 `command`/`menu.item`；keyed 必须带 `key`）；② Host 按 `slot_id` 查目录，按 `registration` 逐字段校验并拒绝未知字段。schema 不知道 `slot_id`，所以字段级必填（如 `workspace.panel` 的 `label`/`location`）只由目录表达。
+
+v1 只注册 `list` 与 `keyed`；`single`/`chain` 保留 kind 语义但目录中没有条目，新增属于 minor 变更（先改目录与本节表格）。keyed slot 的 key 域：`viewer.tab`（文件类型）、`conversation.chat.node`（node id）、`tool.call.toolview`（工具名）为 open——值域由对应的插件/宿主注册表决定；`menu.item`（菜单名）为 closed，值域由 Host 菜单目录声明，非法 key 由 Host 拒绝。
 
 ## 6. 元素词汇表
 
@@ -126,20 +147,26 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 
 规则：
 
-- `type` 必须是本规范列出的元素；未知元素降级为 `Placeholder`。
-- `props` 必须是对象；未知属性忽略并记录诊断（不失败）。
-- `children` 只允许出现在容器元素上；叶子元素带 `children` 视为契约错误。
+- `type` 必须是本规范列出的元素；未知元素在作者期 lint（schema）判 invalid，运行时降级为 `Placeholder`。
+- `props` 必须是对象；未知属性在运行时忽略并记录诊断（不失败），作者期 lint 对未知元素字段判 invalid。
+- `children` 只允许出现在 `Stack`/`Row`/`Grid`/`Card`/`Tabs` 上；`Card` 必须带 `children`；`Accordion` 的内容在 `sections[].children`，不使用节点级 `children`；叶子元素带 `children` 视为契约错误。
 - 限制：树深 ≤ 8、节点数 ≤ 200（单个 View 一次提交）、文本 ≤ 8 KB、单张图片 ≤ 8 MB。
+- 字段必填性与取值范围以 [`schema/adc-v1/element.schema.json`](../../schema/adc-v1/element.schema.json) 为准，本节只定义命名与语义。
+
+作者期 lint 与运行时是两件事：schema 对未知元素、未知节点字段、未知元素字段、叶子带 `children` 判 invalid（严格）；运行时按 P4 把未知元素降级为 `Placeholder`、忽略未知字段并诊断（宽松，不失败）。`a11yLabel` 在作者期可选（schema 不强制），运行时对交互元素 MUST 提供（见 §9，`ADC-ELEM-A11Y-001`）。
 
 ### 6.2 通用属性
 
 | 属性 | 类型 | 说明 |
 |---|---|---|
-| `key` | string | 同一父节点下唯一，用于 diff；缺省按位置处理 |
+| `key` | string | 节点级；同一父节点下唯一，用于 diff；缺省按位置处理 |
 | `visible` | bool | 默认 true |
 | `testId` | string | 测试与截图回归用 |
-| `a11yLabel` | string | 可访问性名称；交互元素 MUST 提供（见 §9） |
+| `a11yLabel` | string | 可访问性名称；交互元素 MUST 提供（见 §9）；作者期可选，运行时强制 |
 | `tone` | enum | `neutral` / `info` / `success` / `warning` / `error` |
+| `span` | integer | `Grid` 子项的跨列数（1–12）；非 Grid 子项忽略 |
+
+`tone` 只使用主题 token 的语义色，插件不能指定色值。
 
 ### 6.3 布局
 
@@ -151,7 +178,7 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 | `Divider` | 否 | `label?` |
 | `Spacer` | 否 | — |
 
-`padding`/`gap` 只接受 `0/2/4/8/12/16/24/32`；`align` ∈ `start/center/end/stretch`；`justify` ∈ `start/center/end/space-between`。
+`padding`/`gap` 只接受 `0/2/4/8/12/16/24/32`；`align` ∈ `start/center/end/stretch`；`justify` ∈ `start/center/end/space-between`。`Grid.columns` 必填且为 1–12；Grid 子项可用 §6.2 的 `span` 跨列（最大 12）。
 
 ### 6.4 文本
 
@@ -183,6 +210,8 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 | `Tree` | `nodes[]{key,label,children?}`, `expanded[]`, `onToggle?` |
 | `KeyValue` | `pairs[]{key,value}` |
 
+`Table.rows` 是对象数组：键为列 `key`，单元格取值 `string`/`number`/`boolean`/`null`；`columns` 至少 1 列。`Tree.nodes` 可递归嵌套 `children`。
+
 ### 6.7 媒体
 
 | 元素 | props |
@@ -191,6 +220,8 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 | `Icon` | `name`（宿主图标集内的名称） |
 | `Chart` | `kind`(`bars`/`line`/`donut`), `data[]{label,value}`, `series?` |
 
+`Image.fit` 取值 `cover`/`contain`/`fill`；`attachmentId` 必须是内容寻址附件 ID（不以 URL 形式给值）。`Chart` 单图 ≤ 8 个数据点；可选 `series` 为 `{label, values[]}`，最多 4 条、每条 ≤ 8 点（见 §12 Q2）。
+
 ### 6.8 容器
 
 | 元素 | props |
@@ -198,6 +229,8 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 | `Card` | `title?`, `tone?`, `children` |
 | `Tabs` | `tabs[]{key,label}`, `activeKey`, `onChange` |
 | `Accordion` | `sections[]{key,title,children}`, `expanded[]` |
+
+`Card` 必须带节点级 `children`；`Tabs` 的节点级 `children` 是当前激活页内容；`Accordion` 的内容位于 `sections[].children`。
 
 ## 7. 绑定、动作与事件
 
@@ -244,9 +277,28 @@ Host 向 View 推送 `{ seq, snapshot?, patches[] }`；`patches` 为有序 `{op:
 declareView → register(slot) → mount → [patch…] → unmount → unregister → dispose
 ```
 
-- `declareView` 必须在 `register` 之前；未声明的 `view` 会被拒绝。
+- `declareView` 必须在 `register` 之前（仅契约含 `view` 的注册）；未声明的 `view` 会被拒绝。
 - View 卸载时其本地状态（滚动位置、展开项）可保留在 client-local state，但不进入 Session Log。
 - 插件重载后 `view` 需重新声明；Host 不缓存旧的元素树。
+
+### 8.1 插件持久化状态
+
+三类状态严格区分（与 [`PLAN.md`](../PLAN.md) §4.4 一致）：
+
+| 状态 | 归属 | 是否持久化 | 例 |
+|---|---|---|---|
+| Host-owned state | Host（Rust 权威） | 由 Host 决定 | Session、Tool Call、审批结果、文件身份 |
+| Client-local state | 客户端 UI | 否，可随时丢弃，不进 Session Log | 面板尺寸/位置、焦点、选中项、折叠状态、未提交输入 |
+| Plugin state | 插件声明、Host 代写 | 是 | 插件配置、上次选择、缓存索引 |
+
+插件持久化状态契约：
+
+1. **声明**：插件在 manifest（`cpp-v1`）或 `apply` 时声明 `state.schemaVersion`（整数，从 1 起）与需要持久化的字段；Host 只接受声明过的字段，未声明字段拒绝并诊断。
+2. **读写**：只能通过 Host 提供的 `ctx.state.get(key)` / `ctx.state.set(key, value)`；值为 JSON（禁止 `NaN`/`Infinity`、函数、对象引用），单键 ≤ 8 KB、每插件合计 ≤ 64 KB；超限拒绝并诊断，读回最后一次已提交值。
+3. **schema 版本与迁移钩子**：Host 持久化 `{schemaVersion, data}`。加载时若 `schemaVersion` 低于当前版本，Host MUST 调用插件声明的纯函数 `migrate(fromVersion, data) -> data`（同步、≤ 1 s、不得访问网络/Session/文件）；迁移只能升版本；迁移失败或超时 → 丢弃该状态并用默认值启动，同时把原数据留在隔离区（quarantine）供人工排查，写诊断 `ADC-STATE-MIGRATE-001`，不得阻塞插件加载。
+4. **与 client-local state 的边界**：滚动位置、焦点、展开项等渲染状态 MUST NOT 进入 plugin state 或 Session Log（见上表）；需要跨会话恢复的"业务性"状态（例如上次选择的文件）走 plugin state。
+5. **隔离**：状态以 `plugin_id` 为命名空间，跨插件读取一律拒绝；卸载插件时状态保留（重装可恢复），用户显式"清除插件数据"时删除；插件不得读写 Session Log 或其它插件的视图状态。
+6. **并发**：同一插件同一时刻只有一个写入者（Host 在 `apply`/视图挂载期间串行化写入）；`set` 返回前不得假设已落盘。
 
 ## 9. 版本与兼容
 
@@ -258,7 +310,7 @@ declareView → register(slot) → mount → [patch…] → unmount → unregist
 
 未知元素渲染为 `Placeholder`（带 `testId` 与诊断），MUST NOT 抛错或整棵树丢弃。
 
-可访问性（M2 起强制）：所有交互元素必须有 `a11yLabel`；焦点顺序按文档序；键盘可达 `Tab`/`Enter`/`Space`/`Esc`。
+可访问性（M2 起强制）：所有交互元素必须有 `a11yLabel`（作者期 schema 不强制、运行时 MUST 拒绝，`ADC-ELEM-A11Y-001`）；焦点顺序按文档序；键盘可达 `Tab`/`Enter`/`Space`/`Esc`。完整清单见 §12 Q4。
 
 ## 10. 安全与配额
 
@@ -270,16 +322,17 @@ declareView → register(slot) → mount → [patch…] → unmount → unregist
 
 ## 11. 校验与工具链
 
-- JSON Schema：[`../../schema/adc-v1/element.schema.json`](../../schema/adc-v1/element.schema.json)、[`slot-registration.schema.json`](../../schema/adc-v1/slot-registration.schema.json)。
-- 规范检查（lint）必须覆盖：未知元素、叶子带 children、交互元素缺 `a11yLabel`、超配额、非法动作、非 https 外链。
-- Conformance 前缀：`ADC-SLOT-*`（注册/撤销/冲突）、`ADC-ELEM-*`（词汇表/降级）、`ADC-BIND-*`（绑定/更新）、`ADC-SEC-*`（配额/权限）。
+- 冻结工件：[`schema/adc-v1/slots.v1.json`](../../schema/adc-v1/slots.v1.json)（slot 目录，唯一事实源，数据非 JSON Schema）、[`element.schema.json`](../../schema/adc-v1/element.schema.json)（26 元素字段级 props）、[`slot-registration.schema.json`](../../schema/adc-v1/slot-registration.schema.json)（kind 级载荷形状）。
+- 作者期 lint（`node schema/check.mjs`）严格：未知元素、未知节点字段、未知元素字段、叶子带 `children`、超配额、非法动作、非 https 外链判 invalid；未知字段在运行时按 P4 忽略并诊断——两件事分开，见 [`review-m3-plan.md`](../review-m3-plan.md) §10 第 9 条。
+- 运行时拒绝（不写进 schema）：交互元素缺 `a11yLabel`（`ADC-ELEM-A11Y-001`）、未知元素降级为 `Placeholder`（`ADC-ELEM-*`）、插件状态迁移失败（`ADC-STATE-MIGRATE-001`）、注册未知 slot/契约不符（`ADC-SLOT-*`）。
+- Conformance 前缀：`ADC-SLOT-*`（注册/撤销/冲突）、`ADC-ELEM-*`（词汇表/降级/a11y）、`ADC-BIND-*`（绑定/更新）、`ADC-SEC-*`（配额/权限）、`ADC-STATE-*`（插件持久化状态）。
 
-## 12. 未决问题
+## 12. 未决问题（v1 已关闭）
 
-| # | 问题 | 倾向 | 决定时点 |
-|---|---|---|---|
-| Q1 | Markdown 子集的确切范围 | 只支持标题/列表/代码/强调/链接/表格 | M2 |
-| Q2 | `Chart` 的数据上限与配色规则 | ≤ 8 数据点，配色仅用语义色 | M2 |
-| Q3 | 是否允许自定义 `Grid` 跨列 | 允许 `span`，最大 12 | M2 |
-| Q4 | 无障碍契约的完整清单 | 先按 §9 四条，M2 补全 | M2 |
-| Q5 | WebView 容器元素是否进入 v2 | 需要独立 Panel 生命周期设计 | M4 后 |
+| # | 问题 | 决定 | 理由 | 关闭时点 |
+|---|---|---|---|---|
+| Q1 | Markdown 子集的确切范围 | 只支持标题/列表/代码/强调/链接/表格；不执行内联 HTML/脚本，未识别语法按纯文本渲染 | 禁任意 HTML/脚本是 §10 硬约束；子集已覆盖会话展示的主场景 | M3（Review） |
+| Q2 | `Chart` 的数据上限与配色规则 | 单图 ≤ 8 个数据点；可选 `series` 最多 4 条、每条 ≤ 8 点；配色只用主题 token 的语义色（`tone`），插件不能指定色值 | 渲染预算（M1 A1c 单行 4 元素 draw p50 15 ms）与主题一致性；8 点是柱/折/环图的可读上限 | M3（Review） |
+| Q3 | 是否允许自定义 `Grid` 跨列 | 允许：元素通用属性 `span`（1–12），仅 Grid 子项生效，超过 12 由 Host 按 12 截断并诊断 | 常见表单布局需要跨列；仍不引入自由布局（P2） | M3（Review） |
+| Q4 | 无障碍契约的完整清单 | v1 按 §9 四条：交互元素必须有 `a11yLabel`（运行时拒绝）、焦点顺序=文档序、键盘 `Tab`/`Enter`/`Space`/`Esc`、未知元素 Placeholder 带 `testId`+诊断；另加 Image `alt`、颜色不得单独承载语义、焦点环用主题 token | 完整 WCAG 2.2 AA 审计需专门预算；v1 先冻结可机检的强制项，M4 做审计补全 | M3（Review） |
+| Q5 | WebView 容器元素是否进入 v2 | 明确不在 v1：元素词汇表不含 WebView/DOM/HTML；需要 DOM 的插件走独立 Panel（Host 单独授权，§4.2 C），v2 也不新增元素级 WebView；重新评估时点为 M4 之后的 Panel 生命周期评审 | 元素级 WebView 与隔离/配额/焦点模型冲突；M1 A3 证明 GPUI 浮层不能可靠覆盖 WebView（[`m1-log.md`](../m1-log.md) L131–152） | M3（Review），v2 保持排除 |

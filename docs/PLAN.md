@@ -422,13 +422,15 @@ Node Sidecar 使用与锁定目标版本一致的**原版 DSH vendored Cordis**�
 | **L4 — Client** | DSH React Client 插件在隔离 WebView/Legacy Client 中运行 | 独立 WebView + 最小 Browser Boot | 需独立 PoC | M5，实验性 |
 | **L5 — Full DSH** | 完整 DSH Web Client、任意 Context/插件图 | — | — | **不承诺** |
 
-**L2 口径（v0.2 修正）**：DSH 本机实测 Host Service 有 **98 项**，且大量方法以活的 `Agent` 对象、回调、流式端点作为参数（如 `approval.request`、`subagents.sendMessage(sender: Agent, …)`、`terminals.spawn(owner: Agent, …)`、`systemPrompt.tools(provider)`、`typertGateway.stream`）。因此 L2 **不是"配一份白名单"**，而是 N 个小型跨进程契约。**首批三个**：
+**L2 口径（v0.2 修正，M3 证据复核）**：DSH 0.2.2-rc.1 的 `cordis_inspect` 目录列出 **107 项** Host Service（`dsh-tool-cordis` 的 `SERVICE_API`；v0.2 写的 98 项是旧采样），且大量方法以活的 `Agent` 对象、回调、流式端点作为参数（如 `approval.request`、`subagents.sendMessage(sender: Agent, …)`、`terminals.spawn(owner: Agent, …)`、`systemPrompt.tools(provider)`、`typertGateway.stream`）。因此 L2 **不是"配一份白名单"**，而是 N 个小型跨进程契约。**首批三个（证据驱动，逐项证据见 [m3-l2-services.md](m3-l2-services.md)）**：
 
-| service | 为什么先做 | 关键难点 |
+| service | 真实调用方（证据） | 关键难点 |
 |---|---|---|
-| `storage` / `storageDomain` | JS 插件几乎都需要持久化，缺它 L1 就不成立 | 域打开/关闭与 generation 绑定 |
-| `settings` | 插件配置读写与热更新 | schema 投影 + 变更通知 |
-| `fs` | 文件类插件的基础能力 | 路径归一化与 workspace 边界必须由 Rust 判定，不能信任 Sidecar 传入的路径 |
+| `workingDirectory` | 10/27 官方工具包注入；`dsh-tool-working-directory` 除 `tools` 外只差它 | 目录权威在 Session Log；per-session 串行化 |
+| `sessionProjections`（配 `session-log` 数据面） | `dsh-tool-todo`、`dsh-tool-subagent` | 投影单元是 JS 函数：注册表留 Sidecar，宿主只给事件流 + 分页读 |
+| `storage` / `storageDomain` | 官方**工具**无调用方（0/27，生态押注）；官方 `kv` backend 契约可复用 | unit/版本戳/布局；v2 无游标（768 KiB 上限） |
+
+`settings`（0/27 工具包注入，只出现在 Client UI 的可选注入，属 L4）与 `fs`（M2 已有 `fs.write.request` 专用写路径，§7.5）**不进首批**；`systemPrompt`（14/27 注入）是 storage 的替补候选。协议正文见 [`spec/sidecar-rpc.md`](spec/sidecar-rpc.md) §13。
 
 L1 的 `Tool` 不是简单 `name -> string`：必须保留参数 Schema、执行 identity、取消、canonical JSON value、模型可见 content、错误标记和 presentation metadata。底层 Rust Policy 对来自 Sidecar 的 Tool **同样生效**。
 
@@ -672,7 +674,8 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 - [x] DSH L1：工具注册、调用、取消、流式输出、卸载、Sidecar 重启测试。
 - [x] **Node 运行时分发**（§5.5）：捆绑 Node（pnpm 待 M3）、离线 vendor、安装确认 + 审计日志。
 - [x] **Sidecar OS 级隔离**（§7）：Job Object、独立 profile、环境变量隔离。
-- [ ] MCP Tool 与基本 ACP Agent Adapter（可后移，见转向）——**按转向后移 M3**。
+- [ ] MCP Tool 与基本 ACP Agent Adapter——按转向处置：**MCP 最小闭环进 M3，ACP 移 M4**
+      （[ADR-0007](decisions/0007-m3-scope.md) §3）。
 - [x] Windows 开发版打包、崩溃诊断和插件错误提示。
 - [x] **启动面复核**：release 为 GUI 子系统（双击无控制台；CLI 用 `AttachConsole` 保留输出）、
       数据根与 CWD 解耦（`DSHR_HOME` / `%LOCALAPPDATA%\dshr` / 包内）、资源根 exe 相对、
@@ -693,26 +696,68 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 
 **未达标转向**：砍 ACP/MCP 到 M3，优先保住"会话 + 工具 + 上下文"闭环。
 
-### M3 — 插件平台 Preview（累计 190–290 工程日）
+### M3 — 插件平台 Preview（累计 240–370 工程日）
 
-- [ ] `CPP-v1` SDK、Manifest、版本检查、打包与模板。
-- [ ] **ADC-v1 冻结**：slot 注册表 + 声明式元素词汇表 v1 + 兼容性测试（未知元素降级）。
-- [ ] Script UI：QuickJS/GPUI Shell 适配方式定案，或明确替代方案。
-- [ ] WASM Component 插件：Tool + 声明式 UI，含资源配额执行。
-- [ ] DSH L2：首批 `storage` / `settings` / `fs` 三个 adapter + conformance。
-- [ ] **最小信任链**：插件签名（或来源校验）+ 首次安装风险提示；不要求完整证书体系。
-- [ ] HTML Widget：隔离面板、权限、事件桥接和跨窗口生命周期。
-- [ ] UI 扩展 API 兼容性测试；插件升级/恢复/数据迁移。
+> **状态：已启动（2026-11-12）。** 范围、债务处置、预算与砍单顺序见
+> [ADR-0007](decisions/0007-m3-scope.md)；计划评审见 [review-m3-plan.md](review-m3-plan.md)。
+> 冻结顺序：先契约工件（ADC-F / CPP manifest / sidecar v2 / plugin-trust）→ 服务端与运行时 →
+> 渲染器与作者验收。M3 增量 **120–185 日**（重估区间 115–190，见 §9.1）；超出 v0.2 的
+> 70–105 由 M2 后移债务与 WASM/信任链/渲染器无预算项造成，**对外 Beta 口径待产品确认**。
 
-**Exit gate（可判定）**：
-1. 外部作者不读主程序源码，凭文档 + 模板 + 示例可发布 Tool + Panel 插件。
-2. ADC-v1 元素集冻结，未知元素降级渲染的测试通过。
-3. WASM 插件在超时/内存超限时被隔离，宿主存活。
-4. 三个 L2 service 通过 conformance matrix。
+- [ ] **CPP-A 运行时**：manifest→typed、`api`/WIT/`min_host_version` 版本检查、capability、
+      错误码；`plugin-host` 接 cordis-rs（pin/vendor）+ Fiber/Service/Effect/Config 最小切片。
+- [ ] **CPP-B/C 可分发 SDK**：`dshr-plugin-api` 给 semver（非 0.0.0）、`rust-static` /
+      `wasm-component` 两套模板、仓库外样例、作者文档。
+- [ ] **ADC-F 冻结工件**：`adc-v1.md` → `Frozen`、`schema/adc-v1/slots.v1.json`（12 slot）、
+      元素 props 字段级、§12 未决清零、冻结 ADR（不把服务端/渲染器算进"冻结"）。
+- [ ] **ADC-S 服务端**（`ui-contributions`）：12 slot、kind/scope、generation、逆序幂等撤销、
+      注册校验与可读诊断。
+- [ ] **ADC-R 渲染器**（`ui-gpui`）：元素集 + 绑定/patch/动作 + 未知元素 `Placeholder` 降级 +
+      a11y + 渲染预算测试。
+- [ ] **WASM Component**：`cpp-v1.wit` + Wasmtime + fuel/epoch/内存/输出/并发五维配额 +
+      三故障注入（超时/fuel/内存）。
+- [ ] **DSH L2**：`sidecar-rpc` v2 host-service 代理 + 证据选出的 3 个 adapter + conformance。
+- [ ] **最小信任链**：`spec/plugin-trust.md` + manifest `integrity`/`signature`/`min_host_version`
+      + 哈希强制 + 可选签名 + 首次安装逐项确认 + 审计 + 降级拒绝。
+- [ ] **外部作者验收**：`plugin-authoring.md` + 模板 + 仓库外样例 + "未读主程序源码" checklist；
+      插件升级/迁移（先补 adc-v1 插件持久化状态章节，否则移出 M3）。
+- [ ] **M3 债务**（[ADR-0007](decisions/0007-m3-scope.md) §3）：工具并行执行、子会话并行 /
+      sidecar 工具继承、默认差异对齐（reasoning effort / LLM 摘要压缩 / 重复调用提醒 /
+      `EMPTY_RESPONSE` / approval 模式切换）、`timeoutMs` 透传、Loader `include`/group 子集、
+      MCP 最小闭环。
+- [ ] **条件项**（不计入必达）：Script UI 5 日 spike（[ADR-0008](decisions/0008-script-ui-spike.md)）；
+      HTML Widget 独立 WebView Panel（WebView 依赖决策未过则移 M4）；pnpm 捆绑（体积评估未过则移 M4）。
 
-**未达标转向**：冻结 Script UI，只保留 Native + WebView 双路线，并把元素词汇表降级为内部实现细节。
+**M3 预算（增量，工程日）**：
 
-### M4 — 跨平台 Beta（累计 240–390 工程日）
+| 工作项 | 日 | 工作项 | 日 |
+|---|---:|---|---:|
+| CPP-A 运行时 | 20–30 | 最小信任链 | 6–10 |
+| CPP-B/C SDK 与模板 | 3–6 | conformance 门禁 | 4–6 |
+| ADC-F 冻结工件 | 4–7 | 外部作者验收 | 5–8 |
+| ADC-S 服务端 | 8–12 | Script UI spike | 5 |
+| ADC-R 渲染器 | 20–30 | M2 债务（M3 选做） | 20–39 |
+| WASM 主机与配额 | 10–18 | **合计** | **115–190** |
+| L2（协议 v2 + 3 adapter） | 8–15 | 计划口径 | **120–185** |
+
+**Exit gate（3 条，均可机检/可复现；证据由 `tools/conformance.mjs` 聚合）**：
+
+1. **G1 契约冻结**：ADC spec 状态 `Frozen`；`slots.v1.json` 与 spec §5 的 12 slot 一一对应；
+   元素 props 字段级；§12 未决清零；未知元素 → `Placeholder` + 诊断 + 不 panic、同树其余元素仍渲染。
+2. **G2 外部作者可发布**：仓库外目录只用文档 + 模板 + semver SDK + `schema/` 构建并安装
+   Tool + Panel 插件；首次安装风险提示/审计/来源校验生效；篡改包与旧版本降级被拒。
+3. **G3 隔离与兼容**：WASM 在 fuel 耗尽/内存超限/超时三例分别被隔离、宿主存活、Session 无脏写；
+   3 个 L2 service 用**未修改的官方包**做到 ①插件装载绿（`inject` 满足）②至少一个方法经
+   `host.service.request/result` 真实往返 ③超时/取消/参数错误各一例；实测耗时回填 §5.1。
+   **工具 `execute` 级闭环不纳入 M3**（24/27 官方工具的 `execute` 读 `exec.agent`，属执行上下文债务）；
+   `storage` 的"官方包"指官方 `dsh-storage` + `dsh-storage-domain`（无官方工具调用方）。
+
+**未达标转向**（按 [ADR-0007](decisions/0007-m3-scope.md) §5 的砍单顺序，**不得砍 G1–G3 判定项**）：
+HTML Widget（6–12 日）→ M4；插件升级/迁移（5–8 日）→ M4；Script UI 实做 → 只留 spike；
+ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务。WASM 若与线程模型冲突 →
+`external-process` 退路；外部作者验证受阻 → M3 降级为"内部作者可用 + Preview 标注"。
+
+### M4 — 跨平台 Beta（累计 290–470 工程日，M3 重估；原 240–390）
 
 - [ ] Windows/macOS/Linux 编译与发布管线；签名和更新策略（差分、灰度、回滚）。
 - [ ] 多窗口、快捷键、IME、辅助功能、DPI、窗口恢复、主题一致性。
@@ -754,6 +799,17 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 | **含集成风险的 Beta 预算** | **240–390** | 对外口径建议表述为 **10–16 人月** |
 
 **这些是判断，不是测量。** M1 结束后必须用实测表替换分项，尤其是 Terminal、Sidecar 与 ADC-v1 三行。
+
+### 9.1 M3 增量预算（ADR-0007 重估，2026-11-12）
+
+上表是 v0.2 的 Beta 全局基线，不承载 M3 的具体工作项。M3 的逐项重估见 §8 M3 预算表：
+增量 **115–190 日**（计划口径 **120–185**），相对 v0.2 分配的 70–105 日增加 45–80 日，
+来源是：M2 正式后移的 9 项债务（M3 选做 20–39 日）、WASM 主机（10–18 日）、信任链（6–10 日）、
+ADC 渲染器（20–30 日）在 §9 均无预算行。对应累计：M3 240–370，M4 290–470（约 13–22 人月）。
+
+**对外口径待产品确认**。若必须维持原 240–390 上限，按 ADR-0007 §5 的砍单顺序执行
+（HTML Widget → 插件迁移 → Script UI 实做 → ADC 交互元素 → L2 减到 1 个），
+**不得砍 G1–G3 的判定项**。
 
 **不含项（明确不计入）**：
 - DSH L5 全兼容、任意 React 组件到 GPUI 自动映射。
@@ -830,7 +886,7 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 | **流式工具输出协议缺失**（新增） | 中高 | `tool.chunk` + 背压 + 结算幂等，进 L1 |
 | **Provider tool-call 格式漂移**（新增） | 中高 | provider 归一化层；M1 起至少两家验证 |
 | **Session Log 增长与保留**（新增） | 中高 | 分段索引、归档、保留期、导出，M2 前定 |
-| **自动更新通道**（新增） | 中 | 提前到 M3，与签名同批 |
+| **自动更新通道**（新增） | 中 | 最小信任链 M3；完整更新通道（差分/灰度/回滚）与证书体系 M4（原"提前到 M3"仅指签名/来源校验） |
 | **ADC-v1 词汇表设计不足**（新增） | 高 | 单列为独立交付物；未冻结前不对外承诺元素集 |
 
 ---
@@ -884,10 +940,13 @@ v0.1 的两周清单实际约 3–4 周工作量，且把最危险的问题排�
 | GPUI Kit 版本 | 精确 commit pin，防止 API 漂移 | M0 |
 | DSH 版本 | 固定官方 DSH tag/commit + vendored Cordis 版本 | M0 |
 | Sidecar Transport | stdio、named pipe 或 Unix socket；先以单机为主 | M1 |
-| UI Script Runtime | GPUI Shell 优先研究，未验证前允许降级 | M1/M3 |
-| ADC-v1 元素集边界 | §4.6.3 为草案，M3 冻结 | M3 |
-| 动态 Native Plugin | WASM Component + WIT 优先 | M3 |
-| L2 具体 Service 清单 | 由真实插件需求决定，首批 storage/settings/fs | M3 |
+| UI Script Runtime | 5 日 spike（ADR-0008）后定选/不选/退路；不作 M3 必达 | M3（W2） |
+| ADC-v1 元素集边界 | §4.6.3 为草案；M3 冻结只读 + 交互子集，超预算按 ADR-0007 砍单 | M3（G1） |
+| 动态 Native Plugin | WASM Component + WIT 优先；线程模型冲突时 `external-process` 退路 | M3（G3） |
+| L2 具体 Service 清单 | 证据驱动：首批 `workingDirectory` + `sessionProjections`（配 `session-log`）+ `storage`；`settings`/`fs` 不进首批（[m3-l2-services.md](m3-l2-services.md)） | M3 |
+| MCP / ACP | MCP 最小闭环进 M3；ACP 完整 adapter 移 M4 | M3/M4 |
+| 插件信任链 | 哈希强制 + 可选签名 + 首装确认；CA/吊销/更新通道 M4 | M3/M4 |
+| Beta 总预算 | 290–470（M3 重估）；若维持 240–390 则按 ADR-0007 §5 砍单 | 待产品确认 |
 | 复杂 CAD/EDA 3D Viewport | 单独 Renderer API；原生 GPU vs WebView 实测选择 | M4 |
 | 是否集成完整 DSH React Client | 作为独立 Legacy Workspace，不阻塞主线 | M5 之后 |
 | Linux Wayland 策略 | Native GPUI 优先；WebView 可能需要 X11/XWayland | M4 |
@@ -951,3 +1010,25 @@ v0.1 的两周清单实际约 3–4 周工作量，且把最危险的问题排�
 13. §3.2 注明 `ctx.plugin()` 限制只约束 CPP-v1，JS 插件图由 Sidecar 内 Cordis 管理。
 14. §8 累计区间不再交叠，M4 明确为"增量 50–100 日"。
 15. §13 增补 ADC-v1 元素集边界、L2 服务清单、团队协作不进入 v1 等决策项。
+
+### v0.3（2026-11-12，M3 启动，依据 M3 计划评审）
+
+**结构性修改**
+
+1. §8 M3 按 [ADR-0007](decisions/0007-m3-scope.md) 锁定范围：CPP-A/B/C、ADC-F/S/R、WASM、
+   L2、最小信任链、外部作者验收、conformance 门禁；Script UI 降为 5 日 spike（ADR-0008）；
+   HTML Widget / 插件迁移 / pnpm 捆绑为条件项。
+2. §8 M3 exit gate 由 4 条改为 3 条可机检 gate（G1 契约冻结 / G2 外部作者 / G3 隔离与兼容），
+   证据统一由 `tools/conformance.mjs` 聚合。
+3. §8 M3 新增预算表（增量 115–190，计划口径 120–185）；§9 新增 §9.1 重估说明，Beta 累计上调为
+   290–470（对外口径待产品确认；维持 240–390 则按砍单顺序执行）。
+4. §8 M2 的 MCP/ACP 后移项落账：MCP 最小闭环进 M3、ACP 移 M4；§8 M2 状态标注见 m2-status。
+5. §13 更新 UI Script Runtime、ADC 元素边界、WASM、L2 选型，新增 MCP/ACP、信任链、Beta 预算行。
+6. §11「自动更新通道」与 §8 M4 的冲突修正：M3 只做最小信任链，完整更新通道与证书体系 M4。
+
+**一致性修正**
+
+7. §8 M3 原 8 条中的"Script UI 定案"移出必达（决策不是交付）；"冻结"拆为 ADC-F（工件）与
+   ADC-S/ADC-R（实现），禁止把实现塞进冻结。
+8. §8 M3 补 M2 后移债务 6 项（工具并行、子会话并行、默认差异、timeout 透传、Loader 子集、MCP）；
+   其余债务在 ADR-0007 §3 逐项标 M3/M4，不再散落在各 m2-*.md。

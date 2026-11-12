@@ -2,39 +2,894 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dshr.local/schema/adc-v1/element.schema.json",
   "title": "ADC-v1 element node",
-  "description": "One node of a declarative UI tree submitted by a client plugin. Recursive: children are nodes.",
-  "$ref": "#/definitions/node",
-  "definitions": {
+  "description": "One node of a declarative UI tree submitted by a client plugin. Recursive: children are nodes. 作者期 lint（本 schema）是严格的：未知元素、未知节点字段、未知元素字段、叶子带 children 均判 invalid；运行时按 spec P4/§6 降级为 Placeholder 并记录诊断——两者不是同一件事，见 docs/spec/adc-v1.md §11。",
+  "$ref": "#/$defs/node",
+  "$defs": {
     "node": {
+      "oneOf": [
+        { "$ref": "#/$defs/elements/Stack" },
+        { "$ref": "#/$defs/elements/Row" },
+        { "$ref": "#/$defs/elements/Grid" },
+        { "$ref": "#/$defs/elements/Divider" },
+        { "$ref": "#/$defs/elements/Spacer" },
+        { "$ref": "#/$defs/elements/Text" },
+        { "$ref": "#/$defs/elements/Markdown" },
+        { "$ref": "#/$defs/elements/Code" },
+        { "$ref": "#/$defs/elements/Badge" },
+        { "$ref": "#/$defs/elements/Button" },
+        { "$ref": "#/$defs/elements/Input" },
+        { "$ref": "#/$defs/elements/Textarea" },
+        { "$ref": "#/$defs/elements/Select" },
+        { "$ref": "#/$defs/elements/Checkbox" },
+        { "$ref": "#/$defs/elements/Switch" },
+        { "$ref": "#/$defs/elements/Slider" },
+        { "$ref": "#/$defs/elements/List" },
+        { "$ref": "#/$defs/elements/Table" },
+        { "$ref": "#/$defs/elements/Tree" },
+        { "$ref": "#/$defs/elements/KeyValue" },
+        { "$ref": "#/$defs/elements/Image" },
+        { "$ref": "#/$defs/elements/Icon" },
+        { "$ref": "#/$defs/elements/Chart" },
+        { "$ref": "#/$defs/elements/Card" },
+        { "$ref": "#/$defs/elements/Tabs" },
+        { "$ref": "#/$defs/elements/Accordion" }
+      ]
+    },
+    "elements": {
+      "Stack": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Stack" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Stack" },
+          "children": { "$ref": "#/$defs/children" }
+        }
+      },
+      "Row": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Row" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Row" },
+          "children": { "$ref": "#/$defs/children" }
+        }
+      },
+      "Grid": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Grid" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Grid" },
+          "children": { "$ref": "#/$defs/children" }
+        }
+      },
+      "Divider": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Divider" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Divider" }
+        }
+      },
+      "Spacer": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Spacer" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Spacer" }
+        }
+      },
+      "Text": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Text" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Text" }
+        }
+      },
+      "Markdown": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Markdown" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Markdown" }
+        }
+      },
+      "Code": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Code" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Code" }
+        }
+      },
+      "Badge": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Badge" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Badge" }
+        }
+      },
+      "Button": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Button" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Button" }
+        }
+      },
+      "Input": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Input" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Input" }
+        }
+      },
+      "Textarea": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Textarea" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Textarea" }
+        }
+      },
+      "Select": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Select" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Select" }
+        }
+      },
+      "Checkbox": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Checkbox" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Checkbox" }
+        }
+      },
+      "Switch": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Switch" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Switch" }
+        }
+      },
+      "Slider": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Slider" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Slider" }
+        }
+      },
+      "List": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "List" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/List" }
+        }
+      },
+      "Table": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Table" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Table" }
+        }
+      },
+      "Tree": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Tree" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Tree" }
+        }
+      },
+      "KeyValue": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "KeyValue" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/KeyValue" }
+        }
+      },
+      "Image": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Image" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Image" }
+        }
+      },
+      "Icon": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Icon" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Icon" }
+        }
+      },
+      "Chart": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Chart" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Chart" }
+        }
+      },
+      "Card": {
+        "type": "object",
+        "required": ["type", "children"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Card" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Card" },
+          "children": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": { "$ref": "#/$defs/node" }
+          }
+        }
+      },
+      "Tabs": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Tabs" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Tabs" },
+          "children": { "$ref": "#/$defs/children" }
+        }
+      },
+      "Accordion": {
+        "type": "object",
+        "required": ["type", "props"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "const": "Accordion" },
+          "key": { "$ref": "#/$defs/elementKey" },
+          "props": { "$ref": "#/$defs/props/Accordion" }
+        }
+      }
+    },
+    "props": {
+      "Stack": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "gap": { "$ref": "#/$defs/spacing" },
+          "padding": { "$ref": "#/$defs/spacing" },
+          "align": { "$ref": "#/$defs/align" },
+          "justify": { "$ref": "#/$defs/justify" }
+        }
+      },
+      "Row": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "gap": { "$ref": "#/$defs/spacing" },
+          "padding": { "$ref": "#/$defs/spacing" },
+          "align": { "$ref": "#/$defs/align" },
+          "justify": { "$ref": "#/$defs/justify" },
+          "wrap": { "type": "boolean" }
+        }
+      },
+      "Grid": {
+        "type": "object",
+        "required": ["columns"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "columns": { "type": "integer", "minimum": 1, "maximum": 12 },
+          "gap": { "$ref": "#/$defs/spacing" }
+        }
+      },
+      "Divider": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "label": { "type": "string", "maxLength": 256 }
+        }
+      },
+      "Spacer": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" }
+        }
+      },
+      "Text": {
+        "type": "object",
+        "required": ["value"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "value": { "type": "string", "maxLength": 8192 },
+          "style": { "enum": ["body", "caption", "title", "mono"] },
+          "maxLines": { "type": "integer", "minimum": 1, "maximum": 1000 }
+        }
+      },
+      "Markdown": {
+        "type": "object",
+        "required": ["source"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "source": { "type": "string", "maxLength": 8192 },
+          "maxLines": { "type": "integer", "minimum": 1, "maximum": 100000 }
+        }
+      },
+      "Code": {
+        "type": "object",
+        "required": ["source"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "source": { "type": "string", "maxLength": 8192 },
+          "language": { "type": "string", "maxLength": 48, "pattern": "^[A-Za-z0-9+#._-]+$" },
+          "lineNumbers": { "type": "boolean" }
+        }
+      },
+      "Badge": {
+        "type": "object",
+        "required": ["label"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "label": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      },
+      "Button": {
+        "type": "object",
+        "required": ["label"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "disabled": { "type": "boolean" },
+          "onPress": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Input": {
+        "type": "object",
+        "required": ["value"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "value": { "type": "string", "maxLength": 8192 },
+          "placeholder": { "type": "string", "maxLength": 256 },
+          "multiline": { "type": "boolean" },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Textarea": {
+        "type": "object",
+        "required": ["value"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "value": { "type": "string", "maxLength": 8192 },
+          "rows": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Select": {
+        "type": "object",
+        "required": ["value", "options"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "value": { "type": "string", "maxLength": 256 },
+          "options": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "required": ["value", "label"],
+              "additionalProperties": false,
+              "properties": {
+                "value": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "label": { "type": "string", "minLength": 1, "maxLength": 256 }
+              }
+            }
+          },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Checkbox": {
+        "type": "object",
+        "required": ["checked"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "checked": { "type": "boolean" },
+          "label": { "type": "string", "maxLength": 256 },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Switch": {
+        "type": "object",
+        "required": ["checked"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "checked": { "type": "boolean" },
+          "label": { "type": "string", "maxLength": 256 },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Slider": {
+        "type": "object",
+        "required": ["value"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "value": { "type": "number" },
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "step": { "type": "number", "minimum": 0 },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "List": {
+        "type": "object",
+        "required": ["items"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "items": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "required": ["key", "primary"],
+              "additionalProperties": false,
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "primary": { "type": "string", "maxLength": 1024 },
+                "secondary": { "type": "string", "maxLength": 1024 }
+              }
+            }
+          },
+          "onSelect": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Table": {
+        "type": "object",
+        "required": ["columns", "rows"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "columns": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "required": ["key", "title"],
+              "additionalProperties": false,
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+                "width": { "type": "number", "minimum": 0, "maximum": 4096 }
+              }
+            }
+          },
+          "rows": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+            }
+          },
+          "onRowClick": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Tree": {
+        "type": "object",
+        "required": ["nodes"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "nodes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": { "$ref": "#/$defs/treeNode" }
+          },
+          "expanded": {
+            "type": "array",
+            "maxItems": 200,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          "onToggle": { "$ref": "#/$defs/action" }
+        }
+      },
+      "KeyValue": {
+        "type": "object",
+        "required": ["pairs"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "pairs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "required": ["key", "value"],
+              "additionalProperties": false,
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "value": { "type": "string", "maxLength": 8192 }
+              }
+            }
+          }
+        }
+      },
+      "Image": {
+        "type": "object",
+        "required": ["attachmentId"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "attachmentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "alt": { "type": "string", "maxLength": 256 },
+          "fit": { "enum": ["cover", "contain", "fill"] }
+        }
+      },
+      "Icon": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]*$" }
+        }
+      },
+      "Chart": {
+        "type": "object",
+        "required": ["kind", "data"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "kind": { "enum": ["bars", "line", "donut"] },
+          "data": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "required": ["label", "value"],
+              "additionalProperties": false,
+              "properties": {
+                "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "value": { "type": "number" }
+              }
+            }
+          },
+          "series": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "required": ["label", "values"],
+              "additionalProperties": false,
+              "properties": {
+                "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "values": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "items": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "Card": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      },
+      "Tabs": {
+        "type": "object",
+        "required": ["tabs", "activeKey"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "tabs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "required": ["key", "label"],
+              "additionalProperties": false,
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "label": { "type": "string", "minLength": 1, "maxLength": 128 }
+              }
+            }
+          },
+          "activeKey": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "onChange": { "$ref": "#/$defs/action" }
+        }
+      },
+      "Accordion": {
+        "type": "object",
+        "required": ["sections"],
+        "additionalProperties": false,
+        "properties": {
+          "visible": { "$ref": "#/$defs/common/visible" },
+          "testId": { "$ref": "#/$defs/common/testId" },
+          "a11yLabel": { "$ref": "#/$defs/common/a11yLabel" },
+          "tone": { "$ref": "#/$defs/common/tone" },
+          "span": { "$ref": "#/$defs/common/span" },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "required": ["key", "title", "children"],
+              "additionalProperties": false,
+              "properties": {
+                "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "children": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 50,
+                  "items": { "$ref": "#/$defs/node" }
+                }
+              }
+            }
+          },
+          "expanded": {
+            "type": "array",
+            "maxItems": 200,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      }
+    },
+    "common": {
+      "visible": { "type": "boolean" },
+      "testId": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "a11yLabel": { "type": "string", "minLength": 1, "maxLength": 256 },
+      "tone": { "$ref": "#/$defs/tone" },
+      "span": { "type": "integer", "minimum": 1, "maximum": 12 }
+    },
+    "tone": { "enum": ["neutral", "info", "success", "warning", "error"] },
+    "spacing": { "enum": [0, 2, 4, 8, 12, 16, 24, 32] },
+    "align": { "enum": ["start", "center", "end", "stretch"] },
+    "justify": { "enum": ["start", "center", "end", "space-between"] },
+    "elementKey": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "children": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "treeNode": {
       "type": "object",
-      "required": ["type"],
+      "required": ["key", "label"],
       "additionalProperties": false,
       "properties": {
-        "type": {
-          "type": "string",
-          "enum": [
-            "Stack", "Row", "Grid", "Divider", "Spacer",
-            "Text", "Markdown", "Code", "Badge",
-            "Button", "Input", "Textarea", "Select", "Checkbox", "Switch", "Slider",
-            "List", "Table", "Tree", "KeyValue",
-            "Image", "Icon", "Chart",
-            "Card", "Tabs", "Accordion"
-          ]
-        },
-        "key": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "props": {
-          "type": "object"
-        },
+        "key": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 256 },
         "children": {
           "type": "array",
           "maxItems": 200,
-          "items": { "$ref": "#/definitions/node" }
+          "items": { "$ref": "#/$defs/treeNode" }
         }
       }
+    },
+    "action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["call"],
+          "additionalProperties": false,
+          "properties": {
+            "call": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+            "args": { "type": "object" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["command"],
+          "additionalProperties": false,
+          "properties": {
+            "command": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["openExternal"],
+          "additionalProperties": false,
+          "properties": {
+            "openExternal": { "type": "string", "pattern": "^https://[^\\s]+$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["copy"],
+          "additionalProperties": false,
+          "properties": {
+            "copy": { "type": "string", "maxLength": 65536 }
+          }
+        }
+      ]
     }
   }
 }

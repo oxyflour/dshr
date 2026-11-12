@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dshr.local/schema/sidecar-rpc/envelope.schema.json",
   "title": "Sidecar RPC envelope",
-  "description": "One control message between the Rust host and the Node DSH sidecar.",
+  "description": "One control message between the Rust host and the Node DSH sidecar. v2 is an additive superset of v1 (docs/spec/sidecar-rpc.md §3.2/§13): the same envelope fields, plus an optional service_key and the v2-only service proxy kinds. kind↔version pairing is a protocol rule, not a schema constraint.",
   "type": "object",
   "required": [
     "version",
@@ -24,7 +24,10 @@
         "plugin.load", "plugin.loaded", "plugin.failed", "plugin.unload", "plugin.unloaded",
         "tool.register", "tool.unregister",
         "tool.invoke", "tool.chunk", "tool.result", "tool.cancel", "tool.aborted",
+        "fs.write.request", "fs.write.result",
         "service.publish", "service.revoke", "service.invoke", "service.result",
+        "service.cancel",
+        "host.service.request", "host.service.result", "host.service.cancel",
         "ui.contribute", "ui.retract",
         "event.subscribe", "event.unsubscribe", "event.emit",
         "health.ping", "health.pong",
@@ -35,6 +38,11 @@
     "runtime_generation": { "type": "string", "pattern": "^node-[0-9]{4,}$" },
     "plugin_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$" },
     "registration_id": { "type": "string", "pattern": "^reg-[0-9]+$" },
+    "service_key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*/v[1-9][0-9]*$",
+      "description": "Service route anchor: `<name>/v<major>` (docs/spec/README.md §3). Required on every service proxy message; absent on v1 messages."
+    },
     "session_id": { "type": "string", "pattern": "^s-[0-9]+$" },
     "call_id": { "type": "string", "pattern": "^call-[0-9]+$" },
     "depth": { "type": "integer", "minimum": 0, "maximum": 4 },
