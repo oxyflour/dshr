@@ -62,7 +62,7 @@ title 取测试函数名，notes 追加来源文件。这同时满足「ID 归�
 |---|---|---|
 | `implemented` | 已有可执行证据：必须声明 `suite` + `selector`，且 selector 在本次运行中命中；`groups` 里还必须能在 `source_dirs` 找到对应测试函数 | 是（未命中/失败 → FAIL） |
 | `pending` | 已定义断言但实现/契约未就绪（`ADC-BIND-001`、`CPP-WASM-001`、17 个 chat selftest） | 否 |
-| `manual` | 需人工/脚本实验判定（`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`CPP-AUTHOR-001`） | 否 |
+| `manual` | 需人工/脚本实验判定（`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`CPP-AUTHOR-001`） | 否 |
 | `blocked` | 被外部依赖阻塞（当前暂无条目；语义保留给前置未落地时） | 否 |
 
 `result` 取值：`PASS` / `FAIL` / `SKIP`（suite 本次未选中，例如 `--quick` 下 `suite=cargo` 的 ID）/
@@ -125,15 +125,15 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-第三轮（M3 代码落地后，2026-11-14 生成）：**共 378 个测试 ID —— implemented 355、
-pending 19、manual 4、failed 0（quick）**。`--quick --compact` 下 34 通过（20 schema fixture +
-1 doc link + 13 个 `node-test` JS 单测），321 个 `suite=cargo` 的 implemented ID 记为 SKIP
+第四轮（M3 W3 代码落地后，2026-11-14 生成）：**共 416 个测试 ID —— implemented 392、
+pending 19、manual 5、failed 0（quick）**。`--quick --compact` 下 34 通过（20 schema fixture +
+1 doc link + 13 个 `node-test` JS 单测），358 个 `suite=cargo` 的 implemented ID 记为 SKIP
 （quick 不构建 Rust）。矩阵报告带 `generated_at`、`git HEAD`（含 dirty 文件数）、platform、
 逐 suite 结果与逐 ID 行；以 [`conformance-matrix.json`](conformance-matrix.json) 为准。
 
 本轮 `--workspace` 实跑（2026-11-14，本机受限会话）：harness 用
-`cargo test --offline --workspace --no-fail-fast` 跑完 **59 suites / 671 passed / 1 failed**；
-逐包判定 implemented 320 pass / 1 fail（仅 `CARGO-UNIT-001` workspace-wide）/ 34 skip。
+`cargo test --offline --workspace --no-fail-fast` 跑完 **61 suites / 709 passed / 1 failed**；
+逐包判定 implemented 357 pass / 1 fail（仅 `CARGO-UNIT-001` workspace-wide）/ 34 skip。
 唯一失败仍是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
 （隔离重跑同样失败，属沙箱进程限制，非代码改动；[`m3-status.md`](m3-status.md) §4 已记录）。
 cargo **仅此 1 条环境失败，其余全绿**。提交矩阵用 `--quick` 生成、cargo ID 记为 SKIP。
@@ -147,7 +147,8 @@ cargo **仅此 1 条环境失败，其余全绿**。提交矩阵用 `--quick` �
 | `JS-L2SVC-001..013` | implemented（`quick`） | `node-test` suite：`sidecar/dsh-official/lib/host-services.test.mjs`（源码 ID L2JS-001..013） |
 | `CARGO-UNIT-001..004` | implemented（`--workspace` 才执行） | workspace 单测；按包 selector |
 | `ADC-SLOT-001..023` / `ADC-ELEM-001..022` / `ADC-SEC-001..009` | implemented | `dshr-ui-contributions`（ADC-S） |
-| `ADC-ELEM-SPACING/ALIGN/...-001..004`（26 条） | implemented | `dshr-ui-gpui` 渲染器单测（ADC-R） |
+| `ADC-ELEM-SPACING/ALIGN/...-001..004`（26 条）+ `ADC-ELEM-PANEL-001..010` | implemented | `dshr-ui-gpui` 渲染器/panel 入口单测（ADC-R） |
+| `ADC-PERF-001..002` | implemented（`--workspace` 才执行） | `dshr-ui-gpui` `tests/adc_perf.rs` 构造预算（debug 约 4.4s；release 见 `m3-render-budget.md`） |
 | `CPP-FIBER-001..027` / `CPP-SVC-001..014` / `CPP-EFF-001..010` | implemented | `dshr-plugin-host`（Fiber/Service/Effect） |
 | `CPP-FIBER-101..133` | implemented | `dshr-plugin-api`（capability/取消/结果/错误码） |
 | `CPP-MANIFEST-001..026` / `CPP-VER-001..007` | implemented | `dshr-plugin-api`（typed/TOML manifest、版本） |
@@ -157,24 +158,30 @@ cargo **仅此 1 条环境失败，其余全绿**。提交矩阵用 `--quick` �
 | `MCP-CLIENT-001..017` | implemented | `dshr-compat-mcp`（MCP stdio 客户端，源码 ID MCP-001..017） |
 | `RPC-L2-001..010` | implemented | `dshr-compat-dsh-protocol`（v2 envelope/service_key） |
 | `RPC-L2-101..128,221..227,301..313` | implemented | `dshr-compat-dsh-host`（service 代理 + storage_kv + 新服务方法） |
+| `RPC-L2-401..410` | implemented | `dshr-compat-dsh-host` `tests/l2_host_services.rs`（v2 握手/caps、storage/wd 端到端、cancel/迟到/generation） |
+| `M3-LOADER-001..015` | implemented | `dshr-profile` `loader.rs`（include/group/patch/深度/`!!js`） |
 | `ADC-BIND-001` / `CPP-WASM-001` | pending | 绑定权限、WASM 配额/隔离尚未实现 |
 | `SELF-CHAT-001..017` | pending | 现有 17 个 `chat --selftest*`，尚未纳入 harness |
-| `CPP-TRUST-019` / `CPP-ISO-022` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件）、authoring 门禁、外部作者实验需人工判定 |
+| `CPP-TRUST-019` / `CPP-ISO-022` / `RPC-L2-411` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件/L2）、authoring 门禁、外部作者实验需人工判定 |
 
 ## 7. 与 M3 exit gate 的对应
 
 参考 [`review-m3-plan.md`](review-m3-plan.md) §4：
 
 - **G1 契约冻结（ADC）**：`ADC-SLOT-*`（12 slot 目录 + 注册/撤销/委托）、`ADC-ELEM-*`
-  （ui-contributions 元素模型 + ui-gpui 26 元素渲染器，未知 type → Placeholder）、`ADC-SEC-*`
-  （https-only/配额/a11y）已 implemented；`ADC-BIND-*`（绑定权限/patch seq）仍 pending。
+  （ui-contributions 元素模型 + ui-gpui 26 元素 + 10 个 panel 入口，未知 type → Placeholder）、
+  `ADC-SEC-*`（https-only/配额/a11y）、`ADC-PERF-*`（渲染构造预算）已 implemented；
+  `ADC-BIND-*`（绑定权限/patch seq）仍 pending。
 - **G2 外部作者可发布**：`CPP-TRUST-001..018`（签名/首装确认/降级）、`CPP-ISO-001..021`
   （external-process 生命周期/隔离 + G2 安装→装载→调用→卸载 E2E）、`CPP-PROC-*`（SDK）、
-  `CPP-MANIFEST/VER` 已 implemented；manual 证据：`CPP-TRUST-019`（chat `--selftest-trust-install`）、
+  `CPP-MANIFEST/VER`、`M3-LOADER-001..015`（include/group/patch/`!!js` 语义）已 implemented；
+  manual 证据：`CPP-TRUST-019`（chat `--selftest-trust-install`）、
   `CPP-ISO-022`（chat `--selftest-external-plugin`）、`CPP-AUTHOR-001`
   （`tools/authoring-check.ps1`）、`GATE-G2-001`（仓库外实验 checklist）。
-- **G3 隔离与兼容**：`RPC-L2-*`（protocol v2 契约 + host service 代理 + storage_kv + 新服务方法）、
-  `MCP-CLIENT-*`（MCP stdio 客户端）、`JS-L2SVC-*`（sidecar host-service JS 单测）已 implemented；
+- **G3 隔离与兼容**：`RPC-L2-*`（protocol v2 契约 + host service 代理 + storage_kv + 新服务方法 +
+  `RPC-L2-401..410` 真实 sidecar 端到端）、`MCP-CLIENT-*`（MCP stdio 客户端）、
+  `JS-L2SVC-*`（sidecar host-service JS 单测）已 implemented；manual 证据
+  `RPC-L2-411`（chat `--selftest-l2`：phase A 真实 sidecar protocol=2 + phase B fixture storage-kv）；
   `CPP-WASM-001`（fuel/内存/超时隔离）仍 pending。
 
 gate 判定方式：`node tools/conformance.mjs --full` 全绿（implemented 无 FAIL）且对应 gate 的
@@ -193,10 +200,11 @@ manual 证据落盘。
 3. **schema selector 与用例 label 耦合**：`SCHEMA-FIXTURE-*` 的 selector 指向
    `schema/check.mjs` 的 `[schema] label`。重命名/删除用例会让对应 ID FAIL——这是有意为之
    （注册表引用的证据必须仍然存在）。新增用例同时把新 ID 写进注册表，不要只改脚本。
-4. **ADC/CPP/RPC 已有运行期证据，但不是全绿**：ADC-SLOT/ELEM/SEC、CPP-FIBER/SVC/EFF/MANIFEST/
-   VER/TRUST/PROC/ISO、MCP、RPC-L2 已按 crate 单测登记为 implemented（`--workspace`/CI 才执行）；
-   剩余 `ADC-BIND-001`（绑定权限）、`CPP-WASM-001`（WASM 配额/隔离）仍 pending，不能因为矩阵
-   整体 exit 0 就宣称对应 gate 已完成（quick 不含 cargo）。
+4. **ADC/CPP/RPC/M3 已有运行期证据，但不是全绿**：ADC-SLOT/ELEM/SEC/PANEL/PERF、CPP-FIBER/
+   SVC/EFF/MANIFEST/VER/TRUST/PROC/ISO、MCP、RPC-L2（含 4xx 端到端）、M3-LOADER 已按 crate 单测
+   登记为 implemented（`--workspace`/CI 才执行）；剩余 `ADC-BIND-001`（绑定权限）、
+   `CPP-WASM-001`（WASM 配额/隔离）仍 pending，不能因为矩阵整体 exit 0 就宣称对应 gate 已完成
+   （quick 不含 cargo）。
 5. **`groups` 依赖源码扫描**：批量条目靠 `source_dirs` + 测试函数名/注释匹配。改测试函数名或
    删测试会让对应 ID 注册表校验失败——这是有意的证据校验；新增测试时把 ID 加进对应组的 `ids`。
 6. **两段式 ID 的映射**：`compat-mcp` 源码写 `MCP-001..017`、sidecar JS 测试写 `L2JS-001..013`，
@@ -219,7 +227,7 @@ manual 证据落盘。
 4. `implemented` 的 selector 必须能被对应 suite 输出命中；拿不准先跑 `--suite <name>` 看输出。
 5. 跑 `node tools/conformance.mjs --quick`，再按需重生成矩阵：
    `--quick --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md`。
-   370+ 条 ID 建议始终带 `--compact`；quick 现在包含 schema/links/node-test。
+   410+ 条 ID 建议始终带 `--compact`；quick 现在包含 schema/links/node-test。
 6. 矩阵文件是生成的，**不要手改**；CI 会重新生成并上传 artifact。
 7. 新增 suite 属于 harness 变更（`SUITE_NAMES`/`SUITE_COMMANDS`/runner/解析器），需同时改
    [`tools/conformance.mjs`](../tools/conformance.mjs) 与注册表 `suites`，两处不一致时 harness 直接报错。

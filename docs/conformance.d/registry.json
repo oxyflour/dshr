@@ -4,10 +4,11 @@
   "updated_at": "2026-11-14",
   "notes": [
     "本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。",
-    "本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 59 suites / 671 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。",
+    "本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 61 suites / 709 passed / 1 failed；逐包判定 implemented 357 pass / 1 fail（仅 CARGO-UNIT-001 workspace-wide）/ 34 skip。唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。",
     "第三轮新增证据：CPP-PROC（plugin-sdk，23）、CPP-ISO（plugin-host external_process，17）、CPP-MANIFEST-023..026（TOML，4）、MCP-CLIENT-001..017（compat-mcp）、RPC-L2-121..128/221..227（host services，15）均为 cargo implemented；sidecar JS 单测 13 个走新增 quick suite `node-test`（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs），登记为 JS-L2SVC-001..013（源码 ID L2JS-xxx）。",
-    "ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理。",
-    "manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）；两者按现有 schema 无法由 harness 自动判定，不计失败。",
+    "第四轮新增证据：RPC-L2-401..410（compat-dsh-host tests/l2_host_services.rs，端到端 v2 握手/storage/wd/cancel/迟到/generation）、M3-LOADER-001..015（profile loader.rs include/group/patch/!!js）、ADC-ELEM-PANEL-001..010（ui-gpui adc.rs panel 入口）、ADC-PERF-001..002（ui-gpui tests/adc_perf.rs 预算，debug 约 4.4s）均为 cargo implemented；chat --selftest-l2 登记 RPC-L2-411 manual（phase A 真实 sidecar+phase B fixture storage-kv）。",
+    "ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理（L2JS-001..013 → JS-L2SVC-001..013）。",
+    "manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、RPC-L2-411 = chat --selftest-l2（需 chat 二进制 + vendored sidecar）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）、CPP-TRUST-019 = chat --selftest-trust-install；均按现有 schema 无法由 harness 自动判定，不计失败。",
     "提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。",
     ".github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。"
   ],
@@ -94,6 +95,8 @@
     {"id":"JS-L2SVC-011","area":"JS","title":"L2JS-011 storage hub exposes the official storage surface","status":"implemented","suite":"node-test","selector":"L2JS-011","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
     {"id":"JS-L2SVC-012","area":"JS","title":"L2JS-012 createHostServicesRuntime wires the sidecar surface","status":"implemented","suite":"node-test","selector":"L2JS-012","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
     {"id":"JS-L2SVC-013","area":"JS","title":"L2JS-013 event subscriptions reach the host channel","status":"implemented","suite":"node-test","selector":"L2JS-013","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"ADC-PERF-001","area":"ADC","title":"adc_perf: 满配额树构造 p95 预算","status":"implemented","suite":"cargo","selector":"dshr-ui-gpui","notes":"crates/ui-gpui/tests/adc_perf.rs::adc_construction_budget_max_quota_tree（默认 debug 也跑，4.4s；release 命令见 docs/m3-render-budget.md）；cargo test -p dshr-ui-gpui --test adc_perf"},
+    {"id":"ADC-PERF-002","area":"ADC","title":"adc_perf: 10 棵典型树构造 p95 预算","status":"implemented","suite":"cargo","selector":"dshr-ui-gpui","notes":"crates/ui-gpui/tests/adc_perf.rs::adc_construction_budget_typical_trees；cargo test -p dshr-ui-gpui --test adc_perf"},
     {"id":"ADC-BIND-001","area":"ADC","title":"绑定前缀权限与 patch seq 乱序丢弃","status":"pending","suite":null,"selector":null,"notes":"依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。"},
     {"id":"CPP-WASM-001","area":"CPP","title":"fuel/内存/超时三例分别隔离","status":"pending","suite":null,"selector":null,"notes":"依赖 spec/cpp-v1.wit + Wasmtime host + 配额 ADR-0010；M3 G3 证据。"},
     {"id":"SELF-CHAT-001","area":"SELF","title":"chat --selftest 基本对话","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。"},
@@ -116,6 +119,7 @@
     {"id":"CPP-TRUST-019","area":"CPP","title":"chat --selftest-trust-install（安装信任链端到端）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。"},
     {"id":"CPP-ISO-022","area":"CPP","title":"chat --selftest-external-plugin（external-process 产品路径 E2E）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。"},
     {"id":"CPP-AUTHOR-001","area":"CPP","title":"tools/authoring-check.ps1（外部作者 E2E 门禁）","status":"manual","suite":null,"selector":null,"notes":"tools/authoring-check.ps1；仓库外按 docs/plugin-authoring.md + templates 构建/打包/安装（G2），人工/脚本判定。"},
+    {"id":"RPC-L2-411","area":"RPC","title":"chat --selftest-l2（v2 host-service 端到端 smoke）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。"},
     {"id":"GATE-G2-001","area":"GATE","title":"外部作者可发布实验（仓库外构建 + 安装 + 卸载）","status":"manual","suite":null,"selector":null,"notes":"M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。"}
   ],
   "groups": [
@@ -334,6 +338,34 @@
       ]
     },
     {
+      "name": "M3-LOADER（profile：Loader include/group/patch/深度/!!js）",
+      "area": "M3",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-profile",
+      "notes": "crates/profile/src/loader.rs 的 #[test]（函数名内编码 M3-LOADER-xxx）；cargo test -p dshr-profile",
+      "source_dirs": [
+        "crates/profile/src"
+      ],
+      "ids": [
+        "M3-LOADER-001",
+        "M3-LOADER-002",
+        "M3-LOADER-003",
+        "M3-LOADER-004",
+        "M3-LOADER-005",
+        "M3-LOADER-006",
+        "M3-LOADER-007",
+        "M3-LOADER-008",
+        "M3-LOADER-009",
+        "M3-LOADER-010",
+        "M3-LOADER-011",
+        "M3-LOADER-012",
+        "M3-LOADER-013",
+        "M3-LOADER-014",
+        "M3-LOADER-015"
+      ]
+    },
+    {
       "name": "ADC-SLOT（ui-contributions：slot 目录/注册表/委托）",
       "area": "ADC",
       "status": "implemented",
@@ -462,7 +494,17 @@
         "ADC-ELEM-TEXT-003",
         "ADC-ELEM-A11Y-003",
         "ADC-ELEM-RENDER-003",
-        "ADC-ELEM-A11Y-004"
+        "ADC-ELEM-A11Y-004",
+        "ADC-ELEM-PANEL-001",
+        "ADC-ELEM-PANEL-002",
+        "ADC-ELEM-PANEL-003",
+        "ADC-ELEM-PANEL-004",
+        "ADC-ELEM-PANEL-005",
+        "ADC-ELEM-PANEL-006",
+        "ADC-ELEM-PANEL-007",
+        "ADC-ELEM-PANEL-008",
+        "ADC-ELEM-PANEL-009",
+        "ADC-ELEM-PANEL-010"
       ]
     },
     {
@@ -494,9 +536,10 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-compat-dsh-host",
-      "notes": "crates/compat-dsh-host/src/{service,storage_kv}.rs 的 #[test]；cargo test -p dshr-compat-dsh-host",
+      "notes": "crates/compat-dsh-host/src/{service,storage_kv}.rs 与 tests/l2_host_services.rs 的 #[test]；cargo test -p dshr-compat-dsh-host",
       "source_dirs": [
-        "crates/compat-dsh-host/src"
+        "crates/compat-dsh-host/src",
+        "crates/compat-dsh-host/tests"
       ],
       "ids": [
         "RPC-L2-101",
@@ -545,7 +588,17 @@
         "RPC-L2-310",
         "RPC-L2-311",
         "RPC-L2-312",
-        "RPC-L2-313"
+        "RPC-L2-313",
+        "RPC-L2-401",
+        "RPC-L2-402",
+        "RPC-L2-403",
+        "RPC-L2-404",
+        "RPC-L2-405",
+        "RPC-L2-406",
+        "RPC-L2-407",
+        "RPC-L2-408",
+        "RPC-L2-409",
+        "RPC-L2-410"
       ]
     },
     {

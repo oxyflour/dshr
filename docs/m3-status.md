@@ -1,35 +1,37 @@
 # M3 状态 — 插件平台 Preview
 
-> 更新：2026-11-14（W3：external-process 运行时 / G2 作者套件 / G3 L2 集成）。范围、gate 与砍单顺序见
+> 更新：2026-11-14（W4：L2 端到端 / Loader 债务 / ADC 渲染预算）。范围、gate 与砍单顺序见
 > [`decisions/0007-m3-scope.md`](decisions/0007-m3-scope.md)；计划基线见 [`PLAN.md`](PLAN.md) §8 M3 / §9.1；
-> 计划评审见 [`review-m3-plan.md`](review-m3-plan.md)。
+> 计划评审见 [`review-m3-plan.md`](review-m3-plan.md)；给最终 review 的证据索引见
+> [`m3-gate-evidence.md`](m3-gate-evidence.md)。
 > 本文是**活文档**：每完成一个 gate 项就更新证据命令与结果，不写"计划中的证据"。
 
 ## 1. 当前结论
 
-M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链路**。三条 gate 现在都**接近达标**，
-剩余项集中在"产品面接线"与"外部作者形式化实验"：
+M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链路 + W4 L2 端到端/渲染预算**。
+三条 gate 现在都**只剩产品面与收尾项**：
 
-- **G1（契约冻结）**：ADC-v1 已 `Frozen`（[ADR-0011](decisions/0011-adc-v1-freeze.md)），冻结工件/
-  服务端/解析降级/渲染器齐备（82 个 ADC 测试）。剩余：渲染器与 slot 注册表接进 `chat.rs` 产品面、
-  渲染预算实测。
-- **G2（外部作者可发布）**：`dshr-plugin-api` 0.1.0 + `dshr-plugin-sdk` 0.1.0（semver）；external-process
-  运行时（Job Object 配额/超时/崩溃隔离，`CPP-ISO-*`）；作者文档 + 模板 + 生成器 + 打包器 + E2E
-  （安装/升级/降级/篡改/未确认五种结果）；chat 产品路径 `--selftest-external-plugin` PASS
-  （安装→装载→调用→卸载→重载→panel）。剩余：真正仓库外目录实验受本机沙箱限制（用 `.tmp/` 代替）、
-  Panel 产品渲染、DSH JS 插件作者路径的单列文档。
-- **G3（隔离与兼容）**：L2 Rust 侧 + sidecar JS 代理 + 两个新服务（working-directory/session-log，
-  `RPC-L2-121..128`/`221..227`）与 JS 单测 13 个完成；隔离由 external-process 承担
-  （`CPP-ISO-*` 17 个：超时/输出/内存/崩溃四类，宿主存活、无残留进程）。剩余：chat.rs 把 Router 接进
-  sidecar 读循环（真实往返）、三个服务用官方包验收、WASM 主方案（本机离线，ADR-0010 退路已启用）。
+- **G1（契约冻结）**：ADC-v1 已 `Frozen`；冻结工件/服务端/解析降级/渲染器/panel 入口齐备；
+  渲染预算实测完成（release 10 棵典型树最差 total p95 **3.78 ms**，占 60fps 预算 23%；
+  见 [`m3-render-budget.md`](m3-render-budget.md)）。剩余：把 `adc_panel_body` / 注册表接进
+  chat 的 panel 与 tool card（产品面）。
+- **G2（外部作者可发布）**：SDK 0.1.0 + external-process 运行时 + 作者文档/模板/生成器/打包器 +
+  E2E 五态 + chat 产品路径 self-test PASS（W3）。剩余：真仓库外目录实验（沙箱限制用 `.tmp/`）、
+  Panel 产品渲染、DSH JS 作者文档。
+- **G3（隔离与兼容）**：W4 已完成 **chat ↔ sidecar ↔ L2 Router 端到端**：`chat --selftest-l2`
+  phase A（真实 vendored sidecar 协商 protocol=2 / host_services=3）+ phase B（fixture
+  storage-kv 真实 `host.service.request` 往返）PASS；v1 宿主安全回退；M2 `--selftest-dsh` /
+  `--selftest-dsh-write` 不回归。隔离由 external-process 承担（CPP-ISO 17）。剩余：三个 L2 服务
+  用**未修改官方包**验收（受官方工具 `exec.agent` 债务限制，口径为装载绿+方法往返+错误面）、
+  WASM 主方案离线偏离说明。
 
 ## 2. Exit gate 对账
 
 | Gate | 判定 | 当前状态 | 缺口（下一步） |
 |---|---|---|---|
-| **G1 契约冻结** | ADC `Frozen`；12 slot 一一对应；元素 props 字段级；§12 清零；未知元素 Placeholder + 诊断 + 不 panic | **达标（库层）/产品面待接**：spec Frozen + ADR-0011；`ui-contributions` 56 tests、`ui-gpui` 26 tests；未知元素 P4 有测试 | ① 渲染器/注册表接进 chat.rs；② 渲染预算 p95 实测 |
+| **G1 契约冻结** | ADC `Frozen`；12 slot 一一对应；元素 props 字段级；§12 清零；未知元素 Placeholder + 诊断 + 不 panic | **达标（库层）/产品面待接**：spec Frozen + ADR-0011；ADC 56+10 tests、渲染 26+10 panel tests；预算 release 最差 3.78 ms（[m3-render-budget](m3-render-budget.md)）；未知元素 P4 有测试 | ① `adc_panel_body`/注册表接进 chat 的 panel 与 tool card；② 窗口内 draw 预算（M4/手动） |
 | **G2 外部作者可发布** | 仓库外只用文档+模板+semver SDK 构建并安装 Tool+Panel；首装确认/审计/来源校验；篡改/降级被拒 | **大部分**：SDK 0.1.0；作者文档/模板/生成器/打包器；E2E PASS（安装/升级/降级/篡改/未确认）；chat 安装→装载→调用→卸载 self-test PASS；信任链完整 | ① 真仓库外目录实验（沙箱限制，当前 `.tmp/` + 不读源码 checklist）；② Panel 产品渲染；③ DSH JS 插件作者文档补章 |
-| **G3 隔离与兼容** | WASM 三故障注入隔离且宿主存活；3 个 L2 service 用未修改官方插件跑通 | **大部分（退路口径）**：external-process 隔离四类故障（CPP-ISO）；L2 Rust+JS 服务完成；chat 路由接线/官方包往返待做；WASM 由 ADR-0010 退路替代 | ① chat.rs 接 Router + SessionAccess（真实往返）；② 三服务官方包验收；③ WASM 主机（离线阻塞）在 review 中明示偏离 |
+| **G3 隔离与兼容** | WASM 三故障注入隔离且宿主存活；3 个 L2 service 用未修改官方插件跑通 | **端到端已通（退路口径）**：external-process 四类隔离（CPP-ISO）；`RPC-L2-401..410` 覆盖 v2 握手/storage 往返/wd 事件/取消/迟到/generation；`chat --selftest-l2` phase A+B PASS（真实 sidecar protocol=2 + fixture 往返）；v1 安全回退；WASM 由 ADR-0010 退路替代 | ① 三服务**官方包**验收（官方工具 `exec.agent` 债务下按"装载绿+方法往返+错误面"）；② WASM 主机离线偏离说明（review 明示） |
 
 ## 3. 交付与证据
 
@@ -70,20 +72,30 @@ M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链
 | **MCP 最小客户端** | `crates/compat-mcp`（`McpClient`、`mcp-stub`、`tests/mcp_client.rs`） | `MCP-001..017`：initialize/分页/调用/isError/超时/崩溃重启/shutdown/非法行 |
 | **L2 服务 + JS 代理** | `crates/compat-dsh-host/src/services.rs`（SessionAccess/WorkingDirectory/SessionLog）、`sidecar/dsh-official/lib/host-services.mjs` + `sidecar-dsh.mjs` v2 分支 | `RPC-L2-121..128` / `221..227`（15）+ `L2JS-001..013`（13）；握手 smoke v2/v1 双路径 |
 
+### 3.4 W4（L2 端到端 / Loader / 渲染预算）
+
+| 交付 | 文件 | 证据（测试 ID / 命令） |
+|---|---|---|
+| **SidecarHost v2 集成** | `crates/compat-dsh-host/src/lib.rs`（HostOptions.host_services/握手/三读循环 maybe_serve_host_service/capabilities）+ `service.rs`（HostService: Send） | `RPC-L2-401..410`：v2 握手/caps、无 router v1、sidecar v1 回退、storage 往返、wd 往返+事件、未知 key、cancel 先到、迟到 result、generation、默认 caps |
+| **chat L2 接线** | `chat.rs`：`spawn_sidecar(approvals, l2_access)` + `build_l2_router`（storage-kv/working-directory/session-log）+ `ChatSessionAccess` + `--selftest-l2` | `chat --selftest-l2`：phase A PASS（真实 vendored sidecar protocol=2/active/host_services=3）、phase B PASS（fixture storage-kv `open→putRecord→loadAll` 往返）；`--selftest-dsh`/`--selftest-dsh-write` 不回归 |
+| **Loader 债务** | `crates/profile/src/loader.rs`（include 递归/group 展开/patch InsertInto/诊断；`!!js` 不动） | `M3-LOADER-001..015` + lib 集成（profile 58 tests）；差异见 [`m3-loader.md`](m3-loader.md) |
+| **ADC 渲染预算** | `crates/ui-gpui/tests/adc_perf.rs`（10 树 + 满配额，parse/view/total p50/p95，断言 p95<50ms） | release：10 树最差 total p95 3.78 ms、满配额 1.17 ms；见 [`m3-render-budget.md`](m3-render-budget.md) |
+| **ADC panel 入口** | `crates/ui-gpui/src/adc.rs`：`adc_panel_body(theme, &Value) -> (AnyElement, Vec<Diagnostic>)` + `_from_str` | `ADC-ELEM-PANEL-001..010`（合法/未知根/配额/空/null/非法 JSON/a11y/叶子 children/容器） |
+| **稳定性修正** | `crates/plugin-host/tests/external_process.rs` | 内存超限用例接受 E_INTERNAL/E_QUOTA/E_TIMEOUT/exited 多种观测并延长等待（全量并行负载下曾偶发）；其余隔离断言不变 |
+
 ## 4. Conformance 现状
 
 - **契约**：`node schema/check.mjs` → **71/71**。
-- **文档互链**：`node tools/check-links.mjs` → **285 链接 0 broken**。
-- **Rust 单测**：`cargo test --offline --workspace` plain 运行在第一个失败处中止
-  （31 suites / 524 passed / 1 failed）；harness `--no-fail-fast` 完整结果：
-  **59 suites / 671 passed / 1 failed**，唯一失败仍是 `dshr-sidecar-guard` 的沙箱进程限制
-  （非本轮代码；普通桌面会话/CI 复验）。
+- **文档互链**：`node tools/check-links.mjs` → **307 链接 0 broken**。
+- **Rust 单测**：harness `--no-fail-fast` → **61 suites / 709 passed / 1 failed**；plain `cargo test`
+  仍会在第一个失败处中止。唯一失败仍是 `dshr-sidecar-guard` 的沙箱进程限制（非本轮代码；
+  普通桌面会话/CI 复验）。
 - **JS 测试**：`node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs`
   → 13/13（conformance 的 `node-test` suite 已纳入 `--quick`）。
-- **矩阵**：`docs/conformance-matrix.json` / `.md`（generated_at 2026-11-14T15:01Z）由
-  `tools/conformance.mjs` 生成；注册表 **378 ID：implemented 355 / pending 19 / manual 4**
-  （manual 含 `chat --selftest-external-plugin`、`tools/authoring-check.ps1`）；quick 门禁
-  schema+links+node-test 全绿、0 failed。
+- **矩阵**：`docs/conformance-matrix.json` / `.md`（generated_at 2026-11-14T15:19Z）由
+  `tools/conformance.mjs` 生成；注册表 **416 ID：implemented 392 / pending 19 / manual 5**
+  （manual：`chat --selftest-l2`、`--selftest-external-plugin`、`authoring-check`、`CPP-TRUST-019`、
+  `CPP-WASM-*` 待实现说明）；quick 门禁 schema+links+node-test 全绿、0 failed。
 - **CI**：`.github/workflows/conformance.yml` 未在 GitHub Actions 实跑。
 
 ## 5. L2（摘要）

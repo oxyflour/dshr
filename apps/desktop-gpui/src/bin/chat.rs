@@ -43,7 +43,11 @@ use dshr_agent_core::{
     ToolExecutor, ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 use dshr_compat_dsh_fs::FsWriteService;
-use dshr_compat_dsh_host::{HostOptions, SidecarHost};
+use dshr_compat_dsh_host::{
+    EventPage, HostOptions, HostServiceRouter, ServiceError, SessionAccess, SessionEventView,
+    SessionHeaderView, SessionLogService, SidecarHost, StorageKvService, WorkingDirectoryService,
+    CAP_SERVICE_PROXY, PROTOCOL_MAX, SESSION_LOG_V1, STORAGE_KV_V1, WORKING_DIRECTORY_V1,
+};
 use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_llm_openai::OpenAiProvider;
@@ -534,6 +538,8 @@ struct ChatState {
     session_id: String,
     /// 会话目录（子会话文件与导出都基于它）。
     sessions_dir: PathBuf,
+    /// L2 Host Service 的会话读写面（None = 该会话不接 sidecar 服务）。
+    l2_access: Option<Arc<ChatSessionAccess>>,
     /// 与 provider 共享的停止句柄（子会话继承，用户停止会传播）。
     cancel: Arc<AtomicBool>,
     /// 是否允许派生子会话（子会话本身为 false，保证默认单层）。
@@ -708,7 +714,10 @@ fn workspace_root() -> PathBuf {
 /// 2. Job Object 包裹（进程数/内存上限 + 随宿主退出，Windows）；
 /// 3. 官方 DSH 侧车额外协商 `fs.write`：官方 write/edit/apply_patch 的写盘请求
 ///    回到 Rust 走审批 + 沙箱（见 `docs/m2-official-write.md`）。
-fn spawn_sidecar(approvals: Option<Arc<ApprovalBroker>>) -> Option<SidecarHost> {
+fn spawn_sidecar(
+    approvals: Option<Arc<ApprovalBroker>>,
+    l2_access: Option<Arc<ChatSessionAccess>>,
+) -> Option<SidecarHost> {
     // 资源根按 exe 相对解析：`dist/dshr-dev` 整目录拷走后仍能找到 sidecar/（见 `app_root`）。
     let root = app_root();
     let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
@@ -760,10 +769,83 @@ fn spawn_sidecar(approvals: Option<Arc<ApprovalBroker>>) -> Option<SidecarHost> 
             }
         }
     }
+    // L2 v2 Host Service：只有官方 sidecar 实现了 host.service.*；默认开启协商，
+    // `DSHR_HOST_SERVICES=0` 显式关闭（受限环境/回退 M2 行为）。握手协商到 1 时
+    // SidecarHost 自动回退 v1，router 完全不会被使用（安全失败）。
+    let l2_enabled = std::env::var("DSHR_HOST_SERVICES")
+        .map(|value| value != "0")
+        .unwrap_or(true);
+    if mode == "dsh" && l2_enabled {
+        if let Some(access) = l2_access {
+            match build_l2_router(access) {
+                Ok(router) => options = options.with_host_services(router),
+                Err(err) => eprintln!("[chat] L2 host-service 不可用（回退 v1）: {err}"),
+            }
+        }
+    }
     options = options.with_guard(GuardLimits::sidecar_default());
     SidecarHost::spawn_with(script, plugin, options)
         .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
         .ok()
+}
+
+/// 构造 v2 Host Service Router：`storage-kv/v1` + `working-directory/v1` + `session-log/v1`。
+///
+/// generation 先写占位值，`SidecarHost` 在 `runtime.ready` 协商到 2 后会写入真实
+/// generation（`HostServiceRouter::set_generation`）。
+fn build_l2_router(
+    access: Arc<ChatSessionAccess>,
+) -> Result<Arc<Mutex<HostServiceRouter>>, String> {
+    build_l2_router_at(
+        access,
+        data_root().join("storage"),
+        workspace_root(),
+        "dsh-official",
+    )
+}
+
+/// [`build_l2_router`] 的显式路径版本（`--selftest-l2` 用临时目录与 fixture 插件 id，
+/// 不污染用户 profile）。
+fn build_l2_router_at(
+    access: Arc<ChatSessionAccess>,
+    storage_root: PathBuf,
+    workspace: PathBuf,
+    plugin_id: &str,
+) -> Result<Arc<Mutex<HostServiceRouter>>, String> {
+    let mut router = HostServiceRouter::new(
+        "node-pending",
+        PROTOCOL_MAX,
+        vec![CAP_SERVICE_PROXY.to_owned()],
+    )
+    .map_err(|error| format!("router: {} ({})", error.message, error.code))?;
+    let storage = StorageKvService::open(&storage_root)
+        .map_err(|error| format!("storage-kv: {} ({})", error.message, error.code))?;
+    router
+        .register(Box::new(storage))
+        .map_err(|error| format!("register storage-kv: {} ({})", error.message, error.code))?;
+    router
+        .register(Box::new(WorkingDirectoryService::new(
+            access.clone(),
+            workspace,
+        )))
+        .map_err(|error| {
+            format!(
+                "register working-directory: {} ({})",
+                error.message, error.code
+            )
+        })?;
+    router
+        .register(Box::new(SessionLogService::new(access)))
+        .map_err(|error| format!("register session-log: {} ({})", error.message, error.code))?;
+    router.register_plugin_inject(
+        plugin_id,
+        vec![
+            STORAGE_KV_V1.to_owned(),
+            WORKING_DIRECTORY_V1.to_owned(),
+            SESSION_LOG_V1.to_owned(),
+        ],
+    );
+    Ok(Arc::new(Mutex::new(router)))
 }
 
 /// 给没有取消概念的 provider（mock）补上取消 token。
@@ -888,6 +970,302 @@ fn clamp_tool_timeout_ms(millis: u64) -> Duration {
     Duration::from_millis(millis.clamp(1_000, 600_000))
 }
 
+// ---------------------------------------------------------------------------
+// L2 Host Service 的会话读写面（spec/sidecar-rpc.md §13，M3 G3）
+// ---------------------------------------------------------------------------
+
+/// `chat` 对 `SessionAccess` 的实现。
+///
+/// 与 service 层是**同一线程**的同步调用：`ChatExecutor` 在调 sidecar 工具前
+/// `publish` 当前内存 `SessionLog` 快照；`working-directory`/`session-log` 的读走快照，
+/// 服务的 `append_event` 进队列，工具返回后由 `ChatExecutor` 补写回内存日志。
+/// 其它会话的读面落到磁盘（`sessions_dir/<id>.jsonl`），因为插件只在当前会话里执行。
+///
+/// seq 约定：快照尾部 + 1 递增；publish 与 drain 之间没有其它日志写入（同步单线程），
+/// 所以队列事件的 seq 与后续真实日志 seq 一致。
+pub struct ChatSessionAccess {
+    inner: Mutex<ChatSessionAccessInner>,
+}
+
+struct ChatSessionAccessInner {
+    sessions_dir: PathBuf,
+    published: Option<PublishedSession>,
+    pending: Vec<PendingSessionEvent>,
+}
+
+#[derive(Clone)]
+struct PublishedSession {
+    header: SessionHeaderView,
+    events: Vec<SessionEventView>,
+    next_seq: u64,
+}
+
+struct PendingSessionEvent {
+    session_id: String,
+    event_type: String,
+    data: serde_json::Value,
+}
+
+impl ChatSessionAccess {
+    pub fn new(sessions_dir: PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(ChatSessionAccessInner {
+                sessions_dir,
+                published: None,
+                pending: Vec::new(),
+            }),
+        })
+    }
+
+    /// 用当前内存日志刷新服务层可见的快照（在每次 sidecar 工具调用前调用）。
+    pub fn publish(&self, log: &SessionLog) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let header = chat_header_from_log(log, &inner.sessions_dir);
+        let events: Vec<SessionEventView> = log
+            .events()
+            .iter()
+            .map(|event| SessionEventView {
+                seq: event.seq,
+                event_type: event.event_type.clone(),
+                data: event.payload.clone(),
+            })
+            .collect();
+        let next_seq = events.last().map(|event| event.seq + 1).unwrap_or(1);
+        inner.published = Some(PublishedSession {
+            header,
+            events,
+            next_seq,
+        });
+    }
+
+    /// 取走服务层为 `session_id` 追加的事件（按序写回内存日志）。
+    pub fn take_appends(&self, session_id: &str) -> Vec<(String, serde_json::Value)> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut taken = Vec::new();
+        let mut keep = Vec::with_capacity(inner.pending.len());
+        for pending in inner.pending.drain(..) {
+            if pending.session_id == session_id {
+                taken.push((pending.event_type, pending.data));
+            } else {
+                keep.push(pending);
+            }
+        }
+        inner.pending = keep;
+        taken
+    }
+
+    // ServiceError 携带结构化 detail（与协议层一致的大 Err），这里按 host crate 的
+    // 同样取舍保留原类型，不为了 clippy 的尺寸阈值再包一层 Box。
+    #[allow(clippy::result_large_err)]
+    fn disk_read(
+        &self,
+        session_id: &str,
+    ) -> Result<(SessionHeaderView, Vec<SessionEventView>), ServiceError> {
+        let sessions_dir = {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            inner.sessions_dir.clone()
+        };
+        let log = load_session_log(&sessions_dir, session_id)?;
+        let header = chat_header_from_log(&log, &sessions_dir);
+        let events = log
+            .events()
+            .iter()
+            .map(|event| SessionEventView {
+                seq: event.seq,
+                event_type: event.event_type.clone(),
+                data: event.payload.clone(),
+            })
+            .collect();
+        Ok((header, events))
+    }
+}
+
+impl SessionAccess for ChatSessionAccess {
+    fn header(&self, session_id: &str) -> Result<SessionHeaderView, ServiceError> {
+        {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(published) = &inner.published {
+                if published.header.id == session_id {
+                    return Ok(published.header.clone());
+                }
+            }
+        }
+        self.disk_read(session_id).map(|(header, _)| header)
+    }
+
+    fn read_events(
+        &self,
+        session_id: &str,
+        from_seq: u64,
+        max_events: usize,
+    ) -> Result<EventPage, ServiceError> {
+        let events = {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(published) = &inner.published {
+                if published.header.id == session_id {
+                    Some(published.events.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        let events = match events {
+            Some(events) => events,
+            None => self.disk_read(session_id)?.1,
+        };
+        let start = events
+            .iter()
+            .position(|event| event.seq >= from_seq)
+            .unwrap_or(events.len());
+        let page: Vec<SessionEventView> =
+            events[start..].iter().take(max_events).cloned().collect();
+        let eof = start + page.len() >= events.len();
+        let next_seq = page.last().map(|event| event.seq + 1).unwrap_or(from_seq);
+        Ok(EventPage {
+            events: page,
+            next_seq,
+            eof,
+        })
+    }
+
+    fn append_event(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        data: serde_json::Value,
+    ) -> Result<u64, ServiceError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(published) = inner.published.as_mut() else {
+            return Err(ServiceError::new(
+                "E_SERVICE_UNAVAILABLE",
+                "no active session snapshot for host service writes",
+            ));
+        };
+        if published.header.id != session_id {
+            return Err(ServiceError::new(
+                "E_SERVICE_UNAVAILABLE",
+                format!("session `{session_id}` is not the active session"),
+            ));
+        }
+        let seq = published.next_seq;
+        published.events.push(SessionEventView {
+            seq,
+            event_type: event_type.to_owned(),
+            data: data.clone(),
+        });
+        published.next_seq += 1;
+        inner.pending.push(PendingSessionEvent {
+            session_id: session_id.to_owned(),
+            event_type: event_type.to_owned(),
+            data,
+        });
+        Ok(seq)
+    }
+
+    fn latest_working_directory(&self, session_id: &str) -> Option<String> {
+        let events = {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            inner.published.as_ref().and_then(|published| {
+                (published.header.id == session_id).then(|| published.events.clone())
+            })
+        };
+        let events = match events {
+            Some(events) => events,
+            None => self.disk_read(session_id).ok()?.1,
+        };
+        events
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "working-directory/change")
+            .and_then(|event| event.data.get("cwd"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn load_session_log(
+    sessions_dir: &std::path::Path,
+    session_id: &str,
+) -> Result<SessionLog, ServiceError> {
+    let path = sessions_dir.join(format!("{session_id}.jsonl"));
+    if !path.exists() {
+        return Err(ServiceError::new(
+            "E_SERVICE_UNAVAILABLE",
+            format!("unknown session `{session_id}`"),
+        ));
+    }
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        ServiceError::new(
+            "E_INTERNAL",
+            format!("read session `{session_id}`: {error}"),
+        )
+    })?;
+    SessionLog::from_jsonl(session_id, &text).map_err(|error| {
+        ServiceError::new(
+            "E_INTERNAL",
+            format!("decode session `{session_id}`: {error}"),
+        )
+    })
+}
+
+fn chat_header_from_log(log: &SessionLog, sessions_dir: &std::path::Path) -> SessionHeaderView {
+    let created = log.created();
+    SessionHeaderView {
+        id: log.session_id().to_owned(),
+        cwd: created
+            .and_then(|created| created.payload().get("workspace_id").cloned())
+            .and_then(|workspace| workspace.as_str().map(str::to_owned)),
+        created_at: log
+            .events()
+            .first()
+            .map(|event| event.ts.clone())
+            .unwrap_or_default(),
+        parent_session_id: created.and_then(|created| created.parent_session_id.clone()),
+        delegation_depth: session_depth(log, sessions_dir),
+    }
+}
+
+/// 从 `session.created.parent_session_id` 链推导深度（根 0）；环形/断链时停止。
+fn session_depth(log: &SessionLog, sessions_dir: &std::path::Path) -> u32 {
+    let mut depth = 0u32;
+    let mut current = log.parent_session_id().map(str::to_owned);
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(parent) = current {
+        if depth >= DEFAULT_MAX_DEPTH || !seen.insert(parent.clone()) {
+            break;
+        }
+        depth += 1;
+        current = load_session_log(sessions_dir, &parent)
+            .ok()
+            .and_then(|parent_log| parent_log.parent_session_id().map(str::to_owned));
+    }
+    depth
+}
+
 /// Agent 的工具执行器：authorize 之后按来源分发给 PluginHost（native）或 Sidecar。
 struct ChatExecutor<'a> {
     plugins: &'a mut PluginHost,
@@ -904,6 +1282,8 @@ struct ChatExecutor<'a> {
     cancel: &'a Arc<AtomicBool>,
     /// 是否允许派生子会话（子会话本身不再派发，默认单层）。
     allow_spawn: bool,
+    /// L2 Host Service 的会话读写面（None = 该轮不接 sidecar 服务）。
+    l2_access: Option<Arc<ChatSessionAccess>>,
 }
 
 impl ToolExecutor for ChatExecutor<'_> {
@@ -979,6 +1359,11 @@ impl ToolExecutor for ChatExecutor<'_> {
                 }
             }
             ToolOrigin::Sidecar { .. } => {
+                // 发布当前会话快照：L2 服务（working-directory/session-log）读面
+                // 看到的是本轮最新日志；工具返回后再把服务追加的事件补写回来。
+                if let Some(access) = &self.l2_access {
+                    access.publish(&self.log.borrow());
+                }
                 let Some(host) = self.host.as_mut() else {
                     return ToolOutcome::failure("sidecar unavailable");
                 };
@@ -986,13 +1371,25 @@ impl ToolExecutor for ChatExecutor<'_> {
                 // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
                 // 可取消版本在用户停止时发 tool.cancel 给 sidecar（慢工具不再等待完整超时）。
                 let timeout = sidecar_tool_timeout(&definition);
-                match host.invoke_as_cancellable(
+                let result = host.invoke_as_cancellable(
                     &call.call_id,
                     &call.tool,
                     call.arguments.clone(),
                     timeout,
                     Some(self.cancel.as_ref()),
-                ) {
+                );
+                // L2 服务追加的事件（working-directory/change 等）写回内存日志。
+                if let Some(access) = &self.l2_access {
+                    let appends = access.take_appends(self.parent_id);
+                    if !appends.is_empty() {
+                        let ts = now_ts();
+                        let mut log = self.log.borrow_mut();
+                        for (event_type, data) in appends {
+                            let _ = log.append(EventSpec::durable(event_type, &ts, data));
+                        }
+                    }
+                }
+                match result {
                     Ok(outcome) if outcome.terminal.kind == "tool.result" => {
                         let payload = &outcome.terminal.payload;
                         let content = payload["content"].clone();
@@ -1220,8 +1617,18 @@ impl ChatState {
             }
         }
 
+        let sessions_dir = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        // L2 会话读写面在 spawn 之前准备好：Router 注册时需要它（chat.rs 只负责构造/注入）。
+        let l2_access = if with_sidecar {
+            Some(ChatSessionAccess::new(sessions_dir.clone()))
+        } else {
+            None
+        };
         let host = if with_sidecar {
-            spawn_sidecar(Some(approvals.clone()))
+            spawn_sidecar(Some(approvals.clone()), l2_access.clone())
         } else {
             None
         };
@@ -1256,10 +1663,8 @@ impl ChatState {
             approvals,
             spill: SpillStore::new(spill_dir_for(&path)),
             session_id: session_id.to_owned(),
-            sessions_dir: path
-                .parent()
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(".")),
+            sessions_dir,
+            l2_access,
             cancel: cancel.clone(),
             allow_spawn,
             plugin_errors,
@@ -1314,7 +1719,7 @@ impl ChatState {
         if let Some(old) = self.host.take() {
             self.plugins.invalidate_generation(old.generation());
         }
-        let Some(host) = spawn_sidecar(Some(self.approvals.clone())) else {
+        let Some(host) = spawn_sidecar(Some(self.approvals.clone()), self.l2_access.clone()) else {
             return false;
         };
         register_sidecar_tools(&mut self.plugins, &host);
@@ -1470,6 +1875,7 @@ impl ChatState {
                 parent_id: &self.session_id,
                 cancel: &self.cancel,
                 allow_spawn: self.allow_spawn,
+                l2_access: self.l2_access.clone(),
             };
             let log_for_events = log_cell.clone();
             self.agent.run_turn_streaming(
@@ -1642,6 +2048,7 @@ impl ChatState {
             parent_id: &self.session_id,
             cancel: &self.cancel,
             allow_spawn: self.allow_spawn,
+            l2_access: self.l2_access.clone(),
         };
         let outcome = executor.execute(call);
         drop(executor);
@@ -6183,6 +6590,146 @@ fn selftest_live_20() -> i32 {
     }
 }
 
+/// `--selftest-l2`：v2 Host Service 的 CLI 层 smoke（不依赖真实 DSH 插件执行）。
+///
+/// Phase A（可选，需要 vendored 官方 sidecar）：真握手到 v2，断言
+/// `negotiated_protocol == 2`、`host_services_active`、白名单 3 张表。
+/// Phase B（始终）：用 compat-dsh-host 的 fixture sidecar 跑
+/// `storage-kv/v1` open→putRecord→loadAll 的真实 `host.service.request` 往返。
+fn selftest_l2() -> i32 {
+    let mut pass = true;
+
+    // Phase A：真实官方 sidecar（无 vendored 依赖时 SKIP，不算失败）。
+    let dsh_dir = app_root().join("sidecar/dsh-official");
+    if dsh_dir.join("sidecar-dsh.mjs").exists() && dsh_dir.join("node_modules").exists() {
+        let l2 = ChatSessionAccess::new(sessions_dir_from_env());
+        let env_keys = [
+            "DSHR_SIDECAR",
+            "DSHR_DSH_PLUGINS",
+            "DSHR_HOST_SERVICES",
+            "DSHR_FS_WRITE",
+        ];
+        let saved: Vec<Option<std::ffi::OsString>> =
+            env_keys.iter().map(std::env::var_os).collect();
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_DSH_PLUGINS", "[]");
+        std::env::set_var("DSHR_HOST_SERVICES", "1");
+        std::env::set_var("DSHR_FS_WRITE", "0");
+        let host = spawn_sidecar(None, Some(l2));
+        for (key, value) in env_keys.iter().zip(saved) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        match host {
+            None => println!("[selftest-l2] SKIP phase A: 官方 sidecar 启动失败（环境受限）"),
+            Some(host) => {
+                let protocol = host.negotiated_protocol();
+                let active = host.host_services_active();
+                let tables = host
+                    .host_services_payload()
+                    .and_then(|payload| payload.as_array().map(Vec::len))
+                    .unwrap_or(0);
+                drop(host);
+                if protocol == 2 && active && tables == 3 {
+                    println!(
+                        "[selftest-l2] phase A PASS protocol={protocol} active={active} host_services={tables}"
+                    );
+                } else {
+                    eprintln!(
+                        "[selftest-l2] phase A FAIL protocol={protocol} active={active} host_services={tables}"
+                    );
+                    pass = false;
+                }
+            }
+        }
+    } else {
+        println!(
+            "[selftest-l2] SKIP phase A: 未找到 vendored 官方 sidecar（先运行 node tools/dsh-vendor.mjs）"
+        );
+    }
+
+    // Phase B：fixture sidecar 的真实 host.service.request 往返（storage-kv）。
+    let fixture = std::path::absolute(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/compat-dsh-host/tests/fixtures/l2-sidecar.mjs"),
+    )
+    .unwrap_or_else(|_| PathBuf::from("crates/compat-dsh-host/tests/fixtures/l2-sidecar.mjs"));
+    if !fixture.exists() {
+        eprintln!(
+            "[selftest-l2] FAIL phase B: fixture 不存在: {}",
+            fixture.display()
+        );
+        return 1;
+    }
+    let root = std::env::temp_dir().join(format!("dshr-selftest-l2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    let access = ChatSessionAccess::new(root.join("sessions"));
+    let router = match build_l2_router_at(
+        access,
+        root.join("storage"),
+        root.join("workspace"),
+        "l2.fixture",
+    ) {
+        Ok(router) => router,
+        Err(err) => {
+            eprintln!("[selftest-l2] FAIL phase B: {err}");
+            return 1;
+        }
+    };
+    let options = HostOptions::default()
+        .with_env("L2_SCENARIO", "storage")
+        .with_registration_window(Duration::from_secs(3))
+        .with_host_services(router);
+    match SidecarHost::spawn_with(&fixture, &fixture, options) {
+        Err(err) => {
+            eprintln!("[selftest-l2] FAIL phase B: spawn fixture: {err}");
+            pass = false;
+        }
+        Ok(mut host) => {
+            let protocol = host.negotiated_protocol();
+            let active = host.host_services_active();
+            match host.invoke("l2_probe", json!({}), Duration::from_secs(15)) {
+                Ok(outcome) => {
+                    let steps = &outcome.terminal.payload["value"]["steps"];
+                    let open_ok = steps[0]["ok"].as_bool().unwrap_or(false);
+                    let put_ok = steps[1]["ok"].as_bool().unwrap_or(false);
+                    let load_n = steps[2]["result"]["tables"]["items"]["a"]["n"].as_i64();
+                    let unit_id = steps[0]["result"]["unit_id"]
+                        .as_str()
+                        .unwrap_or("<none>")
+                        .to_owned();
+                    if protocol == 2 && active && open_ok && put_ok && load_n == Some(1) {
+                        println!(
+                            "[selftest-l2] phase B PASS protocol={protocol} active={active} unit_id={unit_id} roundtrip=ok"
+                        );
+                    } else {
+                        eprintln!(
+                            "[selftest-l2] phase B FAIL protocol={protocol} active={active} payload={}",
+                            outcome.terminal.payload
+                        );
+                        pass = false;
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[selftest-l2] FAIL phase B: invoke: {err}");
+                    pass = false;
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    if pass {
+        println!("[selftest-l2] PASS");
+        0
+    } else {
+        println!("[selftest-l2] FAIL");
+        1
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // 1. 先把命令行用法的输出来路接好（release GUI 子系统没有控制台）。
@@ -6313,6 +6860,10 @@ fn main() {
         std::env::set_var("DSHR_SIDECAR", "dsh");
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_dsh());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-l2") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_l2());
     }
     if std::env::args().any(|arg| arg == "--selftest-cordis") {
         std::env::set_var("DSHR_SIDECAR", "cordis");
@@ -6543,6 +7094,7 @@ mod tests {
             "--selftest",
             "--selftest-stream",
             "--selftest-dsh",
+            "--selftest-l2",
             "--selftest-dsh-write",
             "--selftest-approval",
             "--selftest-corrupt-session",

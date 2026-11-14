@@ -10,7 +10,8 @@ mod text_input;
 pub mod theme;
 
 pub use adc::{
-    a11y_issues_in, adc_view, A11yIssue, A11Y_MISSING_CODE, MAX_CHART_POINTS, MAX_TEXT_BYTES,
+    a11y_issues_in, adc_panel_body, adc_panel_body_from_str, adc_view, A11yIssue, Diagnostic,
+    DiagnosticCode, Severity, A11Y_MISSING_CODE, MAX_CHART_POINTS, MAX_TEXT_BYTES,
 };
 pub use diff::{
     diff_view, diff_view_from_text, parse_diff, Diff, DiffFile, DiffHunk, DiffLine, DiffLineKind,

@@ -30,15 +30,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_protocol::{
-    hello_with_caps, Envelope, FsWriteResult, CAP_FS_WRITE, CAP_TOOL_CANCEL, CAP_TOOL_STREAM,
-    KIND_FS_WRITE_REQUEST, KIND_FS_WRITE_RESULT, MAX_DEPTH,
+    hello_with_caps, hello_with_caps_at, Envelope, FsWriteResult, RpcError, CAP_FS_WRITE,
+    CAP_TOOL_CANCEL, CAP_TOOL_STREAM, KIND_FS_WRITE_REQUEST, KIND_FS_WRITE_RESULT,
+    KIND_HOST_SERVICE_CANCEL, KIND_HOST_SERVICE_REQUEST, KIND_HOST_SERVICE_RESULT, MAX_DEPTH,
+    PROTOCOL_VERSION,
 };
+/// 集成方（chat.rs）构造 v2 Router 需要的协议常量；避免直接依赖 protocol crate。
+pub use dshr_compat_dsh_protocol::{CAP_SERVICE_PROXY, PROTOCOL_MAX};
 use dshr_sidecar_guard::{GuardLimits, GuardedChild};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -82,12 +86,23 @@ pub struct HostOptions {
     pub guard: bool,
     /// Job Object 限额（仅 `guard = true` 生效）。
     pub guard_limits: GuardLimits,
+    /// v2 Host Service 路由（spec §13）：`None` = M2 行为（不发 `service.proxy`、
+    /// 不服务 `host.service.*`）。Some 时握手用 `protocol_max = PROTOCOL_MAX`，
+    /// 协商到 2 且 sidecar 回声 `service.proxy` 才启用。
+    pub host_services: Option<Arc<Mutex<HostServiceRouter>>>,
 }
 
 impl HostOptions {
     /// 打开官方写工具：审批、沙箱、原子写都在 Rust 侧 [`FsWriteService`] 完成。
     pub fn with_fs_write(mut self, service: Arc<FsWriteService>) -> Self {
         self.fs_write = Some(service);
+        self
+    }
+
+    /// 注入 v2 Host Service 路由（router 的 negotiated_version 应为 [`PROTOCOL_MAX`]；
+    /// 实际是否生效由握手协商结果决定，v1 回退时 router 完全不被使用）。
+    pub fn with_host_services(mut self, router: Arc<Mutex<HostServiceRouter>>) -> Self {
+        self.host_services = Some(router);
         self
     }
 
@@ -119,9 +134,13 @@ impl HostOptions {
         self
     }
 
-    /// 合并默认能力；`fs.write` 只跟随 `fs_write` 服务出现，避免"协商了能力却没有裁决层"。
+    /// 合并默认能力；`fs.write` 只跟随 `fs_write` 服务出现，`service.proxy` 只跟随
+    /// `host_services` 路由出现——避免"协商了能力却没有裁决层"。
     pub fn effective_caps(&self) -> Vec<String> {
         let mut caps: Vec<String> = vec![CAP_TOOL_STREAM.to_owned(), CAP_TOOL_CANCEL.to_owned()];
+        if self.host_services.is_some() {
+            caps.push(CAP_SERVICE_PROXY.to_owned());
+        }
         for cap in &self.extra_caps {
             if cap == CAP_FS_WRITE && self.fs_write.is_none() {
                 continue;
@@ -181,6 +200,12 @@ pub struct SidecarHost {
     ready: Duration,
     host_caps: Vec<String>,
     fs_write: Option<Arc<FsWriteService>>,
+    /// v2 Host Service 路由（None = M2 行为；Some 但协商 < 2 时也不会被使用）。
+    host_services: Option<Arc<Mutex<HostServiceRouter>>>,
+    /// 握手协商出的协议版本（v1 缺省）。
+    negotiated_protocol: u32,
+    /// 真正的服务开关：router 存在 && 协商到 2 && sidecar 回声 `service.proxy`。
+    host_services_active: bool,
     /// sidecar 在启动/装载阶段上报的错误（`log.emit` level=error），供 UI 提示。
     boot_errors: Vec<String>,
 }
@@ -347,6 +372,9 @@ impl SidecarHost {
             ready: Duration::ZERO,
             host_caps: options.effective_caps(),
             fs_write: options.fs_write.clone(),
+            host_services: options.host_services.clone(),
+            negotiated_protocol: PROTOCOL_VERSION,
+            host_services_active: false,
             boot_errors: Vec::new(),
         };
 
@@ -356,7 +384,12 @@ impl SidecarHost {
             "node-{:04}",
             NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        let mut hello = hello_with_caps(&host.host_caps);
+        // 有 HostServiceRouter 时才宣告 v2；否则与 M2 完全一致（hello.protocol_max = 1）。
+        let mut hello = if host.host_services.is_some() {
+            hello_with_caps_at(&host.host_caps, PROTOCOL_MAX)
+        } else {
+            hello_with_caps(&host.host_caps)
+        };
         hello.payload["generation"] = json!(generation);
         host.write(&hello)?;
         let ready = host.wait_for("runtime.ready", Duration::from_secs(10))?;
@@ -368,6 +401,7 @@ impl SidecarHost {
         }
         host.generation = generation;
         host.ready = started.elapsed();
+        host.apply_negotiation(&ready)?;
 
         let registration_window = options
             .registration_window
@@ -396,6 +430,79 @@ impl SidecarHost {
 
     pub fn generation(&self) -> &str {
         &self.generation
+    }
+
+    /// 握手协商出的协议版本（v1 缺省；配置了 host_services 且 sidecar 支持时才可能为 2）。
+    pub fn negotiated_protocol(&self) -> u32 {
+        self.negotiated_protocol
+    }
+
+    /// v2 Host Service 是否真正启用（router + 协商到 2 + sidecar 回声 `service.proxy`）。
+    pub fn host_services_active(&self) -> bool {
+        self.host_services_active
+    }
+
+    pub fn host_services_router(&self) -> Option<&Arc<Mutex<HostServiceRouter>>> {
+        self.host_services.as_ref()
+    }
+
+    /// 白名单方法表（`runtime.ready.host_services` / `capabilities.list` 的形状）；
+    /// 未启用 v2 时返回 `None`。
+    pub fn host_services_payload(&self) -> Option<Value> {
+        if !self.host_services_active {
+            return None;
+        }
+        self.host_services
+            .as_ref()
+            .and_then(|router| router.lock().ok())
+            .map(|router| router.host_services_payload())
+    }
+
+    /// 推进 generation（崩溃重启/重连，spec §13.5）：同步给 router，旧 generation 的
+    /// 请求会以 `E_SERVICE_UNAVAILABLE` 结算，去重窗口清空。
+    pub fn set_generation(&mut self, generation: impl Into<String>) -> Result<(), HostError> {
+        self.generation = generation.into();
+        if let Some(router) = &self.host_services {
+            let mut router = router
+                .lock()
+                .map_err(|_| HostError::Protocol("host service router poisoned".to_owned()))?;
+            router.set_generation(self.generation.clone());
+        }
+        Ok(())
+    }
+
+    /// 应用 `runtime.ready` 的协商结果（spec §3.2/§13.5）。
+    fn apply_negotiation(&mut self, ready: &Envelope) -> Result<(), HostError> {
+        let reported = ready
+            .payload
+            .get("protocol")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::from(PROTOCOL_VERSION)) as u32;
+        self.negotiated_protocol = if self.host_services.is_some() {
+            reported.clamp(PROTOCOL_VERSION, PROTOCOL_MAX)
+        } else {
+            reported.clamp(1, PROTOCOL_VERSION)
+        };
+        let sidecar_proxy = ready
+            .payload
+            .get("sidecar_caps")
+            .and_then(Value::as_array)
+            .map(|caps| {
+                caps.iter()
+                    .any(|cap| cap.as_str() == Some(CAP_SERVICE_PROXY))
+            })
+            .unwrap_or(false);
+        self.host_services_active =
+            self.host_services.is_some() && self.negotiated_protocol >= 2 && sidecar_proxy;
+        if self.host_services_active {
+            if let Some(router) = &self.host_services {
+                let mut router = router
+                    .lock()
+                    .map_err(|_| HostError::Protocol("host service router poisoned".to_owned()))?;
+                router.set_generation(self.generation.clone());
+            }
+        }
+        Ok(())
     }
 
     pub fn registrations(&self) -> &[Registration] {
@@ -572,6 +679,10 @@ impl SidecarHost {
             if self.maybe_serve_fs_write(&envelope)? {
                 continue;
             }
+            // v2：等待工具结果期间同样要服务 host.service.request/result/cancel。
+            if self.maybe_serve_host_service(&envelope)? {
+                continue;
+            }
             if envelope.kind == "log.emit" {
                 self.note_log_emit(&envelope);
                 continue;
@@ -654,7 +765,10 @@ impl SidecarHost {
                         plugin_id,
                     });
                 }
-                Ok(_) => continue,
+                Ok(envelope) => {
+                    self.maybe_serve_host_service(&envelope)?;
+                    continue;
+                }
                 Err(RecvTimeoutError::Timeout) => return Ok(()),
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             }
@@ -682,7 +796,10 @@ impl SidecarHost {
                         envelope.payload
                     )))
                 }
-                Ok(_) => continue,
+                Ok(envelope) => {
+                    self.maybe_serve_host_service(&envelope)?;
+                    continue;
+                }
                 Err(RecvTimeoutError::Timeout) => return Err(HostError::Timeout(kind.to_owned())),
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             }
@@ -728,6 +845,80 @@ impl SidecarHost {
             .map_err(|err| HostError::Protocol(format!("serialize fs.write.result: {err}")))?;
         self.write(&envelope.reply(KIND_FS_WRITE_RESULT, payload))?;
         Ok(true)
+    }
+
+    /// 读循环的 v2 公共服务点（spec §13.4/§13.9）：
+    /// - `host.service.request` → `HostServiceRouter::handle_request` → `host.service.result`；
+    /// - `host.service.cancel` → router 取消标记（幂等，无答复）；
+    /// - `capabilities.list` → 白名单方法表（仅 v2 启用时）。
+    ///
+    /// 返回 `true` 表示该信封已被消费。同步 dispatch 会占用当前读循环（本轮按
+    /// spec §13.4 的"服务必须做小做快"取舍；未来可移到工作线程，`acquire_slot`
+    /// 已为背压预留）。
+    fn maybe_serve_host_service(&mut self, envelope: &Envelope) -> Result<bool, HostError> {
+        match envelope.kind.as_str() {
+            KIND_HOST_SERVICE_REQUEST => {
+                let reply = if self.host_services_active {
+                    let router = self.host_services.as_ref().ok_or_else(|| {
+                        HostError::Protocol("active host services without router".to_owned())
+                    })?;
+                    let mut router = router.lock().map_err(|_| {
+                        HostError::Protocol("host service router poisoned".to_owned())
+                    })?;
+                    router.handle_request(envelope)
+                } else {
+                    // v1 回退 / sidecar 未协商也发了 v2 kind：结构化拒绝，不 panic。
+                    let mut reply = envelope.reply(KIND_HOST_SERVICE_RESULT, json!({}));
+                    reply.error = Some(RpcError {
+                        code: "E_PROTOCOL".to_owned(),
+                        message:
+                            "host.service.request received but service.proxy was not negotiated"
+                                .to_owned(),
+                        retryable: false,
+                    });
+                    reply
+                };
+                self.write(&reply)?;
+                Ok(true)
+            }
+            KIND_HOST_SERVICE_CANCEL => {
+                if self.host_services_active {
+                    if let Some(router) = &self.host_services {
+                        if let Ok(mut router) = router.lock() {
+                            router.cancel(&envelope.request_id);
+                        }
+                    }
+                }
+                // 取消是通知语义：恰好一次答复不适用（spec §8/§13.6）。
+                Ok(true)
+            }
+            "capabilities.list" => {
+                let reply = if self.host_services_active {
+                    let payload = self.host_services_payload().unwrap_or_else(|| json!([]));
+                    envelope.reply(
+                        "capabilities.list",
+                        json!({
+                            "protocol": self.negotiated_protocol,
+                            "host_services": payload,
+                        }),
+                    )
+                } else {
+                    let mut reply = envelope.reply("capabilities.list", json!({}));
+                    reply.error = Some(RpcError {
+                        code: "E_VERSION".to_owned(),
+                        message: format!(
+                            "host services are not negotiated (protocol {})",
+                            self.negotiated_protocol
+                        ),
+                        retryable: false,
+                    });
+                    reply
+                };
+                self.write(&reply)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn write(&mut self, envelope: &Envelope) -> Result<(), HostError> {

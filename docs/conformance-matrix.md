@@ -8,25 +8,25 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-14T15:01:37.035Z |
-| git HEAD | be6ff74bb0e9db04d74f03cd5d61484cd37555d4（dirty，37 个文件未提交） |
+| generated_at | 2026-11-14T15:19:57.180Z |
+| git HEAD | 9957531e36ed8dda43046a9b40e735a1b0919c1c（dirty，19 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | quick — `node tools/conformance.mjs --quick --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，378 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，416 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 378 |
-| implemented | 355 |
+| 总测试 ID | 416 |
+| implemented | 392 |
 | implemented passed | 34 |
 | implemented failed | 0 |
-| implemented skipped | 321 |
+| implemented skipped | 358 |
 | pending | 19 |
-| manual | 4 |
+| manual | 5 |
 | blocked | 0 |
 | **failed（导致退出码 1）** | **0** |
 
@@ -35,8 +35,8 @@
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
 | schema | pass | 0 | 0.24s | `node schema/check.mjs` | 71/71 cases passed |
-| links | pass | 0 | 0.27s | `node tools/check-links.mjs` | 285 link(s) checked, 0 broken, 57 file(s) scanned |
-| node-test | pass | 0 | 0.27s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs` | 13/13 node tests passed |
+| links | pass | 0 | 0.24s | `node tools/check-links.mjs` | 307 link(s) checked, 0 broken, 60 file(s) scanned |
+| node-test | pass | 0 | 0.36s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs` | 13/13 node tests passed |
 
 ## 测试矩阵
 
@@ -103,6 +103,16 @@
 | ADC-ELEM-JUSTIFY-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-LIST-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-NUM-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-004 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-005 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-006 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-007 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-008 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-009 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PANEL-010 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-PLACEHOLDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-RENDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-RENDER-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
@@ -116,6 +126,8 @@
 | ADC-ELEM-TEXT-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-TEXT-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-ELEM-TONE-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-PERF-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-PERF-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
 | ADC-SEC-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
 | ADC-SEC-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
 | ADC-SEC-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
@@ -372,6 +384,17 @@
 | RPC-L2-311 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-312 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-313 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-401 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-402 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-403 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-404 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-405 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-406 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-407 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-408 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-409 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-410 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-411 | RPC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。 |
 | MCP-CLIENT-001 | MCP | implemented | SKIP | dshr-compat-mcp |  |
 | MCP-CLIENT-002 | MCP | implemented | SKIP | dshr-compat-mcp |  |
 | MCP-CLIENT-003 | MCP | implemented | SKIP | dshr-compat-mcp |  |
@@ -402,6 +425,21 @@
 | JS-L2SVC-011 | JS | implemented | PASS | L2JS-011 |  |
 | JS-L2SVC-012 | JS | implemented | PASS | L2JS-012 |  |
 | JS-L2SVC-013 | JS | implemented | PASS | L2JS-013 |  |
+| M3-LOADER-001 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-002 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-003 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-004 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-005 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-006 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-007 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-008 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-009 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-010 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-011 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-012 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-013 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-014 | M3 | implemented | SKIP | dshr-profile |  |
+| M3-LOADER-015 | M3 | implemented | SKIP | dshr-profile |  |
 | SELF-CHAT-001 | SELF | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
 | SELF-CHAT-002 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | SELF-CHAT-003 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
@@ -424,10 +462,11 @@
 ## 说明与已知缺口
 
 - 本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。
-- 本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 59 suites / 671 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。
+- 本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 61 suites / 709 passed / 1 failed；逐包判定 implemented 357 pass / 1 fail（仅 CARGO-UNIT-001 workspace-wide）/ 34 skip。唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。
 - 第三轮新增证据：CPP-PROC（plugin-sdk，23）、CPP-ISO（plugin-host external_process，17）、CPP-MANIFEST-023..026（TOML，4）、MCP-CLIENT-001..017（compat-mcp）、RPC-L2-121..128/221..227（host services，15）均为 cargo implemented；sidecar JS 单测 13 个走新增 quick suite `node-test`（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs），登记为 JS-L2SVC-001..013（源码 ID L2JS-xxx）。
-- ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理。
-- manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）；两者按现有 schema 无法由 harness 自动判定，不计失败。
+- 第四轮新增证据：RPC-L2-401..410（compat-dsh-host tests/l2_host_services.rs，端到端 v2 握手/storage/wd/cancel/迟到/generation）、M3-LOADER-001..015（profile loader.rs include/group/patch/!!js）、ADC-ELEM-PANEL-001..010（ui-gpui adc.rs panel 入口）、ADC-PERF-001..002（ui-gpui tests/adc_perf.rs 预算，debug 约 4.4s）均为 cargo implemented；chat --selftest-l2 登记 RPC-L2-411 manual（phase A 真实 sidecar+phase B fixture storage-kv）。
+- ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理（L2JS-001..013 → JS-L2SVC-001..013）。
+- manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、RPC-L2-411 = chat --selftest-l2（需 chat 二进制 + vendored sidecar）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）、CPP-TRUST-019 = chat --selftest-trust-install；均按现有 schema 无法由 harness 自动判定，不计失败。
 - 提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。
 - compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。

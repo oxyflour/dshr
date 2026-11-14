@@ -87,9 +87,12 @@ impl ServiceError {
 
 /// 宿主服务实现（spec §13.1 B 路：Sidecar → host）。
 ///
+/// `Send`：`SidecarHost` 会被 chat 放进 `Mutex<ChatState>` 跨线程持有，
+/// 因此 `Box<dyn HostService>` 必须可跨线程移动（实现内部状态自行加锁）。
+///
 /// `dispatch` 是同步的：服务实现不得反向同步调用同一 Sidecar（会双向死锁，§13.4 规则 6）；
 /// 需要通知时走事件通道。
-pub trait HostService {
+pub trait HostService: Send {
     /// 宿主愿意暴露的方法表（白名单子集，不是全量）。
     fn table(&self) -> &HostServiceTable;
 

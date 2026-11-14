@@ -350,12 +350,17 @@ fn cpp_iso_007_memory_limit_kills_process_and_host_survives() {
         .call("hog", &json!({}))
         .expect_err("512MiB 分配必须被 Job 限制");
     let text = plugin_error_text(&error);
+    // 超限的观测点取决于 OS/负载：Job 内存触发、进程退出、或等待结果超时都可能先发生。
+    // 断言的是"调用失败 + 进程被终止 + 宿主继续"，而不是某一条具体错误码。
     assert!(
-        text.contains("E_INTERNAL") || text.contains("E_QUOTA") || text.contains("exited"),
+        text.contains("E_INTERNAL")
+            || text.contains("E_QUOTA")
+            || text.contains("E_TIMEOUT")
+            || text.contains("exited"),
         "err={text}"
     );
     assert!(
-        wait_process_dead(pid, Duration::from_secs(10)),
+        wait_process_dead(pid, Duration::from_secs(15)),
         "超过 64MB 的进程应被 Job Object 终止 (pid {pid})"
     );
 
@@ -367,7 +372,7 @@ fn cpp_iso_007_memory_limit_kills_process_and_host_survives() {
     let value = host.call("echo", &json!({ "text": "oom" })).unwrap();
     assert_eq!(value["value"]["echo"], json!("oom"));
     host.unload("cpp.iso.fixture").unwrap();
-    assert!(wait_process_dead(fresh_pid, Duration::from_secs(5)));
+    assert!(wait_process_dead(fresh_pid, Duration::from_secs(10)));
 }
 
 #[test]

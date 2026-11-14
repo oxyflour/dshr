@@ -14,7 +14,7 @@
 //! ```
 //!
 //! `sidecar_json()` 输出 `DSHR_DSH_PLUGINS` 需要的数组（只含 enabled 项）。
-//! Loader YAML（`cordis.yml` / `cordis.patch.yml`）是下一步，不在这一层。
+//! Loader YAML（`cordis.yml` / `cordis.patch.yml` + include/group 展开）见 [`loader`]。
 
 #![forbid(unsafe_code)]
 
@@ -92,21 +92,15 @@ impl Profile {
     }
 
     /// 从 Loader bundle + patch 文件构建只读 profile。
+    ///
+    /// `include` 按声明文件所在目录递归展开；group 展开为顺序条目；
+    /// `!!js` 不求值（诊断见 [`loader`]）。派生结果不落盘。
     pub fn from_loader(
         dir: impl Into<PathBuf>,
         bundle: &Path,
         patches: &[PathBuf],
     ) -> Result<Self, String> {
-        let bundle_text =
-            fs::read_to_string(bundle).map_err(|err| format!("读取 bundle 失败: {err}"))?;
-        let mut patch_texts = Vec::new();
-        for patch in patches {
-            patch_texts.push(
-                fs::read_to_string(patch)
-                    .map_err(|err| format!("读取 patch {} 失败: {err}", patch.display()))?,
-            );
-        }
-        let (entries, warnings) = loader::entries_from_loader(&bundle_text, &patch_texts)?;
+        let (entries, warnings) = loader::entries_from_loader_files(bundle, patches)?;
         for warning in warnings {
             eprintln!("[profile] loader: {warning}");
         }
@@ -358,6 +352,39 @@ mod tests {
         assert_eq!(profile.entries().len(), 1);
         assert!(!profile.entries()[0].enabled);
         assert!(profile.save().is_err(), "loader profile 不落盘");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn loader_profile_expands_include_and_group() {
+        // 集成测试：from_loader → entries_from_loader_files（include 基准 = bundle 目录）。
+        let dir = temp_dir("loader-include");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(
+            dir.join("sub/extra.yml"),
+            "- id: extra\n  name: '@x/extra'\n  disabled: true\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cordis.yml"),
+            "- include: sub/extra.yml\n- group: true\n  config:\n    - id: grouped\n      name: '@x/grouped'\n",
+        )
+        .unwrap();
+        let patch = dir.join("cordis.patch.yml");
+        fs::write(&patch, "- id: extra\n  disabled: false\n").unwrap();
+
+        let profile =
+            Profile::from_loader(&dir, &dir.join("cordis.yml"), &[patch]).expect("loader");
+        let names: Vec<&str> = profile
+            .entries()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["@x/extra", "@x/grouped"]);
+        assert!(
+            profile.entries()[0].enabled,
+            "patch 覆盖 include 条目的 disabled"
+        );
         fs::remove_dir_all(dir).ok();
     }
 }

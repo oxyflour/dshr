@@ -23,7 +23,12 @@ use gpui::{
     SharedString, Stateful, TextAlign, Toggled,
 };
 
-use dshr_ui_contributions::{ElementKind, ElementNode, PlaceholderReason};
+use dshr_ui_contributions::{
+    parse_tree, parse_tree_str, ElementKind, ElementNode, PlaceholderReason,
+};
+
+// 渲染入口的返回类型对 chat/tool card 是公开契约，这里一并再导出。
+pub use dshr_ui_contributions::{Diagnostic, DiagnosticCode, Severity};
 
 use crate::markdown::markdown_view;
 use crate::theme::{Palette, Theme};
@@ -379,6 +384,44 @@ pub fn a11y_issues_in(node: &ElementNode) -> Vec<A11yIssue> {
     let mut issues = Vec::new();
     collect_a11y_issues(node, "$", &mut issues);
     issues
+}
+
+/// 把一棵 ADC-v1 JSON 元素树渲染成可嵌入 panel / tool card 的元素。
+///
+/// 这是 chat 与工具卡接线的**唯一入口**（`parse_tree` + [`adc_view`]）：
+/// 返回渲染好的元素和解析期诊断（未知元素、配额裁剪、a11y 缺失等）。
+///
+/// - 未知元素/非法节点按 P4 渲染为 `Placeholder`，不 panic、不丢整棵树；
+/// - 空输入（`null`）同样是 Placeholder + 诊断，宿主可据此显示"内容不可渲染"；
+/// - 返回的 `Vec<Diagnostic>` 可直接用于面板角标/日志，不需要再解析一遍。
+pub fn adc_panel_body(theme: &Theme, tree: &serde_json::Value) -> (AnyElement, Vec<Diagnostic>) {
+    let parsed = parse_tree(tree);
+    (
+        panel_shell(adc_view(theme, &parsed.root)),
+        parsed.diagnostics,
+    )
+}
+
+/// [`adc_panel_body`] 的字符串版本（会话日志 / patch 里拿到的是 JSON 文本）。
+///
+/// 非法 JSON → Placeholder 根节点 + `InvalidJson` 诊断，不 panic。
+pub fn adc_panel_body_from_str(theme: &Theme, json: &str) -> (AnyElement, Vec<Diagnostic>) {
+    let parsed = parse_tree_str(json);
+    (
+        panel_shell(adc_view(theme, &parsed.root)),
+        parsed.diagnostics,
+    )
+}
+
+/// panel 级外壳：列布局 + 撑满可用宽度，避免根元素是纯 `Text` 时贴边。
+fn panel_shell(body: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w(px(0.0))
+        .child(body)
+        .into_any_element()
 }
 
 fn collect_a11y_issues(node: &ElementNode, path: &str, issues: &mut Vec<A11yIssue>) {
@@ -2319,5 +2362,217 @@ mod tests {
                 == dshr_ui_contributions::DiagnosticCode::LeafWithChildren),
             "叶子带 children 必须产生 LeafWithChildren 诊断"
         );
+    }
+
+    // ---- panel / tool-card 渲染入口（ADC-ELEM-PANEL-*） -------------------
+
+    // ADC-ELEM-PANEL-001
+    #[test]
+    fn panel_renders_valid_tree_without_diagnostics() {
+        let tree = serde_json::json!({
+            "type": "Stack",
+            "props": {"gap": 8},
+            "children": [
+                {"type": "Text", "props": {"value": "hello"}},
+                {"type": "Badge", "props": {"label": "ok", "tone": "success"}}
+            ]
+        });
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &tree);
+        assert!(diagnostics.is_empty(), "合法树不应有诊断: {diagnostics:?}");
+        let body: AnyElement = body;
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-002
+    #[test]
+    fn panel_unknown_root_falls_back_to_placeholder() {
+        let tree = serde_json::json!({"type": "Sparkline", "props": {}});
+        let (body, diagnostics) = adc_panel_body(&Theme::dark(), &tree);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::UnknownElement),
+            "未知根元素必须产生 UnknownElement 诊断: {diagnostics:?}"
+        );
+        // 未知元素 -> Placeholder（P4），不 panic、不丢整棵树。
+        let parsed = parse_tree(&tree);
+        assert_eq!(parsed.root.kind.as_str(), "Placeholder");
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-003
+    #[test]
+    fn panel_node_budget_is_clipped_and_diagnosed() {
+        let children: Vec<serde_json::Value> = (0..250)
+            .map(|index| {
+                serde_json::json!({"type": "Text", "props": {"value": format!("row {index}")}})
+            })
+            .collect();
+        let tree = serde_json::json!({"type": "Stack", "children": children});
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &tree);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::NodeBudgetExceeded),
+            "超过 200 节点必须产生 NodeBudgetExceeded 诊断: {diagnostics:?}"
+        );
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-004
+    #[test]
+    fn panel_depth_exceeded_still_renders() {
+        let mut tree = serde_json::json!({"type": "Text", "props": {"value": "leaf"}});
+        for _ in 0..12 {
+            tree = serde_json::json!({"type": "Stack", "children": [tree]});
+        }
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &tree);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::DepthExceeded),
+            "超过 8 层必须产生 DepthExceeded 诊断: {diagnostics:?}"
+        );
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-005
+    #[test]
+    fn panel_null_tree_degrades_to_placeholder() {
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &serde_json::Value::Null);
+        // `null` 不是 JSON 对象：解析期记 InvalidNode（缺 type 的节点走 MissingType）。
+        assert!(
+            diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.code,
+                DiagnosticCode::MissingType | DiagnosticCode::InvalidNode
+            )),
+            "空输入必须产生节点级诊断: {diagnostics:?}"
+        );
+        assert_eq!(
+            parse_tree(&serde_json::Value::Null).root.kind.as_str(),
+            "Placeholder"
+        );
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-006
+    #[test]
+    fn panel_empty_children_is_valid() {
+        let tree = serde_json::json!({"type": "Stack", "children": []});
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &tree);
+        assert!(
+            diagnostics.is_empty(),
+            "空 children 是合法的: {diagnostics:?}"
+        );
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-007
+    #[test]
+    fn panel_from_str_handles_invalid_and_valid_json() {
+        let theme = Theme::light();
+        let (body, invalid) = adc_panel_body_from_str(&theme, "{not json");
+        assert!(
+            invalid
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::InvalidJson),
+            "非法 JSON 必须产生 InvalidJson 诊断: {invalid:?}"
+        );
+        drop(body);
+
+        let (body, valid) =
+            adc_panel_body_from_str(&theme, r#"{"type":"Text","props":{"value":"hi"}}"#);
+        assert!(valid.is_empty(), "合法 JSON 不应有诊断: {valid:?}");
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-008
+    #[test]
+    fn panel_a11y_missing_matches_render_side_issues() {
+        let tree = serde_json::json!({
+            "type": "Stack",
+            "children": [{"type": "Button", "props": {"label": "run"}, "key": "run"}]
+        });
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &tree);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::A11yMissing),
+            "交互元素缺 a11yLabel 必须产生 A11yMissing 诊断: {diagnostics:?}"
+        );
+        // 解析期诊断与渲染侧 a11y 兜底必须一致。
+        let parsed = parse_tree(&tree);
+        assert_eq!(parsed.a11y_missing().len(), 1);
+        let render_side = a11y_issues_in(&parsed.root);
+        assert_eq!(render_side.len(), 1);
+        assert_eq!(render_side[0].kind, "Button");
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-009
+    #[test]
+    fn panel_leaf_with_children_is_diagnosed_and_rendered() {
+        let tree = serde_json::json!({
+            "type": "Card",
+            "children": [{
+                "type": "Text",
+                "props": {"value": "x"},
+                "children": [{"type": "Text", "props": {"value": "y"}}]
+            }]
+        });
+        let (body, diagnostics) = adc_panel_body(&Theme::light(), &tree);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == DiagnosticCode::LeafWithChildren),
+            "叶子带 children 必须产生 LeafWithChildren 诊断: {diagnostics:?}"
+        );
+        let parsed = parse_tree(&tree);
+        assert_eq!(parsed.root.children[0].kind.as_str(), "Text");
+        assert!(parsed.root.children[0].children.is_empty());
+        drop(body);
+    }
+
+    // ADC-ELEM-PANEL-010
+    #[test]
+    fn panel_containers_render_nested_content() {
+        let tree = serde_json::json!({
+            "type": "Card",
+            "props": {"title": "卡", "tone": "info"},
+            "children": [
+                {
+                    "type": "Grid",
+                    "props": {"columns": 2, "gap": 8},
+                    "children": [{
+                        "type": "Tabs",
+                        "props": {
+                            "tabs": [{"key": "a", "label": "A"}],
+                            "activeKey": "a",
+                            "a11yLabel": "页签"
+                        },
+                        "children": [{"type": "Text", "props": {"value": "页内容"}}]
+                    }]
+                },
+                {
+                    "type": "Accordion",
+                    "props": {
+                        "sections": [
+                            {"key": "s", "title": "S", "children": [{"type": "Text", "props": {"value": "折叠内容"}}]}
+                        ],
+                        "expanded": ["s"]
+                    }
+                }
+            ]
+        });
+        let (body, diagnostics) = adc_panel_body(&Theme::dark(), &tree);
+        assert!(
+            diagnostics.is_empty(),
+            "合法容器树不应有诊断: {diagnostics:?}"
+        );
+        // Accordion 的 section 内容落在 nested_children。
+        let parsed = parse_tree(&tree);
+        let accordion = &parsed.root.children[1];
+        assert_eq!(accordion.nested_children["s"][0].kind.as_str(), "Text");
+        drop(body);
     }
 }

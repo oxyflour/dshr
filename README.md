@@ -71,10 +71,11 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 
 **M3 已启动（插件平台 Preview）。** 范围与 exit gate 见
 [`docs/decisions/0007-m3-scope.md`](docs/decisions/0007-m3-scope.md)、计划基线见
-[`docs/PLAN.md`](docs/PLAN.md) §8 M3；起步批次（ADC-v1 冻结工件、conformance 门禁、
-CPP manifest、sidecar v2/L2 契约）与证据见 [`docs/m3-status.md`](docs/m3-status.md)。
-契约状态迁移：`adc-v1` / `sidecar-rpc` / `session-log` 进入 `Review`，M3 冻结目标为
-`adc-v1`（G1）与 `sidecar-rpc` v2。
+[`docs/PLAN.md`](docs/PLAN.md) §8 M3；起步与后续批次（ADC-v1 冻结、conformance 门禁、
+CPP manifest/运行时、external-process 插件、信任链、L2 服务）与证据见
+[`docs/m3-status.md`](docs/m3-status.md)；给独立 review 的 gate 证据/偏离索引见
+[`docs/m3-gate-evidence.md`](docs/m3-gate-evidence.md)。契约状态迁移：`adc-v1` 已 `Frozen`，
+`sidecar-rpc`/`session-log` 进入 `Review`，`plugin-trust` 为 `Review`。
 
 **M1 完成（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
 
