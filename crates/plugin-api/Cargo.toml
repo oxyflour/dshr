@@ -1,7 +1,8 @@
-﻿[package]
+[package]
 name = "dshr-plugin-api"
 description = "CPP-v1 公开契约与稳定标识，不依赖 GPUI/Cordis 实现（spec/cpp-v1.md）"
-version.workspace = true
+# M3 G2：对外分发的 SDK 必须有 semver（不再是 workspace 的 0.0.0）。
+version = "0.1.0"
 edition.workspace = true
 
 [dependencies]
@@ -9,3 +10,4 @@ dshr-tool-runtime = { path = "../tool-runtime" }
 serde.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
+toml.workspace = true

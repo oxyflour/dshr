@@ -25,6 +25,12 @@ use thiserror::Error;
 pub use cancel::{CancellationToken, Cancelled};
 pub use capability::{Capability, CapabilitySet};
 pub use manifest::{HostVersion, Manifest};
+
+/// 宿主兼容基线（= `dshr-plugin-api` 的 semver）。
+///
+/// 插件的 `min_host_version` 与它比较；宿主应用自身的版本（workspace `0.0.0`）
+/// 不参与插件兼容判定，避免产品版本与 SDK 契约版本耦合。
+pub const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use tool_result::{ContentPart, ToolResult};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]

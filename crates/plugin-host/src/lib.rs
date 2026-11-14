@@ -2,9 +2,10 @@
 //!
 //! 这是 CPP-v1 的第一条真实路径（`rust-static`）。`PluginHost` 负责 ToolRegistry /
 //! 面板的原子提交；Fiber 状态机、Service 依赖与 Effect 撤销在 [`fiber`] 模块里
-//! （本机离线，按 PLAN §3.5 采用自研最小实现，替换点为 `fiber` 模块文档里的适配表）。
-//! `PluginHost::load_with_manifest` 是两者的衔接点：先校验 manifest / 版本 / 配额，
-//! 再走原有 `load`，因此 `chat.rs` 依赖的公共 API 完全不变。
+//! （本机离线，按 PLAN §3.5 采用自研最小实现，替换点为 `fiber` 模块文档里的适配表）；
+//! `external-process` 插件运行时在 [`external`] 模块里（spec/cpp-v1.md §12）。
+//! `PluginHost::load_with_manifest` 是先校验 manifest / 版本 / 配额再走 `load` 的衔接点，
+//! 因此 `chat.rs` 依赖的公共 API 完全不变。
 //!
 //! 保证：
 //! 1. `apply` 失败 → 本次声明**一条都不落库**（原子性）；
@@ -13,7 +14,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod external;
 pub mod fiber;
+
+pub use external::{ExternalPlugin, ExternalPluginSpec};
 
 use std::collections::BTreeMap;
 
@@ -34,6 +38,9 @@ pub enum HostError {
     Plugin(#[from] PluginError),
     #[error("registry error: {0}")]
     Registry(#[from] RegistryError),
+    /// `external-process` 运行时错误：启动/握手/协议/子进程退出（spec/cpp-v1.md §12）。
+    #[error("external plugin `{plugin_id}`: {reason}")]
+    External { plugin_id: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

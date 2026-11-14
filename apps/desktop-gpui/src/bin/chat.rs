@@ -48,8 +48,9 @@ use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_llm_openai::OpenAiProvider;
 use dshr_llm_retry::{RetryPolicy, RetryingProvider};
-use dshr_plugin_api::{Plugin, PluginContext, PluginError};
-use dshr_plugin_host::PluginHost;
+use dshr_plugin_api::manifest::RuntimeKind;
+use dshr_plugin_api::{HostVersion, Manifest, Plugin, PluginContext, PluginError};
+use dshr_plugin_host::{ExternalPlugin, ExternalPluginSpec, PluginHost};
 use dshr_profile::{
     install_package, install_package_trusted, package_digest, read_installed_meta, Profile,
     ProfileSource, TrustPolicy, TrustStore,
@@ -5257,6 +5258,206 @@ fn selftest_trust_install() -> i32 {
     }
 }
 
+/// 侧车/插件安装目录（与 `--install-plugin`、sidecar 启动同源）。
+fn sidecar_dir_for_app() -> PathBuf {
+    std::env::var("DSHR_SIDECAR_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| app_root().join("sidecar/dsh-official"))
+}
+
+/// 宿主兼容基线：用 `dshr-plugin-api` 的 semver（0.1.0），不是应用 workspace 的 0.0.0。
+fn host_sdk_version() -> HostVersion {
+    HostVersion::parse(dshr_plugin_api::HOST_VERSION).unwrap_or_else(|_| HostVersion::new(0, 1, 0))
+}
+
+/// 从 profile 的 enabled 条目装载已安装的 `external-process` 插件（spec/cpp-v1.md §12）。
+///
+/// 单个插件失败只记诊断，不影响其它插件与内置工具；非 external-process 条目跳过。
+fn load_enabled_external_plugins(
+    plugins: &mut PluginHost,
+    profile: &Profile,
+    sidecar_dir: &std::path::Path,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let node_modules = sidecar_dir.join("node_modules");
+    for entry in profile.entries().iter().filter(|entry| entry.enabled) {
+        let package_dir = node_modules.join(&entry.name);
+        let manifest_path = package_dir.join("plugin.toml");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let manifest = match Manifest::from_path(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                errors.push(format!("插件 {} 的 manifest 解析失败: {err}", entry.name));
+                continue;
+            }
+        };
+        if manifest.runtime.kind != RuntimeKind::ExternalProcess {
+            continue;
+        }
+        let plugin_id = manifest.plugin.id.clone();
+        let spec = ExternalPluginSpec::new(manifest, &package_dir, host_sdk_version(), 1);
+        match ExternalPlugin::spawn(spec) {
+            Ok(plugin) => {
+                let id = plugin.id().to_owned();
+                if let Err(err) = plugins.load(Box::new(plugin)) {
+                    errors.push(format!("插件 {id} 装载失败: {err}"));
+                } else {
+                    eprintln!("[plugin] external-process 已装载: {id}");
+                }
+            }
+            Err(err) => errors.push(format!("插件 {plugin_id} 启动失败: {err}")),
+        }
+    }
+    errors
+}
+
+/// 自检：external-process 插件产品路径（安装 → profile 装载 → 工具调用 → 卸载 → 重载）。
+fn selftest_external_plugin() -> i32 {
+    let root = PathBuf::from(".tmp/external-plugin-selftest");
+    let _ = std::fs::remove_dir_all(&root);
+    let package = root.join("pkg");
+    let sidecar = root.join("sidecar");
+    let profile_dir = root.join("profile");
+    if std::fs::create_dir_all(&package).is_err() {
+        eprintln!("[selftest-external] 创建目录失败");
+        return 1;
+    }
+    let fixture_name = if cfg!(windows) {
+        "plugin-fixture.exe"
+    } else {
+        "plugin-fixture"
+    };
+    let Some(fixture) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(fixture_name)))
+    else {
+        eprintln!("[selftest-external] 无法定位 fixture 可执行文件");
+        return 1;
+    };
+    if !fixture.is_file() {
+        eprintln!(
+            "[selftest-external] 缺少 {}；先运行 `cargo build -p dshr-plugin-host --bins`",
+            fixture.display()
+        );
+        return 1;
+    }
+    if std::fs::copy(&fixture, package.join(fixture_name)).is_err() {
+        eprintln!("[selftest-external] 复制 fixture 失败");
+        return 1;
+    }
+    let manifest = r#"
+[plugin]
+id = "selftest.external"
+version = "0.1.0"
+api = "cordis-portable/v1"
+description = "external-process selftest fixture"
+
+[runtime]
+kind = "external-process"
+entry = "plugin-fixture.exe"
+max_memory_mb = 128
+timeout_ms = 60000
+
+[permissions]
+workspace_read = false
+workspace_write = false
+network = false
+"#;
+    let package_json = json!({ "name": "selftest.external", "version": "0.1.0" });
+    let _ = std::fs::write(package.join("plugin.toml"), manifest);
+    let _ = std::fs::write(package.join("package.json"), package_json.to_string());
+    let Ok(digest) = package_digest(&package) else {
+        eprintln!("[selftest-external] 计算包摘要失败");
+        return 1;
+    };
+    let trust = json!({
+        "schema_version": 1,
+        "plugin_id": "selftest.external",
+        "version": "0.1.0",
+        "package": { "digest_sha256": digest }
+    });
+    let _ = std::fs::write(package.join("dshr-trust.json"), trust.to_string());
+
+    let mut profile = match Profile::load(&profile_dir) {
+        Ok(profile) => profile,
+        Err(err) => {
+            eprintln!("[selftest-external] 加载 profile 失败: {err}");
+            return 1;
+        }
+    };
+    let policy = TrustPolicy {
+        allow_downgrade: false,
+        require_confirm_for_unsigned: true,
+        store: TrustStore::default(),
+        now_ms: None,
+    };
+    let install = match install_package_trusted(&sidecar, &package, &mut profile, &policy, |_| true)
+    {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("[selftest-external] 安装失败（{}）: {err}", err.code());
+            return 1;
+        }
+    };
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let approvals = ApprovalBroker::new();
+    let mut state = ChatState::open(
+        root.join("session.jsonl"),
+        SESSION_ID,
+        &cancel,
+        approvals,
+        false,
+        false,
+    );
+    let errors = load_enabled_external_plugins(&mut state.plugins, &profile, &sidecar);
+    if !errors.is_empty() {
+        for error in &errors {
+            eprintln!("[selftest-external] {error}");
+        }
+        println!("[selftest-external] FAIL（装载失败）");
+        return 1;
+    }
+    if !state.plugins.is_loaded("selftest.external") {
+        println!("[selftest-external] FAIL（插件未装载）");
+        return 1;
+    }
+    let echo = state.plugins.call("echo", &json!({ "text": "hi" }));
+    let echo_ok = echo
+        .as_ref()
+        .map(|value| value.to_string().contains("hi"))
+        .unwrap_or(false);
+    let unloaded = state.plugins.unload("selftest.external").is_ok();
+    let reload_errors = load_enabled_external_plugins(&mut state.plugins, &profile, &sidecar);
+    let reload_ok = reload_errors.is_empty()
+        && state.plugins.is_loaded("selftest.external")
+        && state
+            .plugins
+            .call("echo", &json!({ "text": "again" }))
+            .map(|value| value.to_string().contains("again"))
+            .unwrap_or(false);
+    // 面板声明也随 ready 注册（ADC panel 的宿主侧元数据）。
+    let panel_ok = state
+        .plugins
+        .panels()
+        .iter()
+        .any(|panel| panel.plugin_id == "selftest.external");
+    let installed_ok = install.install.destination.join("plugin.toml").is_file();
+    let ok = echo_ok && unloaded && reload_ok && panel_ok && installed_ok;
+    println!(
+        "[selftest-external] installed_ok={installed_ok} echo_ok={echo_ok} unloaded={unloaded} reload_ok={reload_ok} panel_ok={panel_ok}"
+    );
+    if ok {
+        println!("[selftest-external] PASS");
+        0
+    } else {
+        println!("[selftest-external] FAIL");
+        1
+    }
+}
+
 /// 会话树产品面自检：spawn_child 真执行（子会话独立日志 + 父链接 + 父子事件）、
 /// 默认单层（子会话不能再派发）、中断传播（interrupted_by_parent）、
 /// 侧栏树顺序/深度、重启后 from_logs 重建。
@@ -6071,6 +6272,9 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-trust-install") {
         std::process::exit(selftest_trust_install());
     }
+    if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
+        std::process::exit(selftest_external_plugin());
+    }
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {
             eprintln!(
@@ -6203,6 +6407,16 @@ fn main() {
         approvals.clone(),
     )));
     let app_cancel = cancel.clone();
+    // 已安装的 external-process 插件：按 profile 的 enabled 条目在启动时装载；
+    // 单个插件失败只进 plugin_errors，不阻塞窗口。
+    {
+        let mut guard = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let external_errors =
+            load_enabled_external_plugins(&mut guard.plugins, &profile, &sidecar_dir_for_app());
+        guard.plugin_errors.extend(external_errors);
+    }
     let (rows, plugin_errors) = {
         let guard = state
             .lock()

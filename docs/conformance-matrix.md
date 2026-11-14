@@ -8,25 +8,25 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-14T14:37:29.995Z |
-| git HEAD | e24d25ddc1f55b2e05252b9950cdae413ad8ef05（dirty，43 个文件未提交） |
+| generated_at | 2026-11-14T15:01:37.035Z |
+| git HEAD | be6ff74bb0e9db04d74f03cd5d61484cd37555d4（dirty，37 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | quick — `node tools/conformance.mjs --quick --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，287 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，378 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 287 |
-| implemented | 266 |
-| implemented passed | 21 |
+| 总测试 ID | 378 |
+| implemented | 355 |
+| implemented passed | 34 |
 | implemented failed | 0 |
-| implemented skipped | 245 |
+| implemented skipped | 321 |
 | pending | 19 |
-| manual | 2 |
+| manual | 4 |
 | blocked | 0 |
 | **failed（导致退出码 1）** | **0** |
 
@@ -34,8 +34,9 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 71/71 cases passed |
-| links | pass | 0 | 0.23s | `node tools/check-links.mjs` | 247 link(s) checked, 0 broken, 54 file(s) scanned |
+| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 71/71 cases passed |
+| links | pass | 0 | 0.27s | `node tools/check-links.mjs` | 285 link(s) checked, 0 broken, 57 file(s) scanned |
+| node-test | pass | 0 | 0.27s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs` | 13/13 node tests passed |
 
 ## 测试矩阵
 
@@ -147,6 +148,7 @@
 | ADC-SLOT-021 | ADC | implemented | SKIP | dshr-ui-contributions |  |
 | ADC-SLOT-022 | ADC | implemented | SKIP | dshr-ui-contributions |  |
 | ADC-SLOT-023 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| CPP-AUTHOR-001 | CPP | manual | MANUAL | — | tools/authoring-check.ps1；仓库外按 docs/plugin-authoring.md + templates 构建/打包/安装（G2），人工/脚本判定。 |
 | CPP-EFF-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
 | CPP-EFF-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
 | CPP-EFF-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
@@ -205,6 +207,24 @@
 | CPP-FIBER-131 | CPP | implemented | SKIP | dshr-plugin-api |  |
 | CPP-FIBER-132 | CPP | implemented | SKIP | dshr-plugin-api |  |
 | CPP-FIBER-133 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-ISO-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-011 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-012 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-013 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-014 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-015 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-020 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-021 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-ISO-022 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。 |
 | CPP-MANIFEST-001 | CPP | implemented | SKIP | dshr-plugin-api |  |
 | CPP-MANIFEST-002 | CPP | implemented | SKIP | dshr-plugin-api |  |
 | CPP-MANIFEST-003 | CPP | implemented | SKIP | dshr-plugin-api |  |
@@ -227,6 +247,33 @@
 | CPP-MANIFEST-020 | CPP | implemented | SKIP | dshr-plugin-api |  |
 | CPP-MANIFEST-021 | CPP | implemented | SKIP | dshr-plugin-api |  |
 | CPP-MANIFEST-022 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-023 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-024 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-025 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-026 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-PROC-001 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-002 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-003 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-004 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-005 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-006 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-007 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-008 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-009 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-010 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-020 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-021 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-022 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-023 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-024 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-025 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-026 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-027 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-028 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-029 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-030 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-031 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
+| CPP-PROC-032 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
 | CPP-SVC-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
 | CPP-SVC-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
 | CPP-SVC-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
@@ -297,6 +344,21 @@
 | RPC-L2-117 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-118 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-119 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-121 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-122 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-123 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-124 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-125 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-126 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-127 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-128 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-221 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-222 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-223 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-224 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-225 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-226 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-227 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-301 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-302 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-303 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
@@ -310,6 +372,36 @@
 | RPC-L2-311 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-312 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
 | RPC-L2-313 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| MCP-CLIENT-001 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-002 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-003 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-004 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-005 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-006 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-007 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-008 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-009 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-010 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-011 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-012 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-013 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-014 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-015 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-016 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| MCP-CLIENT-017 | MCP | implemented | SKIP | dshr-compat-mcp |  |
+| JS-L2SVC-001 | JS | implemented | PASS | L2JS-001 |  |
+| JS-L2SVC-002 | JS | implemented | PASS | L2JS-002 |  |
+| JS-L2SVC-003 | JS | implemented | PASS | L2JS-003 |  |
+| JS-L2SVC-004 | JS | implemented | PASS | L2JS-004 |  |
+| JS-L2SVC-005 | JS | implemented | PASS | L2JS-005 |  |
+| JS-L2SVC-006 | JS | implemented | PASS | L2JS-006 |  |
+| JS-L2SVC-007 | JS | implemented | PASS | L2JS-007 |  |
+| JS-L2SVC-008 | JS | implemented | PASS | L2JS-008 |  |
+| JS-L2SVC-009 | JS | implemented | PASS | L2JS-009 |  |
+| JS-L2SVC-010 | JS | implemented | PASS | L2JS-010 |  |
+| JS-L2SVC-011 | JS | implemented | PASS | L2JS-011 |  |
+| JS-L2SVC-012 | JS | implemented | PASS | L2JS-012 |  |
+| JS-L2SVC-013 | JS | implemented | PASS | L2JS-013 |  |
 | SELF-CHAT-001 | SELF | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
 | SELF-CHAT-002 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | SELF-CHAT-003 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
@@ -332,7 +424,10 @@
 ## 说明与已知缺口
 
 - 本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。
-- 本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 53 suites / 594 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target：26 suites / 448 passed / 1 failed，故 harness 加 --no-fail-fast 以取得完整逐包证据。
+- 本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 59 suites / 671 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。
+- 第三轮新增证据：CPP-PROC（plugin-sdk，23）、CPP-ISO（plugin-host external_process，17）、CPP-MANIFEST-023..026（TOML，4）、MCP-CLIENT-001..017（compat-mcp）、RPC-L2-121..128/221..227（host services，15）均为 cargo implemented；sidecar JS 单测 13 个走新增 quick suite `node-test`（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs），登记为 JS-L2SVC-001..013（源码 ID L2JS-xxx）。
+- ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理。
+- manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）；两者按现有 schema 无法由 harness 自动判定，不计失败。
 - 提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。
 - compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。

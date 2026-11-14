@@ -34,10 +34,12 @@ const TEST_ID_RE = /^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+-\d{3}$/
 const STATUSES = new Set(['implemented', 'pending', 'manual', 'blocked'])
 
 // 已知 suite 名与执行方式。注册表 docs/conformance.d/registry.json 的 suites 必须与这里一致。
-const SUITE_NAMES = ['schema', 'links', 'cargo']
+const SUITE_NAMES = ['schema', 'links', 'node-test', 'cargo']
 const SUITE_COMMANDS = {
   schema: 'node schema/check.mjs',
   links: 'node tools/check-links.mjs',
+  // sidecar JS 单测（node:test）。--test-isolation=none 避免受限环境禁止子进程隔离。
+  'node-test': 'node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs',
   // --no-fail-fast：workspace 里一个包失败时仍跑完其余 target，避免 cargo 中止后
   // 后续包（如 ui-*）被误判为“未运行/失败”，也便于逐包判定。
   cargo: 'tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast',
@@ -45,11 +47,12 @@ const SUITE_COMMANDS = {
 const DEFAULT_TIMEOUT_MS = {
   schema: 120000,
   links: 120000,
+  'node-test': 120000,
   cargo: 1200000, // 20 分钟
 }
 
-// 矩阵与 --list 的领域排序（便于 280+ 条 ID 的表格按领域阅读）。
-const AREA_ORDER = ['SCHEMA', 'DOC', 'CARGO', 'ADC', 'CPP', 'RPC', 'SELF', 'GATE']
+// 矩阵与 --list 的领域排序（便于 300+ 条 ID 的表格按领域阅读）。
+const AREA_ORDER = ['SCHEMA', 'DOC', 'CARGO', 'ADC', 'CPP', 'RPC', 'MCP', 'JS', 'SELF', 'GATE']
 function compareTests(a, b) {
   const ai = AREA_ORDER.indexOf(a.area)
   const bi = AREA_ORDER.indexOf(b.area)
@@ -66,7 +69,7 @@ const USAGE = `tools/conformance.mjs — conformance 矩阵门禁
   node tools/conformance.mjs --help
 
 模式：
-  --quick        schema + links（默认模式；秒级，不需要 Rust 工具链）
+  --quick        schema + links + node-test（默认模式；秒级，不需要 Rust 工具链）
   --suite <n>    只跑指定 suite，可重复：${SUITE_NAMES.join(' / ')}
   --workspace    额外跑 cargo suite（tools/build-env.cmd cargo test --offline --workspace，默认 20 分钟）
   --full         全部 suite（schema + links + cargo）
@@ -175,9 +178,11 @@ function isPlainObject(value) {
 // 从测试函数名推导测试 ID：cpp_fiber_001_xxx → CPP-FIBER-001、adc_slot_001_xxx → ADC-SLOT-001、
 // rpc_l2_101_xxx → RPC-L2-101。ui-gpui / profile 的测试用注释标注 ID，由扫描器关联到下一条 fn。
 function idFromTestFn(fnName) {
-  const match = fnName.match(/^(cpp|adc|rpc)_(fiber|svc|eff|manifest|ver|trust|slot|elem|sec|l2)_(\d{3})_/)
+  const match = fnName.match(/^(cpp|adc|rpc)_([a-z0-9]+)_(\d{3})_/)
   if (!match) return null
-  if (match[1] === 'rpc') return `RPC-L2-${match[3]}`
+  if (match[1] === 'rpc') {
+    return `RPC-${match[2].toUpperCase()}-${match[3]}`
+  }
   return `${match[1].toUpperCase()}-${match[2].toUpperCase()}-${match[3]}`
 }
 
@@ -596,6 +601,37 @@ function parseCargoFailingPackages(output) {
 // suite 执行
 // ---------------------------------------------------------------------------
 
+// node:test 输出解析：兼容 spec reporter（✔ name (1.2ms)）与 TAP（ok 1 - name）。
+function parseNodeTestOutput(output) {
+  const okTests = []
+  const failedTests = []
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.replace(/\x1b\[[0-9;]*m/g, '').trimEnd()
+    const specOk = line.match(/^\s*[✔✓]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?\s*$/)
+    if (specOk) {
+      okTests.push(specOk[1].trim())
+      continue
+    }
+    const specFail = line.match(/^\s*[✖✗×]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?\s*$/)
+    if (specFail) {
+      failedTests.push(specFail[1].trim())
+      continue
+    }
+    const tapOk = line.match(/^\s*ok\s+\d+\s+-\s+(.+)$/)
+    if (tapOk) {
+      okTests.push(tapOk[1].trim())
+      continue
+    }
+    const tapFail = line.match(/^\s*not ok\s+\d+\s+-\s+(.+)$/)
+    if (tapFail) failedTests.push(tapFail[1].trim())
+  }
+  const count = (label) => {
+    const match = output.match(new RegExp(`(?:ℹ|#)\\s*${label}\\s+(\\d+)`))
+    return match ? Number(match[1]) : null
+  }
+  return { okTests, failedTests, total: count('tests'), passed: count('pass'), failed: count('fail') }
+}
+
 async function runSuite(name, timeoutMs) {
   const startedAt = Date.now()
   let invocation
@@ -604,6 +640,12 @@ async function runSuite(name, timeoutMs) {
     invocation = {
       command: process.execPath,
       args: [script],
+      label: SUITE_COMMANDS[name],
+    }
+  } else if (name === 'node-test') {
+    invocation = {
+      command: process.execPath,
+      args: ['--test', '--test-isolation=none', 'sidecar/dsh-official/lib/host-services.test.mjs'],
       label: SUITE_COMMANDS[name],
     }
   } else {
@@ -627,6 +669,10 @@ async function runSuite(name, timeoutMs) {
   } else if (name === 'links') {
     const match = output.match(/(\d+) link\(s\) checked, (\d+) broken, (\d+) file\(s\) scanned/)
     summary = match ? `${match[1]} link(s) checked, ${match[2]} broken, ${match[3]} file(s) scanned` : '未找到链接汇总行'
+  } else if (name === 'node-test') {
+    details.node = parseNodeTestOutput(output)
+    const node = details.node
+    summary = `${node.passed ?? '?'}/${node.total ?? '?'} node tests passed${node.failed ? `, ${node.failed} failed` : ''}`
   } else {
     details.cargo = parseCargoSummary(output)
     details.cargo.failing_packages = parseCargoFailingPackages(output)
@@ -725,6 +771,20 @@ function evaluateTests(tests, suiteRuns) {
       return run.status === 'pass'
         ? makeResult(test, 'pass', `链接检查通过（${run.summary}）`, evidence)
         : makeResult(test, 'fail', `链接检查失败（${run.summary}）`, evidence)
+    }
+
+    if (test.suite === 'node-test') {
+      const node = run.details.node
+      if (!node) return makeResult(test, 'fail', `node-test 输出无法解析（${run.summary}）`, evidence)
+      const ok = node.okTests.some((name) => name.includes(test.selector))
+      if (ok) return makeResult(test, 'pass', `node 测试通过：${test.selector}（${run.summary}）`, evidence)
+      const failed = node.failedTests.some((name) => name.includes(test.selector))
+      return makeResult(
+        test,
+        'fail',
+        failed ? `node 测试失败：${test.selector}` : `selector 未在 node --test 输出中找到（${run.summary}）`,
+        evidence,
+      )
     }
 
     if (test.suite === 'cargo') {
@@ -1145,6 +1205,7 @@ async function main() {
     if (opts.quick) {
       selected.add('schema')
       selected.add('links')
+      selected.add('node-test')
     }
     if (opts.workspace) selected.add('cargo')
     for (const name of opts.suites) {
@@ -1159,7 +1220,8 @@ async function main() {
       // 裸调用等价 quick；显式提示，避免误以为跑了全量。
       selected.add('schema')
       selected.add('links')
-      console.log('[conformance] 未指定模式，按 --quick 执行（schema + links）。')
+      selected.add('node-test')
+      console.log('[conformance] 未指定模式，按 --quick 执行（schema + links + node-test）。')
     }
   }
 

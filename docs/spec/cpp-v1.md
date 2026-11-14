@@ -232,6 +232,7 @@ let effect = ctx.publish::<dyn ToolRegistry>("tool-registry/v1", impl_)?;
 - `api` 只写 major；minor 通过 capability 探测（`ctx.capability("cpp.tool.stream")`）。
 - Service key 的 major 变化即不兼容；宿主同时最多提供一个 major。
 - WASM 插件额外固定 WIT 包版本；组件与宿主 WIT 版本不匹配即 `E_VERSION`。
+  WIT 世界定义（草案）见 [`cpp-v1.wit`](cpp-v1.wit)；Wasmtime 主机接入时由 `wit-bindgen` 校验后冻结。
 - `cdylib` 不作为公开扩展通道：不承诺 ABI 稳定，仅内部使用。
 - 弃用流程：规范标记 `deprecated` → 至少一个 major 周期保留 → 删除。
 
@@ -241,5 +242,96 @@ let effect = ctx.publish::<dyn ToolRegistry>("tool-registry/v1", impl_)?;
 |---|---|---|---|
 | Q1 | 是否需要 `on_config` 之外的热更新钩子 | 只保留 `on_config` | M3 |
 | Q2 | WASM 插件能否共享宿主内存做零拷贝 | 初期不做，先保证隔离 | M3 |
-| Q3 | 独立进程插件的 transport 与 sidecar 是否复用 | 复用 [`sidecar-rpc.md`](sidecar-rpc.md) 的 envelope，独立握手 | M4 |
+| Q3 | 独立进程插件的 transport 与 sidecar 是否复用 | **已定（ADR-0010）**：复用 NDJSON + envelope 语义，独立握手（见 §12） | M3 |
 | Q4 | 静态插件的 manifest 是否允许编译期宏生成 | 允许，但产物必须等价于手写 | M3 |
+
+---
+
+## 12. `external-process` 运行时（`cpp-process/v1`，M3 退路）
+
+> 状态：Review（M3 实现）。动机与配额见 [ADR-0010](../decisions/0010-isolation-runtime-quota.md)：
+> 本机离线无法获取 Wasmtime，G3 的"隔离"由独立进程 + Windows Job Object 承担；WASM 主机就绪后
+> 同一套配额/结算模型复用。
+
+### 12.1 传输与进程边界
+
+- 子进程由宿主启动（`runtime.kind = "external-process"`，`runtime.entry` 是包内相对路径的可执行文件）。
+- **NDJSON over stdio**：stdout 只走协议（一行一条 JSON，≤1 MiB/行），stderr 是日志（宿主转发到
+  `log.emit` 同级诊断），stdin 收宿主消息。
+- 宿主用 `sidecar-guard` 的 Job Object 包裹：进程数、内存、CPU 时间、随宿主退出；cwd 是插件数据目录；
+  环境变量清洗（不继承凭据，见 §3.4/PLAN §7）。
+- 一份 generation 一个进程；崩溃 = generation 失效，在途调用 `aborted`，宿主不崩。
+
+### 12.2 消息
+
+帧形状与 [`sidecar-rpc.md`](sidecar-rpc.md) §4 的 envelope 同构（`version/kind/request_id/generation/
+trace_id/ts/payload/error`），`version` 固定 `"cpp-process/v1"`：
+
+| kind | 方向 | payload | 说明 |
+|---|---|---|---|
+| `process.hello` | host → child | `{protocol, host_version, plugin_id, generation, manifest}` | 启动后宿主先发，10 s 内必须收到 ready |
+| `process.ready` | child → host | `{protocol, plugin_id, tools[], panels[]}` | `tools[]`/`panels[]` 见 §12.3；未知协议/插件 id 不符即拒绝 |
+| `process.ping` / `process.pong` | ↔ | `{}` | 健康检查（宿主 15 s 一次） |
+| `tool.invoke` | host → child | `{tool, arguments, timeout_ms, cancelable}` | 调用一次工具；同一 `request_id` 唯一 |
+| `tool.chunk` | child → host | `{seq, text}` / `{seq, content}` | 可选流式；宿主只记诊断/转发，不阻塞结算 |
+| `tool.result` | child → host | `{content[], value?, meta?, is_error}` | 恰好一次；形状对齐 §7.3 |
+| `tool.cancel` | host → child | `{reason}` | child MUST 5 s 内以 result（`E_CANCELLED`）或 aborted 结算 |
+| `ui.render` | host → child | `{view, state_seq}` | 声明过的 view 的元素树（ADC-v1 JSON） |
+| `ui.result` | child → host | `{tree}` 或 `{error}` | 宿主用 `parse_tree` 校验/降级后交给 ADC 渲染器 |
+| `ui.action` | host → child | `{view, action, payload}` | ADC 动作回传（`call`/`command`/`copy`；`openExternal` 由宿主处理） |
+| `process.shutdown` | host → child | `{timeout_ms}` | 优雅退出；超时 `TerminateJobObject` |
+| `process.bye` | child → host | `{}` | 退出确认（可选；进程退出即等价） |
+
+错误统一走 envelope `error`（`E_*` 闭集）：`E_PROTOCOL`/`E_VERSION`/`E_SCHEMA`/`E_TIMEOUT`/
+`E_CANCELLED`/`E_QUOTA`/`E_INTERNAL`。`error.message` 不得含凭据/绝对路径/堆栈。
+
+### 12.3 声明（`process.ready`）
+
+```json
+{
+  "tools": [{
+    "name": "cad_validate",
+    "description": "Validate a STEP file",
+    "input_schema": { "type": "object", "required": ["path"], "properties": { "path": {"type":"string"} } },
+    "output_schema": { "type": "object" },
+    "timeout_ms": 120000,
+    "cancelable": true,
+    "presentation": "generic"
+  }],
+  "panels": [{ "slot": "workspace.panel", "id": "cad.inspector", "label": "CAD Inspector",
+               "view": "cad.inspector", "location": "right", "order": 100 }]
+}
+```
+
+- `input_schema`/`output_schema` **内联**（≤8 KiB），必须是 JSON Schema 子集；宿主按 §7.1 校验。
+- `panels` 走 ADC-v1 slot 契约（`workspace.panel` 等），注册校验由 `ui-contributions` 完成；
+  未声明 view 的 panel 拒绝。`view` 的树由 `ui.render` 提供，宿主不缓存旧树。
+- 工具名全局唯一（与 Native/Sidecar/MCP 同表）；冲突 → `plugin.failed`（`E_TOOL_CONFLICT`）。
+
+### 12.4 配额（与 Wasmtime 主方案同构，ADR-0010 §1）
+
+| 维度 | 来源 | 超限行为 |
+|---|---|---|
+| 墙钟超时 | tool 声明 `timeout_ms` / `process.ready` 10 s | 杀 Job → `E_TIMEOUT`，会话无脏写 |
+| CPU 时间 | manifest `fuel` 折算或 `cpu_ms`（缺省 60 s/调用） | 杀 Job → `E_QUOTA` |
+| 内存 | manifest `max_memory_mb`（1–512） | Job 内存上限触发 → `E_QUOTA` |
+| 输出 | 单 result ≤ 1 MB（上限 8 MB，超出转附件） | 截断/`E_TOO_LARGE`，不阻塞其它调用 |
+| 并发 | 每插件 4 / 全局 16 | `E_BACKPRESSURE`（退避可重试） |
+
+### 12.5 生命周期
+
+```text
+spawn → process.hello → process.ready → apply(tools/panels 注册) → Active
+  → tool.invoke* / ui.render* → process.shutdown → bye/exit → Disposed
+```
+- `process.ready` 超时/协议不符/插件 id 不符 → `Failed`，杀进程；不影响其它插件。
+- 撤销（unload）幂等；重启即新 generation。
+- 宿主退出时 Job Object 兜底杀子进程。
+
+### 12.6 安全
+
+- `entry` 必须是包内相对路径（拒绝 `..`、绝对路径、符号链接）；不在 PATH 里找可执行文件。
+- 不经过 shell；参数由 manifest/宿主固定，插件不得让模型注入命令行。
+- 子进程拿不到宿主凭据环境变量；文件权限由 Agent 工具策略（Rust）裁决，不信任子进程自报。
+- `ui.render` 的树按 ADC-v1 作者期严格校验 + 运行时降级（未知元素 Placeholder）；元素树不得触发网络。
+

@@ -1062,6 +1062,12 @@ dependencies = [
 [[package]]
 name = "dshr-compat-mcp"
 version = "0.0.0"
+dependencies = [
+ "dshr-tool-runtime",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dshr-conversation-model"
@@ -1126,12 +1132,13 @@ dependencies = [
 
 [[package]]
 name = "dshr-plugin-api"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "dshr-tool-runtime",
  "serde",
  "serde_json",
  "thiserror",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -1139,7 +1146,20 @@ name = "dshr-plugin-host"
 version = "0.0.0"
 dependencies = [
  "dshr-plugin-api",
+ "dshr-plugin-sdk",
+ "dshr-profile",
+ "dshr-sidecar-guard",
  "dshr-tool-runtime",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "dshr-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "dshr-plugin-api",
+ "serde",
  "serde_json",
  "thiserror",
 ]

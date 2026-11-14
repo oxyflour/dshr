@@ -4,7 +4,10 @@
   "updated_at": "2026-11-14",
   "notes": [
     "本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。",
-    "本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 53 suites / 594 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target：26 suites / 448 passed / 1 failed，故 harness 加 --no-fail-fast 以取得完整逐包证据。",
+    "本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 59 suites / 671 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。",
+    "第三轮新增证据：CPP-PROC（plugin-sdk，23）、CPP-ISO（plugin-host external_process，17）、CPP-MANIFEST-023..026（TOML，4）、MCP-CLIENT-001..017（compat-mcp）、RPC-L2-121..128/221..227（host services，15）均为 cargo implemented；sidecar JS 单测 13 个走新增 quick suite `node-test`（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs），登记为 JS-L2SVC-001..013（源码 ID L2JS-xxx）。",
+    "ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理。",
+    "manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）；两者按现有 schema 无法由 harness 自动判定，不计失败。",
     "提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。",
     ".github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。"
   ],
@@ -18,6 +21,12 @@
     "links": {
       "title": "Markdown 相对链接检查（tools/check-links.mjs）",
       "command": "node tools/check-links.mjs",
+      "quick": true,
+      "timeout_ms": 120000
+    },
+    "node-test": {
+      "title": "sidecar JS 单测（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs）",
+      "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs",
       "quick": true,
       "timeout_ms": 120000
     },
@@ -55,6 +64,36 @@
     {"id":"SCHEMA-FIXTURE-018","area":"SCHEMA","title":"envelope: invalid depth over limit","status":"implemented","suite":"schema","selector":"[envelope] invalid: depth over limit","notes":"depth 超上限被拒绝。"},
     {"id":"SCHEMA-FIXTURE-019","area":"SCHEMA","title":"envelope: invalid unknown kind","status":"implemented","suite":"schema","selector":"[envelope] invalid: unknown kind","notes":"未知消息 kind 被拒绝。"},
     {"id":"SCHEMA-FIXTURE-020","area":"SCHEMA","title":"envelope: invalid bad error code","status":"implemented","suite":"schema","selector":"[envelope] invalid: bad error code","notes":"错误码必须匹配 E_<SCREAMING> 词表。"},
+    {"id":"MCP-CLIENT-001","area":"MCP","title":"MCP-001 initialize 协商成功（含幂等）","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-001）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-002","area":"MCP","title":"MCP-002 不支持的协议版本被拒绝并断开","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-002）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-003","area":"MCP","title":"MCP-003 tools/list nextCursor 分页聚合","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-003）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-004","area":"MCP","title":"MCP-004 MCP tool 转 ToolDefinition","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-004）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-005","area":"MCP","title":"MCP-005 tools/call echo 往返（structuredContent 优先）","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-005）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-006","area":"MCP","title":"MCP-006 isError 保留为结果字段","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-006）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-007","area":"MCP","title":"MCP-007 超时后客户端仍可用","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-007）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-008","area":"MCP","title":"MCP-008 超大结果截断并计数","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-008）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-009","area":"MCP","title":"MCP-009 进程崩溃 → 在途失败、restart 恢复","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-009）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-010","area":"MCP","title":"MCP-010 shutdown 幂等且回收进程","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-010）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-011","area":"MCP","title":"MCP-011 非法 JSON 行忽略并计数","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-011）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-012","area":"MCP","title":"MCP-012 register_tools 注册进 Tool Registry","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-012）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-013","area":"MCP","title":"MCP-013 spawn 失败映射为 McpError::Spawn","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-013）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-014","area":"MCP","title":"MCP-014 JSON-RPC error 映射","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-014）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-015","area":"MCP","title":"MCP-015 spec.cwd 传递给服务进程","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-015）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-016","area":"MCP","title":"MCP-016 notifications 忽略并计数","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-016）；cargo test -p dshr-compat-mcp"},
+    {"id":"MCP-CLIENT-017","area":"MCP","title":"MCP-017 迟到答复丢弃且不串请求","status":"implemented","suite":"cargo","selector":"dshr-compat-mcp","notes":"crates/compat-mcp/tests/mcp_client.rs（源码 ID MCP-017）；cargo test -p dshr-compat-mcp"},
+    {"id":"JS-L2SVC-001","area":"JS","title":"L2JS-001 builds host.service.request envelope","status":"implemented","suite":"node-test","selector":"L2JS-001","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-002","area":"JS","title":"L2JS-002 correlates results by request_id and counts late results","status":"implemented","suite":"node-test","selector":"L2JS-002","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-003","area":"JS","title":"L2JS-003 maps envelope errors to structured HostServiceError","status":"implemented","suite":"node-test","selector":"L2JS-003","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-004","area":"JS","title":"L2JS-004 timeout settles with E_SERVICE_TIMEOUT and sends cancel","status":"implemented","suite":"node-test","selector":"L2JS-004","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-005","area":"JS","title":"L2JS-005 cancelForCall cancels only that tool call chain","status":"implemented","suite":"node-test","selector":"L2JS-005","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-006","area":"JS","title":"L2JS-006 event hub enforces the v2 whitelist","status":"implemented","suite":"node-test","selector":"L2JS-006","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-007","area":"JS","title":"L2JS-007 host service enablement matrix","status":"implemented","suite":"node-test","selector":"L2JS-007","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-008","area":"JS","title":"L2JS-008 catalog describes the proxied host services","status":"implemented","suite":"node-test","selector":"L2JS-008","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-009","area":"JS","title":"L2JS-009 workingDirectory shim unwraps wire shapes","status":"implemented","suite":"node-test","selector":"L2JS-009","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-010","area":"JS","title":"L2JS-010 storage kv facet translates units to host.service.request","status":"implemented","suite":"node-test","selector":"L2JS-010","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-011","area":"JS","title":"L2JS-011 storage hub exposes the official storage surface","status":"implemented","suite":"node-test","selector":"L2JS-011","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-012","area":"JS","title":"L2JS-012 createHostServicesRuntime wires the sidecar surface","status":"implemented","suite":"node-test","selector":"L2JS-012","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-013","area":"JS","title":"L2JS-013 event subscriptions reach the host channel","status":"implemented","suite":"node-test","selector":"L2JS-013","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
     {"id":"ADC-BIND-001","area":"ADC","title":"绑定前缀权限与 patch seq 乱序丢弃","status":"pending","suite":null,"selector":null,"notes":"依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。"},
     {"id":"CPP-WASM-001","area":"CPP","title":"fuel/内存/超时三例分别隔离","status":"pending","suite":null,"selector":null,"notes":"依赖 spec/cpp-v1.wit + Wasmtime host + 配额 ADR-0010；M3 G3 证据。"},
     {"id":"SELF-CHAT-001","area":"SELF","title":"chat --selftest 基本对话","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。"},
@@ -75,6 +114,8 @@
     {"id":"SELF-CHAT-016","area":"SELF","title":"chat --selftest-tree 会话树","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
     {"id":"SELF-CHAT-017","area":"SELF","title":"chat --selftest-export 会话导出","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
     {"id":"CPP-TRUST-019","area":"CPP","title":"chat --selftest-trust-install（安装信任链端到端）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。"},
+    {"id":"CPP-ISO-022","area":"CPP","title":"chat --selftest-external-plugin（external-process 产品路径 E2E）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。"},
+    {"id":"CPP-AUTHOR-001","area":"CPP","title":"tools/authoring-check.ps1（外部作者 E2E 门禁）","status":"manual","suite":null,"selector":null,"notes":"tools/authoring-check.ps1；仓库外按 docs/plugin-authoring.md + templates 构建/打包/安装（G2），人工/脚本判定。"},
     {"id":"GATE-G2-001","area":"GATE","title":"外部作者可发布实验（仓库外构建 + 安装 + 卸载）","status":"manual","suite":null,"selector":null,"notes":"M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。"}
   ],
   "groups": [
@@ -234,7 +275,11 @@
         "CPP-MANIFEST-019",
         "CPP-MANIFEST-020",
         "CPP-MANIFEST-021",
-        "CPP-MANIFEST-022"
+        "CPP-MANIFEST-022",
+        "CPP-MANIFEST-023",
+        "CPP-MANIFEST-024",
+        "CPP-MANIFEST-025",
+        "CPP-MANIFEST-026"
       ]
     },
     {
@@ -473,6 +518,21 @@
         "RPC-L2-117",
         "RPC-L2-118",
         "RPC-L2-119",
+        "RPC-L2-121",
+        "RPC-L2-122",
+        "RPC-L2-123",
+        "RPC-L2-124",
+        "RPC-L2-125",
+        "RPC-L2-126",
+        "RPC-L2-127",
+        "RPC-L2-128",
+        "RPC-L2-221",
+        "RPC-L2-222",
+        "RPC-L2-223",
+        "RPC-L2-224",
+        "RPC-L2-225",
+        "RPC-L2-226",
+        "RPC-L2-227",
         "RPC-L2-301",
         "RPC-L2-302",
         "RPC-L2-303",
@@ -486,6 +546,72 @@
         "RPC-L2-311",
         "RPC-L2-312",
         "RPC-L2-313"
+      ]
+    },
+    {
+      "name": "CPP-PROC（plugin-sdk：external-process 协议/会话 SDK）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-sdk",
+      "notes": "crates/plugin-sdk/src/{protocol,session}.rs 的 #[test]；cargo test -p dshr-plugin-sdk",
+      "source_dirs": [
+        "crates/plugin-sdk/src"
+      ],
+      "ids": [
+        "CPP-PROC-001",
+        "CPP-PROC-002",
+        "CPP-PROC-003",
+        "CPP-PROC-004",
+        "CPP-PROC-005",
+        "CPP-PROC-006",
+        "CPP-PROC-007",
+        "CPP-PROC-008",
+        "CPP-PROC-009",
+        "CPP-PROC-010",
+        "CPP-PROC-020",
+        "CPP-PROC-021",
+        "CPP-PROC-022",
+        "CPP-PROC-023",
+        "CPP-PROC-024",
+        "CPP-PROC-025",
+        "CPP-PROC-026",
+        "CPP-PROC-027",
+        "CPP-PROC-028",
+        "CPP-PROC-029",
+        "CPP-PROC-030",
+        "CPP-PROC-031",
+        "CPP-PROC-032"
+      ]
+    },
+    {
+      "name": "CPP-ISO（plugin-host：external-process 生命周期/隔离/安全/G2 端到端）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/tests/external_process.rs；cargo test -p dshr-plugin-host --test external_process",
+      "source_dirs": [
+        "crates/plugin-host/tests"
+      ],
+      "ids": [
+        "CPP-ISO-001",
+        "CPP-ISO-002",
+        "CPP-ISO-003",
+        "CPP-ISO-004",
+        "CPP-ISO-005",
+        "CPP-ISO-006",
+        "CPP-ISO-007",
+        "CPP-ISO-008",
+        "CPP-ISO-009",
+        "CPP-ISO-010",
+        "CPP-ISO-011",
+        "CPP-ISO-012",
+        "CPP-ISO-013",
+        "CPP-ISO-014",
+        "CPP-ISO-015",
+        "CPP-ISO-020",
+        "CPP-ISO-021"
       ]
     }
   ]

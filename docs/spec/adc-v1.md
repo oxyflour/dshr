@@ -1,6 +1,6 @@
 # ADC-v1 — Agent Desktop Client API
 
-> 状态：Review（M3 冻结中） · 版本：`adc/v1` · 冻结工件：[`schema/adc-v1/slots.v1.json`](../../schema/adc-v1/slots.v1.json) · 依赖：[`session-log.md`](session-log.md)
+> 状态：Frozen（M3 冻结，ADR-0011） · 版本：`adc/v1` · 冻结工件：[`schema/adc-v1/slots.v1.json`](../../schema/adc-v1/slots.v1.json) · 依赖：[`session-log.md`](session-log.md)
 > 适用对象：所有希望向 GPUI Shell 提交 UI 的插件——原生 Rust、脚本（QuickJS）、隔离 WebView。
 
 ---

@@ -57,7 +57,19 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// 解析 `plugin.toml` 文本（CPP-v1 的正式形态；`toml` 反序列化到同一组类型）。
+    pub fn from_toml_str(raw: &str) -> Result<Self, PluginError> {
+        let manifest = toml::from_str::<Manifest>(raw).map_err(|err| PluginError::Manifest {
+            path: "<plugin.toml>".to_owned(),
+            reason: err.to_string(),
+        })?;
+        manifest.check_api()?;
+        Ok(manifest)
+    }
+
     /// 读取 manifest 文件再解析；IO 错误与解析错误都带文件路径。
+    ///
+    /// 按扩展名选择 TOML（`.toml`，正式形态）或 JSON（其余；测试/工具链的投影）。
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, PluginError> {
         let path = path.as_ref();
         let path_text = path.display().to_string();
@@ -65,6 +77,19 @@ impl Manifest {
             path: path_text.clone(),
             reason: format!("cannot read manifest file: {err}"),
         })?;
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+        {
+            return Self::from_toml_str(&raw).map_err(|err| match err {
+                PluginError::Manifest { reason, .. } => PluginError::Manifest {
+                    path: path_text,
+                    reason,
+                },
+                other => other,
+            });
+        }
         let manifest =
             serde_json::from_str::<Manifest>(&raw).map_err(|err| PluginError::Manifest {
                 path: path_text,

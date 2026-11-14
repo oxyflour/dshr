@@ -11,3 +11,5 @@ edition = "2021"
 serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = "=1.0.154"
 thiserror = "=2.0.21"
+# CPP-v1 manifest 的正式形态是 plugin.toml（TOML）；版本已在 Cargo.lock 且离线可用。
+toml = "=0.8.23"

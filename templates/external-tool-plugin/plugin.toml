@@ -1,0 +1,25 @@
+# CPP-v1 插件 manifest（external-process 形态）。
+# 字段表与校验规则：docs/spec/cpp-v1.md §3；schema/cpp-v1/manifest.schema.json。
+# package.json 的 name/version 必须与下面的 id/version 一致（plugin-pack 会校验）。
+[plugin]
+id = "__PLUGIN_ID__"
+version = "__PLUGIN_VERSION__"
+api = "cordis-portable/v1"
+description = "__PLUGIN_NAME__ — external-process 插件模板（echo 工具 + workspace.panel）"
+
+[runtime]
+# 独立进程：宿主启动 bin/ 下的可执行文件，用 NDJSON over stdio 通信（spec §12）。
+kind = "external-process"
+entry = "bin/__BIN_NAME__.exe"
+# 配额（spec §12.4）：内存上限（1–512 MB）、单次调用/握手超时。
+max_memory_mb = 128
+timeout_ms = 60000
+
+# 最小权限：模板不需要工作区读写、网络、进程或凭据。
+# 安装预览会把这些权限展示给用户（docs/spec/plugin-trust.md §5）。
+[permissions]
+workspace_read = false
+workspace_write = false
+network = false
+process_spawn = false
+credential_use = false

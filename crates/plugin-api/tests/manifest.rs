@@ -603,3 +603,119 @@ fn cpp_ver_007_host_version_parse_display_and_compare() {
     );
     assert!(HostVersion::parse("nope").is_err());
 }
+
+// CPP-MANIFEST-023：`plugin.toml`（CPP-v1 正式形态）能解析成同一组 typed 类型。
+#[test]
+fn cpp_manifest_023_toml_manifest_parses() {
+    let raw = r#"
+[plugin]
+id = "cad.validate"
+version = "0.1.0"
+api = "cordis-portable/v1"
+description = "Validate STEP parts"
+min_host_version = "0.1.0"
+
+[runtime]
+kind = "external-process"
+entry = "bin/cad_validate.exe"
+timeout_ms = 30000
+
+[inject]
+required = ["tool-registry/v1"]
+
+[permissions]
+workspace_read = true
+workspace_write = false
+network = false
+
+[[tools]]
+name = "cad_validate"
+description = "Validate a STEP file"
+input_schema = "schemas/cad_validate.input.json"
+output_schema = "schemas/cad_validate.output.json"
+timeout_ms = 120000
+cancelable = true
+
+[[ui]]
+slot = "workspace.panel"
+id = "cad.inspector"
+label = "CAD Inspector"
+view = "cad.inspector"
+location = "right"
+"#;
+    let manifest = Manifest::from_toml_str(raw).expect("toml manifest");
+    assert_eq!(manifest.plugin.id, "cad.validate");
+    assert_eq!(manifest.runtime.kind, RuntimeKind::ExternalProcess);
+    assert_eq!(manifest.tools.len(), 1);
+    assert_eq!(manifest.ui.len(), 1);
+    assert_eq!(manifest.ui[0].location, Some(UiLocation::Right));
+    manifest
+        .validate(&HostVersion::parse("0.1.0").unwrap())
+        .expect("valid manifest");
+}
+
+// CPP-MANIFEST-024：TOML 里的未知字段同样拒绝（deny_unknown_fields 生效）。
+#[test]
+fn cpp_manifest_024_toml_unknown_field_rejected() {
+    let raw = r#"
+[plugin]
+id = "x.y"
+version = "1.0.0"
+api = "cordis-portable/v1"
+
+[runtime]
+kind = "rust-static"
+
+[unknown_section]
+value = 1
+"#;
+    let error = Manifest::from_toml_str(raw).unwrap_err();
+    assert!(matches!(error, PluginError::Manifest { .. }));
+}
+
+// CPP-MANIFEST-025：from_path 对 `.toml` 走 TOML 解析（对外插件包的真实入口）。
+#[test]
+fn cpp_manifest_025_from_path_reads_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "dshr-manifest-toml-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("plugin.toml");
+    std::fs::write(
+        &path,
+        r#"
+[plugin]
+id = "x.y"
+version = "1.0.0"
+api = "cordis-portable/v1"
+
+[runtime]
+kind = "rust-static"
+"#,
+    )
+    .unwrap();
+    let manifest = Manifest::from_path(&path).expect("toml from_path");
+    assert_eq!(manifest.plugin.id, "x.y");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+// CPP-MANIFEST-026：TOML 的 api 也必须等于 cordis-portable/v1。
+#[test]
+fn cpp_manifest_026_toml_api_mismatch_rejected() {
+    let raw = r#"
+[plugin]
+id = "x.y"
+version = "1.0.0"
+api = "cordis-portable/v2"
+
+[runtime]
+kind = "rust-static"
+"#;
+    let error = Manifest::from_toml_str(raw).unwrap_err();
+    assert!(matches!(error, PluginError::UnsupportedApi { .. }));
+}

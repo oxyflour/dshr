@@ -1,7 +1,11 @@
-﻿[package]
+[package]
 name = "dshr-compat-mcp"
-description = "MCP 外部工具接入"
+description = "MCP 外部工具接入（stdio JSON-RPC 最小客户端）"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dshr-tool-runtime = { path = "../tool-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

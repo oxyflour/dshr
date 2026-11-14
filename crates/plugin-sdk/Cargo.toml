@@ -1,0 +1,11 @@
+[package]
+name = "dshr-plugin-sdk"
+description = "CPP-v1 external-process 插件作者 SDK（cpp-process/v1，spec/cpp-v1.md §12）"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+dshr-plugin-api = { path = "../plugin-api" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

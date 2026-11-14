@@ -12,11 +12,16 @@
 #![allow(clippy::result_large_err)]
 
 pub mod service;
+pub mod services;
 pub mod storage_kv;
 
 // 集成点（chat.rs / sidecar 读循环）的常用入口，避免深层路径。
 pub use service::{
     allow as allow_host_service, HostService, HostServiceRouter, ServiceCallContext, ServiceError,
+};
+pub use services::{
+    EventPage, SessionAccess, SessionEventView, SessionHeaderView, SessionLogService,
+    WorkingDirectoryService, SESSION_LOG_V1, WORKING_DIRECTORY_CHANGED, WORKING_DIRECTORY_V1,
 };
 pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
 

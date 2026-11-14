@@ -6,12 +6,13 @@
 
 | 文件 | 内容 | 状态 | 冻结时点 |
 |---|---|---|---|
-| [`adc-v1.md`](adc-v1.md) | Agent Desktop Client API v1：slot 注册表、元素词汇表、绑定与动作 | Review | M3（G1） |
+| [`adc-v1.md`](adc-v1.md) | Agent Desktop Client API v1：slot 注册表、元素词汇表、绑定与动作 | **Frozen** | M3（ADR-0011） |
 | [`cpp-v1.md`](cpp-v1.md) | Cordis Portable Profile v1：Rust 插件 manifest、生命周期、Service/Effect/Tool | Draft | M3（G2） |
 | [`sidecar-rpc.md`](sidecar-rpc.md) | Rust ↔ Node DSH Sidecar 的跨进程协议 | Review | M3（v2：host-service 代理） |
 | [`session-log.md`](session-log.md) | Session 事件日志：信封、事件类型、回放与上下文事件 | Review | M2 已实现；M3 复核 |
 | [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 与 DSH 真实契约的逐字段对照：哪些刻意不同、哪些必须补齐 | Draft | 随实现更新 |
 | [`plugin-trust.md`](plugin-trust.md) | 包级信任文件、摘要/可选 ed25519、首装确认、审计、降级拒绝 | Review | M3（G2） |
+| [`cpp-v1.wit`](cpp-v1.wit) | CPP-v1 WASM Component 世界定义（草案；Wasmtime 接入后由 wit-bindgen 校验） | Draft | M3（G3） |
 
 状态含义：
 

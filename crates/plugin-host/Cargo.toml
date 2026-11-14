@@ -6,6 +6,11 @@ edition.workspace = true
 
 [dependencies]
 dshr-plugin-api = { path = "../plugin-api" }
+dshr-plugin-sdk = { path = "../plugin-sdk" }
+dshr-sidecar-guard = { path = "../sidecar-guard" }
 dshr-tool-runtime = { path = "../tool-runtime" }
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+dshr-profile = { path = "../profile" }

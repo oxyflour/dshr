@@ -1,0 +1,7 @@
+{
+  "name": "__PLUGIN_ID__",
+  "version": "__PLUGIN_VERSION__",
+  "description": "__PLUGIN_NAME__ — CPP-v1 external-process 插件（echo 工具 + workspace.panel）",
+  "private": true,
+  "license": "MIT"
+}

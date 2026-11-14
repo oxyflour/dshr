@@ -25,6 +25,7 @@
 //   DSHR_WORKSPACE    fs 服务的工作区根；缺省为 sidecar 进程 cwd（宿主握手时会设置）。
 
 import { createInterface } from 'node:readline'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync } from 'node:fs'
 import { readFile, stat as fsStat, lstat as fsLstat } from 'node:fs/promises'
 import {
@@ -35,8 +36,15 @@ import {
   sep,
 } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import {
+  createHostServicesRuntime,
+  handleHostEventEmit,
+  shouldEnableHostServices,
+} from './lib/host-services.mjs'
 
-const PROTOCOL_VERSION = 1
+const PROTOCOL_MAX = 2
+// 协商结果：min(host, sidecar)。v1 宿主（M2 及以前）保持纯 v1 行为。
+let negotiatedProtocol = 1
 let generation = 'node-0001'
 const tools = new Map()
 const inflight = new Map()
@@ -44,6 +52,18 @@ const inflight = new Map()
 // 握手协商出的 host_caps；`fs.write` 是官方写工具的唯一门闩。
 const hostCaps = new Set()
 let writeEnabled = false
+
+// L2 Host Service 代理（spec §13）：仅协商到 v2 且宿主支持 service.proxy 时启用。
+let hostServices = null
+// 当前工具调用上下文（callId/sessionId/depth）：服务代理用它关联 tool.cancel 与 session_id。
+const callStore = new AsyncLocalStorage()
+// Cordis 根 Context：bootPlugins 后用于把服务事件桥接回插件总线。
+let cordisRoot = null
+
+const HOST_SERVICE_TIMEOUT_MS = (() => {
+  const configured = Number(process.env.DSHR_HOST_SERVICE_TIMEOUT_MS)
+  return Number.isFinite(configured) && configured > 0 ? configured : 30_000
+})()
 
 // 工作区根：宿主在 spawn 时通过 DSHR_WORKSPACE 注入；独立运行时退回 cwd。
 const WORKSPACE_ROOT = resolvePath(process.env.DSHR_WORKSPACE || process.cwd())
@@ -61,7 +81,7 @@ const activeCalls = []
 const send = (kind, requestId, payload, extra = {}) => {
   process.stdout.write(
     JSON.stringify({
-      version: PROTOCOL_VERSION,
+      version: negotiatedProtocol,
       kind,
       request_id: requestId,
       runtime_generation: generation,
@@ -73,6 +93,19 @@ const send = (kind, requestId, payload, extra = {}) => {
     }) + '\n',
   )
 }
+
+/**
+ * 把 host-services 模块构造的完整信封接到 NDJSON `send` 上。
+ * 信封的可选字段（service_key/session_id/depth）走 extra 覆盖。
+ */
+const sendEnvelope = (envelope) =>
+  send(envelope.kind, envelope.request_id, envelope.payload, {
+    version: envelope.version,
+    plugin_id: envelope.plugin_id ?? 'dsh-official',
+    ...(envelope.service_key ? { service_key: envelope.service_key } : {}),
+    ...(envelope.session_id ? { session_id: envelope.session_id } : {}),
+    ...(Number.isInteger(envelope.depth) ? { depth: envelope.depth } : {}),
+  })
 
 const log = (level, message, extra = {}) =>
   send('log.emit', `log-${Date.now()}`, { level, message }, extra)
@@ -584,6 +617,12 @@ async function bootPlugins(entries) {
   root.provide('tools', toolsService)
   root.provide('fs', createFsService())
   root.provide('systemPrompt', createSystemPromptService())
+  if (hostServices) {
+    // L2（spec §13）：只有协商到 service.proxy 时才注入这些代理；
+    // 未协商时官方插件对 `workingDirectory`/`storage` 的 inject 失败，保持 M2 行为。
+    root.provide('workingDirectory', hostServices.createWorkingDirectory())
+    root.provide('storage', hostServices.createStorage())
+  }
   for (const entry of entries) {
     try {
       const module = await import(entry.name)
@@ -621,13 +660,25 @@ async function runTool(definition, msg) {
   const call = { callId: msg.call_id, tool: definition.name }
   callContexts.set(controller.signal, call)
   activeCalls.push(call)
+  // 服务代理读取的调用上下文：session_id 只从信封来（spec §5），depth 用于 +1。
+  const callContext = {
+    callId: msg.call_id,
+    tool: definition.name,
+    sessionId: msg.session_id,
+    depth: Number.isInteger(msg.depth) ? msg.depth : 0,
+  }
   const started = Date.now()
   try {
     // ToolRunContext 在官方实现里由执行器组装；这里给最小可用集合：
     // 没有 agent，因此官方工具不会走 workingDirectory / approval / escalation 分支；
     // 写操作的审批发生在 Rust（fs.write.request 的裁决层）。
     const exec = { signal: controller.signal, callId: msg.call_id }
-    const value = await definition.execute(msg.payload?.arguments ?? {}, exec)
+    const argumentsValue = msg.payload?.arguments ?? {}
+    // AsyncLocalStorage：ctx.workingDirectory/ctx.storage 的代理在官方 execute 的
+    // 任意 await 点都能拿到同一个 call_id/session_id（tool.cancel 据此取消服务调用）。
+    const value = await callStore.run(callContext, () =>
+      definition.execute(argumentsValue, exec),
+    )
 
     let content
     try {
@@ -689,21 +740,55 @@ async function handle(msg) {
       hostCaps.clear()
       for (const capability of msg.payload?.host_caps ?? []) hostCaps.add(String(capability))
       writeEnabled = hostCaps.has('fs.write')
+
+      // 版本协商（spec §3.2）：取 min(protocol_max)；v1 宿主保持 M2 行为。
+      const hostProtocol = Number(msg.payload?.protocol_max)
+      negotiatedProtocol =
+        Number.isFinite(hostProtocol) && hostProtocol >= 1
+          ? Math.min(PROTOCOL_MAX, hostProtocol)
+          : 1
+      const serviceProxyEnabled = shouldEnableHostServices({
+        negotiatedProtocol,
+        hostCaps,
+        env: process.env,
+      })
+      hostServices = serviceProxyEnabled
+        ? createHostServicesRuntime({
+            sendEnvelope,
+            generation: () => generation,
+            timeoutMs: HOST_SERVICE_TIMEOUT_MS,
+            callContext: () => callStore.getStore(),
+            onDiagnostic: (diagnostic) =>
+              send('log.emit', `diag-${Date.now()}`, {
+                level: 'debug',
+                message: JSON.stringify(diagnostic),
+              }),
+            busEmit: (eventName, payload) => {
+              // TODO(cordis)：DSH Cordis Context 的事件 API 在官方 Loader 里是
+              // root.emit(name, ...args)；这里先桥接最小形态，集成轮再核对签名。
+              if (cordisRoot && typeof cordisRoot.emit === 'function') {
+                cordisRoot.emit(eventName, payload)
+              }
+            },
+          })
+        : null
       send('runtime.ready', msg.request_id, {
-        protocol: PROTOCOL_VERSION,
+        protocol: negotiatedProtocol,
         dsh_version: '0.2.2-rc.1',
         sidecar_caps: [
           'tool.cancel',
           'dsh-official',
           ...(writeEnabled ? ['fs.write'] : []),
+          ...(hostServices ? ['service.proxy'] : []),
         ],
+        ...(hostServices ? { host_services: hostServices.catalog } : {}),
         generation,
       })
       // 必须在 ready 之后装载：否则 registration 带着握手前的占位 generation 被丢弃。
-      await bootPlugins(loadPluginConfig())
+      cordisRoot = await bootPlugins(loadPluginConfig())
       send('log.emit', 'boot-capabilities', {
         level: 'info',
-        message: `host_caps=[${[...hostCaps].join(', ')}] fs.write=${writeEnabled} workspace=${WORKSPACE_ROOT}`,
+        message: `host_caps=[${[...hostCaps].join(', ')}] fs.write=${writeEnabled} protocol=${negotiatedProtocol} host_services=${Boolean(hostServices)} workspace=${WORKSPACE_ROOT}`,
       })
       return
     }
@@ -750,6 +835,27 @@ async function handle(msg) {
     case 'tool.cancel': {
       const controller = inflight.get(msg.call_id)
       if (controller) controller.abort()
+      // 服务调用取消（spec §8/§13.6）：同一调用链上在途的 host.service.request
+      // 逐个发 host.service.cancel，本地以 E_CANCELLED 结算。
+      if (hostServices && msg.call_id) hostServices.cancelForCall(msg.call_id)
+      return
+    }
+    case 'host.service.result': {
+      // 与 tool.result 严格分开：只按 request_id 关联 sidecar 发起的服务调用。
+      if (!hostServices) {
+        send('log.emit', `drop-${msg.request_id}`, {
+          level: 'error',
+          message: `host.service.result without negotiated service.proxy: ${msg.request_id}`,
+        })
+        return
+      }
+      hostServices.handleResult(msg)
+      return
+    }
+    case 'event.emit': {
+      // 事件白名单在 EventHub 内（session.event / service.event）；其余拒绝并诊断。
+      if (!hostServices) return
+      handleHostEventEmit(msg, hostServices.eventHub)
       return
     }
     default:

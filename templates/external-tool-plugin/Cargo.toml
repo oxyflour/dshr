@@ -1,0 +1,22 @@
+[package]
+name = "__CRATE_NAME__"
+version = "__PLUGIN_VERSION__"
+edition = "2021"
+description = "__PLUGIN_NAME__ — CPP-v1 external-process 插件（echo 工具 + workspace.panel 面板）"
+publish = false
+license = "MIT"
+
+# `[workspace]`：模板是独立 crate/独立 workspace。
+# 复制到仓库外后不会被上层仓库的 workspace 吞掉，也便于作者单独锁定依赖。
+[workspace]
+
+[[bin]]
+name = "__BIN_NAME__"
+path = "src/main.rs"
+
+[dependencies]
+# 生成器会把 __DSHR_REPO__ 替换成绝对仓库路径（正斜杠）。
+# 对外发布 SDK 后改成名 + 版本：dshr-plugin-sdk = "0.1"
+dshr-plugin-sdk = { path = "__DSHR_REPO__/crates/plugin-sdk" }
+# 只用于构造 panel 的 ADC-v1 元素树（serde_json::Value）。
+serde_json = "=1.0.154"
