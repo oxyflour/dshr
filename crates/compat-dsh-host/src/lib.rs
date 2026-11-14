@@ -6,6 +6,19 @@
 //! 传输固定为 NDJSON over stdio：规范允许抽象 transport，探针先用最便宜的一种。
 
 #![forbid(unsafe_code)]
+// 服务错误携带结构化 detail（code/message/retryable/可选 JSON），`Result<T, ServiceError>`
+// 会在每个方法签名里放大 Err 尺寸。用 Box 包错误会改动公开 API 且不改善调用方（协议层本就
+// 逐条分配 message/detail）；这是有意的取舍，用 crate 级 allow 固定，避免逐函数标注。
+#![allow(clippy::result_large_err)]
+
+pub mod service;
+pub mod storage_kv;
+
+// 集成点（chat.rs / sidecar 读循环）的常用入口，避免深层路径。
+pub use service::{
+    allow as allow_host_service, HostService, HostServiceRouter, ServiceCallContext, ServiceError,
+};
+pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};

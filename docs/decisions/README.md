@@ -38,3 +38,5 @@
 | [0006-next-step-native-plugin-registry.md](0006-next-step-native-plugin-registry.md) | M1 收尾顺序：先 Native Plugin + Tool Registry，LLM 往后 | Accepted | M1 |
 | [0007-m3-scope.md](0007-m3-scope.md) | M3 范围锁定、M2 后移债务处置、3 条 gate 与砍单顺序 | Accepted | M3 启动 |
 | [0008-script-ui-spike.md](0008-script-ui-spike.md) | Script UI 5 日 spike 的时间盒、判定标准与退路 | Accepted | M3 W1 |
+| [0009-plugin-trust.md](0009-plugin-trust.md) | 最小信任链：包级 `dshr-trust.json` + 摘要强制 + 可选 ed25519 + 首装确认/审计/降级拒绝 | Accepted | M3 |
+| [0010-isolation-runtime-quota.md](0010-isolation-runtime-quota.md) | 隔离运行时配额五维；WASM 主方案因本机离线暂由 `external-process`（Job Object）退路承担 G3 | Accepted（退路启用） | M3 |

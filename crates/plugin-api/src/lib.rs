@@ -2,18 +2,32 @@
 //!
 //! 这一层**不依赖 GPUI、不依赖 Cordis 实现**：它只描述"插件能声明什么"。
 //! 生命周期（Fiber / generation / 回滚）由 `plugin-host` 负责。
+//!
+//! ## 与 cordis-rs 的适配缝隙
+//!
+//! 本 crate 是 CPP-v1 的**稳定面**：`Plugin` trait、`PluginContext`、`PluginError`、
+//! 结果与 capability 类型都不感知具体 Fiber 实现。ADR-0002 选定的 cordis-rs 只允许
+//! 出现在 `plugin-host` 内部；将来把 `plugin-host::fiber` 换成 cordis-rs（或反之）
+//! 不需要改这里的任何类型。新增的 [`capability`]、[`cancel`]、[`tool_result`] 模块
+//! 都保持这一边界：纯 std + serde 数据，无执行器、无运行时依赖。
 
 #![forbid(unsafe_code)]
 
+pub mod cancel;
+pub mod capability;
 pub mod manifest;
+pub mod tool_result;
 
 use dshr_tool_runtime::ToolDefinition;
 use serde_json::Value;
 use thiserror::Error;
 
+pub use cancel::{CancellationToken, Cancelled};
+pub use capability::{Capability, CapabilitySet};
 pub use manifest::{HostVersion, Manifest};
+pub use tool_result::{ContentPart, ToolResult};
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum PluginError {
     #[error("plugin already registers a tool named `{0}`")]
     DuplicateTool(String),
@@ -33,6 +47,83 @@ pub enum PluginError {
     HostTooOld { required: String, actual: String },
     #[error("invalid manifest: {0}")]
     InvalidManifest(String),
+
+    // ---- Service / 版本（spec/cpp-v1.md §5、§10、§9）----
+    #[error("service key `{key}` is already provided in this realm")]
+    ServiceConflict { key: String },
+    #[error("required service `{key}` is not available")]
+    ServiceMissing { key: String },
+    #[error("invalid service key `{key}`: {reason}")]
+    InvalidServiceKey { key: String, reason: String },
+    #[error("unsupported version `{actual}`; expected `{expected}`")]
+    Version { expected: String, actual: String },
+
+    // ---- Fiber 生命周期与 Effect 清理（spec/cpp-v1.md §4、§6、§9）----
+    #[error("invalid fiber transition `{from}` -> `{to}`")]
+    InvalidTransition {
+        from: &'static str,
+        to: &'static str,
+    },
+    #[error("plugin `{plugin_id}` is already loaded")]
+    AlreadyLoaded { plugin_id: String },
+    #[error("plugin `{plugin_id}` is not loaded")]
+    NotLoaded { plugin_id: String },
+    #[error("plugin `{plugin_id}` is unloading; new registrations are rejected")]
+    Unloading { plugin_id: String },
+    #[error("apply of plugin `{plugin_id}` timed out after {timeout_ms} ms")]
+    ApplyTimeout { plugin_id: String, timeout_ms: u64 },
+    #[error("unload of plugin `{plugin_id}` timed out after {timeout_ms} ms")]
+    UnloadTimeout { plugin_id: String, timeout_ms: u64 },
+    #[error("effect `{effect}` did not finish within {timeout_ms} ms")]
+    EffectTimeout { effect: String, timeout_ms: u64 },
+
+    // ---- capability / 取消 / 结算（spec/cpp-v1.md §7.4、§9、§10）----
+    #[error("capability `{capability}` is not available on this host")]
+    CapabilityMissing { capability: String },
+    #[error("operation `{operation}` was cancelled")]
+    Cancelled { operation: String },
+    #[error("tool call `{call_id}` is already settled")]
+    AlreadySettled { call_id: String },
+}
+
+impl PluginError {
+    /// 映射到 spec/cpp-v1.md §9 的稳定错误码。
+    ///
+    /// 这些字符串是跨进程/跨语言契约（conformance 依赖它们），不要按 `Display` 文本匹配。
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::DuplicateTool(_) => "E_TOOL_CONFLICT",
+            Self::Invalid(_) | Self::UnknownTool { .. } | Self::ToolFailed { .. } => "E_INTERNAL",
+            Self::Manifest { .. } | Self::InvalidManifest(_) | Self::InvalidServiceKey { .. } => {
+                "E_MANIFEST"
+            }
+            Self::UnsupportedApi { .. } | Self::HostTooOld { .. } | Self::Version { .. } => {
+                "E_VERSION"
+            }
+            Self::ServiceConflict { .. } => "E_SERVICE_CONFLICT",
+            Self::ServiceMissing { .. } => "E_SERVICE_MISSING",
+            Self::InvalidTransition { .. }
+            | Self::AlreadyLoaded { .. }
+            | Self::NotLoaded { .. } => "E_INTERNAL",
+            Self::Unloading { .. } => "E_UNLOADING",
+            Self::ApplyTimeout { .. } => "E_APPLY_TIMEOUT",
+            Self::UnloadTimeout { .. } | Self::EffectTimeout { .. } => "E_UNLOAD_TIMEOUT",
+            Self::CapabilityMissing { .. } => "E_PERMISSION",
+            Self::Cancelled { .. } => "E_CANCELLED",
+            Self::AlreadySettled { .. } => "E_ALREADY_SETTLED",
+        }
+    }
+
+    /// spec/cpp-v1.md §9 的"可恢复"列：调用方可以退避重试/重新装载。
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::ServiceMissing { .. }
+                | Self::ApplyTimeout { .. }
+                | Self::UnloadTimeout { .. }
+                | Self::Cancelled { .. }
+        )
+    }
 }
 
 /// 一个 UI 贡献（当前只承载元数据；渲染由 ui-contributions 在 M2 接）。
@@ -114,4 +205,88 @@ pub trait Plugin: Send {
 
     /// 清理钩子：宿主已经保证注册被撤销，这里只处理插件自己的资源。
     fn unload(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // CPP-FIBER-131..133：错误码映射是跨语言契约。
+    #[test]
+    fn cpp_fiber_131_error_codes_match_spec_table() {
+        assert_eq!(
+            PluginError::ServiceConflict {
+                key: "tool-registry/v1".to_owned()
+            }
+            .code(),
+            "E_SERVICE_CONFLICT"
+        );
+        assert_eq!(
+            PluginError::ServiceMissing {
+                key: "storage/v1".to_owned()
+            }
+            .code(),
+            "E_SERVICE_MISSING"
+        );
+        assert_eq!(
+            PluginError::Version {
+                expected: "cordis-portable/v1".to_owned(),
+                actual: "cordis-portable/v2".to_owned()
+            }
+            .code(),
+            "E_VERSION"
+        );
+        assert_eq!(
+            PluginError::Unloading {
+                plugin_id: "cad.validate".to_owned()
+            }
+            .code(),
+            "E_UNLOADING"
+        );
+        assert_eq!(
+            PluginError::Cancelled {
+                operation: "tool".to_owned()
+            }
+            .code(),
+            "E_CANCELLED"
+        );
+        assert_eq!(
+            PluginError::AlreadySettled {
+                call_id: "call-1".to_owned()
+            }
+            .code(),
+            "E_ALREADY_SETTLED"
+        );
+    }
+
+    #[test]
+    fn cpp_fiber_132_retryable_flags_match_spec_recoverable_column() {
+        assert!(PluginError::ServiceMissing {
+            key: "storage/v1".to_owned()
+        }
+        .is_retryable());
+        assert!(PluginError::ApplyTimeout {
+            plugin_id: "cad.validate".to_owned(),
+            timeout_ms: 10_000
+        }
+        .is_retryable());
+        assert!(!PluginError::ServiceConflict {
+            key: "storage/v1".to_owned()
+        }
+        .is_retryable());
+        assert!(!PluginError::CapabilityMissing {
+            capability: capability::TOOL_STREAM.to_owned()
+        }
+        .is_retryable());
+    }
+
+    #[test]
+    fn cpp_fiber_133_errors_stay_eq_and_clone() {
+        let error = PluginError::InvalidTransition {
+            from: "Pending",
+            to: "Active",
+        };
+        assert_eq!(error.clone(), error);
+        assert_eq!(error.code(), "E_INTERNAL");
+    }
 }

@@ -8,6 +8,7 @@
 | `adc-v1/element.schema.json` | [`adc-v1.md`](../docs/spec/adc-v1.md) §6 | 元素树（递归节点、26 元素字段级 props、类型枚举、上限） |
 | `adc-v1/slot-registration.schema.json` | [`adc-v1.md`](../docs/spec/adc-v1.md) §4.4 | slot 注册条目（view/run × unkeyed/keyed 四种载荷形状） |
 | `cpp-v1/manifest.schema.json` | [`cpp-v1.md`](../docs/spec/cpp-v1.md) §3 | `plugin.toml` 的 JSON 投影（含 fuel 上限、`min_host_version`、`ui[].location`） |
+| `cpp-v1/trust.schema.json` | [`plugin-trust.md`](../docs/spec/plugin-trust.md) §2 | 包级信任文件 `dshr-trust.json`（摘要 + 可选 ed25519 签名） |
 | `sidecar-rpc/envelope.schema.json` | [`sidecar-rpc.md`](../docs/spec/sidecar-rpc.md) §4 | 控制消息信封（L2 host-service 代理 kind 与 `service_key`） |
 
 > `slots.v1.json` 的字段级必填（如 `workspace.panel` 的 `label`/`location`）只存在于**目录数据**里，

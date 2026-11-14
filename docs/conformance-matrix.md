@@ -2,30 +2,31 @@
 
 > 本文件由 `tools/conformance.mjs` 生成，请勿手改；测试清单事实源是 `docs/conformance.d/registry.json`。
 > **CI 状态**：`.github/workflows/conformance.yml` 尚未在 GitHub Actions 实跑；本报告由本机命令生成。
+> **格式**：compact（逐 ID 行只保留 ID/领域/状态/结果/证据/消息，title/notes 见注册表）。
 
 ## 元数据
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-12T14:55:07.202Z |
-| git HEAD | c688ec8de306d3b18987eddfc511a11425b31477（dirty，28 个文件未提交） |
+| generated_at | 2026-11-14T14:37:29.995Z |
+| git HEAD | e24d25ddc1f55b2e05252b9950cdae413ad8ef05（dirty，43 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
-| invocation | quick — `node tools/conformance.mjs --quick --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，57 条测试） |
+| invocation | quick — `node tools/conformance.mjs --quick --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
+| registry | docs/conformance.d/registry.json（schema_version=1，287 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 57 |
-| implemented | 25 |
+| 总测试 ID | 287 |
+| implemented | 266 |
 | implemented passed | 21 |
 | implemented failed | 0 |
-| implemented skipped | 4 |
-| pending | 31 |
-| manual | 1 |
+| implemented skipped | 245 |
+| pending | 19 |
+| manual | 2 |
 | blocked | 0 |
 | **failed（导致退出码 1）** | **0** |
 
@@ -33,76 +34,310 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.21s | `node schema/check.mjs` | 65/65 cases passed |
-| links | pass | 0 | 0.22s | `node tools/check-links.mjs` | 228 link(s) checked, 0 broken, 51 file(s) scanned |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 71/71 cases passed |
+| links | pass | 0 | 0.23s | `node tools/check-links.mjs` | 247 link(s) checked, 0 broken, 54 file(s) scanned |
 
 ## 测试矩阵
 
-| ID | 领域 | 标题 | 状态 | 结果 | 证据 | 消息 |
-|---|---|---|---|---|---|---|
-| SCHEMA-FIXTURE-001 | SCHEMA | element: valid nested stack | implemented | PASS | schema: [element] valid: nested stack | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-002 | SCHEMA | element: invalid unknown element | implemented | PASS | schema: [element] invalid: unknown element | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-003 | SCHEMA | element: invalid missing type | implemented | PASS | schema: [element] invalid: missing type | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-004 | SCHEMA | element: invalid child unknown type | implemented | PASS | schema: [element] invalid: child unknown type | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-005 | SCHEMA | element: invalid unknown top-level field | implemented | PASS | schema: [element] invalid: unknown top-level field | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-006 | SCHEMA | slotRegistration: valid panel | implemented | PASS | schema: [slotRegistration] valid: panel | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-007 | SCHEMA | slotRegistration: invalid slot_id without dot | implemented | PASS | schema: [slotRegistration] invalid: slot_id without dot | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-008 | SCHEMA | slotRegistration: invalid missing view | implemented | PASS | schema: [slotRegistration] invalid: missing view | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-009 | SCHEMA | slotRegistration: invalid plugin_id uppercase | implemented | PASS | schema: [slotRegistration] invalid: plugin_id uppercase | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-010 | SCHEMA | slotRegistration: invalid bad location | implemented | PASS | schema: [slotRegistration] invalid: bad location | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-011 | SCHEMA | manifest: valid wasm tool plugin | implemented | PASS | schema: [manifest] valid: wasm tool plugin | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-012 | SCHEMA | manifest: invalid api v2 | implemented | PASS | schema: [manifest] invalid: api v2 | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-013 | SCHEMA | manifest: invalid unknown runtime kind | implemented | PASS | schema: [manifest] invalid: unknown runtime kind | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-014 | SCHEMA | manifest: invalid unknown top-level field | implemented | PASS | schema: [manifest] invalid: unknown top-level field | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-015 | SCHEMA | manifest: invalid memory over cap | implemented | PASS | schema: [manifest] invalid: memory over cap | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-016 | SCHEMA | envelope: valid tool.invoke | implemented | PASS | schema: [envelope] valid: tool.invoke | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-017 | SCHEMA | envelope: invalid missing trace_id | implemented | PASS | schema: [envelope] invalid: missing trace_id | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-018 | SCHEMA | envelope: invalid depth over limit | implemented | PASS | schema: [envelope] invalid: depth over limit | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-019 | SCHEMA | envelope: invalid unknown kind | implemented | PASS | schema: [envelope] invalid: unknown kind | suite 通过（65/65 cases passed） |
-| SCHEMA-FIXTURE-020 | SCHEMA | envelope: invalid bad error code | implemented | PASS | schema: [envelope] invalid: bad error code | suite 通过（65/65 cases passed） |
-| DOC-LINK-001 | DOC | 全部 Markdown 相对链接可解析 | implemented | PASS | links: all | 链接检查通过（228 link(s) checked, 0 broken, 51 file(s) scanned） |
-| CARGO-UNIT-001 | CARGO | Rust workspace 全部单测 | implemented | SKIP | cargo: all | suite "cargo" 未在本次调用中运行（用 --suite cargo / --workspace / --full 运行） |
-| CARGO-UNIT-002 | CARGO | dshr-plugin-host 单测 | implemented | SKIP | cargo: dshr-plugin-host | suite "cargo" 未在本次调用中运行（用 --suite cargo / --workspace / --full 运行） |
-| CARGO-UNIT-003 | CARGO | dshr-plugin-api 单测 | implemented | SKIP | cargo: dshr-plugin-api | suite "cargo" 未在本次调用中运行（用 --suite cargo / --workspace / --full 运行） |
-| CARGO-UNIT-004 | CARGO | dshr-ui-contributions 单测 | implemented | SKIP | cargo: dshr-ui-contributions | suite "cargo" 未在本次调用中运行（用 --suite cargo / --workspace / --full 运行） |
-| ADC-SLOT-001 | ADC | 12 个 slot 的 kind/scope/注册契约 | pending | PENDING | — | 依赖 docs/spec/adc-v1.md §5 冻结 + schema/adc-v1/slots.v1.json；当前 ui-contributions 无 slot 服务实现。 |
-| ADC-ELEM-001 | ADC | 26 元素渲染快照 + 未知 type → Placeholder | pending | PENDING | — | 依赖 ui-gpui 渲染器；未知元素降级为 M3 G1 核心断言（review-m3-plan.md §4）。 |
-| ADC-BIND-001 | ADC | 绑定前缀权限与 patch seq 乱序丢弃 | pending | PENDING | — | 依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。 |
-| ADC-SEC-001 | ADC | openExternal 仅 https、跨插件绑定拒绝 | pending | PENDING | — | 依赖 ADC 服务端与动作执行器；断言见 review-m3-plan.md §6 ADC-SEC-*。 |
-| CPP-MANIFEST-001 | CPP | manifest 未知字段/min_host/版本检查 | pending | PENDING | — | schema 侧已有 SCHEMA-FIXTURE-011..015；运行期 typed Manifest 解析器尚未实现。 |
-| CPP-VER-001 | CPP | api/WIT/min_host 版本不匹配拒绝 | pending | PENDING | — | 依赖 plugin-api/plugin-host 版本检查；当前 crate 版本 0.0.0。 |
-| CPP-FIBER-001 | CPP | Fiber 状态机与依赖重启 | pending | PENDING | — | 依赖 cordis-rs 接入（ADR-0002 未落地）。 |
-| CPP-SVC-001 | CPP | Service 失效/恢复 | pending | PENDING | — | 依赖 Fiber/Service 依赖图实现。 |
-| CPP-EFF-001 | CPP | Effect LIFO/幂等/超时 | pending | PENDING | — | 依赖 Effect 撤销语义实现（plugin-host 当前不含 Effect 撤销）。 |
-| CPP-WASM-001 | CPP | fuel/内存/超时三例分别隔离 | pending | PENDING | — | 依赖 spec/cpp-v1.wit + Wasmtime host + 配额 ADR-0010；M3 G3 证据。 |
-| CPP-TRUST-001 | CPP | 篡改包/降级拒绝/审计字段 | pending | PENDING | — | 依赖 spec/plugin-trust.md + 验签钩子；当前安装不校验签名。 |
-| RPC-L2-001 | RPC | L2 storage 服务往返 | pending | PENDING | — | 依赖 sidecar-rpc v2 host-service 代理 + storage adapter；M3 按证据选服务。 |
-| RPC-L2-002 | RPC | L2 workingDirectory 服务往返 | pending | PENDING | — | 候选服务见 review-m3-plan.md §2.1；需真实官方插件证据。 |
-| RPC-L2-003 | RPC | L2 sessionProjections 服务往返 | pending | PENDING | — | 候选服务见 review-m3-plan.md §2.1；需真实官方插件证据。 |
-| SELF-CHAT-001 | SELF | chat --selftest 基本对话 | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
-| SELF-CHAT-002 | SELF | chat --selftest-stream 流式 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-003 | SELF | chat --selftest-context 上下文计量 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-004 | SELF | chat --selftest-long-context 长上下文压缩 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-005 | SELF | chat --selftest-spill 外部化 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-006 | SELF | chat --selftest-approval 审批 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-007 | SELF | chat --selftest-sandbox 沙箱 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-008 | SELF | chat --selftest-profile 插件启停 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-009 | SELF | chat --selftest-loader Loader 派生 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-010 | SELF | chat --selftest-install 离线安装 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-011 | SELF | chat --selftest-retry 重试 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-012 | SELF | chat --selftest-perf 性能 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-013 | SELF | chat --selftest-dsh DSH L1 | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本（CI 无此环境）。 |
-| SELF-CHAT-014 | SELF | chat --selftest-dsh-write 官方写路径 | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
-| SELF-CHAT-015 | SELF | chat --selftest-cordis Cordis 插件 | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
-| SELF-CHAT-016 | SELF | chat --selftest-tree 会话树 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-017 | SELF | chat --selftest-export 会话导出 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| GATE-G2-001 | GATE | 外部作者可发布实验（仓库外构建 + 安装 + 卸载） | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
+| ID | 领域 | 状态 | 结果 | 证据 | 消息 |
+|---|---|---|---|---|---|
+| SCHEMA-FIXTURE-001 | SCHEMA | implemented | PASS | [element] valid: nested stack |  |
+| SCHEMA-FIXTURE-002 | SCHEMA | implemented | PASS | [element] invalid: unknown element |  |
+| SCHEMA-FIXTURE-003 | SCHEMA | implemented | PASS | [element] invalid: missing type |  |
+| SCHEMA-FIXTURE-004 | SCHEMA | implemented | PASS | [element] invalid: child unknown type |  |
+| SCHEMA-FIXTURE-005 | SCHEMA | implemented | PASS | [element] invalid: unknown top-level field |  |
+| SCHEMA-FIXTURE-006 | SCHEMA | implemented | PASS | [slotRegistration] valid: panel |  |
+| SCHEMA-FIXTURE-007 | SCHEMA | implemented | PASS | [slotRegistration] invalid: slot_id without dot |  |
+| SCHEMA-FIXTURE-008 | SCHEMA | implemented | PASS | [slotRegistration] invalid: missing view |  |
+| SCHEMA-FIXTURE-009 | SCHEMA | implemented | PASS | [slotRegistration] invalid: plugin_id uppercase |  |
+| SCHEMA-FIXTURE-010 | SCHEMA | implemented | PASS | [slotRegistration] invalid: bad location |  |
+| SCHEMA-FIXTURE-011 | SCHEMA | implemented | PASS | [manifest] valid: wasm tool plugin |  |
+| SCHEMA-FIXTURE-012 | SCHEMA | implemented | PASS | [manifest] invalid: api v2 |  |
+| SCHEMA-FIXTURE-013 | SCHEMA | implemented | PASS | [manifest] invalid: unknown runtime kind |  |
+| SCHEMA-FIXTURE-014 | SCHEMA | implemented | PASS | [manifest] invalid: unknown top-level field |  |
+| SCHEMA-FIXTURE-015 | SCHEMA | implemented | PASS | [manifest] invalid: memory over cap |  |
+| SCHEMA-FIXTURE-016 | SCHEMA | implemented | PASS | [envelope] valid: tool.invoke |  |
+| SCHEMA-FIXTURE-017 | SCHEMA | implemented | PASS | [envelope] invalid: missing trace_id |  |
+| SCHEMA-FIXTURE-018 | SCHEMA | implemented | PASS | [envelope] invalid: depth over limit |  |
+| SCHEMA-FIXTURE-019 | SCHEMA | implemented | PASS | [envelope] invalid: unknown kind |  |
+| SCHEMA-FIXTURE-020 | SCHEMA | implemented | PASS | [envelope] invalid: bad error code |  |
+| DOC-LINK-001 | DOC | implemented | PASS | all |  |
+| CARGO-UNIT-001 | CARGO | implemented | SKIP | all |  |
+| CARGO-UNIT-002 | CARGO | implemented | SKIP | dshr-plugin-host |  |
+| CARGO-UNIT-003 | CARGO | implemented | SKIP | dshr-plugin-api |  |
+| CARGO-UNIT-004 | CARGO | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-BIND-001 | ADC | pending | PENDING | — | 依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。 |
+| ADC-ELEM-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-004 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-005 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-006 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-007 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-008 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-009 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-010 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-011 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-012 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-013 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-014 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-015 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-016 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-017 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-018 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-019 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-020 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-021 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-022 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-ELEM-A11Y-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-A11Y-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-A11Y-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-A11Y-004 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-ALIGN-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-CHART-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-CHART-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-GRID-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-GRID-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-ICON-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-JUSTIFY-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-LIST-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-NUM-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-PLACEHOLDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-RENDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-RENDER-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-RENDER-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-SLIDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-SPACING-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-SPACING-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-TABLE-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-TABLE-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-TEXT-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-TEXT-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-TEXT-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-ELEM-TONE-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
+| ADC-SEC-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-004 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-005 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-006 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-007 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-008 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SEC-009 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-004 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-005 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-006 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-007 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-008 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-009 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-010 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-011 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-012 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-013 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-014 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-015 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-016 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-017 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-018 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-019 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-020 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-021 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-022 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| ADC-SLOT-023 | ADC | implemented | SKIP | dshr-ui-contributions |  |
+| CPP-EFF-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-EFF-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-011 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-012 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-013 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-014 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-015 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-016 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-017 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-018 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-019 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-020 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-021 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-022 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-023 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-024 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-025 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-026 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-027 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-FIBER-101 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-102 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-103 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-104 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-105 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-111 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-112 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-113 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-114 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-115 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-116 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-121 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-122 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-123 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-124 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-125 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-126 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-127 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-131 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-132 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-FIBER-133 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-001 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-002 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-003 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-004 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-005 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-006 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-007 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-008 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-009 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-010 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-011 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-012 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-013 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-014 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-015 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-016 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-017 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-018 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-019 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-020 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-021 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-MANIFEST-022 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-SVC-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-011 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-012 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-013 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-SVC-014 | CPP | implemented | SKIP | dshr-plugin-host |  |
+| CPP-TRUST-001 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-002 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-003 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-004 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-005 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-006 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-007 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-008 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-009 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-010 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-011 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-012 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-013 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-014 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-015 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-016 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-017 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-018 | CPP | implemented | SKIP | dshr-profile |  |
+| CPP-TRUST-019 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。 |
+| CPP-VER-001 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-VER-002 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-VER-003 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-VER-004 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-VER-005 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-VER-006 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-VER-007 | CPP | implemented | SKIP | dshr-plugin-api |  |
+| CPP-WASM-001 | CPP | pending | PENDING | — | 依赖 spec/cpp-v1.wit + Wasmtime host + 配额 ADR-0010；M3 G3 证据。 |
+| RPC-L2-001 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-002 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-003 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-004 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-005 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-006 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-007 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-008 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-009 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-010 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
+| RPC-L2-101 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-102 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-103 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-104 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-105 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-106 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-107 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-108 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-109 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-110 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-111 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-112 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-113 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-114 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-115 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-116 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-117 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-118 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-119 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-301 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-302 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-303 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-304 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-305 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-306 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-307 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-308 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-309 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-310 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-311 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-312 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| RPC-L2-313 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
+| SELF-CHAT-001 | SELF | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
+| SELF-CHAT-002 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-003 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-004 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-005 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-006 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-007 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-008 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-009 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-010 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-011 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-012 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-013 | SELF | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本（CI 无此环境）。 |
+| SELF-CHAT-014 | SELF | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
+| SELF-CHAT-015 | SELF | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
+| SELF-CHAT-016 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
 ## 说明与已知缺口
 
-- 本地 --workspace 实跑记录（2026-11-12，本机受限会话）：cargo suite 26 suites / 316 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（隔离复跑同样失败，属沙箱进程限制，非本轮代码改动；docs/m3-status.md §4 已记录）。提交矩阵用 --quick 生成，CARGO-UNIT-* 记为 SKIP，cargo 全绿待普通终端或 CI 复核。
-- quick 模式不运行 cargo suite：CARGO-UNIT-* 显示 SKIP 属正常，需 --workspace 或 --full。
-- cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace）。
+- 本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。
+- 本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 53 suites / 594 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target：26 suites / 448 passed / 1 failed，故 harness 加 --no-fail-fast 以取得完整逐包证据。
+- 提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。
+- .github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。
+- compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。
+- quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。
+- cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace --no-fail-fast）。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，本报告由本机命令生成。
 - 本文件由 tools/conformance.mjs 生成，请勿手改；新增证据请改 docs/conformance.d/registry.json。
 

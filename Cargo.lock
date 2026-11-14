@@ -1149,8 +1149,10 @@ name = "dshr-profile"
 version = "0.0.0"
 dependencies = [
  "flate2",
+ "ring",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1198,12 +1200,19 @@ dependencies = [
 [[package]]
 name = "dshr-ui-contributions"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "dshr-ui-gpui"
 version = "0.0.0"
 dependencies = [
+ "dshr-ui-contributions",
  "gpui",
+ "serde_json",
  "unicode-segmentation",
 ]
 

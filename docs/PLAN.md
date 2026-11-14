@@ -698,7 +698,8 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 
 ### M3 — 插件平台 Preview（累计 240–370 工程日）
 
-> **状态：已启动（2026-11-12）。** 范围、债务处置、预算与砍单顺序见
+> **状态：进行中（W1 契约冻结 + W2 Rust 侧实现已完成，2026-11-14）。** 证据与缺口见
+> [m3-status.md](m3-status.md)；范围、债务处置、预算与砍单顺序见
 > [ADR-0007](decisions/0007-m3-scope.md)；计划评审见 [review-m3-plan.md](review-m3-plan.md)。
 > 冻结顺序：先契约工件（ADC-F / CPP manifest / sidecar v2 / plugin-trust）→ 服务端与运行时 →
 > 渲染器与作者验收。M3 增量 **120–185 日**（重估区间 115–190，见 §9.1）；超出 v0.2 的
@@ -706,19 +707,27 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 
 - [ ] **CPP-A 运行时**：manifest→typed、`api`/WIT/`min_host_version` 版本检查、capability、
       错误码；`plugin-host` 接 cordis-rs（pin/vendor）+ Fiber/Service/Effect/Config 最小切片。
+      *（W2：manifest/capability/错误码已落地；Fiber/Service/Effect 按 §3.5 自研退路实现并通过
+      `CPP-FIBER/SVC/EFF`；cordis-rs 因本机离线未接入，`chat.rs` 布线待做）*
 - [ ] **CPP-B/C 可分发 SDK**：`dshr-plugin-api` 给 semver（非 0.0.0）、`rust-static` /
       `wasm-component` 两套模板、仓库外样例、作者文档。
 - [ ] **ADC-F 冻结工件**：`adc-v1.md` → `Frozen`、`schema/adc-v1/slots.v1.json`（12 slot）、
       元素 props 字段级、§12 未决清零、冻结 ADR（不把服务端/渲染器算进"冻结"）。
-- [ ] **ADC-S 服务端**（`ui-contributions`）：12 slot、kind/scope、generation、逆序幂等撤销、
-      注册校验与可读诊断。
+      *（W1：工件与 §12 清零已完成，spec 仍 `Review`；W2 补冻结 ADR 后改 `Frozen`）*
+- [x] **ADC-S 服务端**（`ui-contributions`）：12 slot、kind/scope、generation、逆序幂等撤销、
+      注册校验与可读诊断。*（56 tests：`ADC-SLOT/ELEM/SEC`）*
 - [ ] **ADC-R 渲染器**（`ui-gpui`）：元素集 + 绑定/patch/动作 + 未知元素 `Placeholder` 降级 +
-      a11y + 渲染预算测试。
+      a11y + 渲染预算测试。*（W2：26 元素 + Placeholder + a11y 已实现（26 tests）；绑定/事件与
+      渲染预算、chat.rs 面板接线待做）*
 - [ ] **WASM Component**：`cpp-v1.wit` + Wasmtime + fuel/epoch/内存/输出/并发五维配额 +
-      三故障注入（超时/fuel/内存）。
+      三故障注入（超时/fuel/内存）。*（本机离线无法获取 wasmtime；按 ADR-0007 反悔条件准备
+      `external-process` 退路 + WIT/配额 ADR）*
 - [ ] **DSH L2**：`sidecar-rpc` v2 host-service 代理 + 证据选出的 3 个 adapter + conformance。
-- [ ] **最小信任链**：`spec/plugin-trust.md` + manifest `integrity`/`signature`/`min_host_version`
-      + 哈希强制 + 可选签名 + 首次安装逐项确认 + 审计 + 降级拒绝。
+      *（W2：Rust 侧协议 v2 + Router + storage-kv 完成（42 `RPC-L2-*`）；JS 代理与 chat.rs
+      接线待做）*
+- [x] **最小信任链**：`spec/plugin-trust.md` + 包级 `dshr-trust.json`（摘要强制 + 可选 ed25519）
+      + manifest `min_host_version` + 首次安装逐项确认 + 审计 + 降级拒绝（ADR-0009）。
+      *（18 tests + `chat --selftest-trust-install` PASS）*
 - [ ] **外部作者验收**：`plugin-authoring.md` + 模板 + 仓库外样例 + "未读主程序源码" checklist；
       插件升级/迁移（先补 adc-v1 插件持久化状态章节，否则移出 M3）。
 - [ ] **M3 债务**（[ADR-0007](decisions/0007-m3-scope.md) §3）：工具并行执行、子会话并行 /

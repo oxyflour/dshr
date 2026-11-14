@@ -19,7 +19,7 @@
 // 退出码：0 = 通过；1 = 有失败（或注册表非法）；2 = 用法错误。
 
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { arch, platform, release } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,12 +38,23 @@ const SUITE_NAMES = ['schema', 'links', 'cargo']
 const SUITE_COMMANDS = {
   schema: 'node schema/check.mjs',
   links: 'node tools/check-links.mjs',
-  cargo: 'tools\\build-env.cmd cargo test --offline --workspace',
+  // --no-fail-fast：workspace 里一个包失败时仍跑完其余 target，避免 cargo 中止后
+  // 后续包（如 ui-*）被误判为“未运行/失败”，也便于逐包判定。
+  cargo: 'tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast',
 }
 const DEFAULT_TIMEOUT_MS = {
   schema: 120000,
   links: 120000,
   cargo: 1200000, // 20 分钟
+}
+
+// 矩阵与 --list 的领域排序（便于 280+ 条 ID 的表格按领域阅读）。
+const AREA_ORDER = ['SCHEMA', 'DOC', 'CARGO', 'ADC', 'CPP', 'RPC', 'SELF', 'GATE']
+function compareTests(a, b) {
+  const ai = AREA_ORDER.indexOf(a.area)
+  const bi = AREA_ORDER.indexOf(b.area)
+  if (ai !== bi) return (ai < 0 ? AREA_ORDER.length : ai) - (bi < 0 ? AREA_ORDER.length : bi)
+  return a.id.localeCompare(b.id)
 }
 
 const USAGE = `tools/conformance.mjs — conformance 矩阵门禁
@@ -60,6 +71,8 @@ const USAGE = `tools/conformance.mjs — conformance 矩阵门禁
   --workspace    额外跑 cargo suite（tools/build-env.cmd cargo test --offline --workspace，默认 20 分钟）
   --full         全部 suite（schema + links + cargo）
   --list         列出注册表中的 suite 与测试 ID，不执行
+  --compact      矩阵用紧凑模式（逐 ID 行只保留 ID/领域/状态/结果/证据/消息，去掉 title/notes）
+  --registry <p> 使用指定注册表（默认 docs/conformance.d/registry.json）
   --json [p]     写机器可读矩阵（默认 docs/conformance-matrix.json）
   --markdown [p] 写人读矩阵（默认 docs/conformance-matrix.md）
   --timeout-ms n 覆盖本次所有 suite 的超时
@@ -85,6 +98,8 @@ function parseArgs(argv) {
     suites: [],
     list: false,
     help: false,
+    compact: false,
+    registryPath: null,
     jsonPath: null,
     markdownPath: null,
     timeoutMs: null,
@@ -95,8 +110,14 @@ function parseArgs(argv) {
     else if (arg === '--full') opts.full = true
     else if (arg === '--workspace') opts.workspace = true
     else if (arg === '--list') opts.list = true
+    else if (arg === '--compact') opts.compact = true
     else if (arg === '--help' || arg === '-h') opts.help = true
-    else if (arg === '--suite') {
+    else if (arg === '--registry') {
+      const value = argv[i + 1]
+      if (!value || value.startsWith('-')) throw new UsageError('--registry 需要一个注册表路径')
+      opts.registryPath = value
+      i += 1
+    } else if (arg === '--suite') {
       const value = argv[i + 1]
       if (!value || value.startsWith('-')) throw new UsageError('--suite 需要一个 suite 名')
       opts.suites.push(value)
@@ -130,13 +151,13 @@ class UsageError extends Error {}
 // registry 加载与校验
 // ---------------------------------------------------------------------------
 
-function loadRegistry() {
-  if (!existsSync(REGISTRY_PATH)) {
-    throw new Error(`找不到注册表：${REGISTRY_PATH}`)
+function loadRegistry(registryPath = REGISTRY_PATH) {
+  if (!existsSync(registryPath)) {
+    throw new Error(`找不到注册表：${registryPath}`)
   }
   let raw
   try {
-    raw = readFileSync(REGISTRY_PATH, 'utf8')
+    raw = readFileSync(registryPath, 'utf8')
   } catch (err) {
     throw new Error(`读取注册表失败：${err.message}`)
   }
@@ -149,6 +170,58 @@ function loadRegistry() {
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+// 从测试函数名推导测试 ID：cpp_fiber_001_xxx → CPP-FIBER-001、adc_slot_001_xxx → ADC-SLOT-001、
+// rpc_l2_101_xxx → RPC-L2-101。ui-gpui / profile 的测试用注释标注 ID，由扫描器关联到下一条 fn。
+function idFromTestFn(fnName) {
+  const match = fnName.match(/^(cpp|adc|rpc)_(fiber|svc|eff|manifest|ver|trust|slot|elem|sec|l2)_(\d{3})_/)
+  if (!match) return null
+  if (match[1] === 'rpc') return `RPC-L2-${match[3]}`
+  return `${match[1].toUpperCase()}-${match[2].toUpperCase()}-${match[3]}`
+}
+
+// 扫描 source_dirs 下的 .rs 文件，建立 测试 ID -> { title: 测试函数名, file: 相对路径 } 映射。
+// 两种标注方式都支持：函数名内编码（cpp_fiber_001_*）与注释标注（// ADC-ELEM-SPACING-001）。
+function scanTestIds(sourceDirs) {
+  const result = new Map()
+  const files = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === 'target' || entry.name === 'node_modules') continue
+        walk(full)
+      } else if (entry.name.endsWith('.rs')) {
+        files.push(full)
+      }
+    }
+  }
+  for (const dir of sourceDirs) {
+    const absolute = resolve(REPO_ROOT, dir)
+    if (!existsSync(absolute)) continue
+    walk(absolute)
+  }
+  const put = (id, value) => {
+    if (!result.has(id)) result.set(id, value)
+  }
+  for (const file of files) {
+    const rel = relativeToRepo(file)
+    const lines = readFileSync(file, 'utf8').split(/\r?\n/)
+    let pendingId = null
+    for (const line of lines) {
+      const comment = line.match(/^\s*\/\/\s*((?:ADC|CPP|RPC)(?:-[A-Z0-9]+)+-\d{3})\b/)
+      if (comment) pendingId = comment[1]
+      const fn = line.match(/^\s*(?:pub\s+)?fn\s+([a-z0-9_]+)\s*\(/)
+      if (!fn) continue
+      const fnName = fn[1]
+      const derived = idFromTestFn(fnName)
+      if (derived) put(derived, { title: fnName, file: rel })
+      else if (pendingId) put(pendingId, { title: fnName, file: rel })
+      pendingId = null
+    }
+  }
+  return result
 }
 
 function validateRegistry(registry) {
@@ -201,56 +274,117 @@ function validateRegistry(registry) {
   }
   const seen = new Set()
   const tests = []
-  registry.tests.forEach((test, index) => {
-    const where = `tests[${index}]`
-    if (!isPlainObject(test)) {
+  const acceptTest = (raw, where) => {
+    if (!isPlainObject(raw)) {
       add(`${where}: 必须是对象`)
       return
     }
     for (const field of ['id', 'area', 'title', 'status']) {
-      if (typeof test[field] !== 'string' || !test[field]) add(`${where}.${field} 必须是非空字符串`)
+      if (typeof raw[field] !== 'string' || !raw[field]) add(`${where}.${field} 必须是非空字符串`)
     }
-    if (typeof test.id !== 'string') return
-    if (!TEST_ID_RE.test(test.id)) {
-      add(`${where}.id "${test.id}" 不符合 <AREA>-<CATEGORY>-<NNN>（docs/spec/README.md §3）`)
+    if (typeof raw.id !== 'string') return
+    if (!TEST_ID_RE.test(raw.id)) {
+      add(`${where}.id "${raw.id}" 不符合 <AREA>-<CATEGORY>-<NNN>（docs/spec/README.md §3）`)
     }
-    if (seen.has(test.id)) add(`${where}.id "${test.id}" 重复`)
-    seen.add(test.id)
-    if (typeof test.area === 'string' && !test.id.startsWith(`${test.area}-`)) {
-      add(`${where}.area "${test.area}" 与 id "${test.id}" 的首段不一致`)
+    if (seen.has(raw.id)) add(`${where}.id "${raw.id}" 重复`)
+    seen.add(raw.id)
+    if (typeof raw.area === 'string' && !raw.id.startsWith(`${raw.area}-`)) {
+      add(`${where}.area "${raw.area}" 与 id "${raw.id}" 的首段不一致`)
     }
-    if (typeof test.status === 'string' && !STATUSES.has(test.status)) {
-      add(`${where}.status "${test.status}" 非法（允许：${[...STATUSES].join(', ')}）`)
+    if (typeof raw.status === 'string' && !STATUSES.has(raw.status)) {
+      add(`${where}.status "${raw.status}" 非法（允许：${[...STATUSES].join(', ')}）`)
     }
-    if (!('suite' in test) || !('selector' in test) || !('notes' in test)) {
+    if (!('suite' in raw) || !('selector' in raw) || !('notes' in raw)) {
       add(`${where}: 必须包含 suite / selector / notes 字段（无证据时写 null）`)
     }
-    if (test.status === 'implemented') {
-      if (typeof test.suite !== 'string' || !test.suite) {
+    if (raw.status === 'implemented') {
+      if (typeof raw.suite !== 'string' || !raw.suite) {
         add(`${where}.suite: implemented 的测试必须声明可执行来源 suite`)
-      } else if (!SUITE_NAMES.includes(test.suite)) {
-        add(`${where}.suite "${test.suite}" 是未知 suite（harness 支持：${SUITE_NAMES.join(', ')}）`)
-      } else if (!(test.suite in suites)) {
-        add(`${where}.suite "${test.suite}" 未在 suites 中声明`)
+      } else if (!SUITE_NAMES.includes(raw.suite)) {
+        add(`${where}.suite "${raw.suite}" 是未知 suite（harness 支持：${SUITE_NAMES.join(', ')}）`)
+      } else if (!(raw.suite in suites)) {
+        add(`${where}.suite "${raw.suite}" 未在 suites 中声明`)
       }
-      if (typeof test.selector !== 'string' || !test.selector.trim()) {
+      if (typeof raw.selector !== 'string' || !raw.selector.trim()) {
         add(`${where}.selector: implemented 的测试必须有 selector（suite 内可执行选择器）`)
       }
-    } else if (test.suite !== null && test.suite !== undefined) {
-      add(`${where}.suite: 非 implemented 的测试不应声明 suite（当前 status=${test.status}）`)
-    } else if (test.selector !== null && test.selector !== undefined) {
-      add(`${where}.selector: 非 implemented 的测试不应声明 selector（当前 status=${test.status}）`)
+    } else if (raw.suite !== null && raw.suite !== undefined) {
+      add(`${where}.suite: 非 implemented 的测试不应声明 suite（当前 status=${raw.status}）`)
+    } else if (raw.selector !== null && raw.selector !== undefined) {
+      add(`${where}.selector: 非 implemented 的测试不应声明 selector（当前 status=${raw.status}）`)
     }
     tests.push({
-      id: test.id,
-      area: test.area,
-      title: test.title,
-      status: test.status,
-      suite: test.suite ?? null,
-      selector: test.selector ?? null,
-      notes: typeof test.notes === 'string' ? test.notes : '',
+      id: raw.id,
+      area: raw.area,
+      title: raw.title,
+      status: raw.status,
+      suite: raw.suite ?? null,
+      selector: raw.selector ?? null,
+      notes: typeof raw.notes === 'string' ? raw.notes : '',
     })
-  })
+  }
+  registry.tests.forEach((test, index) => acceptTest(test, `tests[${index}]`))
+
+  // groups：批量生成条目（本轮 200+ 条已实现测试用）。组声明 source_dirs + ids，
+  // harness 扫描 source_dirs 中的测试函数（函数名内编码，或注释标注），据此校验每个
+  // ID 确实有测试来源并取函数名作为 title；展开后与显式 tests 同等参与校验。
+  if (registry.groups !== undefined) {
+    if (!Array.isArray(registry.groups)) {
+      add('groups 必须是数组（可选字段）')
+    } else {
+      registry.groups.forEach((group, index) => {
+        const where = `groups[${index}]`
+        if (!isPlainObject(group)) {
+          add(`${where}: 必须是对象`)
+          return
+        }
+        if (typeof group.name !== 'string' || !group.name) add(`${where}.name 必须是非空字符串`)
+        if (typeof group.area !== 'string' || !group.area) add(`${where}.area 必须是非空字符串`)
+        if (group.status !== 'implemented') {
+          add(`${where}.status 目前只支持 implemented（批量组必须有可执行证据；pending/manual 请写显式 tests）`)
+        }
+        if (typeof group.suite !== 'string' || !SUITE_NAMES.includes(group.suite)) {
+          add(`${where}.suite "${group.suite}" 是未知 suite（harness 支持：${SUITE_NAMES.join(', ')}）`)
+        }
+        if (typeof group.selector !== 'string' || !group.selector.trim()) {
+          add(`${where}.selector 必须是非空字符串（cargo selector：包名或 all）`)
+        }
+        if (typeof group.notes !== 'string' || !group.notes) add(`${where}.notes 必须是非空字符串`)
+        if (!Array.isArray(group.source_dirs) || group.source_dirs.length === 0) {
+          add(`${where}.source_dirs 必须是非空字符串数组（测试所在目录）`)
+          return
+        }
+        if (!Array.isArray(group.ids) || group.ids.length === 0) {
+          add(`${where}.ids 必须是非空 ID 数组`)
+          return
+        }
+        const scanned = scanTestIds(group.source_dirs)
+        if (scanned.size === 0) {
+          add(`${where}.source_dirs 中没有扫描到任何测试 ID：${group.source_dirs.join(', ')}`)
+          return
+        }
+        for (const id of group.ids) {
+          const found = scanned.get(id)
+          if (!found) {
+            add(`${where}.ids: "${id}" 在 source_dirs 中未找到对应测试函数（禁止把未实现/无测试的 ID 标 implemented）`)
+            continue
+          }
+          acceptTest(
+            {
+              id,
+              area: group.area,
+              title: found.title,
+              status: 'implemented',
+              suite: group.suite,
+              selector: group.selector,
+              notes: `${group.notes}（${found.file}: ${found.title}）`,
+            },
+            `${where}.ids["${id}"]`,
+          )
+        }
+      })
+    }
+  }
   return { tests, suites, errors, notes: registryNotes }
 }
 
@@ -397,14 +531,14 @@ function cargoInvocation() {
     // 用 cmd /c 执行 .cmd；命令串里用仓库相对路径，避免 cwd 含空格时的引号问题。
     return {
       command: process.env.ComSpec || 'cmd.exe',
-      args: ['/d', '/s', '/c', 'tools\\build-env.cmd cargo test --offline --workspace'],
-      label: 'tools\\build-env.cmd cargo test --offline --workspace',
+      args: ['/d', '/s', '/c', 'tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast'],
+      label: SUITE_COMMANDS.cargo,
     }
   }
   return {
     command: 'cargo',
-    args: ['test', '--offline', '--workspace'],
-    label: 'cargo test --offline --workspace',
+    args: ['test', '--offline', '--workspace', '--no-fail-fast'],
+    label: SUITE_COMMANDS.cargo,
   }
 }
 
@@ -448,6 +582,16 @@ function cargoPackageSeen(output, selector) {
   return pattern.test(output)
 }
 
+// workspace 里某个包的测试失败不影响其它包的实测结论：从 cargo 的
+// `error: test failed, to rerun pass `-p <pkg>`` 行提取失败包名。
+function parseCargoFailingPackages(output) {
+  const failing = new Set()
+  for (const match of output.matchAll(/error: test failed, to rerun pass `-p ([A-Za-z0-9_-]+)/g)) {
+    failing.add(match[1])
+  }
+  return [...failing]
+}
+
 // ---------------------------------------------------------------------------
 // suite 执行
 // ---------------------------------------------------------------------------
@@ -485,7 +629,10 @@ async function runSuite(name, timeoutMs) {
     summary = match ? `${match[1]} link(s) checked, ${match[2]} broken, ${match[3]} file(s) scanned` : '未找到链接汇总行'
   } else {
     details.cargo = parseCargoSummary(output)
-    summary = `${details.cargo.suites} suite(s), ${details.cargo.passed} passed, ${details.cargo.failed} failed, ${details.cargo.ignored} ignored`
+    details.cargo.failing_packages = parseCargoFailingPackages(output)
+    const failingNote =
+      details.cargo.failing_packages.length > 0 ? `；失败包：${details.cargo.failing_packages.join(', ')}` : ''
+    summary = `${details.cargo.suites} suite(s), ${details.cargo.passed} passed, ${details.cargo.failed} failed, ${details.cargo.ignored} ignored${failingNote}`
   }
 
   let status
@@ -582,6 +729,27 @@ function evaluateTests(tests, suiteRuns) {
 
     if (test.suite === 'cargo') {
       if (run.status !== 'pass') {
+        // workspace 整体失败时，逐包判定：该包测试二进制出现且不在失败包列表里 → PASS，
+        // 只有失败包本身（以及编译失败/超时等无法区分的情况）才 FAIL。
+        const failing = run.details.cargo?.failing_packages ?? []
+        const normalized = (name) => String(name).replace(/-/g, '_')
+        const packageFailed = failing.some((name) => normalized(name) === normalized(test.selector))
+        if (
+          test.selector !== 'all' &&
+          failing.length > 0 &&
+          !packageFailed &&
+          cargoPackageSeen(run.output, test.selector)
+        ) {
+          return makeResult(
+            test,
+            'pass',
+            `包 ${test.selector} 通过；workspace 仅 ${failing.join(', ')} 失败（${run.summary}）`,
+            evidence,
+          )
+        }
+        if (test.selector === 'all') {
+          return makeResult(test, 'fail', `cargo workspace 失败（${run.summary}）`, evidence)
+        }
         return makeResult(test, 'fail', `cargo suite ${run.status}（${run.summary}）`, evidence)
       }
       if (test.selector === 'all') {
@@ -635,7 +803,10 @@ function displayCommand(opts, suites) {
   if (opts.quick) parts.push('--quick')
   if (opts.full) parts.push('--full')
   if (opts.workspace) parts.push('--workspace')
+  if (opts.compact) parts.push('--compact')
   for (const name of opts.suites) parts.push('--suite', name)
+  const registryPath = opts.registryPath ? resolve(process.cwd(), opts.registryPath) : REGISTRY_PATH
+  if (registryPath !== REGISTRY_PATH) parts.push('--registry', relativeToRepo(registryPath))
   if (opts.jsonPath && opts.jsonPath !== DEFAULT_JSON_PATH) parts.push('--json', relativeToRepo(opts.jsonPath))
   if (opts.markdownPath && opts.markdownPath !== DEFAULT_MARKDOWN_PATH) {
     parts.push('--markdown', relativeToRepo(opts.markdownPath))
@@ -688,10 +859,27 @@ function publicSuite(run) {
 
 function buildReport({ opts, suiteRuns, evaluated, stats, exitCode, registry, registryPath, git, registryNotes }) {
   const suitesRun = suiteRuns.map((run) => run.name)
+  // 按领域 + ID 排序，避免 280+ 条行按注册顺序穿插、难以阅读。
+  const ordered = [...evaluated].sort(compareTests)
+  // --compact：逐 ID 行用 [id, area, status, result, evidence, message] 紧凑数组，
+  // 去掉 title/notes、PASS 行消息与 suite 前缀；SKIP 行统一短消息。280+ 条 ID 时
+  // 完整格式会把矩阵撑到 100KB+，难以用文件工具落盘，也不便阅读。
+  const compactRows = ordered.map((test) => [
+    test.id,
+    test.area,
+    test.status,
+    test.result,
+    test.status === 'implemented' ? test.selector : '—',
+    test.result === 'pass' || test.result === 'skip' ? '' : test.message,
+  ])
+  const reportTests = opts.compact
+    ? { columns: ['id', 'area', 'status', 'result', 'evidence', 'message'], rows: compactRows }
+    : ordered
   return {
     schema_version: 1,
     tool: 'tools/conformance.mjs',
     generated_at: new Date().toISOString(),
+    format: opts.compact ? 'compact' : 'full',
     invocation: {
       mode: opts.full ? 'full' : opts.workspace ? 'workspace' : opts.suites.length ? 'suite' : 'quick',
       command: displayCommand(opts, suitesRun),
@@ -710,19 +898,23 @@ function buildReport({ opts, suiteRuns, evaluated, stats, exitCode, registry, re
     registry: {
       path: relativeToRepo(registryPath),
       schema_version: registry.schema_version,
+      groups: Array.isArray(registry.groups) ? registry.groups.length : 0,
       tests: evaluated.length,
       suites: Object.keys(registry.suites ?? {}),
     },
     suites: suiteRuns.map(publicSuite),
     stats,
-    tests: evaluated,
+    tests: reportTests,
     notes: [
       ...(registryNotes ?? []),
-      'quick 模式不运行 cargo suite：CARGO-UNIT-* 显示 SKIP 属正常，需 --workspace 或 --full。',
-      'cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace）。',
+      opts.compact
+        ? 'compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。'
+        : null,
+      'quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。',
+      'cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace --no-fail-fast）。',
       '.github/workflows/conformance.yml 未在 GitHub Actions 实跑，本报告由本机命令生成。',
       '本文件由 tools/conformance.mjs 生成，请勿手改；新增证据请改 docs/conformance.d/registry.json。',
-    ],
+    ].filter((note) => note !== null),
     exit_code: exitCode,
   }
 }
@@ -740,6 +932,9 @@ function renderMarkdown(report) {
   lines.push('')
   lines.push('> 本文件由 `tools/conformance.mjs` 生成，请勿手改；测试清单事实源是 `docs/conformance.d/registry.json`。')
   lines.push('> **CI 状态**：`.github/workflows/conformance.yml` 尚未在 GitHub Actions 实跑；本报告由本机命令生成。')
+  if (report.format === 'compact') {
+    lines.push('> **格式**：compact（逐 ID 行只保留 ID/领域/状态/结果/证据/消息，title/notes 见注册表）。')
+  }
   lines.push('')
   lines.push('## 元数据')
   lines.push('')
@@ -794,12 +989,23 @@ function renderMarkdown(report) {
     manual: 'MANUAL',
     blocked: 'BLOCKED',
   }
-  lines.push('| ID | 领域 | 标题 | 状态 | 结果 | 证据 | 消息 |')
-  lines.push('|---|---|---|---|---|---|---|')
-  for (const test of report.tests) {
-    lines.push(
-      `| ${test.id} | ${markdownEscape(test.area)} | ${markdownEscape(test.title)} | ${test.status} | ${resultLabel[test.result] ?? test.result} | ${markdownEscape(test.evidence)} | ${markdownEscape(test.message)} |`,
-    )
+  if (report.format === 'compact') {
+    lines.push('| ID | 领域 | 状态 | 结果 | 证据 | 消息 |')
+    lines.push('|---|---|---|---|---|---|')
+    for (const row of report.tests.rows) {
+      const [id, area, status, result, evidence, message] = row
+      lines.push(
+        `| ${id} | ${markdownEscape(area)} | ${status} | ${resultLabel[result] ?? result} | ${markdownEscape(evidence)} | ${markdownEscape(message)} |`,
+      )
+    }
+  } else {
+    lines.push('| ID | 领域 | 标题 | 状态 | 结果 | 证据 | 消息 |')
+    lines.push('|---|---|---|---|---|---|---|')
+    for (const test of report.tests) {
+      lines.push(
+        `| ${test.id} | ${markdownEscape(test.area)} | ${markdownEscape(test.title)} | ${test.status} | ${resultLabel[test.result] ?? test.result} | ${markdownEscape(test.evidence)} | ${markdownEscape(test.message)} |`,
+      )
+    }
   }
   lines.push('')
   lines.push('## 说明与已知缺口')
@@ -809,6 +1015,26 @@ function renderMarkdown(report) {
   lines.push(`退出码：\`${report.exit_code}\`。pending / manual / blocked 不计失败。`)
   lines.push('')
   return `${lines.join('\n')}\n`
+}
+
+// JSON 报告：full 格式直接 2 空格缩进；compact 格式把 tests 行排成「一行一条」，
+// 避免 JSON.stringify 把每个数组元素拆成多行导致 280+ 条 ID 的文件膨胀。
+function renderJsonReport(report) {
+  if (report.format !== 'compact') return `${JSON.stringify(report, null, 2)}\n`
+  const { tests, ...rest } = report
+  const placeholder = '__CONFORMANCE_TESTS_PLACEHOLDER__'
+  const skeleton = JSON.stringify({ ...rest, tests: placeholder }, null, 2)
+  // JSON 只留 [id, area, result]：status 可由 result 推出（pass/skip/fail → implemented，
+  // pending/manual/blocked 原样）；证据/消息在 markdown 与注册表里，避免重复撑大文件。
+  const jsonColumns = ['id', 'area', 'result']
+  const jsonRows = tests.rows.map((row) => [row[0], row[1], row[3]])
+  const testsText =
+    '{\n' +
+    `    "columns": ${JSON.stringify(jsonColumns)},\n` +
+    '    "rows": [\n' +
+    jsonRows.map((row) => `      ${JSON.stringify(row)}`).join(',\n') +
+    '\n    ]\n  }'
+  return `${skeleton.replace(JSON.stringify(placeholder), testsText)}\n`
 }
 
 function writeFileAt(targetPath, content) {
@@ -840,8 +1066,9 @@ function writeFileAt(targetPath, content) {
 // --list
 // ---------------------------------------------------------------------------
 
-function listRegistry(registry, validated) {
-  console.log(`[conformance] registry: ${relativeToRepo(REGISTRY_PATH)}`)
+function listRegistry(registry, validated, registryPath = REGISTRY_PATH) {
+  console.log(`[conformance] registry: ${relativeToRepo(registryPath)}`)
+  console.log(`[conformance] groups: ${Array.isArray(registry.groups) ? registry.groups.length : 0}`)
   const stats = { implemented: 0, pending: 0, manual: 0, blocked: 0 }
   for (const test of validated.tests) stats[test.status] += 1
   console.log(
@@ -855,7 +1082,7 @@ function listRegistry(registry, validated) {
   }
   console.log('[conformance] tests：')
   console.log(`  ${'ID'.padEnd(22)} ${'STATUS'.padEnd(12)} ${'SUITE'.padEnd(7)} SELECTOR`)
-  for (const test of validated.tests) {
+  for (const test of [...validated.tests].sort(compareTests)) {
     const selector = test.selector ?? (test.status === 'implemented' ? '—' : '—')
     console.log(`  ${test.id.padEnd(22)} ${test.status.padEnd(12)} ${String(test.suite ?? '—').padEnd(7)} ${selector}`)
   }
@@ -884,9 +1111,10 @@ async function main() {
     return
   }
 
+  const registryPath = opts.registryPath ? resolve(process.cwd(), opts.registryPath) : REGISTRY_PATH
   let registry
   try {
-    registry = loadRegistry()
+    registry = loadRegistry(registryPath)
   } catch (err) {
     console.error(`[conformance] 错误：${err.message}`)
     process.exitCode = 1
@@ -904,7 +1132,7 @@ async function main() {
   )
 
   if (opts.list) {
-    listRegistry(registry, validated)
+    listRegistry(registry, validated, registryPath)
     return
   }
 
@@ -956,14 +1184,14 @@ async function main() {
     stats,
     exitCode,
     registry,
-    registryPath: REGISTRY_PATH,
+    registryPath,
     git,
     registryNotes: validated.notes,
   })
 
   let reportWriteFailures = 0
   if (opts.jsonPath) {
-    const outcome = writeFileAt(opts.jsonPath, `${JSON.stringify(report, null, 2)}\n`)
+    const outcome = writeFileAt(opts.jsonPath, renderJsonReport(report))
     if (!outcome.ok) reportWriteFailures += 1
   }
   if (opts.markdownPath) {

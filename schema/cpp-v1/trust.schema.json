@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dshr.local/schema/cpp-v1/trust.schema.json",
+  "title": "dshr-trust/v1 package trust file",
+  "description": "Package-level trust metadata (dshr-trust.json) verified by profile::trust. See docs/spec/plugin-trust.md.",
+  "type": "object",
+  "required": ["schema_version", "plugin_id", "version", "package"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "plugin_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "package": {
+      "type": "object",
+      "required": ["digest_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "digest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["scheme", "key_id", "value_hex"],
+      "additionalProperties": false,
+      "properties": {
+        "scheme": { "const": "ed25519" },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "value_hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{128}$"
+        }
+      }
+    }
+  }
+}

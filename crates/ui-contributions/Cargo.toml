@@ -1,7 +1,10 @@
-﻿[package]
+[package]
 name = "dshr-ui-contributions"
 description = "ADC-v1 服务端：slot 注册表、Contribution 校验、元素词汇表"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

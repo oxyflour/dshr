@@ -19,6 +19,7 @@ const schemas = {
   element: load('adc-v1/element.schema.json'),
   slotRegistration: load('adc-v1/slot-registration.schema.json'),
   manifest: load('cpp-v1/manifest.schema.json'),
+  trust: load('cpp-v1/trust.schema.json'),
   envelope: load('sidecar-rpc/envelope.schema.json'),
 }
 
@@ -596,6 +597,46 @@ const cases = [
     runtime: { kind: 'wasm-component', max_memory_mb: 4096 },
   }, false],
 
+  // ---- dshr-trust/v1 包级信任文件（M3 G2） ----
+  ['trust', 'valid: unsigned package trust file', {
+    schema_version: 1,
+    plugin_id: 'cad.validate',
+    version: '0.1.0',
+    package: { digest_sha256: 'a'.repeat(64) },
+  }, true],
+  ['trust', 'valid: ed25519 signed trust file', {
+    schema_version: 1,
+    plugin_id: 'cad.validate',
+    version: '0.1.0',
+    package: { digest_sha256: 'a'.repeat(64) },
+    signature: { scheme: 'ed25519', key_id: 'cad-vendor-2026', value_hex: 'b'.repeat(128) },
+  }, true],
+  ['trust', 'invalid: digest not 64 lowercase hex', {
+    schema_version: 1,
+    plugin_id: 'cad.validate',
+    version: '0.1.0',
+    package: { digest_sha256: 'ABC' },
+  }, false],
+  ['trust', 'invalid: unknown signature scheme', {
+    schema_version: 1,
+    plugin_id: 'cad.validate',
+    version: '0.1.0',
+    package: { digest_sha256: 'a'.repeat(64) },
+    signature: { scheme: 'rsa', key_id: 'k', value_hex: 'b'.repeat(128) },
+  }, false],
+  ['trust', 'invalid: unknown top-level field', {
+    schema_version: 1,
+    plugin_id: 'cad.validate',
+    version: '0.1.0',
+    package: { digest_sha256: 'a'.repeat(64) },
+    extra: true,
+  }, false],
+  ['trust', 'invalid: missing package digest', {
+    schema_version: 1,
+    plugin_id: 'cad.validate',
+    version: '0.1.0',
+    package: {},
+  }, false],
   // ---- Sidecar envelope ----
   ['envelope', 'valid: tool.invoke', {
     version: 1,
@@ -679,6 +720,7 @@ const validators = {
   element: (data) => validate(schemas.element, data, '$', schemas.element),
   slotRegistration: (data) => validate(schemas.slotRegistration, data, '$', schemas.slotRegistration),
   manifest: (data) => validate(schemas.manifest, data, '$', schemas.manifest),
+  trust: (data) => validate(schemas.trust, data, '$', schemas.trust),
   envelope: (data) => validate(schemas.envelope, data, '$', schemas.envelope),
   slots: (data) => checkSlotsCatalog(data),
   registrationContract: (data) => checkRegistration(data),

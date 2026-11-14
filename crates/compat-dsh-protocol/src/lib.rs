@@ -7,7 +7,20 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// v1 线格式版本：`Envelope::host`/`hello*` 的缺省 `version`。
+///
+/// 为什么不是 2（对齐 spec §13.10 的"`PROTOCOL_VERSION = 2`"建议但本轮不改）：
+/// `Envelope::host` 在**协商前**就要能构造消息，而 `compat-dsh-host` 的握手
+/// （`SidecarHost::from_parts`）当前只等 `runtime.ready`、**不读** `ready.protocol`，
+/// 所有请求信封都写这个常量。把它改成 2 会让 v1 缺省信封变成 `version:2`，
+/// 与"`envelope.version` = 协商结果"（spec §3.2 规则 2）冲突，并让既有 v1 测试
+/// 与未升级的 v1 sidecar 语义漂移。v2 调用方改用 [`Envelope::with_version`]
+/// 显式写 2；`PROTOCOL_MAX` 声明本 crate 实现到的最高版本，供握手集成轮做协商。
 pub const PROTOCOL_VERSION: u32 = 1;
+/// 本 crate 实现的最高协议版本（spec §3.2：双方取 `min(protocol_max)`）。
+pub const PROTOCOL_MAX: u32 = 2;
+/// 本 crate 实现的最低协议版本（没有交集即拒绝）。
+pub const PROTOCOL_MIN: u32 = 1;
 pub const MAX_DEPTH: u32 = 4;
 
 /// 能力协商（`docs/spec/sidecar-rpc.md` §3）：host → sidecar 的 `host_caps` 词表。
@@ -17,11 +30,59 @@ pub const MAX_DEPTH: u32 = 4;
 pub const CAP_TOOL_STREAM: &str = "tool.stream";
 pub const CAP_TOOL_CANCEL: &str = "tool.cancel";
 pub const CAP_FS_WRITE: &str = "fs.write";
+/// v2：宿主实现了白名单内的 Host Service，并接受 `host.service.request`（spec §13.4）。
+pub const CAP_SERVICE_PROXY: &str = "service.proxy";
+/// v2：允许 Sidecar 用 `service.publish` 暴露 JS 服务（spec §13.3）；v2 默认关闭。
+pub const CAP_SERVICE_EXPOSE: &str = "service.expose";
+/// v2：宿主支持服务结果的附件引用（spec §13.8）。
+pub const CAP_SERVICE_ATTACH: &str = "service.attach";
 
 /// Sidecar → Host 的写入回调（`docs/spec/sidecar-rpc.md` §7.5）。
 pub const KIND_FS_WRITE_REQUEST: &str = "fs.write.request";
 /// Host → Sidecar 的写入答复。
 pub const KIND_FS_WRITE_RESULT: &str = "fs.write.result";
+
+/// 宿主 → Sidecar 的取消（v2：JS 服务代理路径；spec §6/§13.6）。
+pub const KIND_SERVICE_CANCEL: &str = "service.cancel";
+/// Sidecar → Host：JS 插件消费宿主服务（v2，spec §13.4）。
+pub const KIND_HOST_SERVICE_REQUEST: &str = "host.service.request";
+/// Host → Sidecar：宿主服务的答复（恰好一次）。
+pub const KIND_HOST_SERVICE_RESULT: &str = "host.service.result";
+/// Sidecar → Host：插件取消一条在途的宿主服务调用。
+pub const KIND_HOST_SERVICE_CANCEL: &str = "host.service.cancel";
+
+/// v2 新增的 4 个服务代理 kind（spec §13.10 的"只新增 4 个 kind"）。
+pub const V2_ONLY_KINDS: &[&str] = &[
+    KIND_SERVICE_CANCEL,
+    KIND_HOST_SERVICE_REQUEST,
+    KIND_HOST_SERVICE_RESULT,
+    KIND_HOST_SERVICE_CANCEL,
+];
+
+/// 全部服务代理 kind（含 v1 正文已声明、v2 钉死方向的 `service.*`）。
+///
+/// 这些 kind 在协商为 1 时一律不可用（spec §13.10：v1 协商时发了也是 `E_PROTOCOL`），
+/// 在协商为 2 时必须带信封 `service_key`（spec §4）。
+pub const SERVICE_PROXY_KINDS: &[&str] = &[
+    "service.publish",
+    "service.revoke",
+    "service.invoke",
+    "service.result",
+    KIND_SERVICE_CANCEL,
+    KIND_HOST_SERVICE_REQUEST,
+    KIND_HOST_SERVICE_RESULT,
+    KIND_HOST_SERVICE_CANCEL,
+];
+
+/// 是否 v2-only kind（spec §3.2 规则 3）。
+pub fn is_v2_only_kind(kind: &str) -> bool {
+    V2_ONLY_KINDS.contains(&kind)
+}
+
+/// 是否服务代理 kind（含 v1 表中已声明但 v2 才落地的 `service.*`）。
+pub fn is_service_proxy_kind(kind: &str) -> bool {
+    SERVICE_PROXY_KINDS.contains(&kind)
+}
 
 /// 写操作的原子语义：`write` 是 create-or-replace（内容即新文件全文），
 /// `delete` 删除现有文件（写前快照仍在 Rust 侧完成）。
@@ -139,13 +200,28 @@ impl FsWriteResult {
     }
 }
 
+/// 版本协商（spec §3.2）：取 `min(host_max, sidecar_max)`；结果必须落在本 crate
+/// 实现区间 `[PROTOCOL_MIN, PROTOCOL_MAX]` 内，否则没有交集、调用方必须拒绝
+/// （不得静默降级）。
+pub fn negotiate_version(host_max: u32, sidecar_max: u32) -> Option<u32> {
+    let negotiated = host_max.min(sidecar_max);
+    (PROTOCOL_MIN..=PROTOCOL_MAX)
+        .contains(&negotiated)
+        .then_some(negotiated)
+}
+
 /// 带完整 host_caps 的握手（客户端能力协商）。
 pub fn hello_with_caps(caps: &[String]) -> Envelope {
+    hello_with_caps_at(caps, PROTOCOL_VERSION)
+}
+
+/// 指定 `protocol_max` 的握手；集成轮协商到 v2 时传 [`PROTOCOL_MAX`]。
+pub fn hello_with_caps_at(caps: &[String], protocol_max: u32) -> Envelope {
     Envelope::host(
         "runtime.hello",
         "req-hello",
         json!({
-            "protocol_max": PROTOCOL_VERSION,
+            "protocol_max": protocol_max,
             "dsh_version": "0.2.2-rc.1",
             "host_caps": caps,
         }),
@@ -184,6 +260,10 @@ pub struct Envelope {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+    /// v2 服务代理消息的路由锚点（spec §4/§5.5）：`<name>/v<major>`。
+    /// v1 消息一律缺省；`serde(default)` 保证 v1 实现对新增字段保持宽松。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_key: Option<String>,
     pub depth: u32,
     pub trace_id: String,
     pub ts: String,
@@ -204,12 +284,32 @@ impl Envelope {
             registration_id: None,
             session_id: None,
             call_id: None,
+            service_key: None,
             depth: 0,
             trace_id: "t-local".to_owned(),
             ts: "1970-01-01T00:00:00Z".to_owned(),
             payload,
             error: None,
         }
+    }
+
+    /// 显式写信封 `version`（spec §3.2 规则 2：它等于协商结果）。
+    ///
+    /// v2 服务代理消息在握手协商到 2 后必须用 2；本 crate 不擅自把缺省值改成 2
+    /// （见 [`PROTOCOL_VERSION`] 的说明）。
+    pub fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+
+    pub fn with_service_key(mut self, service_key: impl Into<String>) -> Self {
+        self.service_key = Some(service_key.into());
+        self
+    }
+
+    pub fn with_depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
+        self
     }
 
     pub fn with_generation(mut self, generation: impl Into<String>) -> Self {
@@ -233,9 +333,12 @@ impl Envelope {
     }
 
     /// 结束一次请求：复制关联字段，替换 kind/payload。
+    ///
+    /// `version` 复制请求的协商版本（不是常量），`service_key` 也回填
+    /// （spec §13.4 规则 2：答复 MUST 回填同一 `request_id` 与 `service_key`）。
     pub fn reply(&self, kind: impl Into<String>, payload: Value) -> Self {
         Self {
-            version: PROTOCOL_VERSION,
+            version: self.version,
             kind: kind.into(),
             request_id: self.request_id.clone(),
             runtime_generation: self.runtime_generation.clone(),
@@ -243,6 +346,7 @@ impl Envelope {
             registration_id: self.registration_id.clone(),
             session_id: self.session_id.clone(),
             call_id: self.call_id.clone(),
+            service_key: self.service_key.clone(),
             depth: self.depth,
             trace_id: self.trace_id.clone(),
             ts: self.ts.clone(),
@@ -256,7 +360,7 @@ impl Envelope {
     }
 }
 
-/// 规范 §9 的错误码闭集。
+/// 规范 §9 的错误码闭集（v2 按 §9.3 补入 `E_*_SERVICE_*` 与 `E_ALREADY_SETTLED`）。
 pub const ERROR_CODES: &[&str] = &[
     "E_PROTOCOL",
     "E_VERSION",
@@ -269,6 +373,13 @@ pub const ERROR_CODES: &[&str] = &[
     "E_TOO_LARGE",
     "E_BACKPRESSURE",
     "E_INTERNAL",
+    "E_ALREADY_SETTLED",
+    "E_SERVICE_UNAVAILABLE",
+    "E_SERVICE_METHOD",
+    "E_SERVICE_ARGS",
+    "E_SERVICE_TIMEOUT",
+    "E_SERVICE_DENIED",
+    "E_SERVICE_CONFLICT",
 ];
 
 /// 可安全重试的 sidecar 错误码（规范 §9.2）。
@@ -277,7 +388,419 @@ pub const ERROR_CODES: &[&str] = &[
 /// 写工具（write/edit/apply_patch）**不适合自动重试**——重试会重复审批/重复写，
 /// 应当把结构化错误交给模型，让它重读现场后再决定。
 pub fn is_retryable_sidecar_error(code: &str) -> bool {
-    matches!(code, "E_TIMEOUT" | "E_BACKPRESSURE" | "E_INTERNAL")
+    matches!(
+        code,
+        "E_TIMEOUT" | "E_BACKPRESSURE" | "E_INTERNAL" | "E_SERVICE_TIMEOUT"
+    )
+}
+
+/// 服务方法错误的重试建议（spec §13.4 规则 4）：只有 `E_SERVICE_TIMEOUT`、
+/// `E_BACKPRESSURE`、`E_INTERNAL` 属于瞬时错误，且仅对 `idempotent:true` 的方法
+/// 允许自动重试（重试必须换新 `request_id`）。
+pub fn is_retryable_service_error(code: &str) -> bool {
+    matches!(code, "E_SERVICE_TIMEOUT" | "E_BACKPRESSURE" | "E_INTERNAL")
+}
+
+/// `service_key` 形态：`<name>/v<major>`（spec §13.2），`name` 为 kebab-case
+/// `[a-z][a-z0-9-]*`，`major` 为 ≥ 1 的整数。与 `schema/sidecar-rpc/envelope.schema.json`
+/// 的 `^[a-z][a-z0-9-]*/v[1-9][0-9]*$` 一致。
+pub fn validate_service_key(key: &str) -> Result<(), String> {
+    let Some((name, version)) = key.rsplit_once('/') else {
+        return Err(format!("service_key `{key}` must be `<name>/v<major>`"));
+    };
+    if !is_kebab_name(name) {
+        return Err(format!(
+            "service_key `{key}` has invalid name; expected `[a-z][a-z0-9-]*`"
+        ));
+    }
+    let Some(major) = version.strip_prefix('v') else {
+        return Err(format!("service_key `{key}` must end with `/v<major>`"));
+    };
+    // `v0` 与 `v01` 都不合法：major 必须 ≥ 1，且是 `[1-9][0-9]*`。
+    let canonical = major.parse::<u32>().ok().filter(|value| *value >= 1);
+    match canonical {
+        Some(value) if value.to_string() == major => Ok(()),
+        _ => Err(format!(
+            "service_key `{key}` has invalid major; expected `v1`, `v2`, ..."
+        )),
+    }
+}
+
+fn is_kebab_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes[0].is_ascii_lowercase()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+/// 方法名的词表：spec §13.2 写的是 `[a-z][a-z0-9_]*`，但首批三个服务的方法用的是
+/// 点分 + camelCase 命名（`unit.loadAll`/`session.describe`/`events.read`，见
+/// `docs/m3-l2-services.md` §3）。实现按**更宽的超集** `[a-z][A-Za-z0-9_.]*` 放行，
+/// 由 Lead 在 spec 里对齐（§13.2 的 regex 是本节与 m3 服务表的冲突点）。
+pub fn validate_method_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || !bytes[0].is_ascii_lowercase() {
+        return Err(format!(
+            "method name `{name}` must match `[a-z][A-Za-z0-9_.]*`"
+        ));
+    }
+    if !bytes
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
+    {
+        return Err(format!(
+            "method name `{name}` must match `[a-z][A-Za-z0-9_.]*`"
+        ));
+    }
+    Ok(())
+}
+
+/// `request_id` 形态（spec §13.4 规则 2）。
+pub fn validate_request_id(request_id: &str) -> Result<(), String> {
+    if request_id.is_empty() || request_id.len() > 64 {
+        return Err("request_id must be 1..=64 chars".to_owned());
+    }
+    if !request_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-'))
+    {
+        return Err("request_id must match `[A-Za-z0-9:_-]{1,64}`".to_owned());
+    }
+    Ok(())
+}
+
+/// 方法 `timeout_ms` 的缺省值与合法区间（spec §13.2）。
+pub const DEFAULT_METHOD_TIMEOUT_MS: u64 = 30_000;
+pub const MIN_METHOD_TIMEOUT_MS: u64 = 100;
+pub const MAX_METHOD_TIMEOUT_MS: u64 = 120_000;
+/// `args_schema` 内联上限（spec §13.2）。
+pub const MAX_METHOD_SCHEMA_BYTES: usize = 8 * 1024;
+
+fn default_method_timeout_ms() -> u64 {
+    DEFAULT_METHOD_TIMEOUT_MS
+}
+
+/// 方法 `kind`（spec §13.2）：v2 只允许 `read`/`write`；`stream` 是保留值，
+/// 声明可以穿过方法表，但调用时必须回 `E_SERVICE_METHOD`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostServiceKind {
+    Read,
+    Write,
+    Stream,
+}
+
+/// 宿主侧方法表的一项（spec §13.2 `ServiceDescriptor.methods[]`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostServiceMethod {
+    pub name: String,
+    pub kind: HostServiceKind,
+    pub args_schema: Value,
+    pub result_schema: Value,
+    #[serde(default = "default_method_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub idempotent: bool,
+    /// 实现扩展（spec §5.5/§13.9 的会话授权判定需要方法级声明）：
+    /// 为 `true` 时信封必须带 `session_id`，否则 `E_SERVICE_ARGS`。
+    /// 不在 §13.2 的方法表字段里，`serde(default)` 让 v2 方法表保持宽松。
+    #[serde(default)]
+    pub requires_session: bool,
+}
+
+/// 载荷上限（spec §13.2 `limits` / §13.8）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostServiceLimits {
+    #[serde(default = "default_max_inline_bytes")]
+    pub max_inline_bytes: u64,
+    #[serde(default = "default_max_result_bytes")]
+    pub max_result_bytes: u64,
+}
+
+pub const DEFAULT_MAX_INLINE_BYTES: u64 = 262_144;
+pub const DEFAULT_MAX_RESULT_BYTES: u64 = 786_432;
+
+fn default_max_inline_bytes() -> u64 {
+    DEFAULT_MAX_INLINE_BYTES
+}
+
+fn default_max_result_bytes() -> u64 {
+    DEFAULT_MAX_RESULT_BYTES
+}
+
+impl Default for HostServiceLimits {
+    fn default() -> Self {
+        Self {
+            max_inline_bytes: DEFAULT_MAX_INLINE_BYTES,
+            max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
+        }
+    }
+}
+
+/// 宿主愿意暴露给 Sidecar 的服务方法表（spec §13.2）。
+///
+/// `runtime.ready.payload.host_services` 与 `capabilities.list` 都必须回填这份表
+/// （白名单子集，不是全量）；`compat-dsh-host` 的 `HostServiceRouter::host_services`
+/// 提供它。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostServiceTable {
+    pub service_key: String,
+    pub methods: Vec<HostServiceMethod>,
+    #[serde(default)]
+    pub limits: HostServiceLimits,
+}
+
+impl HostServiceTable {
+    pub fn new(service_key: impl Into<String>, methods: Vec<HostServiceMethod>) -> Self {
+        Self {
+            service_key: service_key.into(),
+            methods,
+            limits: HostServiceLimits::default(),
+        }
+    }
+
+    pub fn method(&self, name: &str) -> Option<&HostServiceMethod> {
+        self.methods.iter().find(|method| method.name == name)
+    }
+
+    /// 描述表校验（spec §13.2）：失败是宿主配置/实现错误，路由层映射为 `E_SCHEMA`。
+    pub fn validate(&self) -> Result<(), String> {
+        validate_service_key(&self.service_key)
+            .map_err(|reason| format!("service_key: {reason}"))?;
+        if self.methods.is_empty() {
+            return Err("methods must not be empty".to_owned());
+        }
+        for (index, method) in self.methods.iter().enumerate() {
+            method
+                .validate()
+                .map_err(|reason| format!("methods[{index}]: {reason}"))?;
+            if self.methods[..index]
+                .iter()
+                .any(|existing| existing.name == method.name)
+            {
+                return Err(format!(
+                    "methods[{index}]: duplicate name `{}`",
+                    method.name
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl HostServiceMethod {
+    /// 单项校验（spec §13.2 字段规则）。
+    pub fn validate(&self) -> Result<(), String> {
+        validate_method_name(&self.name)?;
+        if !(MIN_METHOD_TIMEOUT_MS..=MAX_METHOD_TIMEOUT_MS).contains(&self.timeout_ms) {
+            return Err(format!(
+                "timeout_ms {} must be within {MIN_METHOD_TIMEOUT_MS}..={MAX_METHOD_TIMEOUT_MS}",
+                self.timeout_ms
+            ));
+        }
+        validate_method_schema("args_schema", &self.args_schema)?;
+        validate_method_schema("result_schema", &self.result_schema)?;
+        Ok(())
+    }
+}
+
+fn validate_method_schema(field: &str, schema: &Value) -> Result<(), String> {
+    let Some(object) = schema.as_object() else {
+        return Err(format!("{field} must be a JSON object"));
+    };
+    if object.get("type").and_then(Value::as_str) != Some("object") {
+        return Err(format!("{field}.type must be \"object\""));
+    }
+    if object.get("additionalProperties") != Some(&Value::Bool(false)) {
+        return Err(format!("{field}.additionalProperties must be false"));
+    }
+    let bytes = serde_json::to_vec(schema)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0);
+    if bytes > MAX_METHOD_SCHEMA_BYTES {
+        return Err(format!(
+            "{field} inlined size {bytes} exceeds {MAX_METHOD_SCHEMA_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// `host.service.request` 的 payload（spec §13.4）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceCall {
+    pub method: String,
+    #[serde(default)]
+    pub args: Value,
+}
+
+/// `host.service.result` / `service.result` 的 payload（spec §13.8）。
+///
+/// `result` 与 `content_ref` 互斥；实现自有的错误词表放 `detail`（§9.3）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ServiceReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
+}
+
+impl ServiceReply {
+    pub fn ok(result: Value) -> Self {
+        Self {
+            result: Some(result),
+            content_ref: None,
+            detail: None,
+        }
+    }
+
+    pub fn content_ref(content_ref: impl Into<String>) -> Self {
+        Self {
+            result: None,
+            content_ref: Some(content_ref.into()),
+            detail: None,
+        }
+    }
+
+    /// `result`/`content_ref` 恰好一个（spec §13.8）。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.result.is_some() && self.content_ref.is_some() {
+            return Err("service reply must not carry both result and content_ref".to_owned());
+        }
+        if self.result.is_none() && self.content_ref.is_none() {
+            return Err("service reply must carry result or content_ref".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// 信封 kind 闭集（与 `schema/sidecar-rpc/envelope.schema.json` 的枚举一致）。
+pub const KNOWN_KINDS: &[&str] = &[
+    "runtime.hello",
+    "runtime.ready",
+    "runtime.reject",
+    "runtime.crashed",
+    "plugin.load",
+    "plugin.loaded",
+    "plugin.failed",
+    "plugin.unload",
+    "plugin.unloaded",
+    "tool.register",
+    "tool.unregister",
+    "tool.invoke",
+    "tool.chunk",
+    "tool.result",
+    "tool.cancel",
+    "tool.aborted",
+    KIND_FS_WRITE_REQUEST,
+    KIND_FS_WRITE_RESULT,
+    "service.publish",
+    "service.revoke",
+    "service.invoke",
+    "service.result",
+    KIND_SERVICE_CANCEL,
+    KIND_HOST_SERVICE_REQUEST,
+    KIND_HOST_SERVICE_RESULT,
+    KIND_HOST_SERVICE_CANCEL,
+    "ui.contribute",
+    "ui.retract",
+    "event.subscribe",
+    "event.unsubscribe",
+    "event.emit",
+    "health.ping",
+    "health.pong",
+    "log.emit",
+    "capabilities.list",
+    "diagnostics.snapshot",
+];
+
+/// 信封校验失败（spec §3.2/§4/§9）：`code` 是 §9 主表里的错误码。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopeViolation {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl EnvelopeViolation {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+/// 按协商结果校验一个信封（spec §3.2 规则 2/3、§4、§5.5）。
+///
+/// 这是**协议规则**的运行时入口，不是 serde 严格模式：v1 消息里出现未知字段仍
+/// 宽松接受（向前兼容），但未知 kind、v2-only kind 出现在 v1 协商里、服务代理消息
+/// 缺 `service_key`、`depth > 4` 都会被拒绝。
+pub fn validate_envelope(
+    envelope: &Envelope,
+    negotiated_version: u32,
+) -> Result<(), EnvelopeViolation> {
+    if !(PROTOCOL_MIN..=PROTOCOL_MAX).contains(&negotiated_version) {
+        return Err(EnvelopeViolation::new(
+            "E_VERSION",
+            format!("unsupported negotiated protocol version {negotiated_version}"),
+        ));
+    }
+    if envelope.version != negotiated_version {
+        return Err(EnvelopeViolation::new(
+            "E_PROTOCOL",
+            format!(
+                "envelope.version {} must equal negotiated protocol version {negotiated_version}",
+                envelope.version
+            ),
+        ));
+    }
+    if !KNOWN_KINDS.contains(&envelope.kind.as_str()) {
+        return Err(EnvelopeViolation::new(
+            "E_PROTOCOL",
+            format!("unknown kind `{}`", envelope.kind),
+        ));
+    }
+    if negotiated_version < 2 && is_service_proxy_kind(&envelope.kind) {
+        return Err(EnvelopeViolation::new(
+            "E_PROTOCOL",
+            format!(
+                "kind `{}` is v2-only but the negotiated protocol version is {negotiated_version}",
+                envelope.kind
+            ),
+        ));
+    }
+    if envelope.depth > MAX_DEPTH {
+        return Err(EnvelopeViolation::new(
+            "E_RPC_DEPTH",
+            format!("depth {} exceeds {MAX_DEPTH}", envelope.depth),
+        ));
+    }
+    validate_request_id(&envelope.request_id)
+        .map_err(|reason| EnvelopeViolation::new("E_PROTOCOL", reason))?;
+    match &envelope.service_key {
+        Some(service_key) => {
+            if negotiated_version < 2 {
+                return Err(EnvelopeViolation::new(
+                    "E_PROTOCOL",
+                    "service_key is v2-only; v1 messages must not carry it",
+                ));
+            }
+            validate_service_key(service_key)
+                .map_err(|reason| EnvelopeViolation::new("E_PROTOCOL", reason))?;
+        }
+        None => {
+            if is_service_proxy_kind(&envelope.kind) {
+                return Err(EnvelopeViolation::new(
+                    "E_PROTOCOL",
+                    format!("kind `{}` requires the envelope service_key", envelope.kind),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn hello(caps: &[&str]) -> Envelope {
@@ -439,5 +962,337 @@ mod tests {
         let value = serde_json::to_value(&success).unwrap();
         assert_eq!(value["ok"], true);
         assert!(value.get("snapshot").is_none());
+    }
+
+    // ---- v2 服务代理（spec §3.2/§4/§13）：RPC-L2-0xx ----
+
+    fn service_method(name: &str, kind: HostServiceKind) -> HostServiceMethod {
+        HostServiceMethod {
+            name: name.to_owned(),
+            kind,
+            args_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "path": { "type": "string" } }
+            }),
+            result_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["cwd"],
+                "properties": { "cwd": { "type": "string" } }
+            }),
+            timeout_ms: 5_000,
+            idempotent: true,
+            requires_session: false,
+        }
+    }
+
+    fn v2_request() -> Envelope {
+        Envelope::host(
+            KIND_HOST_SERVICE_REQUEST,
+            "req-42",
+            json!({ "method": "get", "args": {} }),
+        )
+        .with_version(PROTOCOL_MAX)
+        .with_generation("node-0007")
+        .with_plugin("example.dsh.tool")
+        .with_service_key("working-directory/v1")
+        .with_session("s-0001")
+        .with_depth(1)
+    }
+
+    /// RPC-L2-001：v2 信封 + `service_key` 往返；答复回填 version/service_key。
+    #[test]
+    fn rpc_l2_001_v2_envelope_and_service_key_round_trip() {
+        let request = v2_request();
+        let text = serde_json::to_string(&request).unwrap();
+        assert!(text.contains("\"service_key\":\"working-directory/v1\""));
+        let back: Envelope = serde_json::from_str(&text).unwrap();
+        assert_eq!(request, back);
+        assert_eq!(back.version, 2);
+
+        let reply = request.reply(
+            KIND_HOST_SERVICE_RESULT,
+            json!({ "result": { "cwd": "C:\\ws" } }),
+        );
+        assert_eq!(reply.version, 2, "答复复制协商版本，不能退回常量 1");
+        assert_eq!(reply.service_key.as_deref(), Some("working-directory/v1"));
+        assert_eq!(reply.request_id, "req-42");
+    }
+
+    /// RPC-L2-002：`service_key` 非法形态拒绝（spec §13.2）。
+    #[test]
+    fn rpc_l2_002_invalid_service_keys_are_rejected() {
+        for key in [
+            "working-directory",
+            "Working-Directory/v1",
+            "working-directory/v0",
+            "working-directory/v01",
+            "working-directory/1",
+            "/v1",
+            "working_directory/v1",
+        ] {
+            assert!(
+                validate_service_key(key).is_err(),
+                "`{key}` must be rejected"
+            );
+            let mut envelope = v2_request();
+            envelope.service_key = Some(key.to_owned());
+            let violation = validate_envelope(&envelope, PROTOCOL_MAX).unwrap_err();
+            assert_eq!(violation.code, "E_PROTOCOL", "key `{key}`");
+        }
+        for key in ["working-directory/v1", "storage-kv/v1", "example-tools/v2"] {
+            assert_eq!(validate_service_key(key), Ok(()), "`{key}` must pass");
+        }
+    }
+
+    /// RPC-L2-003：未知 kind 拒绝；已知 v1 kind 仍接受（v1 行为不变）。
+    #[test]
+    fn rpc_l2_003_unknown_kinds_are_rejected() {
+        let unknown = Envelope::host("service.chunk", "req-1", json!({})).with_version(2);
+        let violation = validate_envelope(&unknown, PROTOCOL_MAX).unwrap_err();
+        assert_eq!(violation.code, "E_PROTOCOL");
+
+        // v1 既有消息全部仍在闭集内，v1 协商下照常通过。
+        for kind in [
+            "runtime.hello",
+            "tool.invoke",
+            "tool.result",
+            "fs.write.request",
+        ] {
+            let envelope = Envelope::host(kind, "req-1", json!({}));
+            assert_eq!(
+                validate_envelope(&envelope, PROTOCOL_VERSION),
+                Ok(()),
+                "kind `{kind}`"
+            );
+        }
+        assert_eq!(KNOWN_KINDS.len(), 36);
+    }
+
+    /// RPC-L2-004：协商为 1 时 v2-only kind / `service_key` → `E_PROTOCOL`（§3.2 规则 3）。
+    #[test]
+    fn rpc_l2_004_v2_only_kinds_require_negotiated_version_two() {
+        for kind in V2_ONLY_KINDS {
+            let envelope = Envelope::host(*kind, "req-1", json!({})).with_service_key("x/v1");
+            let violation = validate_envelope(&envelope, PROTOCOL_VERSION).unwrap_err();
+            assert_eq!(violation.code, "E_PROTOCOL", "kind `{kind}`");
+        }
+        let mut envelope = v2_request();
+        envelope.version = PROTOCOL_VERSION;
+        // 信封 version 与协商版本不一致本身就是协议错误。
+        let violation = validate_envelope(&envelope, PROTOCOL_VERSION).unwrap_err();
+        assert_eq!(violation.code, "E_PROTOCOL");
+
+        // 协商为 2 且 service_key 合法 → 通过。
+        assert_eq!(validate_envelope(&v2_request(), PROTOCOL_MAX), Ok(()));
+        // 服务代理 kind 缺 service_key → E_PROTOCOL（§4 条件必需字段）。
+        let missing = Envelope::host(KIND_HOST_SERVICE_REQUEST, "req-1", json!({})).with_version(2);
+        let violation = validate_envelope(&missing, PROTOCOL_MAX).unwrap_err();
+        assert_eq!(violation.code, "E_PROTOCOL");
+    }
+
+    /// RPC-L2-005：版本协商矩阵（§3.2）与 v1 缺省信封不变。
+    #[test]
+    fn rpc_l2_005_version_negotiation_matrix() {
+        assert_eq!(PROTOCOL_VERSION, 1, "v1 缺省线格式语义保持不变");
+        assert_eq!(PROTOCOL_MAX, 2);
+        assert_eq!(negotiate_version(1, 1), Some(1));
+        assert_eq!(negotiate_version(2, 1), Some(1));
+        assert_eq!(negotiate_version(1, 2), Some(1));
+        assert_eq!(negotiate_version(2, 2), Some(2));
+        assert_eq!(negotiate_version(0, 2), None, "没有交集必须拒绝");
+        assert_eq!(negotiate_version(2, 0), None);
+        assert_eq!(negotiate_version(3, 3), None, "超出实现区间要拒绝");
+
+        let v1 = Envelope::host("health.ping", "req-1", json!({}));
+        let value = serde_json::to_value(&v1).unwrap();
+        assert_eq!(value["version"], 1);
+        assert!(
+            value.get("service_key").is_none(),
+            "v1 消息不带 service_key"
+        );
+        assert_eq!(validate_envelope(&v1, 1), Ok(()));
+    }
+
+    /// RPC-L2-006：错误码闭集与重试分类（§9/§9.2/§13.4）。
+    #[test]
+    fn rpc_l2_006_service_error_codes_and_retry_classification() {
+        for code in [
+            "E_ALREADY_SETTLED",
+            "E_SERVICE_UNAVAILABLE",
+            "E_SERVICE_METHOD",
+            "E_SERVICE_ARGS",
+            "E_SERVICE_TIMEOUT",
+            "E_SERVICE_DENIED",
+            "E_SERVICE_CONFLICT",
+        ] {
+            assert!(
+                ERROR_CODES.contains(&code),
+                "{code} must join the closed set"
+            );
+        }
+        assert!(is_retryable_sidecar_error("E_SERVICE_TIMEOUT"));
+        assert!(is_retryable_service_error("E_SERVICE_TIMEOUT"));
+        assert!(is_retryable_service_error("E_BACKPRESSURE"));
+        assert!(is_retryable_service_error("E_INTERNAL"));
+        for code in [
+            "E_SERVICE_UNAVAILABLE",
+            "E_SERVICE_METHOD",
+            "E_SERVICE_ARGS",
+            "E_SERVICE_DENIED",
+            "E_SERVICE_CONFLICT",
+            "E_CANCELLED",
+            "E_ALREADY_SETTLED",
+            "E_TOO_LARGE",
+        ] {
+            assert!(
+                !is_retryable_service_error(code),
+                "{code} must not be auto-retried"
+            );
+        }
+    }
+
+    /// RPC-L2-007：方法表往返 + 缺省值 + 描述表校验（§13.2）。
+    #[test]
+    fn rpc_l2_007_host_service_table_round_trip_and_validation() {
+        let table = HostServiceTable::new(
+            "working-directory/v1",
+            vec![
+                service_method("get", HostServiceKind::Read),
+                service_method("set", HostServiceKind::Write),
+            ],
+        );
+        assert_eq!(table.validate(), Ok(()));
+        assert_eq!(table.limits.max_inline_bytes, DEFAULT_MAX_INLINE_BYTES);
+        assert_eq!(table.limits.max_result_bytes, DEFAULT_MAX_RESULT_BYTES);
+        assert_eq!(table.method("get").unwrap().timeout_ms, 5_000);
+        assert!(table.method("missing").is_none());
+
+        let text = serde_json::to_string(&table).unwrap();
+        let back: HostServiceTable = serde_json::from_str(&text).unwrap();
+        assert_eq!(table, back);
+
+        // 缺省值：timeout_ms 缺省 30000、idempotent 缺省 false、requires_session 缺省 false。
+        let method: HostServiceMethod = serde_json::from_value(json!({
+            "name": "get",
+            "kind": "read",
+            "args_schema": { "type": "object", "additionalProperties": false },
+            "result_schema": { "type": "object", "additionalProperties": false }
+        }))
+        .unwrap();
+        assert_eq!(method.timeout_ms, DEFAULT_METHOD_TIMEOUT_MS);
+        assert!(!method.idempotent);
+        assert!(!method.requires_session);
+
+        // 非法描述表：坏 service_key / 坏方法名 / 重复 / 超时越界 / schema 非 object。
+        assert!(HostServiceTable::new(
+            "bad key",
+            vec![service_method("get", HostServiceKind::Read)]
+        )
+        .validate()
+        .is_err());
+        let mut bad_name = service_method("Bad-Name", HostServiceKind::Read);
+        bad_name.timeout_ms = 5_000;
+        assert!(bad_name.validate().is_err());
+        let mut too_fast = service_method("get", HostServiceKind::Read);
+        too_fast.timeout_ms = 99;
+        assert!(too_fast.validate().is_err());
+        let mut bad_schema = service_method("get", HostServiceKind::Read);
+        bad_schema.args_schema = json!({ "type": "string" });
+        assert!(bad_schema.validate().is_err());
+        let duplicated = HostServiceTable::new(
+            "working-directory/v1",
+            vec![
+                service_method("get", HostServiceKind::Read),
+                service_method("get", HostServiceKind::Write),
+            ],
+        );
+        assert!(duplicated.validate().is_err());
+
+        // 首批服务的点分方法名（m3-l2-services §3）必须合法；
+        // spec §13.2 的 `[a-z][a-z0-9_]*` 与 m3 服务表冲突，实现按超集放行。
+        assert_eq!(validate_method_name("unit.open"), Ok(()));
+        assert_eq!(validate_method_name("unit.loadAll"), Ok(()));
+        assert_eq!(validate_method_name("session.describe"), Ok(()));
+        assert!(validate_method_name("Unit.open").is_err());
+        assert!(validate_method_name("unit open").is_err());
+    }
+
+    /// RPC-L2-008：`ServiceCall` / `ServiceReply` 载荷形状（§13.4/§13.8）。
+    #[test]
+    fn rpc_l2_008_service_call_and_reply_payloads() {
+        let call: ServiceCall = serde_json::from_value(json!({
+            "method": "set",
+            "args": { "path": "src" }
+        }))
+        .unwrap();
+        assert_eq!(call.method, "set");
+        assert_eq!(call.args["path"], "src");
+        assert_eq!(serde_json::to_value(&call).unwrap()["args"]["path"], "src");
+
+        let reply = ServiceReply::ok(json!({ "cwd": "C:\\ws" }));
+        assert_eq!(reply.validate(), Ok(()));
+        let value = serde_json::to_value(&reply).unwrap();
+        assert!(value.get("content_ref").is_none());
+        assert_eq!(value["result"]["cwd"], "C:\\ws");
+
+        let attachment = ServiceReply::content_ref("attachment://sha256:deadbeef");
+        assert_eq!(attachment.validate(), Ok(()));
+        let both = ServiceReply {
+            result: Some(json!({})),
+            content_ref: Some("attachment://sha256:deadbeef".to_owned()),
+            detail: None,
+        };
+        assert!(both.validate().is_err());
+        assert!(ServiceReply::default().validate().is_err());
+    }
+
+    /// RPC-L2-009：v2 常量与 schema 词表一致；hello 仍按 v1 缺省协商 max=1。
+    #[test]
+    fn rpc_l2_009_protocol_constants_match_schema_vocabulary() {
+        assert_eq!(CAP_SERVICE_PROXY, "service.proxy");
+        assert_eq!(CAP_SERVICE_EXPOSE, "service.expose");
+        assert_eq!(CAP_SERVICE_ATTACH, "service.attach");
+        assert_eq!(KIND_SERVICE_CANCEL, "service.cancel");
+        assert_eq!(KIND_HOST_SERVICE_REQUEST, "host.service.request");
+        assert_eq!(KIND_HOST_SERVICE_RESULT, "host.service.result");
+        assert_eq!(KIND_HOST_SERVICE_CANCEL, "host.service.cancel");
+        assert_eq!(V2_ONLY_KINDS.len(), 4);
+        assert!(is_v2_only_kind("host.service.request"));
+        assert!(!is_v2_only_kind("tool.invoke"));
+        assert!(is_service_proxy_kind("service.publish"));
+        assert_eq!(SERVICE_PROXY_KINDS.len(), 8);
+
+        let hello_v1 = hello(&[CAP_TOOL_STREAM]);
+        assert_eq!(hello_v1.payload["protocol_max"], 1);
+        let hello_v2 = hello_with_caps_at(&[CAP_TOOL_STREAM.to_owned()], PROTOCOL_MAX);
+        assert_eq!(hello_v2.payload["protocol_max"], 2);
+    }
+
+    /// RPC-L2-010：`depth > 4` 与 `request_id` 非法 → `E_RPC_DEPTH`/`E_PROTOCOL`（§4）。
+    #[test]
+    fn rpc_l2_010_depth_and_request_id_limits() {
+        let deep = v2_request().with_depth(MAX_DEPTH + 1);
+        let violation = validate_envelope(&deep, PROTOCOL_MAX).unwrap_err();
+        assert_eq!(violation.code, "E_RPC_DEPTH");
+
+        let mut bad_id = v2_request();
+        bad_id.request_id = "bad id!".to_owned();
+        let violation = validate_envelope(&bad_id, PROTOCOL_MAX).unwrap_err();
+        assert_eq!(violation.code, "E_PROTOCOL");
+
+        let mut unsupported = v2_request();
+        unsupported.version = 3;
+        assert_eq!(
+            validate_envelope(&unsupported, PROTOCOL_MAX)
+                .unwrap_err()
+                .code,
+            "E_PROTOCOL"
+        );
+        assert_eq!(
+            validate_envelope(&unsupported, 3).unwrap_err().code,
+            "E_VERSION"
+        );
     }
 }

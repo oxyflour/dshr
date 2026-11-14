@@ -1,8 +1,10 @@
 //! Native Plugin 宿主：加载、原子提交声明、卸载清理、调用分发。
 //!
-//! 这是 CPP-v1 的第一条真实路径（`rust-static`）。它目前是**最小生命周期**，
-//! 不含 Service 依赖图与 Effect 撤销——那部分按 ADR-0002 交给 `jincdream/cordis-rs`，
-//! 本文件里的 `PluginHost` 将作为它的适配层外壳，对外契约不变。
+//! 这是 CPP-v1 的第一条真实路径（`rust-static`）。`PluginHost` 负责 ToolRegistry /
+//! 面板的原子提交；Fiber 状态机、Service 依赖与 Effect 撤销在 [`fiber`] 模块里
+//! （本机离线，按 PLAN §3.5 采用自研最小实现，替换点为 `fiber` 模块文档里的适配表）。
+//! `PluginHost::load_with_manifest` 是两者的衔接点：先校验 manifest / 版本 / 配额，
+//! 再走原有 `load`，因此 `chat.rs` 依赖的公共 API 完全不变。
 //!
 //! 保证：
 //! 1. `apply` 失败 → 本次声明**一条都不落库**（原子性）；
@@ -11,9 +13,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod fiber;
+
 use std::collections::BTreeMap;
 
-use dshr_plugin_api::{PanelContribution, Plugin, PluginContext, PluginError};
+use dshr_plugin_api::{
+    HostVersion, Manifest, PanelContribution, Plugin, PluginContext, PluginError,
+};
 use dshr_tool_runtime::{RegistryError, ToolOrigin, ToolPolicy, ToolRegistry};
 use serde_json::Value;
 use thiserror::Error;
@@ -92,6 +98,29 @@ impl PluginHost {
 
         self.plugins.insert(id, plugin);
         Ok(())
+    }
+
+    /// 从 typed manifest 装载（CPP-A 接入点）：
+    /// 1. `Manifest::validate` 校验 api / `min_host_version` / 配额 / `inject` / tool / ui；
+    /// 2. `manifest.plugin.id` 必须与插件实现声明的 id 一致（防止包与代码错配）；
+    /// 3. 再走原有 [`PluginHost::load`] 的原子提交路径。
+    ///
+    /// 这是 additive API：`load` 与既有测试保持不变。
+    pub fn load_with_manifest(
+        &mut self,
+        manifest: &Manifest,
+        plugin: Box<dyn Plugin>,
+        host: &HostVersion,
+    ) -> Result<(), HostError> {
+        manifest.validate(host)?;
+        if plugin.id() != manifest.plugin.id {
+            return Err(HostError::Plugin(PluginError::InvalidManifest(format!(
+                "manifest plugin.id `{}` does not match plugin id `{}`",
+                manifest.plugin.id,
+                plugin.id()
+            ))));
+        }
+        self.load(plugin)
     }
 
     pub fn unload(&mut self, plugin_id: &str) -> Result<(), HostError> {
@@ -349,5 +378,107 @@ mod tests {
         assert_eq!(registry.invalidate_generation("node-0001"), 1);
         assert!(registry.get("probe_native").is_some());
         assert!(registry.get("js_tool").is_none());
+    }
+
+    fn manifest_json(id: &str, api: &str, min_host_version: Option<&str>) -> serde_json::Value {
+        let mut plugin = json!({
+            "id": id,
+            "version": "0.1.0",
+            "api": api,
+        });
+        if let Some(required) = min_host_version {
+            plugin["min_host_version"] = json!(required);
+        }
+        json!({ "plugin": plugin, "runtime": { "kind": "rust-static" } })
+    }
+
+    fn host_version() -> HostVersion {
+        HostVersion::new(0, 1, 0)
+    }
+
+    // CPP-FIBER-023..027：PluginHost 的 manifest 装载接入（CPP-A）。
+    #[test]
+    fn cpp_fiber_023_load_with_manifest_validates_then_loads() {
+        let manifest = Manifest::from_json_str(
+            &manifest_json("builtin.probe", "cordis-portable/v1", None).to_string(),
+        )
+        .unwrap();
+        let mut host = PluginHost::new(AllowAll);
+        host.load_with_manifest(&manifest, Box::new(ProbeNative::new()), &host_version())
+            .unwrap();
+        assert!(host.is_loaded("builtin.probe"));
+        assert!(host.registry().get("probe_native").is_some());
+        assert_eq!(host.panels().len(), 1);
+    }
+
+    #[test]
+    fn cpp_fiber_024_load_with_manifest_rejects_too_old_host() {
+        let manifest = Manifest::from_json_str(
+            &manifest_json("builtin.probe", "cordis-portable/v1", Some("9.9.9")).to_string(),
+        )
+        .unwrap();
+        let mut host = PluginHost::new(AllowAll);
+        let err = host
+            .load_with_manifest(&manifest, Box::new(ProbeNative::new()), &host_version())
+            .unwrap_err();
+        let HostError::Plugin(error) = &err else {
+            panic!("预期 PluginError，实际 {err:?}");
+        };
+        assert_eq!(error.code(), "E_VERSION");
+        assert!(matches!(error, PluginError::HostTooOld { .. }));
+        assert!(!host.is_loaded("builtin.probe"));
+        assert!(host.registry().is_empty());
+    }
+
+    #[test]
+    fn cpp_fiber_025_load_with_manifest_rejects_api_mismatch() {
+        // 直接 serde 解析以绕过 `from_json_str` 的 api 检查，验证装载期仍会拒绝。
+        let raw = manifest_json("builtin.probe", "cordis-portable/v2", None).to_string();
+        let manifest: Manifest = serde_json::from_str(&raw).unwrap();
+        let mut host = PluginHost::new(AllowAll);
+        let err = host
+            .load_with_manifest(&manifest, Box::new(ProbeNative::new()), &host_version())
+            .unwrap_err();
+        let HostError::Plugin(error) = &err else {
+            panic!("预期 PluginError，实际 {err:?}");
+        };
+        assert_eq!(error.code(), "E_VERSION");
+        assert!(matches!(error, PluginError::UnsupportedApi { .. }));
+        assert!(host.registry().is_empty());
+    }
+
+    #[test]
+    fn cpp_fiber_026_load_with_manifest_rejects_plugin_id_mismatch() {
+        let manifest = Manifest::from_json_str(
+            &manifest_json("other.plugin", "cordis-portable/v1", None).to_string(),
+        )
+        .unwrap();
+        let mut host = PluginHost::new(AllowAll);
+        let err = host
+            .load_with_manifest(&manifest, Box::new(ProbeNative::new()), &host_version())
+            .unwrap_err();
+        let HostError::Plugin(error) = &err else {
+            panic!("预期 PluginError，实际 {err:?}");
+        };
+        assert_eq!(error.code(), "E_MANIFEST");
+        assert!(matches!(error, PluginError::InvalidManifest(_)));
+        assert!(!host.is_loaded("builtin.probe"));
+        assert!(host.registry().is_empty());
+    }
+
+    #[test]
+    fn cpp_fiber_027_load_with_manifest_leaves_registry_untouched_on_plugin_failure() {
+        let manifest = Manifest::from_json_str(
+            &manifest_json("builtin.probe", "cordis-portable/v1", None).to_string(),
+        )
+        .unwrap();
+        let mut host = PluginHost::new(AllowAll);
+        let err = host
+            .load_with_manifest(&manifest, Box::new(ProbeNative::failing()), &host_version())
+            .unwrap_err();
+        assert!(matches!(err, HostError::Plugin(_)));
+        assert!(host.registry().is_empty());
+        assert!(host.panels().is_empty());
+        assert!(!host.is_loaded("builtin.probe"));
     }
 }

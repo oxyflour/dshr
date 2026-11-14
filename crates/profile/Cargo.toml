@@ -7,5 +7,9 @@ edition.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 # 只用于离线解包 npm pack 产物（.tgz）；版本已在 Cargo.lock 中，离线可构建。
 flate2 = "=1.1.11"
+# 信任链（M3 spec/plugin-trust.md）：SHA-256 与 ed25519 校验。
+# 版本已在 Cargo.lock 中且已有构建产物，离线可用。
+ring = "=0.17.14"

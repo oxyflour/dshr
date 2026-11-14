@@ -41,8 +41,24 @@ pub fn install_package(
     if !profile.can_edit() {
         return Err(String::from("Loader 模式的插件列表只读，不能安装"));
     }
+    let source = prepare_package(package)?;
+    install_dir(sidecar_dir, &source.root, profile)
+}
+
+/// 解析安装源（目录或 `.tgz`）到可复制的包根目录；`.tgz` 的暂存目录随
+/// [`PackageSource`] 一起释放。信任链（`crate::trust`）复用它，保证摘要与
+/// 实际安装内容一致。
+pub(crate) struct PackageSource {
+    pub(crate) root: PathBuf,
+    _staging: Option<StagingDir>,
+}
+
+pub(crate) fn prepare_package(package: &Path) -> Result<PackageSource, String> {
     if package.is_dir() {
-        return install_dir(sidecar_dir, package, profile);
+        return Ok(PackageSource {
+            root: package.to_path_buf(),
+            _staging: None,
+        });
     }
     if !package.is_file() {
         return Err(format!(
@@ -63,10 +79,13 @@ pub fn install_package(
 
     let staging = StagingDir::create()?;
     let unpacked = archive::unpack_tgz(package, staging.path())?;
-    install_dir(sidecar_dir, &unpacked.root, profile)
+    Ok(PackageSource {
+        root: unpacked.root,
+        _staging: Some(staging),
+    })
 }
 
-fn install_dir(
+pub(crate) fn install_dir(
     sidecar_dir: &Path,
     package_dir: &Path,
     profile: &mut Profile,
@@ -104,7 +123,7 @@ fn install_dir(
 /// `dsh` 字段是 DSH 的插件清单约定（可缺省：官方 tool 包就没有）：
 /// `dsh.bundle.patch` 指向 Loader patch 文件，`dsh.client` 描述 Web Client 插件。
 /// 这里只校验结构和路径安全，不解释其组合语义（Loader 见 `loader.rs`）。
-fn read_manifest(package_dir: &Path) -> Result<String, String> {
+pub(crate) fn read_manifest(package_dir: &Path) -> Result<String, String> {
     let manifest = package_dir.join("package.json");
     let text = fs::read_to_string(&manifest)
         .map_err(|err| format!("读取 {} 失败: {err}", manifest.display()))?;
@@ -123,6 +142,48 @@ fn read_manifest(package_dir: &Path) -> Result<String, String> {
         validate_dsh_field(dsh, package_dir)?;
     }
     Ok(name)
+}
+
+/// 读包版本：优先 `package.json` 的 `version`，其次 `plugin.toml` 的 `[plugin].version`。
+/// 信任链用它做"trust 文件 vs 实际清单"的一致性校验；读不到返回 `None`。
+pub(crate) fn read_package_version(package_dir: &Path) -> Result<Option<String>, String> {
+    let package_json = package_dir.join("package.json");
+    if package_json.is_file() {
+        let text = fs::read_to_string(&package_json)
+            .map_err(|err| format!("读取 {} 失败: {err}", package_json.display()))?;
+        let value: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+            .map_err(|err| format!("package.json 解析失败: {err}"))?;
+        if let Some(version) = value.get("version").and_then(Value::as_str) {
+            if !version.is_empty() {
+                return Ok(Some(version.to_owned()));
+            }
+        }
+    }
+    let plugin_toml = package_dir.join("plugin.toml");
+    if plugin_toml.is_file() {
+        let text = fs::read_to_string(&plugin_toml)
+            .map_err(|err| format!("读取 {} 失败: {err}", plugin_toml.display()))?;
+        let mut section = String::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                section = line.trim_matches(['[', ']']).trim().to_owned();
+                continue;
+            }
+            if section != "plugin" {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                if key.trim() == "version" {
+                    let version = value.trim().trim_matches('"').trim_matches('\'');
+                    if !version.is_empty() {
+                        return Ok(Some(version.to_owned()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn validate_package_name(name: &str) -> Result<(), String> {

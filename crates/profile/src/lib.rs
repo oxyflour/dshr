@@ -21,8 +21,14 @@
 pub mod archive;
 pub mod install;
 pub mod loader;
+pub mod trust;
 
 pub use install::{install_package, InstallReport};
+pub use trust::{
+    install_package_trusted, package_digest, read_installed_meta, verify_package, AuditRecord,
+    InstallPreview, InstalledMeta, SignatureStatus, TrustError, TrustKey, TrustPolicy, TrustReport,
+    TrustStore, TrustedInstallReport, TRUST_FILE,
+};
 
 use std::fs;
 use std::path::{Path, PathBuf};

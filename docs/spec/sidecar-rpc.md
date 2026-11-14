@@ -81,6 +81,10 @@ v1 宿主不发 v2 的 cap，v1 Sidecar 也不认识它们——两边都按"未
    协商为 2 时收到 v1 未列出的 kind 同理。
 4. v2 的**增补不改变 v1 的任何 payload 形状**：`service_key` 是可选字段，v1 消息不带它，
    v1 实现按 `additionalProperties` 宽松处理即可（`schema/sidecar-rpc/envelope.schema.json` 已收录该字段）。
+5. **实现注记**：`compat-dsh-protocol` 保留 `PROTOCOL_VERSION = 1` 作为 v1 缺省信封版本，
+   另加 `PROTOCOL_MAX = 2` 供协商与 `hello_with_caps_at(caps, 2)`；握手读到 `runtime.ready.protocol`
+   后，双方显式用协商值构造/校验后续信封（`Envelope::with_version`）。在集成完成前，宿主不会主动
+   把缺省信封升到 2——这是为了保持 M2 的 v1 行为与既有测试不变，不是规范歧义。
 
 
 ## 4. Envelope
@@ -471,12 +475,13 @@ DSH 的 JS 插件通过 Cordis `inject` 拿到 `ctx.<service>`（`workingDirecto
 | 字段 | 必需 | 规则 |
 |---|---|---|
 | `service_key` | 是 | 信封字段（§4），payload 不重复 |
-| `methods[].name` | 是 | `[a-z][a-z0-9_]*`；同表内唯一 |
+| `methods[].name` | 是 | `[a-z][A-Za-z0-9_.]*`（允许点分段，如 `unit.loadAll` / `session.describe`）；同表内唯一 |
 | `methods[].kind` | 是 | v2 只允许 `read` / `write`；`stream` 为**保留值**，v2 拒绝（`E_SERVICE_METHOD`） |
 | `methods[].args_schema` | 是 | JSON Schema 子集，内联 ≤ 8 KiB；`type:"object"` 且 `additionalProperties:false`；**不含 `session_id`**（会话身份只在信封上） |
 | `methods[].result_schema` | 是 | 同上；结果必须整体匹配 |
 | `methods[].timeout_ms` | 是 | 整数，`[100, 120000]`；缺省 `30000`；越界 → `E_SCHEMA`（描述表校验失败） |
 | `methods[].idempotent` | 是 | `true` = 可安全重试（读或幂等写）；`false` = 重试会重复副作用 |
+| `methods[].requires_session` | 否 | 布尔，缺省 `false`；`true` 时信封必须带 `session_id`，缺 → `E_SERVICE_ARGS`（落 §5.5 会话身份规则） |
 | `limits.max_inline_bytes` | 否 | 缺省 262144（256 KiB），见 §13.8 |
 | `limits.max_result_bytes` | 否 | 缺省 786432（768 KiB），见 §13.8 |
 

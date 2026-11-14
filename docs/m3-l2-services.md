@@ -284,13 +284,16 @@ Committed 事件派发内同步执行，见官方 `onEventChanged` 注释）；*
 | 方法 | kind | args | result | timeout_ms | idempotent |
 |---|---|---|---|---|---|
 | `unit.open` | write | `{unit:{name, version, compatible_versions?, layout:"single" / "per-record", tables?}}` | `{unit_id}` | 15000 | true（同 descriptor 重开返回同 unit） |
-| `unit.loadAll` | read | `{}` | `{tables:{[table]:{[key]:value}}, global?}` | 30000 | true |
-| `unit.putRecord` | write | `{table, key, value}` | `{}` | 10000 | true（last-write-wins） |
-| `unit.deleteRecord` | write | `{table, key}` | `{}` | 10000 | true |
-| `unit.deleteRecords` | write | `{table, keys[]}` | `{}` | 10000 | true |
-| `unit.setGlobal` | write | `{value}` | `{}` | 10000 | true |
-| `unit.close` | write | `{}` | `{}` | 5000 | true |
+| `unit.loadAll` | read | `{unit_id}` | `{tables:{[table]:{[key]:value}}, global?}` | 30000 | true |
+| `unit.putRecord` | write | `{unit_id, table, key, value}` | `{}` | 10000 | true（last-write-wins） |
+| `unit.deleteRecord` | write | `{unit_id, table, key}` | `{}` | 10000 | true |
+| `unit.deleteRecords` | write | `{unit_id, table, keys[]}` | `{}` | 10000 | true |
+| `unit.setGlobal` | write | `{unit_id, value}` | `{}` | 10000 | true |
+| `unit.close` | write | `{unit_id}` | `{}` | 5000 | true |
 
+- **`unit_id` 是必需参数**（`unit.open` 除外，它返回 `unit_id`）：v2 是无状态 RPC，宿主不能靠
+  「最近打开的 unit」推断目标；实现见 `crates/compat-dsh-host/src/storage_kv.rs`。JS 适配器必须
+  在每个 `unit.*` 方法里带上 `unit_id`（官方 `kv` facet 是面向对象接口，适配层在 Sidecar 侧做映射）。
 - `unit_id` 由宿主分配，作用域 `(plugin_id, unit.name)`；同一插件重复 `open` 同 descriptor 返回同
   `unit_id`（幂等），不同 descriptor 版本冲突 → `E_INTERNAL` + `detail.storage_code="version-mismatch"`。
 - `unit.loadAll` 结果必须 ≤ 768 KiB（spec §13.8）；超限 → `E_TOO_LARGE`（v2 不做游标，风险见 §6.3）。

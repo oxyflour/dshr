@@ -50,7 +50,10 @@ use dshr_llm_openai::OpenAiProvider;
 use dshr_llm_retry::{RetryPolicy, RetryingProvider};
 use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_plugin_host::PluginHost;
-use dshr_profile::{install_package, Profile, ProfileSource};
+use dshr_profile::{
+    install_package, install_package_trusted, package_digest, read_installed_meta, Profile,
+    ProfileSource, TrustPolicy, TrustStore,
+};
 use dshr_sandbox::Workspace;
 use dshr_session_export::{export_session, verify_export, ExportOptions, SpillStoreSource};
 use dshr_session_store::{
@@ -5052,66 +5055,205 @@ fn retention_plan_cli() -> i32 {
     0
 }
 
+struct InstallCliOptions {
+    package: PathBuf,
+    /// 非交互确认（CI / 脚本）；未验证签名的包必须显式给出。
+    yes_install: bool,
+    allow_downgrade: bool,
+}
+
 fn install_plugin_cli(package: PathBuf) -> i32 {
-    // 资源根按 exe 相对解析（打包后不依赖源码树）。
-    let root = app_root();
+    let args: Vec<String> = std::env::args().collect();
     let sidecar_dir = std::env::var("DSHR_SIDECAR_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| root.join("sidecar/dsh-official"));
-    if let Err(err) = std::fs::create_dir_all(&sidecar_dir) {
-        eprintln!("[install] 创建 sidecar 目录失败: {err}");
-        return 1;
-    }
+        .unwrap_or_else(|_| app_root().join("sidecar/dsh-official"));
     let profile_dir = std::env::var("DSHR_PROFILE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".tmp/profile"));
-    let mut profile = match Profile::load(&profile_dir) {
+    install_plugin_with_options(
+        &InstallCliOptions {
+            package,
+            yes_install: args.iter().any(|arg| arg == "--yes-install"),
+            allow_downgrade: args.iter().any(|arg| arg == "--allow-downgrade"),
+        },
+        &sidecar_dir,
+        &profile_dir,
+    )
+}
+
+/// 可信安装 CLI（M3 G2）：摘要/签名校验 → 首装确认（`--yes-install`）→ 审计。
+fn install_plugin_with_options(
+    options: &InstallCliOptions,
+    sidecar_dir: &std::path::Path,
+    profile_dir: &std::path::Path,
+) -> i32 {
+    if let Err(err) = std::fs::create_dir_all(sidecar_dir) {
+        eprintln!("[install] 创建 sidecar 目录失败: {err}");
+        return 1;
+    }
+    let mut profile = match Profile::load(profile_dir) {
         Ok(profile) => profile,
         Err(err) => {
             eprintln!("[install] 加载 profile 失败: {err}");
             return 1;
         }
     };
-    // 第三方插件拥有当前用户的代码执行权限：显式确认（命令行主动调用）并留审计记录。
-    println!("[install] 安装第三方插件会在你的用户权限下执行任意代码；继续安装 {package:?}");
-    match install_package(&sidecar_dir, &package, &mut profile) {
+    let store = match TrustStore::load(profile_dir) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("[install] 信任密钥库无效（{profile_dir:?}/trust-keys.json）: {err}");
+            return 1;
+        }
+    };
+    let policy = TrustPolicy {
+        allow_downgrade: options.allow_downgrade,
+        require_confirm_for_unsigned: true,
+        store,
+        now_ms: None,
+    };
+    let package = options.package.clone();
+    let yes_install = options.yes_install;
+    let result = install_package_trusted(sidecar_dir, &package, &mut profile, &policy, |preview| {
+        // 非交互 CLI：必须显式 --yes-install；打印与 spec §5 一致的预览项。
+        println!(
+            "[install] 待安装: {} {}（{}）",
+            preview.name,
+            preview.version,
+            preview.signature_status.as_str()
+        );
+        println!(
+            "[install] 来源: {}；摘要: {}",
+            package.display(),
+            preview.digest_sha256
+        );
+        if let Some(key_id) = &preview.key_id {
+            println!("[install] 签名 key: {key_id}");
+        }
+        if let Some(installed) = &preview.installed_version {
+            println!("[install] 已安装版本: {installed}");
+        }
+        println!("[install] 会获得的权限: {}", preview.permissions_hint);
+        println!("[install] 警告: 该插件可在你的用户权限下执行任意代码");
+        if !yes_install {
+            eprintln!("[install] 未验证签名的包需要显式确认：加 --yes-install 重跑（本次未安装）");
+        }
+        yes_install
+    });
+    match result {
         Ok(report) => {
             println!(
-                "[install] {} -> {}（profile_added={}）",
-                report.name,
-                report.destination.display(),
-                report.added_to_profile
+                "[install] {} -> {}（profile_added={}，signature={}）",
+                report.install.name,
+                report.install.destination.display(),
+                report.install.added_to_profile,
+                report.trust.signature_status.as_str()
             );
             println!(
                 "[install] profile={}；重启 chat 后加载",
                 profile.path().display()
             );
-            // 审计日志：安装动作与来源（不记录包内容）。
-            let audit = profile_dir.join("install-audit.jsonl");
-            let entry = json!({
-                "ts": now_ts(),
-                "action": "install",
-                "name": report.name,
-                "source": package.display().to_string(),
-                "destination": report.destination.display().to_string(),
-                "added_to_profile": report.added_to_profile,
-            });
-            let _ = std::fs::create_dir_all(&profile_dir);
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&audit)
-            {
-                use std::io::Write;
-                let _ = writeln!(file, "{entry}");
-            }
-            println!("[install] 审计记录: {}", audit.display());
+            println!(
+                "[install] 审计记录: {}",
+                profile_dir.join("install-audit.jsonl").display()
+            );
             0
         }
         Err(err) => {
-            eprintln!("[install] 安装失败: {err}");
+            if matches!(err, dshr_profile::TrustError::NotConfirmed) {
+                eprintln!("[install] 已取消：未确认安装");
+                return 2;
+            }
+            eprintln!("[install] 安装失败（{}）: {err}", err.code());
             1
         }
+    }
+}
+
+/// 自检：可信安装端到端（首装确认、摘要校验、篡改拒绝、元数据/审计）。
+fn selftest_trust_install() -> i32 {
+    let root = PathBuf::from(".tmp/trust-selftest");
+    let _ = std::fs::remove_dir_all(&root);
+    let package = root.join("pkg");
+    let sidecar = root.join("sidecar");
+    let profile_dir = root.join("profile");
+    if std::fs::create_dir_all(package.join("lib")).is_err() {
+        eprintln!("[selftest-trust] 创建目录失败");
+        return 1;
+    }
+    let package_json = json!({ "name": "selftest.trust", "version": "0.1.0" });
+    let _ = std::fs::write(package.join("package.json"), package_json.to_string());
+    let _ = std::fs::write(package.join("lib/index.js"), "export const ok = true\n");
+    let Ok(digest) = package_digest(&package) else {
+        eprintln!("[selftest-trust] 计算摘要失败");
+        return 1;
+    };
+    let trust = json!({
+        "schema_version": 1,
+        "plugin_id": "selftest.trust",
+        "version": "0.1.0",
+        "package": { "digest_sha256": digest }
+    });
+    let _ = std::fs::write(package.join("dshr-trust.json"), trust.to_string());
+
+    // 1) 未确认 → 退出码 2 且未安装。
+    let unconfirmed = install_plugin_with_options(
+        &InstallCliOptions {
+            package: package.clone(),
+            yes_install: false,
+            allow_downgrade: false,
+        },
+        &sidecar,
+        &profile_dir,
+    );
+    let destination = sidecar.join("node_modules").join("selftest.trust");
+    let rejected_unconfirmed = unconfirmed == 2 && !destination.exists();
+
+    // 2) 确认 → 安装成功，元数据/摘要一致。
+    let confirmed = install_plugin_with_options(
+        &InstallCliOptions {
+            package: package.clone(),
+            yes_install: true,
+            allow_downgrade: false,
+        },
+        &sidecar,
+        &profile_dir,
+    );
+    let meta = read_installed_meta(&destination);
+    let installed_ok = confirmed == 0
+        && meta
+            .as_ref()
+            .map(|meta| meta.digest_sha256 == digest)
+            .unwrap_or(false);
+
+    // 3) 篡改内容后重装 → 摘要不匹配被拒。
+    let _ = std::fs::write(package.join("lib/index.js"), "malicious()\n");
+    let tampered = install_plugin_with_options(
+        &InstallCliOptions {
+            package: package.clone(),
+            yes_install: true,
+            allow_downgrade: false,
+        },
+        &sidecar,
+        &profile_dir,
+    );
+    let tamper_rejected = tampered == 1;
+
+    // 4) 审计：至少包含 accepted 与 reject 两种记录。
+    let audit =
+        std::fs::read_to_string(profile_dir.join("install-audit.jsonl")).unwrap_or_default();
+    let accepted = audit.contains("\"decision\":\"accepted\"");
+    let rejected = audit.contains("\"decision\":\"rejected\"");
+    let signature_status = meta.map(|meta| meta.signature.status).unwrap_or_default();
+    let ok = rejected_unconfirmed && installed_ok && tamper_rejected && accepted && rejected;
+    println!(
+        "[selftest-trust] rejected_unconfirmed={rejected_unconfirmed} installed_ok={installed_ok} tamper_rejected={tamper_rejected} audit_accepted={accepted} audit_rejected={rejected} signature_status={signature_status}"
+    );
+    if ok {
+        println!("[selftest-trust] PASS");
+        0
+    } else {
+        println!("[selftest-trust] FAIL");
+        1
     }
 }
 
@@ -5926,9 +6068,14 @@ fn main() {
             .unwrap_or_else(|| PathBuf::from(".tmp/sessions"));
         std::process::exit(seed_perf_session(&dir));
     }
+    if std::env::args().any(|arg| arg == "--selftest-trust-install") {
+        std::process::exit(selftest_trust_install());
+    }
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {
-            eprintln!("用法: chat --install-plugin <本地包目录>");
+            eprintln!(
+                "用法: chat --install-plugin <本地包目录> [--yes-install] [--allow-downgrade]"
+            );
             std::process::exit(2);
         };
         std::process::exit(install_plugin_cli(PathBuf::from(path)));

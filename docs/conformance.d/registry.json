@@ -1,9 +1,12 @@
 {
   "schema_version": 1,
   "id_spec": "docs/spec/README.md#3",
-  "updated_at": "2026-11-12",
+  "updated_at": "2026-11-14",
   "notes": [
-    "本地 --workspace 实跑记录（2026-11-12，本机受限会话）：cargo suite 26 suites / 316 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（隔离复跑同样失败，属沙箱进程限制，非本轮代码改动；docs/m3-status.md §4 已记录）。提交矩阵用 --quick 生成，CARGO-UNIT-* 记为 SKIP，cargo 全绿待普通终端或 CI 复核。"
+    "本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。",
+    "本地 --workspace 实跑（2026-11-14，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 53 suites / 594 passed / 1 failed；唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target：26 suites / 448 passed / 1 failed，故 harness 加 --no-fail-fast 以取得完整逐包证据。",
+    "提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。",
+    ".github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。"
   ],
   "suites": {
     "schema": {
@@ -20,525 +23,470 @@
     },
     "cargo": {
       "title": "Rust workspace 单测（tools/build-env.cmd cargo test --offline --workspace）",
-      "command": "tools\\build-env.cmd cargo test --offline --workspace",
+      "command": "tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast",
       "quick": false,
       "timeout_ms": 1200000,
       "requires_build_env": true
     }
   },
   "tests": [
+    {"id":"CARGO-UNIT-001","area":"CARGO","title":"Rust workspace 全部单测","status":"implemented","suite":"cargo","selector":"all","notes":"tools/build-env.cmd cargo test --offline --workspace；只有 --workspace/--full 才运行（quick 不构建 Rust）。"},
+    {"id":"CARGO-UNIT-002","area":"CARGO","title":"dshr-plugin-host 单测","status":"implemented","suite":"cargo","selector":"dshr-plugin-host","notes":"review-m3-plan.md §1 记录 6 个测试；selector 为该包在 cargo 输出中的测试二进制。"},
+    {"id":"CARGO-UNIT-003","area":"CARGO","title":"dshr-plugin-api 单测","status":"implemented","suite":"cargo","selector":"dshr-plugin-api","notes":"CPP-v1 公开契约 crate；M3 起新增测试在此登记。"},
+    {"id":"CARGO-UNIT-004","area":"CARGO","title":"dshr-ui-contributions 单测","status":"implemented","suite":"cargo","selector":"dshr-ui-contributions","notes":"ADC-v1 服务端 crate；M3 起新增测试在此登记。"},
+    {"id":"DOC-LINK-001","area":"DOC","title":"全部 Markdown 相对链接可解析","status":"implemented","suite":"links","selector":"all","notes":"tools/check-links.mjs 扫描仓库全部 .md，0 broken 即通过。"},
+    {"id":"SCHEMA-FIXTURE-001","area":"SCHEMA","title":"element: valid nested stack","status":"implemented","suite":"schema","selector":"[element] valid: nested stack","notes":"schema/check.mjs 正例：嵌套 Stack/Text/Button 树合法。"},
+    {"id":"SCHEMA-FIXTURE-002","area":"SCHEMA","title":"element: invalid unknown element","status":"implemented","suite":"schema","selector":"[element] invalid: unknown element","notes":"未知元素 WebView 在作者期 schema lint 中被拒绝（运行时降级语义见 ADC-ELEM-001）。"},
+    {"id":"SCHEMA-FIXTURE-003","area":"SCHEMA","title":"element: invalid missing type","status":"implemented","suite":"schema","selector":"[element] invalid: missing type","notes":"缺少 type 的元素必须被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-004","area":"SCHEMA","title":"element: invalid child unknown type","status":"implemented","suite":"schema","selector":"[element] invalid: child unknown type","notes":"子树中的未知类型同样被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-005","area":"SCHEMA","title":"element: invalid unknown top-level field","status":"implemented","suite":"schema","selector":"[element] invalid: unknown top-level field","notes":"additionalProperties=false 的顶层未知字段被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-006","area":"SCHEMA","title":"slotRegistration: valid panel","status":"implemented","suite":"schema","selector":"[slotRegistration] valid: panel","notes":"workspace.panel 注册 fixture 合法。"},
+    {"id":"SCHEMA-FIXTURE-007","area":"SCHEMA","title":"slotRegistration: invalid slot_id without dot","status":"implemented","suite":"schema","selector":"[slotRegistration] invalid: slot_id without dot","notes":"slot_id 必须是 domain.seat 点分形式。"},
+    {"id":"SCHEMA-FIXTURE-008","area":"SCHEMA","title":"slotRegistration: invalid missing view","status":"implemented","suite":"schema","selector":"[slotRegistration] invalid: missing view","notes":"view 是 slot 注册的必填字段。"},
+    {"id":"SCHEMA-FIXTURE-009","area":"SCHEMA","title":"slotRegistration: invalid plugin_id uppercase","status":"implemented","suite":"schema","selector":"[slotRegistration] invalid: plugin_id uppercase","notes":"plugin_id 必须小写 ASCII。"},
+    {"id":"SCHEMA-FIXTURE-010","area":"SCHEMA","title":"slotRegistration: invalid bad location","status":"implemented","suite":"schema","selector":"[slotRegistration] invalid: bad location","notes":"location 只接受声明过的枚举值。"},
+    {"id":"SCHEMA-FIXTURE-011","area":"SCHEMA","title":"manifest: valid wasm tool plugin","status":"implemented","suite":"schema","selector":"[manifest] valid: wasm tool plugin","notes":"完整 wasm-component Tool 插件 manifest 合法。"},
+    {"id":"SCHEMA-FIXTURE-012","area":"SCHEMA","title":"manifest: invalid api v2","status":"implemented","suite":"schema","selector":"[manifest] invalid: api v2","notes":"api major 不匹配被拒绝（CPP-VER-001 的 schema 侧证据）。"},
+    {"id":"SCHEMA-FIXTURE-013","area":"SCHEMA","title":"manifest: invalid unknown runtime kind","status":"implemented","suite":"schema","selector":"[manifest] invalid: unknown runtime kind","notes":"runtime.kind 未知取值被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-014","area":"SCHEMA","title":"manifest: invalid unknown top-level field","status":"implemented","suite":"schema","selector":"[manifest] invalid: unknown top-level field","notes":"manifest 顶层未知字段被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-015","area":"SCHEMA","title":"manifest: invalid memory over cap","status":"implemented","suite":"schema","selector":"[manifest] invalid: memory over cap","notes":"max_memory_mb 超上限被拒绝（配额 schema 侧证据）。"},
+    {"id":"SCHEMA-FIXTURE-016","area":"SCHEMA","title":"envelope: valid tool.invoke","status":"implemented","suite":"schema","selector":"[envelope] valid: tool.invoke","notes":"sidecar-rpc 信封完整字段正例。"},
+    {"id":"SCHEMA-FIXTURE-017","area":"SCHEMA","title":"envelope: invalid missing trace_id","status":"implemented","suite":"schema","selector":"[envelope] invalid: missing trace_id","notes":"trace_id 必填。"},
+    {"id":"SCHEMA-FIXTURE-018","area":"SCHEMA","title":"envelope: invalid depth over limit","status":"implemented","suite":"schema","selector":"[envelope] invalid: depth over limit","notes":"depth 超上限被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-019","area":"SCHEMA","title":"envelope: invalid unknown kind","status":"implemented","suite":"schema","selector":"[envelope] invalid: unknown kind","notes":"未知消息 kind 被拒绝。"},
+    {"id":"SCHEMA-FIXTURE-020","area":"SCHEMA","title":"envelope: invalid bad error code","status":"implemented","suite":"schema","selector":"[envelope] invalid: bad error code","notes":"错误码必须匹配 E_<SCREAMING> 词表。"},
+    {"id":"ADC-BIND-001","area":"ADC","title":"绑定前缀权限与 patch seq 乱序丢弃","status":"pending","suite":null,"selector":null,"notes":"依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。"},
+    {"id":"CPP-WASM-001","area":"CPP","title":"fuel/内存/超时三例分别隔离","status":"pending","suite":null,"selector":null,"notes":"依赖 spec/cpp-v1.wit + Wasmtime host + 配额 ADR-0010；M3 G3 证据。"},
+    {"id":"SELF-CHAT-001","area":"SELF","title":"chat --selftest 基本对话","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。"},
+    {"id":"SELF-CHAT-002","area":"SELF","title":"chat --selftest-stream 流式","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-003","area":"SELF","title":"chat --selftest-context 上下文计量","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-004","area":"SELF","title":"chat --selftest-long-context 长上下文压缩","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-005","area":"SELF","title":"chat --selftest-spill 外部化","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-006","area":"SELF","title":"chat --selftest-approval 审批","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-007","area":"SELF","title":"chat --selftest-sandbox 沙箱","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-008","area":"SELF","title":"chat --selftest-profile 插件启停","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-009","area":"SELF","title":"chat --selftest-loader Loader 派生","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-010","area":"SELF","title":"chat --selftest-install 离线安装","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-011","area":"SELF","title":"chat --selftest-retry 重试","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-012","area":"SELF","title":"chat --selftest-perf 性能","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-013","area":"SELF","title":"chat --selftest-dsh DSH L1","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；依赖本机 DSH 安装副本（CI 无此环境）。"},
+    {"id":"SELF-CHAT-014","area":"SELF","title":"chat --selftest-dsh-write 官方写路径","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；依赖本机 DSH 安装副本。"},
+    {"id":"SELF-CHAT-015","area":"SELF","title":"chat --selftest-cordis Cordis 插件","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；依赖本机 DSH 安装副本。"},
+    {"id":"SELF-CHAT-016","area":"SELF","title":"chat --selftest-tree 会话树","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"SELF-CHAT-017","area":"SELF","title":"chat --selftest-export 会话导出","status":"pending","suite":null,"selector":null,"notes":"已存在但未纳入 harness；未来 suite=selftest-chat。"},
+    {"id":"CPP-TRUST-019","area":"CPP","title":"chat --selftest-trust-install（安装信任链端到端）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。"},
+    {"id":"GATE-G2-001","area":"GATE","title":"外部作者可发布实验（仓库外构建 + 安装 + 卸载）","status":"manual","suite":null,"selector":null,"notes":"M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。"}
+  ],
+  "groups": [
     {
-      "id": "SCHEMA-FIXTURE-001",
-      "area": "SCHEMA",
-      "title": "element: valid nested stack",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[element] valid: nested stack",
-      "notes": "schema/check.mjs 正例：嵌套 Stack/Text/Button 树合法。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-002",
-      "area": "SCHEMA",
-      "title": "element: invalid unknown element",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[element] invalid: unknown element",
-      "notes": "未知元素 WebView 在作者期 schema lint 中被拒绝（运行时降级语义见 ADC-ELEM-001）。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-003",
-      "area": "SCHEMA",
-      "title": "element: invalid missing type",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[element] invalid: missing type",
-      "notes": "缺少 type 的元素必须被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-004",
-      "area": "SCHEMA",
-      "title": "element: invalid child unknown type",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[element] invalid: child unknown type",
-      "notes": "子树中的未知类型同样被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-005",
-      "area": "SCHEMA",
-      "title": "element: invalid unknown top-level field",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[element] invalid: unknown top-level field",
-      "notes": "additionalProperties=false 的顶层未知字段被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-006",
-      "area": "SCHEMA",
-      "title": "slotRegistration: valid panel",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[slotRegistration] valid: panel",
-      "notes": "workspace.panel 注册 fixture 合法。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-007",
-      "area": "SCHEMA",
-      "title": "slotRegistration: invalid slot_id without dot",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[slotRegistration] invalid: slot_id without dot",
-      "notes": "slot_id 必须是 domain.seat 点分形式。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-008",
-      "area": "SCHEMA",
-      "title": "slotRegistration: invalid missing view",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[slotRegistration] invalid: missing view",
-      "notes": "view 是 slot 注册的必填字段。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-009",
-      "area": "SCHEMA",
-      "title": "slotRegistration: invalid plugin_id uppercase",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[slotRegistration] invalid: plugin_id uppercase",
-      "notes": "plugin_id 必须小写 ASCII。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-010",
-      "area": "SCHEMA",
-      "title": "slotRegistration: invalid bad location",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[slotRegistration] invalid: bad location",
-      "notes": "location 只接受声明过的枚举值。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-011",
-      "area": "SCHEMA",
-      "title": "manifest: valid wasm tool plugin",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[manifest] valid: wasm tool plugin",
-      "notes": "完整 wasm-component Tool 插件 manifest 合法。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-012",
-      "area": "SCHEMA",
-      "title": "manifest: invalid api v2",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[manifest] invalid: api v2",
-      "notes": "api major 不匹配被拒绝（CPP-VER-001 的 schema 侧证据）。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-013",
-      "area": "SCHEMA",
-      "title": "manifest: invalid unknown runtime kind",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[manifest] invalid: unknown runtime kind",
-      "notes": "runtime.kind 未知取值被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-014",
-      "area": "SCHEMA",
-      "title": "manifest: invalid unknown top-level field",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[manifest] invalid: unknown top-level field",
-      "notes": "manifest 顶层未知字段被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-015",
-      "area": "SCHEMA",
-      "title": "manifest: invalid memory over cap",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[manifest] invalid: memory over cap",
-      "notes": "max_memory_mb 超上限被拒绝（配额 schema 侧证据）。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-016",
-      "area": "SCHEMA",
-      "title": "envelope: valid tool.invoke",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[envelope] valid: tool.invoke",
-      "notes": "sidecar-rpc 信封完整字段正例。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-017",
-      "area": "SCHEMA",
-      "title": "envelope: invalid missing trace_id",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[envelope] invalid: missing trace_id",
-      "notes": "trace_id 必填。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-018",
-      "area": "SCHEMA",
-      "title": "envelope: invalid depth over limit",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[envelope] invalid: depth over limit",
-      "notes": "depth 超上限被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-019",
-      "area": "SCHEMA",
-      "title": "envelope: invalid unknown kind",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[envelope] invalid: unknown kind",
-      "notes": "未知消息 kind 被拒绝。"
-    },
-    {
-      "id": "SCHEMA-FIXTURE-020",
-      "area": "SCHEMA",
-      "title": "envelope: invalid bad error code",
-      "status": "implemented",
-      "suite": "schema",
-      "selector": "[envelope] invalid: bad error code",
-      "notes": "错误码必须匹配 E_<SCREAMING> 词表。"
-    },
-    {
-      "id": "DOC-LINK-001",
-      "area": "DOC",
-      "title": "全部 Markdown 相对链接可解析",
-      "status": "implemented",
-      "suite": "links",
-      "selector": "all",
-      "notes": "tools/check-links.mjs 扫描仓库全部 .md，0 broken 即通过。"
-    },
-    {
-      "id": "CARGO-UNIT-001",
-      "area": "CARGO",
-      "title": "Rust workspace 全部单测",
-      "status": "implemented",
-      "suite": "cargo",
-      "selector": "all",
-      "notes": "tools/build-env.cmd cargo test --offline --workspace；只有 --workspace/--full 才运行（quick 不构建 Rust）。"
-    },
-    {
-      "id": "CARGO-UNIT-002",
-      "area": "CARGO",
-      "title": "dshr-plugin-host 单测",
+      "name": "CPP-FIBER（plugin-host：Fiber 状态机/生命周期/取消/manifest 装载）",
+      "area": "CPP",
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-host",
-      "notes": "review-m3-plan.md §1 记录 6 个测试；selector 为该包在 cargo 输出中的测试二进制。"
+      "notes": "crates/plugin-host/src/fiber.rs + lib.rs 的 #[test]；cargo test -p dshr-plugin-host",
+      "source_dirs": [
+        "crates/plugin-host/src"
+      ],
+      "ids": [
+        "CPP-FIBER-001",
+        "CPP-FIBER-002",
+        "CPP-FIBER-003",
+        "CPP-FIBER-004",
+        "CPP-FIBER-005",
+        "CPP-FIBER-006",
+        "CPP-FIBER-007",
+        "CPP-FIBER-008",
+        "CPP-FIBER-009",
+        "CPP-FIBER-010",
+        "CPP-FIBER-011",
+        "CPP-FIBER-012",
+        "CPP-FIBER-013",
+        "CPP-FIBER-014",
+        "CPP-FIBER-015",
+        "CPP-FIBER-016",
+        "CPP-FIBER-017",
+        "CPP-FIBER-018",
+        "CPP-FIBER-019",
+        "CPP-FIBER-020",
+        "CPP-FIBER-021",
+        "CPP-FIBER-022",
+        "CPP-FIBER-023",
+        "CPP-FIBER-024",
+        "CPP-FIBER-025",
+        "CPP-FIBER-026",
+        "CPP-FIBER-027"
+      ]
     },
     {
-      "id": "CARGO-UNIT-003",
-      "area": "CARGO",
-      "title": "dshr-plugin-api 单测",
+      "name": "CPP-SVC（plugin-host：Service key/服务表/依赖暂停恢复）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/src/fiber.rs 的 #[test]；cargo test -p dshr-plugin-host",
+      "source_dirs": [
+        "crates/plugin-host/src"
+      ],
+      "ids": [
+        "CPP-SVC-001",
+        "CPP-SVC-002",
+        "CPP-SVC-003",
+        "CPP-SVC-004",
+        "CPP-SVC-005",
+        "CPP-SVC-006",
+        "CPP-SVC-007",
+        "CPP-SVC-008",
+        "CPP-SVC-009",
+        "CPP-SVC-010",
+        "CPP-SVC-011",
+        "CPP-SVC-012",
+        "CPP-SVC-013",
+        "CPP-SVC-014"
+      ]
+    },
+    {
+      "name": "CPP-EFF（plugin-host：Effect 栈 LIFO/幂等/失败与超时隔离）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/src/fiber.rs 的 #[test]；cargo test -p dshr-plugin-host",
+      "source_dirs": [
+        "crates/plugin-host/src"
+      ],
+      "ids": [
+        "CPP-EFF-001",
+        "CPP-EFF-002",
+        "CPP-EFF-003",
+        "CPP-EFF-004",
+        "CPP-EFF-005",
+        "CPP-EFF-006",
+        "CPP-EFF-007",
+        "CPP-EFF-008",
+        "CPP-EFF-009",
+        "CPP-EFF-010"
+      ]
+    },
+    {
+      "name": "CPP-FIBER（plugin-api：capability/取消令牌/工具结果/错误码）",
+      "area": "CPP",
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-api",
-      "notes": "CPP-v1 公开契约 crate；M3 起新增测试在此登记。"
+      "notes": "crates/plugin-api/src/{capability,cancel,tool_result,lib}.rs 的 #[test]；cargo test -p dshr-plugin-api",
+      "source_dirs": [
+        "crates/plugin-api/src"
+      ],
+      "ids": [
+        "CPP-FIBER-101",
+        "CPP-FIBER-102",
+        "CPP-FIBER-103",
+        "CPP-FIBER-104",
+        "CPP-FIBER-105",
+        "CPP-FIBER-111",
+        "CPP-FIBER-112",
+        "CPP-FIBER-113",
+        "CPP-FIBER-114",
+        "CPP-FIBER-115",
+        "CPP-FIBER-116",
+        "CPP-FIBER-121",
+        "CPP-FIBER-122",
+        "CPP-FIBER-123",
+        "CPP-FIBER-124",
+        "CPP-FIBER-125",
+        "CPP-FIBER-126",
+        "CPP-FIBER-127",
+        "CPP-FIBER-131",
+        "CPP-FIBER-132",
+        "CPP-FIBER-133"
+      ]
     },
     {
-      "id": "CARGO-UNIT-004",
-      "area": "CARGO",
-      "title": "dshr-ui-contributions 单测",
+      "name": "CPP-MANIFEST（plugin-api：typed manifest/版本/配额校验）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-api",
+      "notes": "crates/plugin-api/tests/manifest.rs；cargo test -p dshr-plugin-api",
+      "source_dirs": [
+        "crates/plugin-api/tests"
+      ],
+      "ids": [
+        "CPP-MANIFEST-001",
+        "CPP-MANIFEST-002",
+        "CPP-MANIFEST-003",
+        "CPP-MANIFEST-004",
+        "CPP-MANIFEST-005",
+        "CPP-MANIFEST-006",
+        "CPP-MANIFEST-007",
+        "CPP-MANIFEST-008",
+        "CPP-MANIFEST-009",
+        "CPP-MANIFEST-010",
+        "CPP-MANIFEST-011",
+        "CPP-MANIFEST-012",
+        "CPP-MANIFEST-013",
+        "CPP-MANIFEST-014",
+        "CPP-MANIFEST-015",
+        "CPP-MANIFEST-016",
+        "CPP-MANIFEST-017",
+        "CPP-MANIFEST-018",
+        "CPP-MANIFEST-019",
+        "CPP-MANIFEST-020",
+        "CPP-MANIFEST-021",
+        "CPP-MANIFEST-022"
+      ]
+    },
+    {
+      "name": "CPP-VER（plugin-api：SemVer 比较与 min_host 检查）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-api",
+      "notes": "crates/plugin-api/tests/manifest.rs；cargo test -p dshr-plugin-api",
+      "source_dirs": [
+        "crates/plugin-api/tests"
+      ],
+      "ids": [
+        "CPP-VER-001",
+        "CPP-VER-002",
+        "CPP-VER-003",
+        "CPP-VER-004",
+        "CPP-VER-005",
+        "CPP-VER-006",
+        "CPP-VER-007"
+      ]
+    },
+    {
+      "name": "CPP-TRUST（profile：摘要/签名/首装确认/降级拒绝/审计）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-profile",
+      "notes": "crates/profile/src/trust.rs 的 #[test]（注释标注 ID）；cargo test -p dshr-profile",
+      "source_dirs": [
+        "crates/profile/src"
+      ],
+      "ids": [
+        "CPP-TRUST-001",
+        "CPP-TRUST-002",
+        "CPP-TRUST-003",
+        "CPP-TRUST-004",
+        "CPP-TRUST-005",
+        "CPP-TRUST-006",
+        "CPP-TRUST-007",
+        "CPP-TRUST-008",
+        "CPP-TRUST-009",
+        "CPP-TRUST-010",
+        "CPP-TRUST-011",
+        "CPP-TRUST-012",
+        "CPP-TRUST-013",
+        "CPP-TRUST-014",
+        "CPP-TRUST-015",
+        "CPP-TRUST-016",
+        "CPP-TRUST-017",
+        "CPP-TRUST-018"
+      ]
+    },
+    {
+      "name": "ADC-SLOT（ui-contributions：slot 目录/注册表/委托）",
+      "area": "ADC",
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-ui-contributions",
-      "notes": "ADC-v1 服务端 crate；M3 起新增测试在此登记。"
+      "notes": "crates/ui-contributions/tests/adc_slot.rs；cargo test -p dshr-ui-contributions",
+      "source_dirs": [
+        "crates/ui-contributions/tests"
+      ],
+      "ids": [
+        "ADC-SLOT-001",
+        "ADC-SLOT-002",
+        "ADC-SLOT-003",
+        "ADC-SLOT-004",
+        "ADC-SLOT-005",
+        "ADC-SLOT-006",
+        "ADC-SLOT-007",
+        "ADC-SLOT-008",
+        "ADC-SLOT-009",
+        "ADC-SLOT-010",
+        "ADC-SLOT-011",
+        "ADC-SLOT-012",
+        "ADC-SLOT-013",
+        "ADC-SLOT-014",
+        "ADC-SLOT-015",
+        "ADC-SLOT-016",
+        "ADC-SLOT-017",
+        "ADC-SLOT-018",
+        "ADC-SLOT-019",
+        "ADC-SLOT-020",
+        "ADC-SLOT-021",
+        "ADC-SLOT-022",
+        "ADC-SLOT-023"
+      ]
     },
     {
-      "id": "ADC-SLOT-001",
+      "name": "ADC-ELEM（ui-contributions：元素模型/降级/a11y）",
       "area": "ADC",
-      "title": "12 个 slot 的 kind/scope/注册契约",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 docs/spec/adc-v1.md §5 冻结 + schema/adc-v1/slots.v1.json；当前 ui-contributions 无 slot 服务实现。"
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-ui-contributions",
+      "notes": "crates/ui-contributions/tests/adc_elem.rs；cargo test -p dshr-ui-contributions",
+      "source_dirs": [
+        "crates/ui-contributions/tests"
+      ],
+      "ids": [
+        "ADC-ELEM-001",
+        "ADC-ELEM-002",
+        "ADC-ELEM-003",
+        "ADC-ELEM-004",
+        "ADC-ELEM-005",
+        "ADC-ELEM-006",
+        "ADC-ELEM-007",
+        "ADC-ELEM-008",
+        "ADC-ELEM-009",
+        "ADC-ELEM-010",
+        "ADC-ELEM-011",
+        "ADC-ELEM-012",
+        "ADC-ELEM-013",
+        "ADC-ELEM-014",
+        "ADC-ELEM-015",
+        "ADC-ELEM-016",
+        "ADC-ELEM-017",
+        "ADC-ELEM-018",
+        "ADC-ELEM-019",
+        "ADC-ELEM-020",
+        "ADC-ELEM-021",
+        "ADC-ELEM-022"
+      ]
     },
     {
-      "id": "ADC-ELEM-001",
+      "name": "ADC-SEC（ui-contributions：安全与配额）",
       "area": "ADC",
-      "title": "26 元素渲染快照 + 未知 type → Placeholder",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 ui-gpui 渲染器；未知元素降级为 M3 G1 核心断言（review-m3-plan.md §4）。"
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-ui-contributions",
+      "notes": "crates/ui-contributions/tests/adc_sec.rs；cargo test -p dshr-ui-contributions",
+      "source_dirs": [
+        "crates/ui-contributions/tests"
+      ],
+      "ids": [
+        "ADC-SEC-001",
+        "ADC-SEC-002",
+        "ADC-SEC-003",
+        "ADC-SEC-004",
+        "ADC-SEC-005",
+        "ADC-SEC-006",
+        "ADC-SEC-007",
+        "ADC-SEC-008",
+        "ADC-SEC-009"
+      ]
     },
     {
-      "id": "ADC-BIND-001",
+      "name": "ADC-ELEM（ui-gpui：26 元素 GPUI 渲染器快照/降级）",
       "area": "ADC",
-      "title": "绑定前缀权限与 patch seq 乱序丢弃",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。"
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-ui-gpui",
+      "notes": "crates/ui-gpui/src/adc.rs 的 #[test]（注释标注 ID）；cargo test -p dshr-ui-gpui",
+      "source_dirs": [
+        "crates/ui-gpui/src"
+      ],
+      "ids": [
+        "ADC-ELEM-SPACING-001",
+        "ADC-ELEM-ALIGN-001",
+        "ADC-ELEM-JUSTIFY-001",
+        "ADC-ELEM-GRID-001",
+        "ADC-ELEM-CHART-001",
+        "ADC-ELEM-TABLE-001",
+        "ADC-ELEM-LIST-001",
+        "ADC-ELEM-TEXT-001",
+        "ADC-ELEM-SLIDER-001",
+        "ADC-ELEM-TONE-001",
+        "ADC-ELEM-ICON-001",
+        "ADC-ELEM-A11Y-001",
+        "ADC-ELEM-PLACEHOLDER-001",
+        "ADC-ELEM-NUM-001",
+        "ADC-ELEM-RENDER-001",
+        "ADC-ELEM-SPACING-002",
+        "ADC-ELEM-GRID-002",
+        "ADC-ELEM-TEXT-002",
+        "ADC-ELEM-CHART-002",
+        "ADC-ELEM-A11Y-002",
+        "ADC-ELEM-TABLE-002",
+        "ADC-ELEM-RENDER-002",
+        "ADC-ELEM-TEXT-003",
+        "ADC-ELEM-A11Y-003",
+        "ADC-ELEM-RENDER-003",
+        "ADC-ELEM-A11Y-004"
+      ]
     },
     {
-      "id": "ADC-SEC-001",
-      "area": "ADC",
-      "title": "openExternal 仅 https、跨插件绑定拒绝",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 ADC 服务端与动作执行器；断言见 review-m3-plan.md §6 ADC-SEC-*。"
-    },
-    {
-      "id": "CPP-MANIFEST-001",
-      "area": "CPP",
-      "title": "manifest 未知字段/min_host/版本检查",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "schema 侧已有 SCHEMA-FIXTURE-011..015；运行期 typed Manifest 解析器尚未实现。"
-    },
-    {
-      "id": "CPP-VER-001",
-      "area": "CPP",
-      "title": "api/WIT/min_host 版本不匹配拒绝",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 plugin-api/plugin-host 版本检查；当前 crate 版本 0.0.0。"
-    },
-    {
-      "id": "CPP-FIBER-001",
-      "area": "CPP",
-      "title": "Fiber 状态机与依赖重启",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 cordis-rs 接入（ADR-0002 未落地）。"
-    },
-    {
-      "id": "CPP-SVC-001",
-      "area": "CPP",
-      "title": "Service 失效/恢复",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 Fiber/Service 依赖图实现。"
-    },
-    {
-      "id": "CPP-EFF-001",
-      "area": "CPP",
-      "title": "Effect LIFO/幂等/超时",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 Effect 撤销语义实现（plugin-host 当前不含 Effect 撤销）。"
-    },
-    {
-      "id": "CPP-WASM-001",
-      "area": "CPP",
-      "title": "fuel/内存/超时三例分别隔离",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 spec/cpp-v1.wit + Wasmtime host + 配额 ADR-0010；M3 G3 证据。"
-    },
-    {
-      "id": "CPP-TRUST-001",
-      "area": "CPP",
-      "title": "篡改包/降级拒绝/审计字段",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 spec/plugin-trust.md + 验签钩子；当前安装不校验签名。"
-    },
-    {
-      "id": "RPC-L2-001",
+      "name": "RPC-L2（compat-dsh-protocol：v2 envelope/service_key/错误码）",
       "area": "RPC",
-      "title": "L2 storage 服务往返",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "依赖 sidecar-rpc v2 host-service 代理 + storage adapter；M3 按证据选服务。"
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-compat-dsh-protocol",
+      "notes": "crates/compat-dsh-protocol/src/lib.rs 的 #[test]；cargo test -p dshr-compat-dsh-protocol",
+      "source_dirs": [
+        "crates/compat-dsh-protocol/src"
+      ],
+      "ids": [
+        "RPC-L2-001",
+        "RPC-L2-002",
+        "RPC-L2-003",
+        "RPC-L2-004",
+        "RPC-L2-005",
+        "RPC-L2-006",
+        "RPC-L2-007",
+        "RPC-L2-008",
+        "RPC-L2-009",
+        "RPC-L2-010"
+      ]
     },
     {
-      "id": "RPC-L2-002",
+      "name": "RPC-L2（compat-dsh-host：service 代理/storage_kv adapter）",
       "area": "RPC",
-      "title": "L2 workingDirectory 服务往返",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "候选服务见 review-m3-plan.md §2.1；需真实官方插件证据。"
-    },
-    {
-      "id": "RPC-L2-003",
-      "area": "RPC",
-      "title": "L2 sessionProjections 服务往返",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "候选服务见 review-m3-plan.md §2.1；需真实官方插件证据。"
-    },
-    {
-      "id": "SELF-CHAT-001",
-      "area": "SELF",
-      "title": "chat --selftest 基本对话",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。"
-    },
-    {
-      "id": "SELF-CHAT-002",
-      "area": "SELF",
-      "title": "chat --selftest-stream 流式",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-003",
-      "area": "SELF",
-      "title": "chat --selftest-context 上下文计量",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-004",
-      "area": "SELF",
-      "title": "chat --selftest-long-context 长上下文压缩",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-005",
-      "area": "SELF",
-      "title": "chat --selftest-spill 外部化",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-006",
-      "area": "SELF",
-      "title": "chat --selftest-approval 审批",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-007",
-      "area": "SELF",
-      "title": "chat --selftest-sandbox 沙箱",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-008",
-      "area": "SELF",
-      "title": "chat --selftest-profile 插件启停",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-009",
-      "area": "SELF",
-      "title": "chat --selftest-loader Loader 派生",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-010",
-      "area": "SELF",
-      "title": "chat --selftest-install 离线安装",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-011",
-      "area": "SELF",
-      "title": "chat --selftest-retry 重试",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-012",
-      "area": "SELF",
-      "title": "chat --selftest-perf 性能",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-013",
-      "area": "SELF",
-      "title": "chat --selftest-dsh DSH L1",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；依赖本机 DSH 安装副本（CI 无此环境）。"
-    },
-    {
-      "id": "SELF-CHAT-014",
-      "area": "SELF",
-      "title": "chat --selftest-dsh-write 官方写路径",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；依赖本机 DSH 安装副本。"
-    },
-    {
-      "id": "SELF-CHAT-015",
-      "area": "SELF",
-      "title": "chat --selftest-cordis Cordis 插件",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；依赖本机 DSH 安装副本。"
-    },
-    {
-      "id": "SELF-CHAT-016",
-      "area": "SELF",
-      "title": "chat --selftest-tree 会话树",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "SELF-CHAT-017",
-      "area": "SELF",
-      "title": "chat --selftest-export 会话导出",
-      "status": "pending",
-      "suite": null,
-      "selector": null,
-      "notes": "已存在但未纳入 harness；未来 suite=selftest-chat。"
-    },
-    {
-      "id": "GATE-G2-001",
-      "area": "GATE",
-      "title": "外部作者可发布实验（仓库外构建 + 安装 + 卸载）",
-      "status": "manual",
-      "suite": null,
-      "selector": null,
-      "notes": "M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。"
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-compat-dsh-host",
+      "notes": "crates/compat-dsh-host/src/{service,storage_kv}.rs 的 #[test]；cargo test -p dshr-compat-dsh-host",
+      "source_dirs": [
+        "crates/compat-dsh-host/src"
+      ],
+      "ids": [
+        "RPC-L2-101",
+        "RPC-L2-102",
+        "RPC-L2-103",
+        "RPC-L2-104",
+        "RPC-L2-105",
+        "RPC-L2-106",
+        "RPC-L2-107",
+        "RPC-L2-108",
+        "RPC-L2-109",
+        "RPC-L2-110",
+        "RPC-L2-111",
+        "RPC-L2-112",
+        "RPC-L2-113",
+        "RPC-L2-114",
+        "RPC-L2-115",
+        "RPC-L2-116",
+        "RPC-L2-117",
+        "RPC-L2-118",
+        "RPC-L2-119",
+        "RPC-L2-301",
+        "RPC-L2-302",
+        "RPC-L2-303",
+        "RPC-L2-304",
+        "RPC-L2-305",
+        "RPC-L2-306",
+        "RPC-L2-307",
+        "RPC-L2-308",
+        "RPC-L2-309",
+        "RPC-L2-310",
+        "RPC-L2-311",
+        "RPC-L2-312",
+        "RPC-L2-313"
+      ]
     }
   ]
 }

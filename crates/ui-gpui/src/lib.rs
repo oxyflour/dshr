@@ -2,12 +2,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adc;
 pub mod diff;
 pub mod markdown;
 pub mod terminal;
 mod text_input;
 pub mod theme;
 
+pub use adc::{
+    a11y_issues_in, adc_view, A11yIssue, A11Y_MISSING_CODE, MAX_CHART_POINTS, MAX_TEXT_BYTES,
+};
 pub use diff::{
     diff_view, diff_view_from_text, parse_diff, Diff, DiffFile, DiffHunk, DiffLine, DiffLineKind,
     MAX_RENDER_LINES,
