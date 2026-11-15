@@ -47,7 +47,7 @@ use dshr_agent_core::{
 };
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{
-    parse_tool_registration, EventPage, HostOptions, HostServiceRouter, ServiceError,
+    parse_tool_registration, Envelope, EventPage, HostOptions, HostServiceRouter, ServiceError,
     SessionAccess, SessionEventView, SessionHeaderView, SessionLogService, SidecarHost,
     StorageKvService, WorkingDirectoryService, CAP_SERVICE_PROXY, PROTOCOL_MAX, SESSION_LOG_V1,
     STORAGE_KV_V1, WORKING_DIRECTORY_V1,
@@ -1385,22 +1385,127 @@ impl ToolExecutor for ChatExecutor<'_> {
 
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
         if self.allow_spawn && call.tool == SPAWN_CHILD_TOOL {
-            let mut log = self.log.borrow_mut();
-            return TreeCoordinator::spawn_child(
-                &mut log,
-                self.parent_id,
-                self.sessions_dir,
-                call,
-                self.approvals,
-                self.cancel,
-            );
+            return self.execute_spawn_child(call);
         }
-        let definition = match self
+        match self.authorize_call(call) {
+            Ok(definition) => self.dispatch_one(call, &definition),
+            Err(outcome) => outcome,
+        }
+    }
+
+    /// 同一 step 的批量执行（M3 并行工具，DSH `maxParallelToolCalls=10`）：
+    /// - sidecar 工具走 [`SidecarHost::invoke_batch`]（≤ `max_parallel` 并发）；
+    /// - native/MCP/`spawn_child` 逐个顺序执行（native 的插件调用是同步的，不做并发）；
+    /// - 合并后按**原顺序**返回；单个失败/超时/拒绝在各自槽位降级，不拖垮整批。
+    fn execute_batch(
+        &mut self,
+        calls: &[ToolCallRequest],
+        max_parallel: usize,
+    ) -> Vec<ToolOutcome> {
+        let mut outcomes: Vec<Option<ToolOutcome>> = (0..calls.len()).map(|_| None).collect();
+        let mut sidecar_indices: Vec<usize> = Vec::new();
+        let mut sidecar_calls: Vec<dshr_compat_dsh_host::BatchInvokeCall> = Vec::new();
+
+        for (index, call) in calls.iter().enumerate() {
+            // 子会话派发会阻塞跑一整轮，必须保持串行（且不改事件顺序）。
+            if self.allow_spawn && call.tool == SPAWN_CHILD_TOOL {
+                outcomes[index] = Some(self.execute_spawn_child(call));
+                continue;
+            }
+            let definition = match self.authorize_call(call) {
+                Ok(definition) => definition,
+                Err(outcome) => {
+                    outcomes[index] = Some(outcome);
+                    continue;
+                }
+            };
+            match definition.origin {
+                ToolOrigin::Sidecar { .. } => {
+                    if self.host.is_some() {
+                        sidecar_indices.push(index);
+                        sidecar_calls.push(dshr_compat_dsh_host::BatchInvokeCall::new(
+                            call.call_id.clone(),
+                            call.tool.clone(),
+                            call.arguments.clone(),
+                            sidecar_tool_timeout(&definition),
+                        ));
+                    } else {
+                        outcomes[index] = Some(ToolOutcome::failure("sidecar unavailable"));
+                    }
+                }
+                _ => {
+                    outcomes[index] = Some(self.dispatch_non_sidecar(call, &definition));
+                }
+            }
+        }
+
+        if !sidecar_calls.is_empty() {
+            // 服务读面快照一次；批结束后统一把 L2 追加事件写回内存日志。
+            self.publish_l2_snapshot();
+            let results = match self.host.as_mut() {
+                Some(host) => host.invoke_batch(
+                    &sidecar_calls,
+                    max_parallel.max(1),
+                    Some(self.cancel.as_ref()),
+                ),
+                None => (0..sidecar_calls.len())
+                    .map(|_| {
+                        Err(dshr_compat_dsh_host::HostError::Protocol(
+                            "sidecar disappeared before batch".to_owned(),
+                        ))
+                    })
+                    .collect(),
+            };
+            self.drain_l2_appends();
+            for (slot, index) in sidecar_indices.iter().enumerate() {
+                let outcome = match results.get(slot) {
+                    Some(Ok(outcome)) if outcome.terminal.kind == "tool.result" => {
+                        outcome_from_terminal(&outcome.terminal)
+                    }
+                    Some(Ok(outcome)) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
+                    Some(Err(error)) => ToolOutcome::failure(error.to_string()),
+                    None => ToolOutcome::failure("batch outcome missing"),
+                };
+                outcomes[*index] = Some(outcome);
+            }
+        }
+
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome
+                    .unwrap_or_else(|| ToolOutcome::failure("batch outcome missing for this call"))
+            })
+            .collect()
+    }
+}
+
+impl ChatExecutor<'_> {
+    /// `spawn_child`：阻塞跑一整轮子会话（必须串行）。
+    fn execute_spawn_child(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        let mut log = self.log.borrow_mut();
+        TreeCoordinator::spawn_child(
+            &mut log,
+            self.parent_id,
+            self.sessions_dir,
+            call,
+            self.approvals,
+            self.cancel,
+        )
+    }
+
+    /// 策略 + schema 授权（Ask 时阻塞等审批）；失败返回可直接使用的降级结果。
+    ///
+    /// `ToolOutcome` 携带 content/value/meta（与协议 payload 同量级），这里按错误值直接
+    /// 复用而不是再包一层 enum，与 chat 现有错误路径一致。
+    #[allow(clippy::result_large_err)]
+    fn authorize_call(&mut self, call: &ToolCallRequest) -> Result<ToolDefinition, ToolOutcome> {
+        match self
             .plugins
             .registry()
             .authorize(&call.tool, &call.arguments)
         {
-            Ok(definition) => definition.clone(),
+            Ok(definition) => Ok(definition.clone()),
             Err(RegistryError::NeedsApproval { tool }) => {
                 // 策略说"要确认"：阻塞等工作线程外的 UI 决定（或超时按拒绝）。
                 // 停止生成必须能打断审批等待：request_cancellable 每 100ms 检查一次取消标志。
@@ -1412,20 +1517,61 @@ impl ToolExecutor for ChatExecutor<'_> {
                     self.cancel.as_ref(),
                 );
                 match outcome {
-                    ApprovalOutcome::AllowOnce => {
-                        match self.plugins.registry().get(&tool).cloned() {
-                            Some(definition) => definition,
-                            None => return ToolOutcome::failure(format!("工具 {tool} 已卸载")),
-                        }
-                    }
-                    ApprovalOutcome::Deny => {
-                        return ToolOutcome::failure(format!("用户拒绝了工具 `{tool}` 的调用"))
-                    }
+                    ApprovalOutcome::AllowOnce => self
+                        .plugins
+                        .registry()
+                        .get(&tool)
+                        .cloned()
+                        .ok_or_else(|| ToolOutcome::failure(format!("工具 {tool} 已卸载"))),
+                    ApprovalOutcome::Deny => Err(ToolOutcome::failure(format!(
+                        "用户拒绝了工具 `{tool}` 的调用"
+                    ))),
                 }
             }
-            Err(err) => return ToolOutcome::failure(err.to_string()),
-        };
+            Err(err) => Err(ToolOutcome::failure(err.to_string())),
+        }
+    }
 
+    /// 单调用分发（sidecar 走单调用路径，保持既有语义）。
+    fn dispatch_one(&mut self, call: &ToolCallRequest, definition: &ToolDefinition) -> ToolOutcome {
+        match definition.origin {
+            ToolOrigin::Sidecar { .. } => {
+                // 发布当前会话快照：L2 服务（working-directory/session-log）读面
+                // 看到的是本轮最新日志；工具返回后再把服务追加的事件补写回来。
+                self.publish_l2_snapshot();
+                let Some(host) = self.host.as_mut() else {
+                    return ToolOutcome::failure("sidecar unavailable");
+                };
+                // 超时用工具声明的 `timeout_ms`（对齐 DSH 的 per-tool timeoutMs），
+                // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
+                // 可取消版本在用户停止时发 tool.cancel 给 sidecar（慢工具不再等待完整超时）。
+                let timeout = sidecar_tool_timeout(definition);
+                let result = host.invoke_as_cancellable(
+                    &call.call_id,
+                    &call.tool,
+                    call.arguments.clone(),
+                    timeout,
+                    Some(self.cancel.as_ref()),
+                );
+                self.drain_l2_appends();
+                match result {
+                    Ok(outcome) if outcome.terminal.kind == "tool.result" => {
+                        outcome_from_terminal(&outcome.terminal)
+                    }
+                    Ok(outcome) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
+                    Err(err) => ToolOutcome::failure(err.to_string()),
+                }
+            }
+            _ => self.dispatch_non_sidecar(call, definition),
+        }
+    }
+
+    /// native / MCP 分发（同步；批量里也保持串行）。
+    fn dispatch_non_sidecar(
+        &mut self,
+        call: &ToolCallRequest,
+        definition: &ToolDefinition,
+    ) -> ToolOutcome {
         match definition.origin {
             ToolOrigin::Native { .. } => {
                 match self.plugins.call_approved(&call.tool, &call.arguments) {
@@ -1435,62 +1581,50 @@ impl ToolExecutor for ChatExecutor<'_> {
                     Err(err) => ToolOutcome::failure(err.to_string()),
                 }
             }
-            ToolOrigin::Sidecar { .. } => {
-                // 发布当前会话快照：L2 服务（working-directory/session-log）读面
-                // 看到的是本轮最新日志；工具返回后再把服务追加的事件补写回来。
-                if let Some(access) = &self.l2_access {
-                    access.publish(&self.log.borrow());
-                }
-                let Some(host) = self.host.as_mut() else {
-                    return ToolOutcome::failure("sidecar unavailable");
-                };
-                // 超时用工具声明的 `timeout_ms`（对齐 DSH 的 per-tool timeoutMs），
-                // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
-                // 可取消版本在用户停止时发 tool.cancel 给 sidecar（慢工具不再等待完整超时）。
-                let timeout = sidecar_tool_timeout(&definition);
-                let result = host.invoke_as_cancellable(
-                    &call.call_id,
-                    &call.tool,
-                    call.arguments.clone(),
-                    timeout,
-                    Some(self.cancel.as_ref()),
-                );
-                // L2 服务追加的事件（working-directory/change 等）写回内存日志。
-                if let Some(access) = &self.l2_access {
-                    let appends = access.take_appends(self.parent_id);
-                    if !appends.is_empty() {
-                        let ts = now_ts();
-                        let mut log = self.log.borrow_mut();
-                        for (event_type, data) in appends {
-                            let _ = log.append(EventSpec::durable(event_type, &ts, data));
-                        }
-                    }
-                }
-                match result {
-                    Ok(outcome) if outcome.terminal.kind == "tool.result" => {
-                        let payload = &outcome.terminal.payload;
-                        let content = payload["content"].clone();
-                        // value 优先取自 payload.value；旧插件只在 content 里放值，做一次兼容回退。
-                        let value = payload.get("value").cloned().unwrap_or_else(|| {
-                            content
-                                .get(0)
-                                .and_then(|block| block.get("value"))
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null)
-                        });
-                        ToolOutcome {
-                            is_error: payload["is_error"].as_bool().unwrap_or(false),
-                            content,
-                            value,
-                            meta: payload.get("meta").cloned(),
-                        }
-                    }
-                    Ok(outcome) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
-                    Err(err) => ToolOutcome::failure(err.to_string()),
-                }
-            }
             ToolOrigin::Mcp { .. } => ToolOutcome::failure("mcp not wired"),
+            ToolOrigin::Sidecar { .. } => ToolOutcome::failure("sidecar must use invoke_batch"),
         }
+    }
+
+    fn publish_l2_snapshot(&self) {
+        if let Some(access) = &self.l2_access {
+            access.publish(&self.log.borrow());
+        }
+    }
+
+    fn drain_l2_appends(&self) {
+        let Some(access) = &self.l2_access else {
+            return;
+        };
+        let appends = access.take_appends(self.parent_id);
+        if appends.is_empty() {
+            return;
+        }
+        let ts = now_ts();
+        let mut log = self.log.borrow_mut();
+        for (event_type, data) in appends {
+            let _ = log.append(EventSpec::durable(event_type, &ts, data));
+        }
+    }
+}
+
+/// sidecar `tool.result` 终态 → `ToolOutcome`（content 给模型、value/meta 给 UI/回放）。
+fn outcome_from_terminal(terminal: &Envelope) -> ToolOutcome {
+    let payload = &terminal.payload;
+    let content = payload["content"].clone();
+    // value 优先取自 payload.value；旧插件只在 content 里放值，做一次兼容回退。
+    let value = payload.get("value").cloned().unwrap_or_else(|| {
+        content
+            .get(0)
+            .and_then(|block| block.get("value"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    });
+    ToolOutcome {
+        is_error: payload["is_error"].as_bool().unwrap_or(false),
+        content,
+        value,
+        meta: payload.get("meta").cloned(),
     }
 }
 
@@ -7303,6 +7437,103 @@ fn selftest_l2() -> i32 {
     }
 }
 
+/// `--selftest-parallel-tools`：M3 并行工具的 CLI 层证据（串行 vs 并行墙钟 + 顺序）。
+///
+/// 用 probe sidecar 的 `probe_slow`（每个 ≈2s）跑 3 个：串行 ≈6s、并行 ≈2s；
+/// 另用 `probe_echo` 验证 `execute_batch` 的结果按原顺序返回。取消/超时/迟到语义
+/// 由 `compat-dsh-host` 的 `M3-PARALLEL-101..107` 覆盖。
+fn selftest_parallel_tools() -> i32 {
+    let path = PathBuf::from(".tmp/chat-parallel-tools.jsonl");
+    let _ = std::fs::remove_file(&path);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::open(
+        path,
+        "s-parallel",
+        &cancel,
+        ApprovalBroker::new(),
+        false,
+        true,
+    );
+    if state.host.is_none() {
+        println!(
+            "[selftest-parallel-tools] SKIP: sidecar unavailable（找不到 node/probe sidecar）"
+        );
+        return 0;
+    }
+    let log_cell = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
+        &mut state.log,
+        SessionLog::new("s-parallel"),
+    )));
+    let mut executor = ChatExecutor {
+        plugins: &mut state.plugins,
+        host: state.host.as_mut(),
+        approvals: &state.approvals,
+        log: log_cell.clone(),
+        sessions_dir: &state.sessions_dir,
+        parent_id: "s-parallel",
+        cancel: &cancel,
+        allow_spawn: false,
+        l2_access: state.l2_access.clone(),
+    };
+
+    // 1) 顺序证据：3 个 probe_echo（fast），并行批返回顺序必须等于调用顺序。
+    let order_calls: Vec<ToolCallRequest> = (0..3)
+        .map(|index| ToolCallRequest {
+            call_id: format!("parallel-order-{index}"),
+            tool: "probe_echo".to_owned(),
+            arguments: json!({ "i": index }),
+        })
+        .collect();
+    let order_results = executor.execute_batch(&order_calls, 3);
+    let order_ok = order_results.iter().enumerate().all(|(index, outcome)| {
+        !outcome.is_error && outcome.value["echo"]["i"].as_u64() == Some(index as u64)
+    });
+
+    // 2) 墙钟证据：3 个 probe_slow（每个 ≈2s）先串行、再并行。
+    let slow_calls: Vec<ToolCallRequest> = (0..3)
+        .map(|index| ToolCallRequest {
+            call_id: format!("parallel-slow-{index}"),
+            tool: "probe_slow".to_owned(),
+            arguments: json!({}),
+        })
+        .collect();
+    let serial_started = std::time::Instant::now();
+    let serial_results: Vec<ToolOutcome> = slow_calls
+        .iter()
+        .map(|call| executor.execute(call))
+        .collect();
+    let serial_elapsed = serial_started.elapsed();
+    let parallel_started = std::time::Instant::now();
+    let parallel_results = executor.execute_batch(&slow_calls, 3);
+    let parallel_elapsed = parallel_started.elapsed();
+
+    drop(executor);
+    state.log = std::rc::Rc::try_unwrap(log_cell)
+        .map(|cell| cell.into_inner())
+        .unwrap_or_else(|cell| cell.borrow().clone());
+    state.save();
+
+    let all_ok = serial_results
+        .iter()
+        .chain(parallel_results.iter())
+        .all(|outcome| !outcome.is_error && outcome.value["done"] == true);
+    let ratio = if serial_elapsed.is_zero() {
+        f64::INFINITY
+    } else {
+        parallel_elapsed.as_secs_f64() / serial_elapsed.as_secs_f64()
+    };
+    println!(
+        "[selftest-parallel-tools] order_ok={order_ok} all_ok={all_ok} serial={serial_elapsed:?} parallel={parallel_elapsed:?} ratio={ratio:.2}"
+    );
+    if order_ok && all_ok && ratio < 0.6 {
+        println!("[selftest-parallel-tools] PASS");
+        0
+    } else {
+        println!("[selftest-parallel-tools] FAIL（并行加速比应 < 0.6）");
+        1
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // 1. 先把命令行用法的输出来路接好（release GUI 子系统没有控制台）。
@@ -7443,6 +7674,10 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-l2") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_l2());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-parallel-tools") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_parallel_tools());
     }
     if std::env::args().any(|arg| arg == "--selftest-cordis") {
         std::env::set_var("DSHR_SIDECAR", "cordis");
@@ -7682,6 +7917,7 @@ mod tests {
             "--selftest-stream",
             "--selftest-dsh",
             "--selftest-l2",
+            "--selftest-parallel-tools",
             "--selftest-dsh-write",
             "--selftest-approval",
             "--selftest-corrupt-session",

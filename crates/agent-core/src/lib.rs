@@ -77,6 +77,12 @@ fn parse_budget_env(name: &str) -> Option<usize> {
         .and_then(|value| parse_positive_limit(&value))
 }
 
+/// DSH `maxParallelToolCalls` 的默认值（`@deepseek-ai/dsh-agent-loop` 0.2.2-rc.1）。
+pub const DEFAULT_MAX_PARALLEL_TOOL_CALLS: usize = 10;
+
+/// 并行上限的环境变量（空/`0`/非法 → 默认 10，与 DSH 一致）。
+pub const MAX_PARALLEL_TOOL_CALLS_ENV: &str = "DSHR_MAX_PARALLEL_TOOL_CALLS";
+
 // ---------------------------------------------------------------------------
 // DSH 默认差异（M3）：reasoning effort / 重复工具调用软提醒
 // ---------------------------------------------------------------------------
@@ -344,6 +350,20 @@ impl ToolOutcome {
 pub trait ToolExecutor {
     fn specs(&self) -> Vec<ToolSpec>;
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome;
+
+    /// 一个 step 内**同一批**工具调用：返回顺序必须与 `calls` 一一对应。
+    ///
+    /// 默认实现逐个 `execute`（保持串行语义）；支持并发的执行器（如 sidecar）可覆盖，
+    /// 在 `max_parallel` 上限内并发跑完再按原顺序返回。预算/取消在 Agent 层裁决，
+    /// 这里收到的都是"本批真正要执行"的调用。
+    fn execute_batch(
+        &mut self,
+        calls: &[ToolCallRequest],
+        max_parallel: usize,
+    ) -> Vec<ToolOutcome> {
+        let _ = max_parallel;
+        calls.iter().map(|call| self.execute(call)).collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -481,6 +501,8 @@ pub struct Agent<P> {
     provider: P,
     turn: u64,
     budget: ToolBudget,
+    /// 覆盖 `maxParallelToolCalls`（None = 读 env / 默认 10；测试注入确定性值用）。
+    max_parallel_tool_calls: Option<usize>,
     /// 重复工具调用软提醒（默认开启，与 DSH `repeat-tool-reminder` 一致）。
     repeat_reminders: RepeatToolReminderConfig,
     reminder_log: Vec<RepeatToolReminder>,
@@ -493,6 +515,7 @@ impl<P: ModelProvider> Agent<P> {
             provider,
             turn: 0,
             budget: ToolBudget::from_env(),
+            max_parallel_tool_calls: None,
             repeat_reminders: RepeatToolReminderConfig::from_env(),
             reminder_log: Vec::new(),
         }
@@ -504,9 +527,24 @@ impl<P: ModelProvider> Agent<P> {
             provider,
             turn: 0,
             budget,
+            max_parallel_tool_calls: None,
             repeat_reminders: RepeatToolReminderConfig::from_env(),
             reminder_log: Vec::new(),
         }
+    }
+
+    /// 覆盖每步并行工具数（`None` = 回到 env/默认 10；`0` 视为 1）。
+    pub fn with_max_parallel_tool_calls(mut self, max_parallel: Option<usize>) -> Self {
+        self.max_parallel_tool_calls = max_parallel.filter(|value| *value > 0);
+        self
+    }
+
+    /// 当前生效的并行上限：显式覆盖 > `DSHR_MAX_PARALLEL_TOOL_CALLS` > 默认 10。
+    pub fn max_parallel_tool_calls(&self) -> usize {
+        self.max_parallel_tool_calls
+            .or_else(|| parse_budget_env(MAX_PARALLEL_TOOL_CALLS_ENV))
+            .unwrap_or(DEFAULT_MAX_PARALLEL_TOOL_CALLS)
+            .max(1)
     }
 
     /// 显式注入重复提醒配置（测试 / 静默运行）。
@@ -547,8 +585,10 @@ impl<P: ModelProvider> Agent<P> {
     /// step 数只受 [`ToolBudget::max_steps`] 约束（默认无限）；工具调用总数只受
     /// [`ToolBudget::max_tool_calls`] 约束（默认无限，与官方 DSH 一致）。
     ///
-    /// 事件顺序保证：`TurnStarted` → (`StepStarted` → `TextDelta`* → (`ToolCall` →
-    /// `ToolResult` | `ToolCancelled`)*)? → `TurnEnded` / `TurnFailed` / `TurnCancelled`。
+    /// 事件顺序保证：`TurnStarted` → (`StepStarted` → `TextDelta`* →
+    /// (`ToolCall`* → (`ToolResult` | `ToolCancelled`)*)?) → `TurnEnded` /
+    /// `TurnFailed` / `TurnCancelled`。同一 step 的工具调用按批执行：先按原顺序发
+    /// `ToolCall`，再按原顺序发 paired 终态（M3 并行工具，DSH `maxParallelToolCalls=10`）。
     /// 预算命中是**降级**，不会产生 `TurnFailed`；取消产生 `TurnCancelled`（含未执行
     /// 调用的 `ToolCancelled`），同样不是失败。
     pub fn run_turn(
@@ -577,15 +617,16 @@ impl<P: ModelProvider> Agent<P> {
     /// `history` 由调用方从 Session Log 重建（`agent-context`），Agent 自己只维护**本轮**
     /// 产生的 assistant/tool 消息，保证 `role: tool` 与 `tool_call_id` 严格配对。
     ///
-    /// 取消语义（M2 review P1-2）：UI 通过 provider 的 [`ModelProvider::cancel_token`]
-    /// 置位 token；本函数在四个检查点读它（`Relaxed` 足够：只关心最终可见性）：
+    /// 取消语义（M2 review P1-2；M3 并行批）：UI 通过 provider 的
+    /// [`ModelProvider::cancel_token`] 置位 token；本函数在四个检查点读它
+    /// （`Relaxed` 足够：只关心最终可见性）：
     /// 1. 每步开始前（发 `StepStarted` 之前）；
     /// 2. 拿到模型回复之后、执行本步工具之前；
-    /// 3. 每个工具调用执行前；
-    /// 4. 每个工具调用执行后。
+    /// 3. 本批工具执行前（batch 一个都还没发出时）；
+    /// 4. 本批执行后（batch 内已发出的调用允许完成，但不再发起下一步）。
     ///
-    /// 命中取消时：未执行的调用逐个发 `ToolCall` + `ToolCancelled`（事件配对），
-    /// 已执行的调用保留其 `ToolResult`，最后以 `TurnCancelled` 收尾——**不会**产生
+    /// 命中取消时：未发出的调用逐个发 `ToolCall` + `ToolCancelled`（事件配对），
+    /// 已完成的调用保留其 `ToolResult`，最后以 `TurnCancelled` 收尾——**不会**产生
     /// `TurnFailed`。预算命中仍是"降级"（`ToolResult(is_error)`），与取消无关。
     pub fn run_turn_streaming(
         &mut self,
@@ -691,6 +732,17 @@ impl<P: ModelProvider> Agent<P> {
                 break;
             }
 
+            // 本 step 的工具调用按批执行（DSH `maxParallelToolCalls`，默认 10）：
+            // 1) 按原顺序发 ToolCall、裁决预算/取消，收集"真正要执行"的批；
+            // 2) 一次 execute_batch（执行器决定并发程度，默认串行）；
+            // 3) 再按原顺序发 ToolResult / 写 tool 消息。
+            let calls_in_step = reply.tool_calls.len();
+            let mut batch_indices: Vec<usize> = Vec::with_capacity(calls_in_step);
+            let mut batch_calls: Vec<ToolCallRequest> = Vec::with_capacity(calls_in_step);
+            let mut executed = vec![false; calls_in_step];
+            let mut outcomes: Vec<Option<ToolOutcome>> = (0..calls_in_step).map(|_| None).collect();
+
+            // 阶段 1：按原顺序发 ToolCall + 预算/取消裁决。
             for (index, tool_call) in reply.tool_calls.iter().enumerate() {
                 let call = tool_call_request(tool_call);
                 // 预算耗尽也是"事件完整"的：调用与结果都要发，模型/UI 才能看到配对。
@@ -710,16 +762,40 @@ impl<P: ModelProvider> Agent<P> {
                     return;
                 }
 
-                let over_budget = self.budget.max_tool_calls.filter(|max| calls >= *max);
-                let outcome = if let Some(max) = over_budget {
+                if let Some(max) = self.budget.max_tool_calls.filter(|max| calls >= *max) {
                     budget_exhausted = true;
-                    ToolOutcome::failure(format!(
+                    outcomes[index] = Some(ToolOutcome::failure(format!(
                         "tool call budget exhausted ({max}): 本次调用未执行"
-                    ))
+                    )));
                 } else {
                     calls += 1;
-                    executor.execute(&call)
-                };
+                    executed[index] = true;
+                    batch_indices.push(index);
+                    batch_calls.push(call);
+                }
+            }
+
+            // 阶段 2：一次批量执行（sidecar 可在 max_parallel 内并发）。
+            if !batch_calls.is_empty() {
+                let batch_outcomes =
+                    executor.execute_batch(&batch_calls, self.max_parallel_tool_calls());
+                for (slot, index) in batch_indices.iter().enumerate() {
+                    outcomes[*index] =
+                        Some(batch_outcomes.get(slot).cloned().unwrap_or_else(|| {
+                            ToolOutcome::failure(
+                                "batch executor returned fewer outcomes than calls",
+                            )
+                        }));
+                }
+            }
+
+            // 阶段 3：按原顺序发 ToolResult / 写 tool 消息 / 统计重复提醒。
+            for index in 0..calls_in_step {
+                let tool_call = &reply.tool_calls[index];
+                let call = tool_call_request(tool_call);
+                let outcome = outcomes[index]
+                    .take()
+                    .unwrap_or_else(|| ToolOutcome::failure("tool outcome missing for this call"));
                 on_event(&AgentEvent::ToolResult {
                     call_id: call.call_id.clone(),
                     outcome: outcome.clone(),
@@ -731,7 +807,7 @@ impl<P: ModelProvider> Agent<P> {
 
                 // 重复工具调用软提醒：只统计**真正执行**的调用；命中阈值先排队，
                 // 本步工具都执行完后统一注入 System 消息（不打断配对协议）。
-                if over_budget.is_none() && self.repeat_reminders.enabled {
+                if executed[index] && self.repeat_reminders.enabled {
                     let key = (call.tool.clone(), canonical_arguments(&call.arguments));
                     let count = repeat_counts.entry(key).or_insert(0);
                     *count += 1;
@@ -743,16 +819,6 @@ impl<P: ModelProvider> Agent<P> {
                         ));
                     }
                 }
-
-                // 取消检查点 4：执行后。已执行调用的 ToolResult 保留；本步剩余调用
-                // 不再执行，逐条补 ToolCall + ToolCancelled，然后 TurnCancelled。
-                if cancel_requested(cancel.as_ref()) {
-                    cancel_calls(&reply.tool_calls[index + 1..], on_event);
-                    on_event(&AgentEvent::TurnCancelled {
-                        reason: CANCEL_REASON.to_owned(),
-                    });
-                    return;
-                }
             }
             // 本步结束：把命中的软提醒注入历史（system 消息，软提醒不失败）。
             if !pending_reminders.is_empty() {
@@ -760,6 +826,15 @@ impl<P: ModelProvider> Agent<P> {
                     messages.push(ChatMessage::System(reminder.text.clone()));
                     self.reminder_log.push(reminder);
                 }
+            }
+
+            // 取消检查点 4：批执行后。本批已发出的调用允许完成（结果已保留），
+            // 但不再发起下一 step，直接 TurnCancelled 收尾。
+            if cancel_requested(cancel.as_ref()) {
+                on_event(&AgentEvent::TurnCancelled {
+                    reason: CANCEL_REASON.to_owned(),
+                });
+                return;
             }
             step += 1;
             if budget_exhausted {
@@ -1223,6 +1298,297 @@ mod tests {
         ));
     }
 
+    // -----------------------------------------------------------------------
+    // M3 并行工具（DSH `maxParallelToolCalls = 10`）：M3-PARALLEL-001..010
+    // -----------------------------------------------------------------------
+
+    /// 只记录本批看得到的调用及其 `max_parallel` 参数。
+    struct BatchRecordingExecutor {
+        calls: Vec<ToolCallRequest>,
+    }
+
+    impl BatchRecordingExecutor {
+        fn new() -> Self {
+            Self { calls: Vec::new() }
+        }
+    }
+
+    impl ToolExecutor for BatchRecordingExecutor {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+
+        fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+            self.calls.push(call.clone());
+            ToolOutcome::success(
+                json!([{ "type": "text", "text": call.tool.clone() }]),
+                Value::Null,
+            )
+        }
+    }
+
+    /// M3-PARALLEL-001：默认 `execute_batch` 逐个 `execute`；事件按原顺序配对
+    /// （先 ToolCall×N，再 ToolResult×N）。
+    #[test]
+    fn m3_parallel_001_batch_default_is_sequential_and_ordered() {
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 3), ToolBudget::default())
+            .with_max_parallel_tool_calls(Some(3));
+        let mut executor = EchoExecutor::new();
+        let events = agent.run_turn("同时跑三个", &mut executor);
+
+        // 默认 execute_batch 走 3 次 execute，顺序 = 调用顺序。
+        let executed: Vec<String> = executor
+            .calls
+            .iter()
+            .map(|call| call.call_id.clone())
+            .collect();
+        assert_eq!(executed, tool_call_ids(&events));
+        // 事件顺序：3 个 ToolCall 都在第一个 ToolResult 之前。
+        let first_result = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ToolResult { .. }))
+            .expect("tool result");
+        let call_positions: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| matches!(event, AgentEvent::ToolCall(_)))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(call_positions.len(), 3);
+        assert!(call_positions
+            .iter()
+            .all(|position| *position < first_result));
+        // 结果顺序 = 发出顺序。
+        let result_ids: Vec<String> = tool_results(&events)
+            .into_iter()
+            .map(|(call_id, _)| call_id)
+            .collect();
+        assert_eq!(result_ids, tool_call_ids(&events));
+    }
+
+    /// M3-PARALLEL-002：执行器覆盖 `execute_batch` 时可真正并发；墙钟显著小于串行。
+    struct ConcurrentExecutor {
+        max_active: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ToolExecutor for ConcurrentExecutor {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+
+        fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+            ToolOutcome::failure(format!("execute should not be used for {}", call.call_id))
+        }
+
+        fn execute_batch(
+            &mut self,
+            calls: &[ToolCallRequest],
+            max_parallel: usize,
+        ) -> Vec<ToolOutcome> {
+            assert_eq!(max_parallel, 3, "max_parallel 应透传给执行器");
+            let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut handles = Vec::new();
+            for call in calls {
+                let active = Arc::clone(&active);
+                let max_active = Arc::clone(&self.max_active);
+                let call = call.clone();
+                handles.push(std::thread::spawn(move || {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    ToolOutcome::success(
+                        json!([{ "type": "json", "value": { "call": call.call_id } }]),
+                        json!({ "call": call.call_id }),
+                    )
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("worker"))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn m3_parallel_002_execute_batch_runs_concurrently() {
+        let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 3), ToolBudget::default())
+            .with_max_parallel_tool_calls(Some(3));
+        let mut executor = ConcurrentExecutor {
+            max_active: Arc::clone(&max_active),
+        };
+        let started = std::time::Instant::now();
+        let events = agent.run_turn("并行", &mut executor);
+        let elapsed = started.elapsed();
+
+        assert_eq!(max_active.load(Ordering::SeqCst), 3, "3 个调用应同时在跑");
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "并行墙钟应远小于串行 240ms，实际 {elapsed:?}"
+        );
+        assert_eq!(tool_results(&events).len(), 3);
+        assert_eq!(
+            tool_results(&events)
+                .iter()
+                .filter(|(_, is_error)| *is_error)
+                .count(),
+            0
+        );
+    }
+
+    /// M3-PARALLEL-003：预算截断只把允许的调用放进 batch；超预算的按原位置降级。
+    #[test]
+    fn m3_parallel_003_budget_limits_the_batch() {
+        let mut agent = Agent::with_budget(
+            loop_provider(Some(1), 4),
+            ToolBudget {
+                max_tool_calls: Some(2),
+                max_steps: None,
+            },
+        )
+        .with_max_parallel_tool_calls(Some(4));
+        let mut executor = BatchRecordingExecutor::new();
+        let events = agent.run_turn("预算", &mut executor);
+
+        assert_eq!(executor.calls.len(), 2, "batch 只收到预算内的 2 个调用");
+        let call_ids = tool_call_ids(&events);
+        let results = tool_results(&events);
+        assert_eq!(results.len(), 4, "4 个调用都要有配对结果");
+        assert_eq!(results[0].0, call_ids[0]);
+        assert!(!results[0].1);
+        assert_eq!(results[1].0, call_ids[1]);
+        assert!(!results[1].1);
+        assert_eq!(results[2].0, call_ids[2]);
+        assert!(results[2].1, "超预算调用标失败");
+        assert_eq!(results[3].0, call_ids[3]);
+        assert!(results[3].1, "超预算调用标失败");
+    }
+
+    /// M3-PARALLEL-004：batch 内单个调用失败不影响其它调用（错误隔离、顺序保留）。
+    struct PartialFailureExecutor;
+    impl ToolExecutor for PartialFailureExecutor {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+        fn execute(&mut self, _call: &ToolCallRequest) -> ToolOutcome {
+            ToolOutcome::failure("unused")
+        }
+        fn execute_batch(
+            &mut self,
+            calls: &[ToolCallRequest],
+            _max_parallel: usize,
+        ) -> Vec<ToolOutcome> {
+            calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    if index == 1 {
+                        ToolOutcome::failure(format!("boom {}", call.call_id))
+                    } else {
+                        ToolOutcome::success(
+                            json!([{ "type": "text", "text": call.call_id.clone() }]),
+                            json!(call.call_id.clone()),
+                        )
+                    }
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn m3_parallel_004_batch_error_is_isolated() {
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 3), ToolBudget::default())
+            .with_max_parallel_tool_calls(Some(3));
+        let mut executor = PartialFailureExecutor;
+        let events = agent.run_turn("隔离", &mut executor);
+
+        let results = tool_results(&events);
+        assert_eq!(
+            results
+                .iter()
+                .map(|(_, is_error)| *is_error)
+                .collect::<Vec<_>>(),
+            vec![false, true, false],
+            "中间失败不影响两侧: {results:?}"
+        );
+        assert_eq!(
+            results
+                .iter()
+                .map(|(call_id, _)| call_id.clone())
+                .collect::<Vec<_>>(),
+            tool_call_ids(&events)
+        );
+        assert!(!has_turn_failed(&events), "{events:?}");
+    }
+
+    /// M3-PARALLEL-005：`max_parallel` 取值优先级（显式覆盖 > env > 默认 10）与透传。
+    #[test]
+    fn m3_parallel_005_max_parallel_resolution_and_passthrough() {
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 3), ToolBudget::default())
+            .with_max_parallel_tool_calls(Some(2));
+        assert_eq!(agent.max_parallel_tool_calls(), 2);
+        let mut recorder = MaxParallelRecorder::default();
+        let _ = agent.run_turn("parallel", &mut recorder);
+        assert_eq!(recorder.seen, vec![2], "显式覆盖必须透传给执行器");
+
+        let mut recorder = MaxParallelRecorder::default();
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 10), ToolBudget::default())
+            .with_max_parallel_tool_calls(Some(10));
+        let _ = agent.run_turn("parallel", &mut recorder);
+        assert_eq!(recorder.seen, vec![10]);
+
+        if std::env::var(MAX_PARALLEL_TOOL_CALLS_ENV).is_err() {
+            let agent = Agent::new(MockProvider);
+            assert_eq!(
+                agent.max_parallel_tool_calls(),
+                DEFAULT_MAX_PARALLEL_TOOL_CALLS
+            );
+        }
+    }
+
+    #[derive(Default)]
+    struct MaxParallelRecorder {
+        seen: Vec<usize>,
+    }
+
+    impl ToolExecutor for MaxParallelRecorder {
+        fn specs(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+        fn execute(&mut self, _call: &ToolCallRequest) -> ToolOutcome {
+            ToolOutcome::failure("unused")
+        }
+        fn execute_batch(
+            &mut self,
+            calls: &[ToolCallRequest],
+            max_parallel: usize,
+        ) -> Vec<ToolOutcome> {
+            self.seen.push(max_parallel);
+            calls
+                .iter()
+                .map(|call| ToolOutcome::success(json!([]), json!(call.call_id.clone())))
+                .collect()
+        }
+    }
+
+    /// M3-PARALLEL-006：batch 的重复工具提醒统计仍然只算真正执行的调用。
+    #[test]
+    fn m3_parallel_006_repeat_reminder_counts_batch_calls() {
+        let mut agent = Agent::with_budget(loop_provider(Some(1), 3), ToolBudget::default())
+            .with_max_parallel_tool_calls(Some(3))
+            .with_repeat_reminders(RepeatToolReminderConfig {
+                enabled: true,
+                thresholds: vec![3],
+            });
+        let mut executor = BatchRecordingExecutor::new();
+        let _ = agent.run_turn("重复", &mut executor);
+        let reminders = agent.take_repeat_reminders();
+        assert_eq!(reminders.len(), 1, "{reminders:?}");
+        assert_eq!(reminders[0].count, 3);
+        assert_eq!(reminders[0].tool, "probe_native");
+    }
+
     /// 命中 max_steps：优雅结束 TurnEnded，不是 TurnFailed。
     #[test]
     fn max_steps_ends_turn_without_failure() {
@@ -1386,13 +1752,14 @@ mod tests {
         }
     }
 
-    /// turn 中途取消：不发 TurnFailed、不再发起模型请求；已执行调用保留 ToolResult，
-    /// 未执行调用逐个发配对的 ToolCancelled。
+    /// M3-PARALLEL-007：turn 中途取消（发生在 batch 执行内）——已发出的批允许完成、
+    /// 结果保留；不再发起下一个 step，以 TurnCancelled 收尾（不是 TurnFailed）；
+    /// batch 内不再有"未执行调用"，因此不产生 ToolCancelled。
     #[test]
-    fn cancel_stops_turn_without_failure() {
+    fn cancel_during_batch_keeps_results_then_stops() {
         let token = Arc::new(AtomicBool::new(false));
         let provider = CancelAwareProvider::new(token.clone(), 3);
-        let mut agent = Agent::new(provider);
+        let mut agent = Agent::new(provider).with_max_parallel_tool_calls(Some(3));
         let mut executor = CancellingExecutor::new(token.clone());
         let events = agent.run_turn("loop", &mut executor);
 
@@ -1404,30 +1771,22 @@ mod tests {
             has_turn_cancelled(&events),
             "必须发 TurnCancelled: {events:?}"
         );
-        assert_eq!(executor.calls.len(), 1, "取消后不应再执行剩余工具");
-        assert_eq!(step_count(&events), 1, "取消后不应再发起模型请求");
-
-        // 事件配对：3 个 ToolCall、1 个 ToolResult、2 个 ToolCancelled（id 一致）。
-        let calls = tool_call_ids(&events);
-        assert_eq!(calls.len(), 3, "{events:?}");
-        let results = tool_results(&events);
-        assert_eq!(results.len(), 1, "已执行调用保留 ToolResult: {events:?}");
-        assert_eq!(results[0].0, calls[0]);
         assert_eq!(
-            tool_cancelled_ids(&events),
-            vec![calls[1].clone(), calls[2].clone()],
-            "未执行调用必须逐条配对 ToolCancelled: {events:?}"
+            executor.calls.len(),
+            3,
+            "batch 内已发出的调用允许完成（M3 并行语义）"
         );
-        // 事件顺序：ToolCall 先于对应的 ToolCancelled。
-        let cancelled_pos = events
-            .iter()
-            .position(|event| matches!(event, AgentEvent::ToolCancelled { .. }))
-            .expect("tool cancelled");
-        let call_pos = events
-            .iter()
-            .position(|event| matches!(event, AgentEvent::ToolCall(_)))
-            .expect("tool call");
-        assert!(call_pos < cancelled_pos);
+        assert_eq!(step_count(&events), 1, "取消后不应再发起模型请求");
+        assert_eq!(tool_call_ids(&events).len(), 3, "{events:?}");
+        assert_eq!(
+            tool_results(&events).len(),
+            3,
+            "批内 3 个调用都要有配对结果: {events:?}"
+        );
+        assert!(
+            tool_cancelled_ids(&events).is_empty(),
+            "batch 内没有未执行调用: {events:?}"
+        );
     }
 
     /// 第一轮开始前 token 已置位：不发 StepStarted、不请求模型，只有 TurnCancelled。

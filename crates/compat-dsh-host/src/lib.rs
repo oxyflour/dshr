@@ -25,6 +25,7 @@ pub use services::{
 };
 pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -36,13 +37,12 @@ use std::time::{Duration, Instant};
 
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_protocol::{
-    hello_with_caps, hello_with_caps_at, Envelope, FsWriteResult, RpcError, CAP_FS_WRITE,
-    CAP_TOOL_CANCEL, CAP_TOOL_STREAM, KIND_FS_WRITE_REQUEST, KIND_FS_WRITE_RESULT,
-    KIND_HOST_SERVICE_CANCEL, KIND_HOST_SERVICE_REQUEST, KIND_HOST_SERVICE_RESULT, MAX_DEPTH,
-    PROTOCOL_VERSION,
+    hello_with_caps, hello_with_caps_at, FsWriteResult, RpcError, CAP_FS_WRITE, CAP_TOOL_CANCEL,
+    CAP_TOOL_STREAM, KIND_FS_WRITE_REQUEST, KIND_FS_WRITE_RESULT, KIND_HOST_SERVICE_CANCEL,
+    KIND_HOST_SERVICE_REQUEST, KIND_HOST_SERVICE_RESULT, MAX_DEPTH, PROTOCOL_VERSION,
 };
 /// 集成方（chat.rs）构造 v2 Router 需要的协议常量；避免直接依赖 protocol crate。
-pub use dshr_compat_dsh_protocol::{CAP_SERVICE_PROXY, PROTOCOL_MAX};
+pub use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
 use dshr_sidecar_guard::{GuardLimits, GuardedChild};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -235,6 +235,33 @@ pub struct InvokeOutcome {
     pub elapsed: Duration,
 }
 
+/// `SidecarHost::invoke_batch` 的一次工具调用（M3 并行工具）。
+///
+/// `timeout` 是**本调用**的绝对截止时间（从写出 `tool.invoke` 起算），不共享批的超时。
+#[derive(Debug, Clone)]
+pub struct BatchInvokeCall {
+    pub call_id: String,
+    pub tool: String,
+    pub arguments: Value,
+    pub timeout: Duration,
+}
+
+impl BatchInvokeCall {
+    pub fn new(
+        call_id: impl Into<String>,
+        tool: impl Into<String>,
+        arguments: Value,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tool: tool.into(),
+            arguments,
+            timeout,
+        }
+    }
+}
+
 /// Windows：GUI 子系统父进程 spawn console 子程序（node）时默认会新开一个控制台窗口；
 /// 设置 `CREATE_NO_WINDOW` 让 sidecar 静默运行（release 双击时不再每个会话弹黑框）。
 #[cfg(windows)]
@@ -247,6 +274,9 @@ fn hide_console_window(command: &mut Command) {
 
 #[cfg(not(windows))]
 fn hide_console_window(_command: &mut Command) {}
+
+/// 批量调用等待读循环的轮询片段：既保证及时检查超时/取消，又不空转。
+const WAIT_SLICE: Duration = Duration::from_millis(50);
 
 pub struct SidecarHost {
     child: ChildHandle,
@@ -664,6 +694,218 @@ impl SidecarHost {
         .with_generation(self.generation.clone())
         .with_call(call_id.to_owned());
         self.write(&envelope)
+    }
+
+    /// 批量调用（M3 并行工具，DSH `maxParallelToolCalls`）：
+    ///
+    /// 按 `max_parallel` 分**波次**：每一波先把本波所有 `tool.invoke` 一次写出
+    /// （request_id 区分），再在同一读循环里收集各自 `tool.chunk` / `tool.result` /
+    /// `tool.aborted`，按 `call_id` 关联。返回值与 `calls` 一一对应（原顺序），
+    /// 单个调用失败/超时不影响其它调用。
+    ///
+    /// 语义：
+    /// - **per-call timeout**：每个调用独立 deadline；超时回 `HostError::Timeout`
+    ///   并向 sidecar 发 `tool.cancel`，迟到结果被丢弃；
+    /// - **取消**：`cancel` 置位时对本波在途调用发一次 `tool.cancel`，随后继续收结果
+    ///   （`tool.aborted` 作为该调用的终态返回，聊天层映射为失败）；不再启动后续波次；
+    /// - **迟到/未知结果**：`call_id` 不匹配当前波的终态直接丢弃（不干扰后续调用）；
+    /// - **读循环仍服务** `fs.write.request` / `host.service.*` / `log.emit`，不会与
+    ///   现有单调用路径互相死锁。
+    pub fn invoke_batch(
+        &mut self,
+        calls: &[BatchInvokeCall],
+        max_parallel: usize,
+        cancel: Option<&AtomicBool>,
+    ) -> Vec<Result<InvokeOutcome, HostError>> {
+        struct BatchSlot {
+            call_id: String,
+            started: Instant,
+            deadline: Instant,
+            chunks: Vec<String>,
+            done: bool,
+        }
+
+        let mut results: Vec<Option<Result<InvokeOutcome, HostError>>> =
+            (0..calls.len()).map(|_| None).collect();
+        if calls.is_empty() {
+            return Vec::new();
+        }
+        let parallel = max_parallel.max(1);
+        let mut next = 0usize;
+        'outer: while next < calls.len() {
+            let end = (next + parallel).min(calls.len());
+            let mut slots: Vec<BatchSlot> = Vec::with_capacity(end - next);
+            let mut by_call: HashMap<String, usize> = HashMap::new();
+
+            // 第一波写：把本波调用的 tool.invoke 全部写出再收结果。
+            for (offset, call) in calls[next..end].iter().enumerate() {
+                let started = Instant::now();
+                self.seq += 1;
+                let request_id = format!("req-batch-{}", self.seq);
+                let envelope = Envelope::host(
+                    "tool.invoke",
+                    request_id,
+                    json!({ "name": call.tool, "arguments": call.arguments }),
+                )
+                .with_generation(self.generation.clone())
+                .with_call(call.call_id.clone())
+                .with_session("s-probe");
+                match self.write(&envelope) {
+                    Ok(()) => {
+                        by_call.insert(call.call_id.clone(), offset);
+                        slots.push(BatchSlot {
+                            call_id: call.call_id.clone(),
+                            started,
+                            deadline: started + call.timeout.max(Duration::from_millis(1)),
+                            chunks: Vec::new(),
+                            done: false,
+                        });
+                    }
+                    Err(err) => {
+                        slots.push(BatchSlot {
+                            call_id: call.call_id.clone(),
+                            started,
+                            deadline: started,
+                            chunks: Vec::new(),
+                            done: true,
+                        });
+                        results[next + offset] = Some(Err(err));
+                    }
+                }
+            }
+
+            let mut cancel_sent = false;
+            let mut fatal: Option<String> = None;
+            loop {
+                // 取消：对本波所有在途调用发一次 tool.cancel，然后继续收终态。
+                if !cancel_sent && cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
+                    cancel_sent = true;
+                    for slot in slots.iter().filter(|slot| !slot.done) {
+                        let _ = self.cancel(&slot.call_id);
+                    }
+                }
+                let now = Instant::now();
+                for (offset, slot) in slots.iter_mut().enumerate() {
+                    if slot.done || now < slot.deadline {
+                        continue;
+                    }
+                    slot.done = true;
+                    let _ = self.cancel(&slot.call_id);
+                    results[next + offset] =
+                        Some(Err(HostError::Timeout(format!("tool {}", slot.call_id))));
+                }
+                if slots.iter().all(|slot| slot.done) {
+                    break;
+                }
+                let mut wait = WAIT_SLICE;
+                for slot in slots.iter().filter(|slot| !slot.done) {
+                    let remaining = slot.deadline.saturating_duration_since(now);
+                    wait = wait.min(remaining.max(Duration::from_millis(1)));
+                }
+                match self.rx.recv_timeout(wait) {
+                    Ok(envelope) => {
+                        let served = match self.maybe_serve_fs_write(&envelope) {
+                            Ok(served) => served,
+                            Err(err) => {
+                                fatal = Some(format!("serving fs.write during batch: {err}"));
+                                break;
+                            }
+                        };
+                        if served {
+                            continue;
+                        }
+                        let served = match self.maybe_serve_host_service(&envelope) {
+                            Ok(served) => served,
+                            Err(err) => {
+                                fatal = Some(format!("serving host.service during batch: {err}"));
+                                break;
+                            }
+                        };
+                        if served {
+                            continue;
+                        }
+                        if envelope.kind == "log.emit" {
+                            self.note_log_emit(&envelope);
+                            continue;
+                        }
+                        let Some(call_id) = envelope.call_id.clone() else {
+                            continue;
+                        };
+                        let Some(offset) = by_call.get(&call_id).copied() else {
+                            // 其它调用/上一波超时后的迟到结果：丢弃（与本波无关）。
+                            continue;
+                        };
+                        let slot = &mut slots[offset];
+                        if slot.done {
+                            continue;
+                        }
+                        match envelope.kind.as_str() {
+                            "tool.chunk" => {
+                                if let Some(text) =
+                                    envelope.payload.get("text").and_then(Value::as_str)
+                                {
+                                    slot.chunks.push(text.to_owned());
+                                }
+                            }
+                            "tool.result" | "tool.aborted" => {
+                                let chunks = std::mem::take(&mut slot.chunks);
+                                let elapsed = slot.started.elapsed();
+                                slot.done = true;
+                                results[next + offset] = Some(Ok(InvokeOutcome {
+                                    chunks,
+                                    terminal: envelope,
+                                    elapsed,
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        for (offset, slot) in slots.iter_mut().enumerate() {
+                            if !slot.done {
+                                slot.done = true;
+                                results[next + offset] = Some(Err(HostError::Closed));
+                            }
+                        }
+                        fatal = Some("sidecar closed the pipe during batch".to_owned());
+                        break;
+                    }
+                }
+            }
+
+            if let Some(message) = fatal {
+                for slot in results.iter_mut().skip(next).take(calls.len() - next) {
+                    if slot.is_none() {
+                        *slot = Some(Err(HostError::Protocol(message.clone())));
+                    }
+                }
+                break 'outer;
+            }
+            next = end;
+            if cancel_sent {
+                // 已取消：不再启动后续波次；本波已发出的调用已全部结算。
+                for slot in results.iter_mut().skip(next) {
+                    if slot.is_none() {
+                        *slot = Some(Err(HostError::Cancelled(format!(
+                            "batch cancelled before wave starting at {next}"
+                        ))));
+                    }
+                }
+                break 'outer;
+            }
+        }
+
+        results
+            .into_iter()
+            .map(|slot| {
+                slot.unwrap_or_else(|| {
+                    Err(HostError::Protocol(
+                        "batch slot missing after invoke_batch".to_owned(),
+                    ))
+                })
+            })
+            .collect()
     }
 
     /// 读到达终止事件（`tool.result` / `tool.aborted`）为止，收集中间 chunk。

@@ -741,8 +741,9 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 - [ ] **M3 债务**（[ADR-0007](decisions/0007-m3-scope.md) §3）：工具并行执行、子会话并行 /
       sidecar 工具继承、默认差异对齐（reasoning effort / LLM 摘要压缩 / 重复调用提醒 /
       `EMPTY_RESPONSE` / approval 模式切换）、`timeoutMs` 透传、Loader `include`/group 子集、
-      MCP 最小闭环。*（MCP 完成；W5 默认差异（`M3-DEFAULT-*` 39 ID）+ approval/重复提醒/
-      timeout 接线完成；Loader include/group 完成（`M3-LOADER-*`）；**剩余：工具并行、子会话并行**）*
+      MCP 最小闭环。*（MCP 完成；默认差异（`M3-DEFAULT-*` 39+）、approval/重复提醒/timeout 接线、
+      Loader include/group（`M3-LOADER-*`）、**工具并行（`M3-PARALLEL-*` 14 tests，3×2s 串行 6.1s→
+      并行 2.0s）均完成**；剩余：子会话并行 / sidecar 工具继承（M4 候选））*
 - [ ] **条件项**（不计入必达）：Script UI 5 日 spike（[ADR-0008](decisions/0008-script-ui-spike.md)）；
       HTML Widget 独立 WebView Panel（WebView 依赖决策未过则移 M4）；pnpm 捆绑（体积评估未过则移 M4）。
 

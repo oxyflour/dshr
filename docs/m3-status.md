@@ -1,6 +1,6 @@
 # M3 状态 — 插件平台 Preview
 
-> 更新：2026-11-15（W5/W6：G1 产品面板 / G3 官方包 + WASM 主机 / M3 默认差异；沙箱 danger-full-access、网络恢复）。
+> 更新：2026-11-15（W7：工具并行收口；M3 功能项完成，进入收尾 evidence + 独立 review）。
 > 范围、gate 与砍单顺序见 [`decisions/0007-m3-scope.md`](decisions/0007-m3-scope.md)；
 > 计划基线见 [`PLAN.md`](PLAN.md) §8 M3 / §9.1；计划评审见 [`review-m3-plan.md`](review-m3-plan.md)；
 > 给最终 review 的证据索引见 [`m3-gate-evidence.md`](m3-gate-evidence.md)。
@@ -25,7 +25,10 @@ W5 产品面板/官方包验收/默认差异**。G1、G2、G3 的库层/产品�
   （`RPC-L2-501..505`）；workingDirectory 官方签名代理往返 PASS。**W6 WASM 主机已落地**：
   wasmtime `=50.0.1` core-module ABI（`CPP-WASM-001..020` 四类隔离：fuel/epoch/内存/输出 +
   trap 后宿主存活/relaunch/并发背压）；Component Model/WIT 未启用（偏离，见
-  [`wasm-host.md`](wasm-host.md)）。剩余：工具并发（M3 债务最后一项）、可选 Component 主机。
+  [`wasm-host.md`](wasm-host.md)）。**W7 工具并行收口**：sidecar 工具按 `maxParallelToolCalls=10`
+  分波并发（`SidecarHost::invoke_batch`），native/MCP 仍串行；实测 3×2s 串行 6.1s→并行 2.0s
+  （ratio 0.33），结果按原序、取消/超时/迟到语义保持。剩余：子会话并行/sidecar 工具继承、
+  `tool.chunk` 消费与 Component/WIT（标注为 M4/后续，非 gate）。
 
 ## 2. Exit gate 对账
 
@@ -94,13 +97,14 @@ W5 产品面板/官方包验收/默认差异**。G1、G2、G3 的库层/产品�
 | **M3 默认差异** | `agent-core`（ReasoningEffort/重复提醒）、`llm-openai`（reasoning_effort）、`llm-retry`（EMPTY_RESPONSE）、`agent-context`（retainRatio 0.16 + env）、`tool-runtime`（PermissionMode/ApprovalPolicy/from_env/effective_timeout_ms） | `M3-DEFAULT-001..063`（39 唯一 ID；6 crate 176 tests）；细节见 [`m2-dsh-defaults.md`](m2-dsh-defaults.md) 的 M3 更新；chat 接线见下一行 |
 | **债务接线（W5 并行）** | `chat.rs`/compat/host/sidecar：approval env、`tool.repeat` 事件、reasoning/retain env 路径、sidecar per-tool timeout、`--selftest-defaults` | 见 W5 接线报告；`--selftest*` 全 PASS（完成后补 ID） |
 | **WASM 主机（W6，已集成）** | `crates/plugin-wasm`（wasmtime `=50.0.1`；ABI `dshr-wasm-core/v1`：`memory`+`dshr_alloc`+`dshr_invoke` JSON）；`WasmEngineConfig::from_manifest`；已并回根 workspace | `CPP-WASM-001..020`（20 tests）：fuel→`E_QUOTA(OutOfFuel)`、epoch 100ms→`E_TIMEOUT`、`StoreLimits`→`E_QUOTA(MemoryLimit)`、输出超限→`E_TOO_LARGE`、trap 后同 runtime 可用/relaunch、跨 runtime 隔离、并发→`E_BACKPRESSURE`、缺导出/非法模块/guest -1/unreachable；详见 [`wasm-host.md`](wasm-host.md) |
+| **工具并行（W7）** | `agent-core`：`ToolExecutor::execute_batch`（默认逐个）+ `max_parallel_tool_calls`（override>env>10）；`compat-dsh-host`：`SidecarHost::invoke_batch`（按波写 invoke → 按 call_id 收 chunk/result/aborted，per-call timeout/取消/迟到丢弃）；`chat.rs`：sidecar 并行、native/MCP 串行、结果保持原序 | `M3-PARALLEL-001..007`（agent-core：顺序/并发/预算/错误隔离/上限优先级/重复提醒/取消）+ `M3-PARALLEL-101..107`（host：关联/chunk/墙钟/per-call timeout/迟到/取消/空批）；`--selftest-parallel-tools` PASS（serial 6.1s → parallel 2.0s，ratio 0.33，order_ok=true） |
 
 ## 4. Conformance 现状
 
 - **契约**：`node schema/check.mjs` → **71/71**。
 - **文档互链**：`node tools/check-links.mjs` → 待 W5/W6 同步后刷新（W4 为 307/0 broken）。
-- **Rust 单测**：**65 suites / 784 passed / 0 failed**（含 `dshr-plugin-wasm` 20 个；沙箱
-  danger-full-access 下原 sidecar-guard 进程测试也通过）。CI 仍需普通 runner 复验。
+- **Rust 单测**：**66 suites / 797 passed / 0 failed**（含 `dshr-plugin-wasm` 20 个与工具并行
+  14 个；沙箱 danger-full-access 下原 sidecar-guard 进程测试也通过）。CI 仍需普通 runner 复验。
 - **JS 测试**：`node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs`
   → 13/13（conformance 的 `node-test` suite 已纳入 `--quick`）。
 - **矩阵**：`docs/conformance-matrix.json` / `.md` 由 `tools/conformance.mjs` 生成；W5/W6 新增
@@ -126,7 +130,7 @@ Cordis Service class，当前 sidecar plugin seam 不能按普通 plugin 装载�
 | 项 | 影响 | 处理 |
 |---|---|---|
 | WASM 主机 = core module（非 Component/WIT） | PLAN 字面 "WASM Component" | 已实现四类隔离并集成；Component Model/WIT canonical ABI 作为后续项（M4/独立任务），review 明示偏离 |
-| 工具并行 | M3 债务最后一项 | 待做：`maxParallelToolCalls=10` 批并发 + 取消/错误语义（下一轮） |
+| 工具并行（W7 已完成） | 子会话并行/sidecar 工具继承、`tool.chunk` 消费、Component/WIT 仍未做 | 明确列为 M4/后续（非 M3 gate）；review 记录 |
 | ADC 交互/事件/tool card | G1 增强项 | ADR-0011 降级清单，M4 |
 | 外部作者"仓库外"实验 | G2 字面口径 | 沙箱 danger-full-access，可在普通目录复跑 `tools/authoring-check.ps1`（`.tmp/` 证据仍有效） |
 | `plugin-api` trait 冻结 | 插件 ABI | external SDK 已 0.1.0；`Plugin` trait 仍同步 `call`（`&'static str` leak 一次），冻结留到并发改造 |
@@ -135,13 +139,13 @@ Cordis Service class，当前 sidecar plugin seam 不能按普通 plugin 装载�
 
 ## 7. 下一步（按依赖排序）
 
-1. **工具并行**：`maxParallelToolCalls=10` 批并发 + 取消/错误/结果顺序语义；保持默认不限总量。
-2. **可选 Component 主机**：`wit-bindgen`/`wasmtime::component` canonical ABI（替换 core-module ABI），
-   以及 `plugin-host::load_with_manifest` 的 wasm 分支装载。
-3. **子会话并行 / sidecar 工具继承**、`headroomTokens`/`compactionRetries` 对齐、`tool.chunk` 消费
-   （M3 债务剩余）；条件项（Script UI/HTML Widget/pnpm）按时间决定。
-4. **最终 gate 证据**：更新 m3-gate-evidence/conformance 矩阵；`--full` 全绿（WASM 主机纳入）。
-5. **子 agent 独立 review**（M3 收尾）。
+1. **收尾 evidence**：把 W7 并行证据并入 conformance 矩阵；跑一次 `--full`/`--quick` 与全量
+   `cargo test --workspace`，刷新 m3-status/gate-evidence 的最终数字。
+2. **子 agent 独立 review**：对 M3 实现、gate 证据、偏离（WASM core-module、官方包口径、
+   环境限制）做独立评审；根据 P0/P1 修复后收尾。
+3. **M4/后续候选**（不在 M3 gate）：Component/WIT canonical ABI、子会话并行/sidecar 工具继承、
+   `tool.chunk` 消费、ADC 交互/事件/tool card、`headroomTokens`/`compactionRetries`、
+   Script UI spike/HTML Widget/pnpm 等条件项。
 
 ## 8. 复现命令
 

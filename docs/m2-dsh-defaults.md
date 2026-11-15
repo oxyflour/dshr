@@ -40,7 +40,7 @@ assistant 文本：12345678处理失败：tool call budget exhausted (8)
 | 配置项 | DSH 0.2.2-rc.1 默认 | dshr 修复前 | dshr 修复后 | 影响 |
 |---|---|---|---|---|
 | 每轮工具调用总数 | **无上限**（`dsh-agent-loop` 只有 `maxParallelToolCalls`） | **8，超出即 `TurnFailed`** | **无上限**；可用 `DSHR_MAX_TOOL_CALLS` 显式收紧，命中后**降级**（未执行的调用仍发 `ToolCall` + `is_error` 的 `ToolResult`，随后 `TurnEnded`，不失败） | 修复用户现场故障；默认行为与 DSH 一致 |
-| 每步并行工具数 | `maxParallelToolCalls = 10`，按批并发 | 串行 1 个（`Agent` 顺序 `for` 执行） | 串行 1 个（未改） | 功能不受影响；一个 step 10 个 2s 调用从 2s 变 20s。**仍有意的差异（M3 未完成）** |
+| 每步并行工具数 | `maxParallelToolCalls = 10`，按批并发 | 串行 1 个（`Agent` 顺序 `for` 执行） | **M3 默认 10（sidecar 工具按波次并发）**：`ToolExecutor::execute_batch` + `SidecarHost::invoke_batch`；native/MCP/`spawn_child` 仍串行（native 是同步插件调用）；`DSHR_MAX_PARALLEL_TOOL_CALLS` 可收紧，默认 10。实测 3×2s probe 工具：串行 6.1s → 并行 2.0s（ratio 0.33）。**事件顺序**：同一 step 先发全部 `ToolCall`，再按原序发 `ToolResult`（UI/回放按 `call_id` 配对，不依赖相邻） | 功能与墙钟对齐 DSH；剩余差异仅 native/MCP 并发 |
 | step 数上限 | 无 | 无（仅被 8 次调用间接限制） | 无；`DSHR_MAX_STEPS` 可显式收紧，命中后 `TurnEnded` | 与 DSH 一致 |
 | context window | `deepseek-flash` / `deepseek-v4-pro`：`1_048_576`；`DEFAULT_CONTEXT_WINDOW = 1_000_000` | 固定 `64_000`（`DSHR_CONTEXT_WINDOW` 才能改） | `DSHR_CONTEXT_WINDOW` 优先；否则按模型名：`flash`/`v4-pro`/`v4.1` → 1M，`deepseek-chat`/`reasoner` → 128K，`gpt-4o`/`gpt-4.1`/`o3`/`o4` → 128K，其余 / 未配置模型 → 128K（两家默认模型口径） | 默认模型 `deepseek-chat` 不再被低估到 64K；选 1M 模型时自动吃满窗口 |
 | output max tokens | `DEFAULT_MAX_TOKENS = 256_000`，每个请求都发 `max_tokens` | 不发送（provider 默认） | **仍默认不发送**；新增 `DEEPSEEK_MAX_TOKENS` / `OPENAI_MAX_TOKENS` 显式开启 | 有意差异：dshr 默认模型 `deepseek-chat` 与 DSH desktop 的 `deepseek-flash` 不同，不盲目照抄 256k |

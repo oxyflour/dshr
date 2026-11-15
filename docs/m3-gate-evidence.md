@@ -72,6 +72,7 @@
 | 协议 v2 向后兼容 | 无 router / sidecar max=1 → negotiated=1、不发 v2 kind、capabilities 回 `E_VERSION`；M2 `--selftest-dsh` / `--selftest-dsh-write` 不回归 |
 | WASM 主方案（W5 完成，core-module） | `crates/plugin-wasm`（wasmtime `=50.0.1`，ABI `dshr-wasm-core/v1`）+ `CPP-WASM-001..020`：fuel→`E_QUOTA(OutOfFuel)`、epoch 100ms→`E_TIMEOUT`、`StoreLimits` 1MiB→`E_QUOTA(MemoryLimit)`、输出 1MiB>4KiB→`E_TOO_LARGE`；trap 后同 runtime 可继续/relaunch、跨 runtime 隔离、并发→`E_BACKPRESSURE`；`WasmEngineConfig::from_manifest` | 见 [`wasm-host.md`](wasm-host.md) |
 | external-process 退路 | `CPP-ISO-001..017`（Job Object 内存/CPU/进程配额、四类隔离） | 见 [`cpp-v1.md`](spec/cpp-v1.md) §12 |
+| 工具并行（W7） | `agent-core::ToolExecutor::execute_batch` + `max_parallel_tool_calls`（override>env>10）；`SidecarHost::invoke_batch`（按波写 `tool.invoke` → 按 `call_id` 收 chunk/result/aborted，per-call timeout/取消/迟到丢弃）；chat sidecar 并行、native/MCP 串行、结果保持原序 | `M3-PARALLEL-001..007` + `101..107`（14 tests）；`--selftest-parallel-tools` PASS：3×2s 串行 6.1s → 并行 2.0s（ratio 0.33），order_ok=true；事件序 `ToolCall×N → 终态×N`（session-log 已注） |
 
 未完成/偏离（**review 重点**）：
 1. **WASM 主方案是 core module，不是 Component/WIT**：`cpp-v1.wit` 仍是草案，未用
@@ -80,8 +81,10 @@
 2. 官方包验收的**边界**：`dsh-tool-working-directory` 的 execute 受 `exec.agent` 债务阻塞，用 502
    作为可判定证据；storage hub 本体未装载（Service class seam），由官方消费者 storage-domain 代表。
    这是 G3 收窄后的口径，review 需确认可接受。
-3. `event.*` 的 Cordis 总线桥是最小形态（TODO）；storage 无游标/backupRecord/fsync（记录在
-   [`m3-l2-services.md`](m3-l2-services.md) §6.3）。
+3. **工具并行的剩余差异**：native/MCP/`spawn_child` 仍串行（native 是同步插件调用）；并行仅约束
+   sidecar 批；`tool.chunk` 尚未被 agent 消费；同 step 事件顺序变化要求 UI/回放按 `call_id` 配对。
+4. `event.*` 的 Cordis 总线桥是最小形态（TODO）；storage 无游标/backupRecord/fsync（记录在
+   [`m3-l2-services.md`](m3-l2-services.md) §6.3）；子会话并行/sidecar 工具继承仍在 M4 候选。
 
 ## 4. 环境限制（不是代码失败，需在 review 中区分）
 
