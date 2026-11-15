@@ -112,19 +112,25 @@ W5 产品面板/官方包验收/默认差异**。G1、G2、G3 的库层/产品�
 | **P1-5 sessionProjections** | Rust `SessionProjectionsService` + sidecar `session-projections.mjs` shim；官方 `dsh-tool-todo` 装载绿 | `RPC-L2-202..208`（7）+ `L2JS-021..028`（8）；`RPC-L2-201` 仅装载绿（execute pending，官方债务） |
 | **P1-7 batch 取消宽限** | 取消后每 slot 2s deadline → Cancelled，不再等 per-call 120s | `M3-PARALLEL-108`（忽略 cancel fixture，≈2s 返回，1.8s≤elapsed<5s） |
 | **P2-3/P2-4/P2-5/P2-10** | panel id 全局冲突拒绝；selftest-l2 用 data root；摘要只跳根元数据（Rust/Node 交叉一致）；session_id 透传 API | `CPP-PANEL-002`/`CPP-WASM-033`；受限 TEMP 下 selftest-l2 PASS；`M3-DIGEST-001/002`（交叉摘要 `ec652b7…` 两侧一致）；`M3-PARALLEL-109/110` |
+| **复审残余 P1（W8 补充）** | stderr 巨行有界（分配前截断、tail 64 行/64 KiB、超限丢弃到换行）；conformance ignored 检测改 binary→counts（stdout/stderr 合并捕获，修死代码） | `CPP-ISO-032/033`（16 MiB 单行仅留 4143 B、5000 短行留 64 行；宿主存活）；`--full` 在 Lead 环境 exit 0、`implemented 511/511`；official_packages 在 summary 中显式列为 `6 ignored` 不再 pass |
+
+> **第二位独立 review**：[`review-m3-implementation-2.md`](review-m3-implementation-2.md) 结论
+> "有条件接受"（条件：stderr 有界、提交并修正 conformance ignored 检测）——两项均已在 W8 补充
+> 修复并全量复验；待 review #2 确认后 M3 完成。
 
 ## 4. Conformance 现状
 
 - **契约**：`node schema/check.mjs` → **71/71**。
-- **文档互链**：`node tools/check-links.mjs` → 待 W8 同步后刷新（W4 为 307/0 broken）。
-- **Rust 单测**：**67 suites / 831 passed / 0 failed / 6 ignored**（6 ignored = 官方包 manual gate
+- **文档互链**：`node tools/check-links.mjs` → **336 链接 0 broken（65 文件）**。
+- **Rust 单测**：**67 suites / 837 passed / 0 failed / 6 ignored**（6 ignored = 官方包 manual gate
   `RPC-L2-201/501..505`，显式 `tools/official-l2-gate.ps1` 跑 6/6 PASS；缺 fixture 时 gate exit 1）；
-  含 wasmtime 27 tests、工具并行 16 tests、SDK 27 tests。
-- **JS 测试**：`node --test --test-isolation=none .../host-services.test.mjs` 13/13 +
-  `session-projections.test.mjs` 8/8（conformance `node-test` suite 覆盖）。
-- **矩阵**：`docs/conformance-matrix.json` / `.md` 由 `tools/conformance.mjs` 生成；W8 的
-  registry 变更（RPC-L2-201/501..505 改 manual、新增 WASM/ISO/INSTALL/DIGEST/PANEL/SESSION 等）
-  正在同步（W8 conformance 任务），完成后以矩阵统计为准；gate 证据同时要求 `--full` 矩阵。
+  含 wasmtime 27 tests、工具并行 16 tests、SDK 27 tests、external-process 边界/stderr 故障注入。
+- **JS 测试**：`node --test --test-isolation=none` → **21/21**（host-services 13 + session-projections 8）。
+- **矩阵（最终，Lead 环境）**：`node tools/conformance.mjs --full` → **exit 0**；
+  registry **544 ID：implemented 511 / pending 18 / manual 15**；矩阵 stats
+  `implemented 511/511 passed、失败 0、pending 18、manual 15`；`docs/conformance-matrix.json/.md`
+  已落盘（generated_at 2026-11-15T12:4xZ，HEAD 5d2335d）。本机受限会话仍会出现
+  `dshr-sidecar-guard` 沙箱抖动（矩阵如实记录为环境项，非代码）。
 - **CI**：`.github/workflows/conformance.yml` 未在 GitHub Actions 实跑；官方包需本机 DSH 抽取物
   （manual gate）。
 

@@ -83,8 +83,33 @@ fn main() {
             // 永不读 stdin：宿主写大请求会阻塞在管道，等 watchdog 结算。
             std::thread::sleep(Duration::from_secs(30));
         }
+        "fault-stderr-huge" => {
+            // 16 MiB 单行（无换行，最后才补一个 '\n'）：验证宿主 stderr 读取在分配前截断。
+            let stderr = std::io::stderr();
+            let mut err = stderr.lock();
+            let chunk = [b'E'; 64 * 1024];
+            let mut written = 0usize;
+            while written < 16 * 1024 * 1024 {
+                let _ = err.write_all(&chunk);
+                written += chunk.len();
+            }
+            let _ = err.write_all(b"\n");
+            let _ = err.flush();
+            // 写完巨行后不读 stdin：宿主调用路径应按写 watchdog 返回 E_TIMEOUT 并杀 Job。
+            std::thread::sleep(Duration::from_secs(30));
+        }
+        "fault-stderr-flood" => {
+            // 5000 条短行：验证 tail 的行数/字节双上限只保留最后若干行。
+            let stderr = std::io::stderr();
+            let mut err = stderr.lock();
+            for index in 0..5000 {
+                let _ = writeln!(err, "flood-{index}");
+            }
+            let _ = err.flush();
+            std::thread::sleep(Duration::from_secs(30));
+        }
         _ => {
-            eprintln!("plugin-fault-fixture: unknown mode `{mode}` (expected fault-huge-line / fault-no-stdin)");
+            eprintln!("plugin-fault-fixture: unknown mode `{mode}` (expected fault-huge-line / fault-no-stdin / fault-stderr-huge / fault-stderr-flood)");
         }
     }
 }

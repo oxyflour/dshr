@@ -39,7 +39,8 @@ const SUITE_COMMANDS = {
   schema: 'node schema/check.mjs',
   links: 'node tools/check-links.mjs',
   // sidecar JS 单测（node:test）。--test-isolation=none 避免受限环境禁止子进程隔离。
-  'node-test': 'node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs',
+  'node-test':
+    'node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs',
   // --no-fail-fast：workspace 里一个包失败时仍跑完其余 target，避免 cargo 中止后
   // 后续包（如 ui-*）被误判为“未运行/失败”，也便于逐包判定。
   cargo: 'tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast',
@@ -418,7 +419,7 @@ function killTree(child) {
   }
 }
 
-function runProcess(command, args, { cwd, timeoutMs, env } = {}) {
+function runProcess(command, args, { cwd, timeoutMs, env, combineOutput = false } = {}) {
   return new Promise((resolvePromise) => {
     const startedAt = Date.now()
     runCounter += 1
@@ -431,7 +432,7 @@ function runProcess(command, args, { cwd, timeoutMs, env } = {}) {
     let errFd
     try {
       outFd = openSync(outPath, 'w')
-      errFd = openSync(errPath, 'w')
+      errFd = combineOutput ? outFd : openSync(errPath, 'w')
     } catch (err) {
       resolvePromise({
         code: null,
@@ -485,7 +486,7 @@ function runProcess(command, args, { cwd, timeoutMs, env } = {}) {
         // 忽略
       }
       stdout = readFileSafe(outPath)
-      stderr = readFileSafe(errPath)
+      stderr = combineOutput ? '' : readFileSafe(errPath)
       if (spawnMessage) stderr += `\n${spawnMessage}`
       cleanup()
       resolvePromise({
@@ -513,7 +514,9 @@ function runProcess(command, args, { cwd, timeoutMs, env } = {}) {
         cwd,
         env: env ?? process.env,
         windowsHide: true,
-        stdio: ['ignore', outFd, errFd],
+        // combineOutput：stdout/stderr 写同一个文件，保证 cargo 的 Running 行与
+        // test result 行按真实顺序交错（否则 binary→ignored 映射会错位）。
+        stdio: ['ignore', outFd, combineOutput ? outFd : errFd],
       })
     } catch (err) {
       finish(null, null, true, `spawn 失败：${err.message}`)
@@ -594,6 +597,70 @@ function parseCargoFailingPackages(output) {
   return [...failing]
 }
 
+// 逐测试二进制统计 passed/failed/ignored（P2-1/P2-2：`#[ignore]` 不算通过）。
+function parseCargoBinaryResults(output) {
+  const entries = []
+  let current = null
+  for (const line of output.split(/\r?\n/)) {
+    const running = line.match(/^\s*Running [^(]*\(target[\\/][^)]*[\\/]([A-Za-z0-9_]+)-[0-9a-f]+\.exe\)/)
+    if (running) {
+      current = { name: running[1], suites: 0, passed: 0, failed: 0, ignored: 0 }
+      entries.push(current)
+      continue
+    }
+    const doc = line.match(/^\s*Doc-tests ([A-Za-z0-9_]+)/)
+    if (doc) {
+      current = { name: doc[1], suites: 0, passed: 0, failed: 0, ignored: 0 }
+      entries.push(current)
+      continue
+    }
+    const result = line.match(/test result: (ok|FAILED)\.\s+(\d+) passed;\s+(\d+) failed;\s+(\d+) ignored/)
+    if (result && current) {
+      current.suites += 1
+      current.passed += Number(result[2])
+      current.failed += Number(result[3])
+      current.ignored += Number(result[4])
+    }
+  }
+  return entries
+}
+
+// 判断某个测试二进制是否属于该包：lib/doctest 二进制名 = 包名（- → _）；
+// integration test 二进制名是测试文件名，需要按 crate 源码目录反查 tests/<binary>.rs。
+function packageOwnsBinary(selector, binaryName) {
+  const base = selector.replace(/^dshr-/, '')
+  const candidates = [
+    join(REPO_ROOT, 'crates', base, 'tests', `${binaryName}.rs`),
+    join(REPO_ROOT, 'crates', base, 'src', 'bin', `${binaryName}.rs`),
+    join(REPO_ROOT, 'crates', base, 'benches', `${binaryName}.rs`),
+  ]
+  if (base === 'desktop-gpui') candidates.push(join(REPO_ROOT, 'apps', 'desktop-gpui', 'tests', `${binaryName}.rs`))
+  return candidates.some((candidate) => existsSync(candidate))
+}
+
+function cargoPackageBinaries(output, selector) {
+  const normalized = selector.replace(/-/g, '_')
+  return parseCargoBinaryResults(output).filter(
+    (entry) =>
+      entry.name === normalized ||
+      entry.name.startsWith(`${normalized}-`) ||
+      entry.name.startsWith(`${normalized}_`) ||
+      packageOwnsBinary(selector, entry.name),
+  )
+}
+
+// 该包名下测试二进制的 `#[ignore]` 统计：tainted = 0 passed 且 ignored>0
+// （即整文件被忽略、没有执行过任何用例），executed = 至少执行过一条用例。
+function cargoPackageIgnoredState(output, selector) {
+  const binaries = cargoPackageBinaries(output, selector)
+  return {
+    binaries,
+    tainted: binaries.filter((entry) => entry.failed === 0 && entry.passed === 0 && entry.ignored > 0),
+    executed: binaries.some((entry) => entry.passed > 0 || entry.failed > 0),
+    ignored: binaries.reduce((sum, entry) => sum + entry.ignored, 0),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // suite 执行
 // ---------------------------------------------------------------------------
@@ -642,7 +709,12 @@ async function runSuite(name, timeoutMs) {
   } else if (name === 'node-test') {
     invocation = {
       command: process.execPath,
-      args: ['--test', '--test-isolation=none', 'sidecar/dsh-official/lib/host-services.test.mjs'],
+      args: [
+        '--test',
+        '--test-isolation=none',
+        'sidecar/dsh-official/lib/host-services.test.mjs',
+        'sidecar/dsh-official/lib/session-projections.test.mjs',
+      ],
       label: SUITE_COMMANDS[name],
     }
   } else {
@@ -653,6 +725,7 @@ async function runSuite(name, timeoutMs) {
   const result = await runProcess(invocation.command, invocation.args, {
     cwd: REPO_ROOT,
     timeoutMs,
+    combineOutput: name === 'cargo',
   })
   const output = `${result.stdout}\n${result.stderr}`
   const durationMs = result.durationMs
@@ -673,9 +746,19 @@ async function runSuite(name, timeoutMs) {
   } else {
     details.cargo = parseCargoSummary(output)
     details.cargo.failing_packages = parseCargoFailingPackages(output)
+    details.cargo.binaries = parseCargoBinaryResults(output)
     const failingNote =
       details.cargo.failing_packages.length > 0 ? `；失败包：${details.cargo.failing_packages.join(', ')}` : ''
-    summary = `${details.cargo.suites} suite(s), ${details.cargo.passed} passed, ${details.cargo.failed} failed, ${details.cargo.ignored} ignored${failingNote}`
+    // P1-6：整文件被 #[ignore]（0 passed / N ignored）的二进制必须显式列出，
+    // 不能藏在全局 ignored 计数里；包级 selector 也不得据此判 pass。
+    const skippedBinaries = details.cargo.binaries.filter(
+      (entry) => entry.failed === 0 && entry.passed === 0 && entry.ignored > 0,
+    )
+    const skippedNote =
+      skippedBinaries.length > 0
+        ? `；未执行: ${skippedBinaries.map((entry) => `${entry.name}(${entry.ignored} ignored)`).join(', ')}`
+        : ''
+    summary = `${details.cargo.suites} suite(s), ${details.cargo.passed} passed, ${details.cargo.failed} failed, ${details.cargo.ignored} ignored${failingNote}${skippedNote}`
   }
 
   let status
@@ -785,6 +868,10 @@ function evaluateTests(tests, suiteRuns) {
     }
 
     if (test.suite === 'cargo') {
+      const describeTainted = (state) =>
+        state.tainted.length > 0
+          ? `；另有 ${state.tainted.map((entry) => `${entry.name}(${entry.ignored} ignored/0 passed)`).join(', ')} 未执行（不计为通过）`
+          : ''
       if (run.status !== 'pass') {
         // workspace 整体失败时，逐包判定：该包测试二进制出现且不在失败包列表里 → PASS，
         // 只有失败包本身（以及编译失败/超时等无法区分的情况）才 FAIL。
@@ -797,10 +884,19 @@ function evaluateTests(tests, suiteRuns) {
           !packageFailed &&
           cargoPackageSeen(run.output, test.selector)
         ) {
+          const state = cargoPackageIgnoredState(run.output, test.selector)
+          if (state.tainted.length > 0 && !state.executed) {
+            return makeResult(
+              test,
+              'fail',
+              `包 ${test.selector} 的测试二进制全部被 #[ignore]（0 passed / ${state.ignored} ignored，不计为通过；${run.summary}）`,
+              evidence,
+            )
+          }
           return makeResult(
             test,
             'pass',
-            `包 ${test.selector} 通过；workspace 仅 ${failing.join(', ')} 失败（${run.summary}）`,
+            `包 ${test.selector} 通过${describeTainted(state)}；workspace 仅 ${failing.join(', ')} 失败（${run.summary}）`,
             evidence,
           )
         }
@@ -810,10 +906,36 @@ function evaluateTests(tests, suiteRuns) {
         return makeResult(test, 'fail', `cargo suite ${run.status}（${run.summary}）`, evidence)
       }
       if (test.selector === 'all') {
-        return makeResult(test, 'pass', `cargo workspace 通过（${run.summary}）`, evidence)
+        const ignored = run.details.cargo?.ignored ?? 0
+        const skippedBinaries = (run.details.cargo?.binaries ?? []).filter(
+          (entry) => entry.failed === 0 && entry.passed === 0 && entry.ignored > 0,
+        )
+        const ignoredNote =
+          ignored > 0
+            ? `；${ignored} 个 #[ignore] 未执行，不计为通过${
+                skippedBinaries.length > 0
+                  ? `（${skippedBinaries.map((entry) => `${entry.name}: 0 passed/${entry.ignored} ignored`).join(', ')}）`
+                  : ''
+              }；官方包证据见 manual RPC-L2-201/501..505 的 tools/official-l2-gate.ps1`
+            : ''
+        return makeResult(test, 'pass', `cargo workspace 通过（${run.summary}${ignoredNote}）`, evidence)
       }
       if (cargoPackageSeen(run.output, test.selector)) {
-        return makeResult(test, 'pass', `包 ${test.selector} 的测试二进制出现在 cargo 输出中（${run.summary}）`, evidence)
+        const state = cargoPackageIgnoredState(run.output, test.selector)
+        if (state.tainted.length > 0 && !state.executed) {
+          return makeResult(
+            test,
+            'fail',
+            `包 ${test.selector} 的测试二进制全部被 #[ignore]（0 passed / ${state.ignored} ignored，不计为通过；${run.summary}）`,
+            evidence,
+          )
+        }
+        return makeResult(
+          test,
+          'pass',
+          `包 ${test.selector} 的测试二进制出现在 cargo 输出中${describeTainted(state)}（${run.summary}）`,
+          evidence,
+        )
       }
       return makeResult(test, 'fail', `包 ${test.selector} 未在 cargo 输出中出现（包名错误或该包无单测）`, evidence)
     }
@@ -910,7 +1032,8 @@ function publicSuite(run) {
     duration_ms: run.duration_ms,
     timeout_ms: run.timeout_ms,
     summary: run.summary,
-    output_tail: output || null,
+    // 行数组而非单个长字符串：矩阵 JSON 可逐行阅读/复制，避免一行几 KB。
+    output_tail: output ? output.split(/\r?\n/) : null,
   }
 }
 
@@ -1047,14 +1170,25 @@ function renderMarkdown(report) {
     blocked: 'BLOCKED',
   }
   if (report.format === 'compact') {
+    const rows = report.tests.rows
+    const nonPass = rows.filter((row) => row[3] !== 'pass')
+    const passRows = rows.filter((row) => row[3] === 'pass')
+    lines.push('### 非 PASS（逐 ID 明细）')
+    lines.push('')
     lines.push('| ID | 领域 | 状态 | 结果 | 证据 | 消息 |')
     lines.push('|---|---|---|---|---|---|')
-    for (const row of report.tests.rows) {
+    for (const row of nonPass) {
       const [id, area, status, result, evidence, message] = row
       lines.push(
         `| ${id} | ${markdownEscape(area)} | ${status} | ${resultLabel[result] ?? result} | ${markdownEscape(evidence)} | ${markdownEscape(message)} |`,
       )
     }
+    lines.push('')
+    lines.push(`### PASS（逐 ID；共 ${passRows.length} 条）`)
+    lines.push('')
+    lines.push('| ID | 结果 |')
+    lines.push('|---|---|')
+    for (const row of passRows) lines.push(`| ${row[0]} | PASS |`)
   } else {
     lines.push('| ID | 领域 | 标题 | 状态 | 结果 | 证据 | 消息 |')
     lines.push('|---|---|---|---|---|---|---|')

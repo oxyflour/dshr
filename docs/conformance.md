@@ -62,7 +62,7 @@ title 取测试函数名，notes 追加来源文件。这同时满足「ID 归�
 |---|---|---|
 | `implemented` | 已有可执行证据：必须声明 `suite` + `selector`，且 selector 在本次运行中命中；`groups` 里还必须能在 `source_dirs` 找到对应测试函数 | 是（未命中/失败 → FAIL） |
 | `pending` | 已定义断言但实现/契约未就绪（`ADC-BIND-001`、17 个 chat selftest） | 否 |
-| `manual` | 需人工/脚本实验判定（`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`ADC-PANEL-001`、`M3-DEFAULT-070`、`M3-PARALLEL-201`、`CPP-AUTHOR-001`） | 否 |
+| `manual` | 需人工/脚本实验判定（official gate `RPC-L2-201/501..505`、`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`ADC-PANEL-001`、`M3-DEFAULT-070`、`M3-PARALLEL-201`、`CPP-WASM-100`、`CPP-AUTHOR-001`） | 否 |
 | `blocked` | 被外部依赖阻塞（当前暂无条目；语义保留给前置未落地时） | 否 |
 
 `result` 取值：`PASS` / `FAIL` / `SKIP`（suite 本次未选中，例如 `--quick` 下 `suite=cargo` 的 ID）/
@@ -82,7 +82,7 @@ title 取测试函数名，notes 追加来源文件。这同时满足「ID 归�
 |---|---|---|---|---|
 | `schema` | `node schema/check.mjs` | 是 | 120s | 输出中 `ok [schema] label` 行；selector 取 `[schema] label` |
 | `links` | `node tools/check-links.mjs` | 是 | 120s | 只有 `all`：suite 整体通过即满足 |
-| `node-test` | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs` | 是 | 120s | 从 `✔ name` / TAP `ok N - name` 行匹配 selector（如 `L2JS-001`），并要求输出汇总 `pass`/`fail` 与退出码一致 |
+| `node-test` | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 是 | 120s | 从 `✔ name` / TAP `ok N - name` 行匹配 selector（如 `L2JS-001`/`L2JS-021`），并要求输出汇总 `pass`/`fail` 与退出码一致 |
 | `cargo` | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast`（Windows；其它平台同样加 `--no-fail-fast`） | 否 | 1200s（20 min） | `all` 要求 workspace 整体通过；包名（如 `dshr-plugin-host`）在该包测试二进制出现、且该包不是失败包时通过——workspace 里其它包的环境失败不会连坐本包。`--no-fail-fast` 保证一个包失败后其余包仍会运行（否则 cargo 中止、后面的包无法判定） |
 
 Windows 上 cargo 必须经 [`tools/build-env.cmd`](../tools/build-env.cmd)（本机 `%TEMP%` 不可写，
@@ -125,19 +125,22 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-第七轮（W7 工具并行收口，2026-11-15 生成）：**共 502 个测试 ID —— implemented 476、
-pending 18、manual 8、failed 0（quick）**。`--quick --compact` 下 34 通过（20 schema fixture +
-1 doc link + 13 个 `node-test` JS 单测），442 个 `suite=cargo` 的 implemented ID 记为 SKIP
-（quick 不构建 Rust）。矩阵报告带 `generated_at`、`git HEAD`（含 dirty 文件数）、platform、
-逐 suite 结果与逐 ID 行；以 [`conformance-matrix.json`](conformance-matrix.json) 为准。
+第八轮（W8/P0 修复后，2026-11-15 生成）：**共 544 个测试 ID —— implemented 511、
+pending 18、manual 15、failed 0（quick）**。`--quick --compact` 下 42 通过（20 schema fixture +
+1 doc link + 21 个 `node-test` JS 单测），469 个 `suite=cargo` 的 implemented ID 记为 SKIP
+（quick 不构建 Rust）。提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
 
-本轮 `--workspace` 实跑（2026-11-15，本机受限会话）：harness 用
-`cargo test --offline --workspace --no-fail-fast` 跑完 **66 suites / 796 passed / 1 failed**
-（根 workspace 已包含 `dshr-plugin-wasm`，无需 exclude）；逐包判定 implemented 441 pass /
-1 fail（仅 `CARGO-UNIT-001` workspace-wide）/ 34 skip。唯一失败仍是 `dshr-sidecar-guard` 的
-`process::tests::drop_terminates_the_guarded_process`（隔离重跑同样失败，属沙箱进程限制；
-普通终端/Lead 环境同一 workspace 为 **66 suites / 797 passed / 0 failed**；[`m3-status.md`](m3-status.md)
-§4 已记录）。提交矩阵用 `--quick` 生成、cargo ID 记为 SKIP。
+本轮 `--full` 实跑（2026-11-15，本机受限会话）：`67 suites / 836 passed / 1 failed / 6 ignored`；
+逐包判定 implemented 510 pass / 1 fail（仅 `CARGO-UNIT-001` workspace-wide）/ 0 skip。
+唯一失败仍是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
+（隔离重跑同样失败，属沙箱进程限制；普通终端/Lead 环境同一 workspace 为 **0 failed / 6 ignored**；
+[`m3-status.md`](m3-status.md) §4 已记录）。
+6 个 ignored 是 `tests/official_packages.rs` 的 `RPC-L2-201/501..505`（P0 后改为 manual，
+用 `tools/official-l2-gate.ps1` 跑：有 fixture 时 6/6 PASS，缺 `.tmp/dsh-tools-all` 时 exit 1）。
+harness 的 cargo 判定已按 **测试二进制**（Running + test result 块）识别 ignored：本机实测 suite
+summary 为 `67 suite(s), 836 passed, 1 failed, 6 ignored；失败包：dshr-sidecar-guard；未执行: official_packages(6 ignored)`，
+`CARGO-UNIT-001` 不会把 `official_packages` 的 0 passed/6 ignored 当成 pass；整文件被忽略的包若无其它
+已执行用例则判 FAIL，其余 ID 的消息里会标注这些未执行二进制。
 
 主要 groups：
 
@@ -145,32 +148,33 @@ pending 18、manual 8、failed 0（quick）**。`--quick --compact` 下 34 通�
 |---|---|---|
 | `SCHEMA-FIXTURE-001..020` | implemented | `schema/check.mjs` fixture 逐条登记 |
 | `DOC-LINK-001` | implemented | `tools/check-links.mjs` 0 broken |
-| `JS-L2SVC-001..013` | implemented（`quick`） | `node-test` suite：`sidecar/dsh-official/lib/host-services.test.mjs`（源码 ID L2JS-001..013） |
-| `CARGO-UNIT-001..004` | implemented（`--workspace` 才执行） | workspace 单测；按包 selector |
+| `JS-L2SVC-001..013,021..028` | implemented（`quick`） | `node-test` suite：`host-services.test.mjs` + `session-projections.test.mjs`（源码 ID L2JS-001..013/021..028） |
+| `CARGO-UNIT-001..004` | implemented（cargo） | workspace 单测；按包 selector |
 | `ADC-SLOT-001..023` / `ADC-ELEM-001..022` / `ADC-SEC-001..009` | implemented | `dshr-ui-contributions`（ADC-S） |
 | `ADC-ELEM-SPACING/ALIGN/...-001..004`（26 条）+ `ADC-ELEM-PANEL-001..010` | implemented | `dshr-ui-gpui` 渲染器/panel 入口单测（ADC-R） |
 | `ADC-ELEM-PANEL-API-001..002` | implemented | `dshr-plugin-api` panel 渲染契约默认实现 |
 | `ADC-ELEM-PANEL-HOST-001..004` | implemented | `dshr-plugin-host` panel 渲染入口（含 external-process `ui.render`） |
-| `ADC-PERF-001..002` | implemented（`--workspace` 才执行） | `dshr-ui-gpui` `tests/adc_perf.rs` 构造预算（debug 约 4.4s；release 见 `m3-render-budget.md`） |
+| `ADC-PERF-001..002` | implemented（cargo） | `dshr-ui-gpui` `tests/adc_perf.rs` 构造预算（debug 约 4.4s；release 见 `m3-render-budget.md`） |
 | `CPP-FIBER-001..027` / `CPP-SVC-001..014` / `CPP-EFF-001..010` | implemented | `dshr-plugin-host`（Fiber/Service/Effect） |
 | `CPP-FIBER-101..133` | implemented | `dshr-plugin-api`（capability/取消/结果/错误码） |
 | `CPP-MANIFEST-001..026` / `CPP-VER-001..007` | implemented | `dshr-plugin-api`（typed/TOML manifest、版本） |
 | `CPP-TRUST-001..018` | implemented | `dshr-profile`（摘要/签名/首装确认/降级） |
-| `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK） |
-| `CPP-ISO-001..015,020..021` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/安全/G2 E2E） |
-| `CPP-WASM-001..020` | implemented（`--workspace`；首次编译 wasmtime 1–3 分钟） | `dshr-plugin-wasm`（wasmtime 主机：fuel/epoch/内存/输出/并发配额四类隔离 + core-module ABI；见 `wasm-host.md`） |
+| `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
+| `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |
+| `CPP-WASM-001..027` | implemented（cargo；首次编译 wasmtime 1–3 分钟） | `dshr-plugin-wasm`（wasmtime 主机：fuel/epoch/内存/输出/并发配额 + 多 memory/大 table/alloc=0/WasmPlugin 适配；见 `wasm-host.md`） |
+| `CPP-PANEL-002` / `CPP-WASM-033` | implemented | `dshr-plugin-host`（panel id 跨插件/同插件冲突拒绝与原子回滚，review P2-3） |
 | `MCP-CLIENT-001..017` | implemented | `dshr-compat-mcp`（MCP stdio 客户端，源码 ID MCP-001..017） |
 | `RPC-L2-001..010` | implemented | `dshr-compat-dsh-protocol`（v2 envelope/service_key） |
-| `RPC-L2-101..128,221..227,301..313` | implemented | `dshr-compat-dsh-host`（service 代理 + storage_kv + 新服务方法） |
+| `RPC-L2-101..128,202..208,221..227,301..313` | implemented | `dshr-compat-dsh-host`（service 代理 + storage_kv + sessionProjections 等新服务方法） |
 | `RPC-L2-401..410` | implemented | `dshr-compat-dsh-host` `tests/l2_host_services.rs`（v2 握手/caps、storage/wd 端到端、cancel/迟到/generation） |
-| `RPC-L2-501..505` | implemented（官方包缺失时测试内部 SKIP） | `dshr-compat-dsh-host` `tests/official_packages.rs`（未修改官方包装载/storage-domain 往返；依赖 `.tmp/dsh-tools-all` + vendored sidecar） |
 | `M3-LOADER-001..015` | implemented | `dshr-profile` `loader.rs`（include/group/patch/深度/`!!js`） |
+| `M3-INSTALL-001..003` / `M3-DIGEST-001..002` | implemented | `dshr-profile`（原子安装/回滚、摘要规则） |
 | `M3-DEFAULT-001..004,010..015,020..025,030..032,035..037,040..045,050..056,060..063` | implemented | agent-core / llm-retry / llm-deepseek / llm-openai / agent-context / tool-runtime（DSH 默认对齐） |
-| `M3-PARALLEL-001..007` | implemented | `dshr-agent-core` batch 调度：并发/顺序/预算截断/错误隔离/max_parallel 解析/重复提醒/取消 |
-| `M3-PARALLEL-101..107` | implemented | `dshr-compat-dsh-host` `tests/parallel_batch.rs`（sidecar 批 invoke 端到端） |
-| `ADC-BIND-001` | pending | 绑定权限尚未实现（WASM 配额/隔离已由 CPP-WASM-001..020 覆盖） |
+| `M3-PARALLEL-001..007,101..110` | implemented | `dshr-agent-core` batch 调度 + `dshr-compat-dsh-host` `tests/parallel_batch.rs`（sidecar 批 invoke/取消宽限/session_id 透传） |
+| `ADC-BIND-001` | pending | 绑定权限尚未实现（WASM 配额/隔离已由 CPP-WASM 覆盖） |
 | `SELF-CHAT-001..017` | pending | 现有 17 个 `chat --selftest*`，尚未纳入 harness |
-| `CPP-TRUST-019` / `CPP-ISO-022` / `RPC-L2-411` / `ADC-PANEL-001` / `M3-DEFAULT-070` / `M3-PARALLEL-201` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件/L2/ADC panel/defaults/工具并行）、authoring 门禁、外部作者实验需人工判定 |
+| `RPC-L2-201` / `RPC-L2-501..505` | manual（official gate） | `tools/official-l2-gate.ps1`（缺 fixture exit 1；默认 cargo 中 6 ignored/0 passed） |
+| `CPP-TRUST-019` / `CPP-ISO-022` / `RPC-L2-411` / `ADC-PANEL-001` / `M3-DEFAULT-070` / `M3-PARALLEL-201` / `CPP-WASM-100` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件/L2/ADC panel/defaults/工具并行/WASM）、authoring 门禁、外部作者实验需人工判定 |
 
 ## 7. 与 M3 exit gate 的对应
 
@@ -188,15 +192,17 @@ pending 18、manual 8、failed 0（quick）**。`--quick --compact` 下 34 通�
   （chat `--selftest-trust-install`）、`CPP-ISO-022`（chat `--selftest-external-plugin`）、
   `M3-DEFAULT-070`（chat `--selftest-defaults`）、`CPP-AUTHOR-001`
   （`tools/authoring-check.ps1`）、`GATE-G2-001`（仓库外实验 checklist）。
-- **G3 隔离与兼容（WASM 为主方案）**：`CPP-WASM-001..020`（wasmtime 主机：
-  fuel/epoch/内存/输出/并发配额四类隔离 + core-module ABI，见 [`wasm-host.md`](wasm-host.md)）、
-  `RPC-L2-*`（protocol v2 契约 + host service 代理 + storage_kv + 新服务方法 +
-  `RPC-L2-401..410` 真实 sidecar 端到端 + `RPC-L2-501..505` 未修改官方包装载/往返）、
-  `MCP-CLIENT-*`（MCP stdio 客户端）、`JS-L2SVC-*`（sidecar host-service JS 单测）、
-  `M3-PARALLEL-001..007`（agent-core batch 调度）+ `M3-PARALLEL-101..107`（sidecar 批 invoke
-  端到端）已 implemented；manual 证据 `RPC-L2-411`（chat `--selftest-l2`：phase A 真实 sidecar
-  protocol=2 + phase B fixture storage-kv）、`M3-PARALLEL-201`（chat `--selftest-parallel-tools`：
-  串行 6.1s→并行 2.0s，ratio 0.33，顺序约束成立）。
+- **G3 隔离与兼容（WASM 为主方案）**：`CPP-WASM-001..027`（wasmtime 主机：
+  fuel/epoch/内存/输出/并发配额 + 多 memory/大 table/alloc=0/WasmPlugin 适配，见
+  [`wasm-host.md`](wasm-host.md)）、`RPC-L2-*`（protocol v2 契约 + host service 代理 +
+  storage_kv + sessionProjections `RPC-L2-202..208` + `RPC-L2-401..410` 真实 sidecar 端到端）、
+  `MCP-CLIENT-*`（MCP stdio 客户端）、`JS-L2SVC-*`（sidecar host-service/session-projections JS
+  单测）、`M3-PARALLEL-001..110`（batch 调度 + sidecar 批 invoke/取消宽限/session_id 透传）、
+  `CPP-PANEL-002`/`CPP-WASM-033`（panel id 冲突）已 implemented；manual 证据
+  `RPC-L2-411`（chat `--selftest-l2`）、`M3-PARALLEL-201`（chat `--selftest-parallel-tools`）、
+  `CPP-WASM-100`（chat `--selftest-wasm`：安装→装载→调用→trap→卸载）以及 **official gate**
+  `RPC-L2-201/501..505`（`tools/official-l2-gate.ps1`；缺 `.tmp/dsh-tools-all` 时 exit 1，
+  默认 cargo 中 6 ignored/0 passed，不再算 implemented）。
 
 gate 判定方式：`node tools/conformance.mjs --full` 全绿（implemented 无 FAIL）且对应 gate 的
 manual 证据落盘。
@@ -215,27 +221,35 @@ manual 证据落盘。
    `schema/check.mjs` 的 `[schema] label`。重命名/删除用例会让对应 ID FAIL——这是有意为之
    （注册表引用的证据必须仍然存在）。新增用例同时把新 ID 写进注册表，不要只改脚本。
 4. **ADC/CPP/RPC/M3 已有运行期证据，但不是全绿**：ADC-SLOT/ELEM/SEC/PANEL/PERF（含 panel API/HOST）、
-   CPP-FIBER/SVC/EFF/MANIFEST/VER/TRUST/PROC/ISO/WASM、MCP、RPC-L2（含 4xx/5xx 端到端）、
-   M3-LOADER/M3-DEFAULT/M3-PARALLEL 已按 crate 单测登记为 implemented（`--workspace`/CI 才执行）；
-   剩余 `ADC-BIND-001`（绑定权限）仍 pending，不能因为矩阵整体 exit 0 就宣称对应 gate 已完成
-   （quick 不含 cargo）。
-5. **WASM 测试首次编译慢**：`dshr-plugin-wasm` 依赖 wasmtime，首次 `--workspace` 需 1–3 分钟
+   CPP-FIBER/SVC/EFF/MANIFEST/VER/TRUST/PROC/ISO/WASM/PANEL、MCP、
+   RPC-L2（含 4xx/5xx 端到端、sessionProjections 202..208）、M3-LOADER/DEFAULT/INSTALL/DIGEST/PARALLEL
+   已按 crate 单测登记为 implemented（cargo）；剩余 `ADC-BIND-001`（绑定权限）仍 pending，
+   不能因为矩阵整体 exit 0 就宣称对应 gate 已完成（quick 不含 cargo）。
+5. **WASM 测试首次编译慢**：`dshr-plugin-wasm` 依赖 wasmtime，首次 cargo 需 1–3 分钟
    编译；`--timeout-ms` 要给足（默认 20 分钟足够）。`CPP-WASM-*` 的 selector 是
-   `dshr-plugin-wasm`，不是整个 workspace。
+   `dshr-plugin-wasm`（`CPP-WASM-033` 例外：在 plugin-host 的 panel 冲突组）。
 6. **`groups` 依赖源码扫描**：批量条目靠 `source_dirs` + 测试函数名/注释匹配（支持 `// ID：` 与
    `/// ID：` 两种注释；W7 的 M3-PARALLEL-007 是 `///` 文档注释 + 非 ID 函数名）。改测试函数名或
    删测试会让对应 ID 注册表校验失败——这是有意的证据校验；新增测试时把 ID 加进对应组的 `ids`。
-7. **两段式 ID 的映射**：`compat-mcp` 源码写 `MCP-001..017`、sidecar JS 测试写 `L2JS-001..013`，
-   都是两段式；注册表按 spec §3 的三段式登记为 `MCP-CLIENT-001..017` / `JS-L2SVC-001..013`，
-   title/notes 保留源码 ID。若日后 spec 放宽 ID 形态，可再收敛。
-8. **RPC-L2-501..505 可能内部 SKIP**：这些测试依赖 `.tmp/dsh-tools-all`（gitignored 的官方包抽取）
-   与 vendored sidecar；缺失时测试打印 SKIP 但仍算 `cargo test` 通过。矩阵显示 PASS 不等于
-   "官方包已在本机实跑"，需看该 crate 的测试输出；`docs/m3-gate-evidence.md` 记录实际取数环境。
-9. **CI 未实跑**：`.github/workflows/conformance.yml` 是本仓库首个 workflow，尚未在
-   GitHub Actions 验证；矩阵报告里明确标注「未在 GitHub Actions 实跑」。本地等价命令即
-   `schema/check.mjs` + `check-links.mjs` + `node --test ...` + `cargo test --offline --workspace` +
-   `--quick` 矩阵。
-10. **blocked 暂无条目**：状态机保留该状态；首次出现真实阻塞（如 WASM 配额 ADR 未决）时再登记。
+7. **两段式 ID 的映射**：`compat-mcp` 源码写 `MCP-001..017`、sidecar JS 测试写 `L2JS-001..013`
+   与 `L2JS-021..028`，都是两段式；注册表按 spec §3 的三段式登记为
+   `MCP-CLIENT-001..017` / `JS-L2SVC-001..028`，title/notes 保留源码 ID。
+8. **`#[ignore]` 不算通过（P0/P1-6 口径）**：`tests/official_packages.rs` 的 6 个官方包用例默认
+   `#[ignore]`（需 `.tmp/dsh-tools-all` + vendored sidecar）。harness 从 cargo 的
+   `Running ...(<binary>-<hash>.exe)` + 紧随 `test result: ... passed; ... ignored` 块建立
+   **binary→counts** 映射（stdout/stderr 合并同一文件以保顺序），integration test 二进制用
+   `crates/<pkg>/tests/<binary>.rs` 反查包归属；`passed=0 && ignored>0` 的整文件忽略二进制会进入
+   suite summary（本机实测 `未执行: official_packages(6 ignored)`），该包若无其它已执行用例即 FAIL。
+   对应 ID 已全部改 manual（`tools/official-l2-gate.ps1`），矩阵显示 MANUAL 而非 PASS。
+   限制：同一二进制内"部分执行 + 部分 ignored"目前只计数、不逐个归因到 ID。
+9. **源码同 ID 重复**：`cpp_proc_024..027` 在 plugin-sdk 的 `session.rs` 与 `tool_result.rs`
+   各有一份测试函数名；注册表只能按唯一 ID 登记一次（harness 取首个映射），不影响 gate，
+   但后续应给其中一组换 ID/前缀。
+10. **CI 未实跑**：`.github/workflows/conformance.yml` 是本仓库首个 workflow，尚未在
+    GitHub Actions 验证；矩阵报告里明确标注「未在 GitHub Actions 实跑」。本地等价命令即
+    `schema/check.mjs` + `check-links.mjs` + `node --test ...` + `cargo test --offline --workspace` +
+    `--full` 矩阵。
+11. **blocked 暂无条目**：状态机保留该状态；首次出现真实阻塞（如 WASM 配额 ADR 未决）时再登记。
 
 ## 9. 维护流程（加一个测试 ID）
 
@@ -246,9 +260,9 @@ manual 证据落盘。
    candidate 先验证），harness 会扫描源码确认每个 ID 有测试函数；`selector` 用该 crate 的
    cargo 包名。新增测试时把新 ID 追加进组 `ids`，不要只改源码。
 4. `implemented` 的 selector 必须能被对应 suite 输出命中；拿不准先跑 `--suite <name>` 看输出。
-5. 跑 `node tools/conformance.mjs --quick`，再按需重生成矩阵：
-   `--quick --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md`。
-   460+ 条 ID 建议始终带 `--compact`；quick 现在包含 schema/links/node-test。
+5. 跑 `node tools/conformance.mjs --quick` 做门禁；提交矩阵用
+   `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md`
+   （`--full` 才含真实 cargo 结果；540+ 条 ID 建议带 `--compact`）。
 6. 矩阵文件是生成的，**不要手改**；CI 会重新生成并上传 artifact。
 7. 新增 suite 属于 harness 变更（`SUITE_NAMES`/`SUITE_COMMANDS`/runner/解析器），需同时改
    [`tools/conformance.mjs`](../tools/conformance.mjs) 与注册表 `suites`，两处不一致时 harness 直接报错。

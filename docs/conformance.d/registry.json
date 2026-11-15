@@ -3,16 +3,13 @@
   "id_spec": "docs/spec/README.md#3",
   "updated_at": "2026-11-15",
   "notes": [
-    "本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。",
-    "本地 --workspace 实跑（2026-11-15，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 66 suites / 796 passed / 1 failed；逐包判定 implemented 441 pass / 1 fail（仅 CARGO-UNIT-001 workspace-wide）/ 34 skip。唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录；普通终端/Lead 环境同一 workspace 为 66 suites / 797 passed / 0 failed），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。",
-    "第三轮新增证据：CPP-PROC（plugin-sdk，23）、CPP-ISO（plugin-host external_process，17）、CPP-MANIFEST-023..026（TOML，4）、MCP-CLIENT-001..017（compat-mcp）、RPC-L2-121..128/221..227（host services，15）均为 cargo implemented；sidecar JS 单测 13 个走新增 quick suite `node-test`（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs），登记为 JS-L2SVC-001..013（源码 ID L2JS-xxx）。",
-    "第四轮新增证据：RPC-L2-401..410（compat-dsh-host tests/l2_host_services.rs，端到端 v2 握手/storage/wd/cancel/迟到/generation）、M3-LOADER-001..015（profile loader.rs include/group/patch/!!js）、ADC-ELEM-PANEL-001..010（ui-gpui adc.rs panel 入口）、ADC-PERF-001..002（ui-gpui tests/adc_perf.rs 预算，debug 约 4.4s）均为 cargo implemented；chat --selftest-l2 登记 RPC-L2-411 manual（phase A 真实 sidecar+phase B fixture storage-kv）。",
-    "第五轮新增证据：ADC-ELEM-PANEL-API-001..002（plugin-api）、ADC-ELEM-PANEL-HOST-001..004（plugin-host，含 external_process ui.render）、M3-DEFAULT-001..004/010..015/020..025/030..032/035..037/040..045/050..056/060..063（39 个，跨 agent-core/llm-*/agent-context/tool-runtime）、RPC-L2-501..505（compat-dsh-host tests/official_packages.rs，官方包装载/往返；依赖 .tmp/dsh-tools-all，缺失时测试内部 SKIP）均为 cargo implemented；chat --selftest-adc-panel 登记 ADC-PANEL-001 manual。",
-    "第六轮（W5/W6）新增证据：CPP-WASM-001..020（crates/plugin-wasm/tests/wasm_isolation.rs，wasmtime 主机 fuel/epoch/内存/输出/并发配额隔离 + core-module ABI；根 workspace 已纳入 dshr-plugin-wasm，不再 exclude）为 cargo implemented，selector=dshr-plugin-wasm；chat --selftest-defaults 登记 M3-DEFAULT-070 manual；docs/wasm-host.md、ADR-0010 更新、session-log tool.repeat 为文档证据（links 增长）。",
-    "第七轮（W7）新增证据：M3-PARALLEL-001..007（agent-core batch 调度：并发/顺序/预算截断/错误隔离/max_parallel/重复提醒/取消）、M3-PARALLEL-101..107（compat-dsh-host tests/parallel_batch.rs，sidecar 批 invoke 端到端）为 cargo implemented；chat --selftest-parallel-tools 登记 M3-PARALLEL-201 manual（串行 6.1s→并行 2.0s，ratio 0.33）；session-log 并行事件顺序约束等文档更新（links 变化）。",
-    "ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理（L2JS-001..013 → JS-L2SVC-001..013）。",
-    "manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、RPC-L2-411 = chat --selftest-l2（需 chat 二进制 + vendored sidecar）、ADC-PANEL-001 = chat --selftest-adc-panel（需 chat 二进制）、M3-DEFAULT-070 = chat --selftest-defaults（需 chat 二进制）、M3-PARALLEL-201 = chat --selftest-parallel-tools（需 chat 二进制 + vendored sidecar）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）、CPP-TRUST-019 = chat --selftest-trust-install；均按现有 schema 无法由 harness 自动判定，不计失败。",
-    "提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。",
+    "groups 批量条目的 source_dirs 由 harness 扫描：测试函数名内编码或 // ID / /// ID 注释匹配，找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。",
+    "本地 --full 实跑（2026-11-15，本机受限会话）：67 suites / 836 passed / 1 failed / 6 ignored；失败包仅 dshr-sidecar-guard（process::tests::drop_terminates_the_guarded_process，沙箱进程限制，隔离复跑同样失败，非代码）。普通终端/Lead 环境同 workspace 0 failed / 6 ignored。默认 `cargo test --workspace`（无 --no-fail-fast）在本机会先止于 sidecar-guard、到不了 official_packages；--no-fail-fast 输出里 official_packages 为 0 passed / 6 ignored。",
+    "P1-6 ignored 检测：cargo suite 按 `Running ...(<binary>-<hash>.exe)` + 紧随 `test result:` 建 binary→counts 映射（stdout/stderr 合并同一文件以保顺序）；integration test 二进制用 `crates/<pkg>/tests/<binary>.rs` 反查归属。`passed=0 && ignored>0` 的整文件忽略二进制会列入 suite summary（实测：`未执行: official_packages(6 ignored)`），该包若无其它已执行用例则判 FAIL；所有依赖 official fixture 的 ID 已改 manual，不会把 ignored 算 pass。",
+    "W8/P0 证据：CPP-WASM-021..027、CPP-ISO-018/019/026..031、M3-INSTALL-001..003、M3-DIGEST-001/002、CPP-PANEL-002、CPP-WASM-033、RPC-L2-202..208、L2JS-021..028、M3-PARALLEL-108..110 为 cargo/node-test implemented；CPP-PROC-024..027 由既有 plugin-sdk 组覆盖（源码 session.rs/tool_result.rs 有同 ID 重复，注册表按唯一 ID 登记）；RPC-L2-201/501..505 与 chat --selftest-wasm（CPP-WASM-100）为 manual。",
+    "ID 兼容说明：MCP 源码两段式 MCP-001..017 / JS L2JS-001..028 按 spec/README §3 三段式登记为 MCP-CLIENT-001..017 / JS-L2SVC-001..028，title/notes 保留源码 ID。",
+    "manual 证据：official gate（RPC-L2-201/501..505）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 6 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100（需构建 chat 二进制，部分需 vendored sidecar）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。",
+    "提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）；quick 门禁仍用 `--quick`。cargo suite 会把 #[ignore] 计入 ignored、绝不当作 passed：包级 selector 遇 ignored>0 判 FAIL，all 通过时也在消息中标注 ignored 数。compact markdown 的 PASS 行只列 ID+结果，非 PASS（FAIL/SKIP/PENDING/MANUAL）保留完整 6 列；JSON tests.rows 为 [id, area, result]。",
     ".github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。"
   ],
   "suites": {
@@ -29,8 +26,8 @@
       "timeout_ms": 120000
     },
     "node-test": {
-      "title": "sidecar JS 单测（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs）",
-      "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs",
+      "title": "sidecar JS 单测（node --test --test-isolation=none host-services + session-projections）",
+      "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
       "quick": true,
       "timeout_ms": 120000
     },
@@ -98,6 +95,14 @@
     {"id":"JS-L2SVC-011","area":"JS","title":"L2JS-011 storage hub exposes the official storage surface","status":"implemented","suite":"node-test","selector":"L2JS-011","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
     {"id":"JS-L2SVC-012","area":"JS","title":"L2JS-012 createHostServicesRuntime wires the sidecar surface","status":"implemented","suite":"node-test","selector":"L2JS-012","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
     {"id":"JS-L2SVC-013","area":"JS","title":"L2JS-013 event subscriptions reach the host channel","status":"implemented","suite":"node-test","selector":"L2JS-013","notes":"sidecar/dsh-official/lib/host-services.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-021","area":"JS","title":"L2JS-021 register + ensureSession init(header)","status":"implemented","suite":"node-test","selector":"L2JS-021","notes":"sidecar/dsh-official/lib/session-projections.test.mjs（对应 RPC-L2-202）；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-022","area":"JS","title":"L2JS-022 register validates definition","status":"implemented","suite":"node-test","selector":"L2JS-022","notes":"sidecar/dsh-official/lib/session-projections.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-023","area":"JS","title":"L2JS-023 session.event drives apply in order","status":"implemented","suite":"node-test","selector":"L2JS-023","notes":"sidecar/dsh-official/lib/session-projections.test.mjs（对应 RPC-L2-204）；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-024","area":"JS","title":"L2JS-024 duplicate seq is dropped","status":"implemented","suite":"node-test","selector":"L2JS-024","notes":"sidecar/dsh-official/lib/session-projections.test.mjs；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-025","area":"JS","title":"L2JS-025 gap detected and backfilled via events.read","status":"implemented","suite":"node-test","selector":"L2JS-025","notes":"sidecar/dsh-official/lib/session-projections.test.mjs（对应 RPC-L2-205）；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-026","area":"JS","title":"L2JS-026 events.read errors are surfaced","status":"implemented","suite":"node-test","selector":"L2JS-026","notes":"sidecar/dsh-official/lib/session-projections.test.mjs（对应 RPC-L2-206）；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-027","area":"JS","title":"L2JS-027 backfill is bounded and diagnosed","status":"implemented","suite":"node-test","selector":"L2JS-027","notes":"sidecar/dsh-official/lib/session-projections.test.mjs（对应 RPC-L2-207）；node --test --test-isolation=none"},
+    {"id":"JS-L2SVC-028","area":"JS","title":"L2JS-028 release stops projection updates","status":"implemented","suite":"node-test","selector":"L2JS-028","notes":"sidecar/dsh-official/lib/session-projections.test.mjs（对应 RPC-L2-208）；node --test --test-isolation=none"},
     {"id":"ADC-PERF-001","area":"ADC","title":"adc_perf: 满配额树构造 p95 预算","status":"implemented","suite":"cargo","selector":"dshr-ui-gpui","notes":"crates/ui-gpui/tests/adc_perf.rs::adc_construction_budget_max_quota_tree（默认 debug 也跑，4.4s；release 命令见 docs/m3-render-budget.md）；cargo test -p dshr-ui-gpui --test adc_perf"},
     {"id":"ADC-PERF-002","area":"ADC","title":"adc_perf: 10 棵典型树构造 p95 预算","status":"implemented","suite":"cargo","selector":"dshr-ui-gpui","notes":"crates/ui-gpui/tests/adc_perf.rs::adc_construction_budget_typical_trees；cargo test -p dshr-ui-gpui --test adc_perf"},
     {"id":"ADC-BIND-001","area":"ADC","title":"绑定前缀权限与 patch seq 乱序丢弃","status":"pending","suite":null,"selector":null,"notes":"依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。"},
@@ -125,6 +130,13 @@
     {"id":"M3-DEFAULT-070","area":"M3","title":"chat --selftest-defaults（M3 默认差异接线自检）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-defaults：无网络自检 approval 默认/read-only/重复工具软提醒阈值/默认差异接线；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。"},
     {"id":"ADC-PANEL-001","area":"ADC","title":"chat --selftest-adc-panel（ADC 插件面板产品链路）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-adc-panel：装载 fixture 插件→panels→render_panel（验证到 AnyElement 构造层）→未知元素 view；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。"},
     {"id":"M3-PARALLEL-201","area":"M3","title":"chat --selftest-parallel-tools（串行 vs 并行墙钟 + 顺序）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-parallel-tools：sidecar 批 invoke 串行 6.1s→并行 2.0s（ratio 0.33）且事件顺序约束成立；需构建 chat 二进制 + vendored sidecar，harness 无 selftest suite，人工/脚本判定。"},
+    {"id":"RPC-L2-201","area":"RPC","title":"官方 dsh-tool-todo 在 v2 sidecar 下装载（official gate）","status":"manual","suite":null,"selector":null,"notes":"需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 中该测试 #[ignore]，输出 0 passed/6 ignored（不计为通过）。"},
+    {"id":"RPC-L2-501","area":"RPC","title":"官方 working_directory 包装载绿（official gate）","status":"manual","suite":null,"selector":null,"notes":"需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/6 ignored（不计为通过）。"},
+    {"id":"RPC-L2-502","area":"RPC","title":"官方工具 execute 被 exec.agent 阻塞（official gate）","status":"manual","suite":null,"selector":null,"notes":"同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。"},
+    {"id":"RPC-L2-503","area":"RPC","title":"官方 working_directory 签名服务往返（official gate）","status":"manual","suite":null,"selector":null,"notes":"同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。"},
+    {"id":"RPC-L2-504","area":"RPC","title":"官方 dsh-storage-domain 往返（official gate）","status":"manual","suite":null,"selector":null,"notes":"同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。"},
+    {"id":"RPC-L2-505","area":"RPC","title":"官方 dsh-storage 是 Cordis Service class（official gate）","status":"manual","suite":null,"selector":null,"notes":"同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。"},
+    {"id":"CPP-WASM-100","area":"CPP","title":"chat --selftest-wasm（WASM 插件产品链路）","status":"manual","suite":null,"selector":null,"notes":"apps/desktop-gpui/src/bin/chat.rs 的 --selftest-wasm：安装→装载→调用→trap→卸载（review P1-1）；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。"},
     {"id":"GATE-G2-001","area":"GATE","title":"外部作者可发布实验（仓库外构建 + 安装 + 卸载）","status":"manual","suite":null,"selector":null,"notes":"M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。"}
   ],
   "groups": [
@@ -691,7 +703,7 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-compat-dsh-host",
-      "notes": "crates/compat-dsh-host/src/{service,storage_kv}.rs、tests/l2_host_services.rs、tests/official_packages.rs 的 #[test]；cargo test -p dshr-compat-dsh-host（RPC-L2-501..505 依赖 .tmp/dsh-tools-all，缺失时测试内部 SKIP，详见 docs/m3-gate-evidence.md）",
+      "notes": "crates/compat-dsh-host/src/{service,storage_kv,services}.rs、tests/l2_host_services.rs 的 #[test]；cargo test -p dshr-compat-dsh-host（RPC-L2-201/501..505 依赖 .tmp/dsh-tools-all，已改为 manual，见 tools/official-l2-gate.ps1）",
       "source_dirs": [
         "crates/compat-dsh-host/src",
         "crates/compat-dsh-host/tests"
@@ -754,11 +766,13 @@
         "RPC-L2-408",
         "RPC-L2-409",
         "RPC-L2-410",
-        "RPC-L2-501",
-        "RPC-L2-502",
-        "RPC-L2-503",
-        "RPC-L2-504",
-        "RPC-L2-505"
+        "RPC-L2-202",
+        "RPC-L2-203",
+        "RPC-L2-204",
+        "RPC-L2-205",
+        "RPC-L2-206",
+        "RPC-L2-207",
+        "RPC-L2-208"
       ]
     },
     {
@@ -803,8 +817,9 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-host",
-      "notes": "crates/plugin-host/tests/external_process.rs；cargo test -p dshr-plugin-host --test external_process",
+      "notes": "crates/plugin-host/src/external.rs、crates/plugin-host/tests/external_process.rs 的 #[test]；cargo test -p dshr-plugin-host",
       "source_dirs": [
+        "crates/plugin-host/src",
         "crates/plugin-host/tests"
       ],
       "ids": [
@@ -823,8 +838,16 @@
         "CPP-ISO-013",
         "CPP-ISO-014",
         "CPP-ISO-015",
+        "CPP-ISO-018",
+        "CPP-ISO-019",
         "CPP-ISO-020",
-        "CPP-ISO-021"
+        "CPP-ISO-021",
+        "CPP-ISO-026",
+        "CPP-ISO-027",
+        "CPP-ISO-028",
+        "CPP-ISO-029",
+        "CPP-ISO-030",
+        "CPP-ISO-031"
       ]
     },
     {
@@ -857,7 +880,14 @@
         "CPP-WASM-017",
         "CPP-WASM-018",
         "CPP-WASM-019",
-        "CPP-WASM-020"
+        "CPP-WASM-020",
+        "CPP-WASM-021",
+        "CPP-WASM-022",
+        "CPP-WASM-023",
+        "CPP-WASM-024",
+        "CPP-WASM-025",
+        "CPP-WASM-026",
+        "CPP-WASM-027"
       ]
     },
     {
@@ -897,7 +927,43 @@
         "M3-PARALLEL-104",
         "M3-PARALLEL-105",
         "M3-PARALLEL-106",
-        "M3-PARALLEL-107"
+        "M3-PARALLEL-107",
+        "M3-PARALLEL-108",
+        "M3-PARALLEL-109",
+        "M3-PARALLEL-110"
+      ]
+    },
+    {
+      "name": "CPP-PANEL（plugin-host：panel id 冲突拒绝与原子回滚）",
+      "area": "CPP",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/src/lib.rs 的 #[test]（review P2-3：跨插件/同插件重复 panel id 冲突）；cargo test -p dshr-plugin-host",
+      "source_dirs": [
+        "crates/plugin-host/src"
+      ],
+      "ids": [
+        "CPP-PANEL-002",
+        "CPP-WASM-033"
+      ]
+    },
+    {
+      "name": "M3-INSTALL / M3-DIGEST（profile：原子安装/回滚与摘要规则）",
+      "area": "M3",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-profile",
+      "notes": "crates/profile/src/{install,trust}.rs 的 #[test]（M3-INSTALL-001..003 / M3-DIGEST-001..002）；cargo test -p dshr-profile",
+      "source_dirs": [
+        "crates/profile/src"
+      ],
+      "ids": [
+        "M3-INSTALL-001",
+        "M3-INSTALL-002",
+        "M3-INSTALL-003",
+        "M3-DIGEST-001",
+        "M3-DIGEST-002"
       ]
     }
   ]

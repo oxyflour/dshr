@@ -2,31 +2,30 @@
 
 > 本文件由 `tools/conformance.mjs` 生成，请勿手改；测试清单事实源是 `docs/conformance.d/registry.json`。
 > **CI 状态**：`.github/workflows/conformance.yml` 尚未在 GitHub Actions 实跑；本报告由本机命令生成。
-> **格式**：compact（逐 ID 行只保留 ID/领域/状态/结果/证据/消息，title/notes 见注册表）。
 
 ## 元数据
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-15T11:51:05.341Z |
-| git HEAD | e10ba8f42c8fba1285dfeaf80716384684d54aae（dirty，3 个文件未提交） |
+| generated_at | 2026-11-15T12:40:26.555Z |
+| git HEAD | 5d2335d575bc9f50c44747f9b1a38a6c170d60a3（dirty，9 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
-| invocation | quick — `node tools/conformance.mjs --quick --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，502 条测试） |
+| invocation | full — `node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
+| registry | docs/conformance.d/registry.json（schema_version=1，544 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 502 |
-| implemented | 476 |
-| implemented passed | 34 |
+| 总测试 ID | 544 |
+| implemented | 511 |
+| implemented passed | 511 |
 | implemented failed | 0 |
-| implemented skipped | 442 |
+| implemented skipped | 0 |
 | pending | 18 |
-| manual | 8 |
+| manual | 15 |
 | blocked | 0 |
 | **failed（导致退出码 1）** | **0** |
 
@@ -34,531 +33,570 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 1.49s | `node schema/check.mjs` | 71/71 cases passed |
-| links | pass | 0 | 0.36s | `node tools/check-links.mjs` | 318 link(s) checked, 0 broken, 61 file(s) scanned |
-| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs` | 13/13 node tests passed |
+| schema | pass | 0 | 0.27s | `node schema/check.mjs` | 71/71 cases passed |
+| links | pass | 0 | 0.28s | `node tools/check-links.mjs` | 336 link(s) checked, 0 broken, 65 file(s) scanned |
+| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 54.04s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
-| ID | 领域 | 状态 | 结果 | 证据 | 消息 |
-|---|---|---|---|---|---|
-| SCHEMA-FIXTURE-001 | SCHEMA | implemented | PASS | [element] valid: nested stack |  |
-| SCHEMA-FIXTURE-002 | SCHEMA | implemented | PASS | [element] invalid: unknown element |  |
-| SCHEMA-FIXTURE-003 | SCHEMA | implemented | PASS | [element] invalid: missing type |  |
-| SCHEMA-FIXTURE-004 | SCHEMA | implemented | PASS | [element] invalid: child unknown type |  |
-| SCHEMA-FIXTURE-005 | SCHEMA | implemented | PASS | [element] invalid: unknown top-level field |  |
-| SCHEMA-FIXTURE-006 | SCHEMA | implemented | PASS | [slotRegistration] valid: panel |  |
-| SCHEMA-FIXTURE-007 | SCHEMA | implemented | PASS | [slotRegistration] invalid: slot_id without dot |  |
-| SCHEMA-FIXTURE-008 | SCHEMA | implemented | PASS | [slotRegistration] invalid: missing view |  |
-| SCHEMA-FIXTURE-009 | SCHEMA | implemented | PASS | [slotRegistration] invalid: plugin_id uppercase |  |
-| SCHEMA-FIXTURE-010 | SCHEMA | implemented | PASS | [slotRegistration] invalid: bad location |  |
-| SCHEMA-FIXTURE-011 | SCHEMA | implemented | PASS | [manifest] valid: wasm tool plugin |  |
-| SCHEMA-FIXTURE-012 | SCHEMA | implemented | PASS | [manifest] invalid: api v2 |  |
-| SCHEMA-FIXTURE-013 | SCHEMA | implemented | PASS | [manifest] invalid: unknown runtime kind |  |
-| SCHEMA-FIXTURE-014 | SCHEMA | implemented | PASS | [manifest] invalid: unknown top-level field |  |
-| SCHEMA-FIXTURE-015 | SCHEMA | implemented | PASS | [manifest] invalid: memory over cap |  |
-| SCHEMA-FIXTURE-016 | SCHEMA | implemented | PASS | [envelope] valid: tool.invoke |  |
-| SCHEMA-FIXTURE-017 | SCHEMA | implemented | PASS | [envelope] invalid: missing trace_id |  |
-| SCHEMA-FIXTURE-018 | SCHEMA | implemented | PASS | [envelope] invalid: depth over limit |  |
-| SCHEMA-FIXTURE-019 | SCHEMA | implemented | PASS | [envelope] invalid: unknown kind |  |
-| SCHEMA-FIXTURE-020 | SCHEMA | implemented | PASS | [envelope] invalid: bad error code |  |
-| DOC-LINK-001 | DOC | implemented | PASS | all |  |
-| CARGO-UNIT-001 | CARGO | implemented | SKIP | all |  |
-| CARGO-UNIT-002 | CARGO | implemented | SKIP | dshr-plugin-host |  |
-| CARGO-UNIT-003 | CARGO | implemented | SKIP | dshr-plugin-api |  |
-| CARGO-UNIT-004 | CARGO | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-BIND-001 | ADC | pending | PENDING | — | 依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。 |
-| ADC-ELEM-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-004 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-005 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-006 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-007 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-008 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-009 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-010 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-011 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-012 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-013 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-014 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-015 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-016 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-017 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-018 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-019 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-020 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-021 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-022 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-ELEM-A11Y-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-A11Y-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-A11Y-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-A11Y-004 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-ALIGN-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-CHART-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-CHART-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-GRID-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-GRID-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-ICON-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-JUSTIFY-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-LIST-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-NUM-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-004 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-005 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-006 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-007 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-008 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-009 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-010 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-PANEL-API-001 | ADC | implemented | SKIP | dshr-plugin-api |  |
-| ADC-ELEM-PANEL-API-002 | ADC | implemented | SKIP | dshr-plugin-api |  |
-| ADC-ELEM-PANEL-HOST-001 | ADC | implemented | SKIP | dshr-plugin-host |  |
-| ADC-ELEM-PANEL-HOST-002 | ADC | implemented | SKIP | dshr-plugin-host |  |
-| ADC-ELEM-PANEL-HOST-003 | ADC | implemented | SKIP | dshr-plugin-host |  |
-| ADC-ELEM-PANEL-HOST-004 | ADC | implemented | SKIP | dshr-plugin-host |  |
-| ADC-ELEM-PLACEHOLDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-RENDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-RENDER-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-RENDER-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-SLIDER-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-SPACING-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-SPACING-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-TABLE-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-TABLE-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-TEXT-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-TEXT-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-TEXT-003 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-ELEM-TONE-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-PANEL-001 | ADC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-adc-panel：装载 fixture 插件→panels→render_panel（验证到 AnyElement 构造层）→未知元素 view；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
-| ADC-PERF-001 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-PERF-002 | ADC | implemented | SKIP | dshr-ui-gpui |  |
-| ADC-SEC-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-004 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-005 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-006 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-007 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-008 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SEC-009 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-001 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-002 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-003 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-004 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-005 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-006 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-007 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-008 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-009 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-010 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-011 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-012 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-013 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-014 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-015 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-016 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-017 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-018 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-019 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-020 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-021 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-022 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| ADC-SLOT-023 | ADC | implemented | SKIP | dshr-ui-contributions |  |
-| CPP-AUTHOR-001 | CPP | manual | MANUAL | — | tools/authoring-check.ps1；仓库外按 docs/plugin-authoring.md + templates 构建/打包/安装（G2），人工/脚本判定。 |
-| CPP-EFF-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-EFF-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-011 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-012 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-013 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-014 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-015 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-016 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-017 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-018 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-019 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-020 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-021 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-022 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-023 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-024 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-025 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-026 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-027 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-FIBER-101 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-102 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-103 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-104 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-105 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-111 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-112 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-113 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-114 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-115 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-116 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-121 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-122 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-123 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-124 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-125 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-126 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-127 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-131 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-132 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-FIBER-133 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-ISO-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-011 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-012 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-013 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-014 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-015 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-020 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-021 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-ISO-022 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。 |
-| CPP-MANIFEST-001 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-002 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-003 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-004 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-005 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-006 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-007 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-008 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-009 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-010 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-011 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-012 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-013 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-014 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-015 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-016 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-017 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-018 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-019 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-020 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-021 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-022 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-023 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-024 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-025 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-MANIFEST-026 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-PROC-001 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-002 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-003 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-004 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-005 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-006 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-007 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-008 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-009 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-010 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-020 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-021 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-022 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-023 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-024 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-025 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-026 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-027 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-028 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-029 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-030 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-031 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-PROC-032 | CPP | implemented | SKIP | dshr-plugin-sdk |  |
-| CPP-SVC-001 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-002 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-003 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-004 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-005 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-006 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-007 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-008 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-009 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-010 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-011 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-012 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-013 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-SVC-014 | CPP | implemented | SKIP | dshr-plugin-host |  |
-| CPP-TRUST-001 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-002 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-003 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-004 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-005 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-006 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-007 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-008 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-009 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-010 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-011 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-012 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-013 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-014 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-015 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-016 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-017 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-018 | CPP | implemented | SKIP | dshr-profile |  |
-| CPP-TRUST-019 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。 |
-| CPP-VER-001 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-VER-002 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-VER-003 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-VER-004 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-VER-005 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-VER-006 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-VER-007 | CPP | implemented | SKIP | dshr-plugin-api |  |
-| CPP-WASM-001 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-002 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-003 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-004 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-005 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-006 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-007 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-008 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-009 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-010 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-011 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-012 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-013 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-014 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-015 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-016 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-017 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-018 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-019 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| CPP-WASM-020 | CPP | implemented | SKIP | dshr-plugin-wasm |  |
-| RPC-L2-001 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-002 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-003 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-004 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-005 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-006 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-007 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-008 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-009 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-010 | RPC | implemented | SKIP | dshr-compat-dsh-protocol |  |
-| RPC-L2-101 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-102 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-103 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-104 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-105 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-106 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-107 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-108 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-109 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-110 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-111 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-112 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-113 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-114 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-115 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-116 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-117 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-118 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-119 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-121 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-122 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-123 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-124 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-125 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-126 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-127 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-128 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-221 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-222 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-223 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-224 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-225 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-226 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-227 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-301 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-302 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-303 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-304 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-305 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-306 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-307 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-308 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-309 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-310 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-311 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-312 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-313 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-401 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-402 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-403 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-404 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-405 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-406 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-407 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-408 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-409 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-410 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-411 | RPC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。 |
-| RPC-L2-501 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-502 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-503 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-504 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| RPC-L2-505 | RPC | implemented | SKIP | dshr-compat-dsh-host |  |
-| MCP-CLIENT-001 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-002 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-003 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-004 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-005 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-006 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-007 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-008 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-009 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-010 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-011 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-012 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-013 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-014 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-015 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-016 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| MCP-CLIENT-017 | MCP | implemented | SKIP | dshr-compat-mcp |  |
-| JS-L2SVC-001 | JS | implemented | PASS | L2JS-001 |  |
-| JS-L2SVC-002 | JS | implemented | PASS | L2JS-002 |  |
-| JS-L2SVC-003 | JS | implemented | PASS | L2JS-003 |  |
-| JS-L2SVC-004 | JS | implemented | PASS | L2JS-004 |  |
-| JS-L2SVC-005 | JS | implemented | PASS | L2JS-005 |  |
-| JS-L2SVC-006 | JS | implemented | PASS | L2JS-006 |  |
-| JS-L2SVC-007 | JS | implemented | PASS | L2JS-007 |  |
-| JS-L2SVC-008 | JS | implemented | PASS | L2JS-008 |  |
-| JS-L2SVC-009 | JS | implemented | PASS | L2JS-009 |  |
-| JS-L2SVC-010 | JS | implemented | PASS | L2JS-010 |  |
-| JS-L2SVC-011 | JS | implemented | PASS | L2JS-011 |  |
-| JS-L2SVC-012 | JS | implemented | PASS | L2JS-012 |  |
-| JS-L2SVC-013 | JS | implemented | PASS | L2JS-013 |  |
-| M3-DEFAULT-001 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-002 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-003 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-004 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-010 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-011 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-012 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-013 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-014 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-015 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-DEFAULT-020 | M3 | implemented | SKIP | dshr-llm-retry |  |
-| M3-DEFAULT-021 | M3 | implemented | SKIP | dshr-llm-retry |  |
-| M3-DEFAULT-022 | M3 | implemented | SKIP | dshr-llm-retry |  |
-| M3-DEFAULT-023 | M3 | implemented | SKIP | dshr-llm-retry |  |
-| M3-DEFAULT-024 | M3 | implemented | SKIP | dshr-llm-retry |  |
-| M3-DEFAULT-025 | M3 | implemented | SKIP | dshr-llm-retry |  |
-| M3-DEFAULT-030 | M3 | implemented | SKIP | dshr-llm-deepseek |  |
-| M3-DEFAULT-031 | M3 | implemented | SKIP | dshr-llm-deepseek |  |
-| M3-DEFAULT-032 | M3 | implemented | SKIP | dshr-llm-deepseek |  |
-| M3-DEFAULT-035 | M3 | implemented | SKIP | dshr-llm-openai |  |
-| M3-DEFAULT-036 | M3 | implemented | SKIP | dshr-llm-openai |  |
-| M3-DEFAULT-037 | M3 | implemented | SKIP | dshr-llm-openai |  |
-| M3-DEFAULT-040 | M3 | implemented | SKIP | dshr-agent-context |  |
-| M3-DEFAULT-041 | M3 | implemented | SKIP | dshr-agent-context |  |
-| M3-DEFAULT-042 | M3 | implemented | SKIP | dshr-agent-context |  |
-| M3-DEFAULT-043 | M3 | implemented | SKIP | dshr-agent-context |  |
-| M3-DEFAULT-044 | M3 | implemented | SKIP | dshr-agent-context |  |
-| M3-DEFAULT-045 | M3 | implemented | SKIP | dshr-agent-context |  |
-| M3-DEFAULT-050 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-051 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-052 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-053 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-054 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-055 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-056 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-060 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-061 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-062 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-063 | M3 | implemented | SKIP | dshr-tool-runtime |  |
-| M3-DEFAULT-070 | M3 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-defaults：无网络自检 approval 默认/read-only/重复工具软提醒阈值/默认差异接线；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
-| M3-LOADER-001 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-002 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-003 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-004 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-005 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-006 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-007 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-008 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-009 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-010 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-011 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-012 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-013 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-014 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-LOADER-015 | M3 | implemented | SKIP | dshr-profile |  |
-| M3-PARALLEL-001 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-002 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-003 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-004 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-005 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-006 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-007 | M3 | implemented | SKIP | dshr-agent-core |  |
-| M3-PARALLEL-101 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-102 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-103 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-104 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-105 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-106 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-107 | M3 | implemented | SKIP | dshr-compat-dsh-host |  |
-| M3-PARALLEL-201 | M3 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-parallel-tools：sidecar 批 invoke 串行 6.1s→并行 2.0s（ratio 0.33）且事件顺序约束成立；需构建 chat 二进制 + vendored sidecar，harness 无 selftest suite，人工/脚本判定。 |
-| SELF-CHAT-001 | SELF | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
-| SELF-CHAT-002 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-003 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-004 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-005 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-006 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-007 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-008 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-009 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-010 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-011 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-012 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-013 | SELF | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本（CI 无此环境）。 |
-| SELF-CHAT-014 | SELF | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
-| SELF-CHAT-015 | SELF | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
-| SELF-CHAT-016 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
-| GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
+| ID | 领域 | 标题 | 状态 | 结果 | 证据 | 消息 |
+|---|---|---|---|---|---|---|
+| SCHEMA-FIXTURE-001 | SCHEMA | element: valid nested stack | implemented | PASS | schema: [element] valid: nested stack | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-002 | SCHEMA | element: invalid unknown element | implemented | PASS | schema: [element] invalid: unknown element | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-003 | SCHEMA | element: invalid missing type | implemented | PASS | schema: [element] invalid: missing type | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-004 | SCHEMA | element: invalid child unknown type | implemented | PASS | schema: [element] invalid: child unknown type | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-005 | SCHEMA | element: invalid unknown top-level field | implemented | PASS | schema: [element] invalid: unknown top-level field | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-006 | SCHEMA | slotRegistration: valid panel | implemented | PASS | schema: [slotRegistration] valid: panel | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-007 | SCHEMA | slotRegistration: invalid slot_id without dot | implemented | PASS | schema: [slotRegistration] invalid: slot_id without dot | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-008 | SCHEMA | slotRegistration: invalid missing view | implemented | PASS | schema: [slotRegistration] invalid: missing view | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-009 | SCHEMA | slotRegistration: invalid plugin_id uppercase | implemented | PASS | schema: [slotRegistration] invalid: plugin_id uppercase | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-010 | SCHEMA | slotRegistration: invalid bad location | implemented | PASS | schema: [slotRegistration] invalid: bad location | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-011 | SCHEMA | manifest: valid wasm tool plugin | implemented | PASS | schema: [manifest] valid: wasm tool plugin | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-012 | SCHEMA | manifest: invalid api v2 | implemented | PASS | schema: [manifest] invalid: api v2 | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-013 | SCHEMA | manifest: invalid unknown runtime kind | implemented | PASS | schema: [manifest] invalid: unknown runtime kind | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-014 | SCHEMA | manifest: invalid unknown top-level field | implemented | PASS | schema: [manifest] invalid: unknown top-level field | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-015 | SCHEMA | manifest: invalid memory over cap | implemented | PASS | schema: [manifest] invalid: memory over cap | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-016 | SCHEMA | envelope: valid tool.invoke | implemented | PASS | schema: [envelope] valid: tool.invoke | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-017 | SCHEMA | envelope: invalid missing trace_id | implemented | PASS | schema: [envelope] invalid: missing trace_id | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-018 | SCHEMA | envelope: invalid depth over limit | implemented | PASS | schema: [envelope] invalid: depth over limit | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-019 | SCHEMA | envelope: invalid unknown kind | implemented | PASS | schema: [envelope] invalid: unknown kind | suite 通过（71/71 cases passed） |
+| SCHEMA-FIXTURE-020 | SCHEMA | envelope: invalid bad error code | implemented | PASS | schema: [envelope] invalid: bad error code | suite 通过（71/71 cases passed） |
+| DOC-LINK-001 | DOC | 全部 Markdown 相对链接可解析 | implemented | PASS | links: all | 链接检查通过（336 link(s) checked, 0 broken, 65 file(s) scanned） |
+| CARGO-UNIT-001 | CARGO | Rust workspace 全部单测 | implemented | PASS | cargo: all | cargo workspace 通过（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)；6 个 #[ignore] 未执行，不计为通过（official_packages: 0 passed/6 ignored）；官方包证据见 manual RPC-L2-201/501..505 的 tools/official-l2-gate.ps1） |
+| CARGO-UNIT-002 | CARGO | dshr-plugin-host 单测 | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CARGO-UNIT-003 | CARGO | dshr-plugin-api 单测 | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CARGO-UNIT-004 | CARGO | dshr-ui-contributions 单测 | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-BIND-001 | ADC | 绑定前缀权限与 patch seq 乱序丢弃 | pending | PENDING | — | 依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。 |
+| ADC-ELEM-001 | ADC | adc_elem_001_parses_layout_and_leaf_elements | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-002 | ADC | adc_elem_002_unknown_element_degrades_to_placeholder_without_losing_tree | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-003 | ADC | adc_elem_003_missing_type_becomes_placeholder_root | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-004 | ADC | adc_elem_004_leaf_with_children_is_rejected_but_node_kept | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-005 | ADC | adc_elem_005_unknown_props_ignored_and_diagnosed | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-006 | ADC | adc_elem_006_invalid_prop_values_are_dropped | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-007 | ADC | adc_elem_007_missing_required_prop_is_diagnosed_but_node_kept | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-008 | ADC | adc_elem_008_interactive_element_without_a11y_label_is_flagged | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-009 | ADC | adc_elem_009_valid_actions_are_parsed | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-010 | ADC | adc_elem_010_invalid_actions_are_downgraded | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-011 | ADC | adc_elem_011_oversized_copy_action_is_downgraded | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-012 | ADC | adc_elem_012_all_twenty_six_elements_map_to_kinds | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-013 | ADC | adc_elem_013_common_props_are_hoisted | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-014 | ADC | adc_elem_014_accordion_sections_expose_parsed_children | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-015 | ADC | adc_elem_015_invalid_accordion_sections_are_dropped | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-016 | ADC | adc_elem_016_card_requires_children_and_tabs_carries_active_page | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-017 | ADC | adc_elem_017_walk_visits_depth_first_with_depth | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-018 | ADC | adc_elem_018_parse_tree_str_degrades_invalid_json | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-019 | ADC | adc_elem_019_non_object_props_degrades_to_placeholder | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-020 | ADC | adc_elem_020_unknown_node_level_field_is_diagnosed | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-021 | ADC | adc_elem_021_constructors_produce_usable_nodes | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-022 | ADC | adc_elem_022_full_vocabulary_tree_has_no_props_diagnostics | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-A11Y-001 | ADC | a11y_label_missing_flags_interactive_elements_only | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-A11Y-002 | ADC | a11y_issue_carries_code_path_and_test_id | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-A11Y-003 | ADC | interactive_kinds_match_the_contributions_crate | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-A11Y-004 | ADC | a11y_issues_walk_children_and_accordion_sections | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-ALIGN-001 | ADC | align_maps_the_four_documented_values | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-CHART-001 | ADC | chart_points_and_series_are_clipped | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-CHART-002 | ADC | chart_bar_heights_normalize_and_survive_bad_values | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-GRID-001 | ADC | grid_columns_stay_within_one_to_twelve | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-GRID-002 | ADC | grid_span_stays_within_one_to_twelve | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-ICON-001 | ADC | icon_glyph_maps_known_names_and_falls_back | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-JUSTIFY-001 | ADC | justify_maps_the_four_documented_values | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-LIST-001 | ADC | list_items_are_clipped | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-NUM-001 | ADC | format_number_keeps_integers_short | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-001 | ADC | panel_renders_valid_tree_without_diagnostics | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-002 | ADC | panel_unknown_root_falls_back_to_placeholder | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-003 | ADC | panel_node_budget_is_clipped_and_diagnosed | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-004 | ADC | panel_depth_exceeded_still_renders | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-005 | ADC | panel_null_tree_degrades_to_placeholder | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-006 | ADC | panel_empty_children_is_valid | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-007 | ADC | panel_from_str_handles_invalid_and_valid_json | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-008 | ADC | panel_a11y_missing_matches_render_side_issues | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-009 | ADC | panel_leaf_with_children_is_diagnosed_and_rendered | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-010 | ADC | panel_containers_render_nested_content | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-API-001 | ADC | id | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-API-002 | ADC | adc_elem_panel_api_002_panel_view_falls_back_to_id | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-HOST-001 | ADC | render_panel_returns_adc_tree_from_native_plugin | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-HOST-002 | ADC | render_panel_unknown_plugin_is_not_found | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-HOST-003 | ADC | render_panel_default_impl_is_readable_for_plugins_without_views | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PANEL-HOST-004 | ADC | adc_elem_panel_host_004_render_panel_through_external_plugin | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-PLACEHOLDER-001 | ADC | placeholder_label_includes_type_and_detail | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-RENDER-001 | ADC | every_element_kind_renders_without_a_window | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-RENDER-002 | ADC | representative_tree_renders_with_props | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-RENDER-003 | ADC | parse_tree_output_renders_end_to_end | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-SLIDER-001 | ADC | slider_fraction_clamps_and_handles_degenerate_range | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-SPACING-001 | ADC | spacing_accepts_only_documented_tokens | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-SPACING-002 | ADC | spacing_px_maps_tokens_and_defaults_invalid_to_zero | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-TABLE-001 | ADC | table_columns_and_rows_are_clipped | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-TABLE-002 | ADC | cell_text_renders_scalar_values | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-TEXT-001 | ADC | truncate_text_keeps_utf8_boundaries | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-TEXT-002 | ADC | truncate_text_to_handles_short_and_degenerate_input | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-TEXT-003 | ADC | text_metrics_follow_theme_token_scale | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-ELEM-TONE-001 | ADC | tone_uses_theme_tokens_only | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-PANEL-001 | ADC | chat --selftest-adc-panel（ADC 插件面板产品链路） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-adc-panel：装载 fixture 插件→panels→render_panel（验证到 AnyElement 构造层）→未知元素 view；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
+| ADC-PERF-001 | ADC | adc_perf: 满配额树构造 p95 预算 | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-PERF-002 | ADC | adc_perf: 10 棵典型树构造 p95 预算 | implemented | PASS | cargo: dshr-ui-gpui | 包 dshr-ui-gpui 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-001 | ADC | adc_sec_001_depth_over_limit_is_clipped_with_diagnostic | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-002 | ADC | adc_sec_002_node_budget_is_enforced | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-003 | ADC | adc_sec_003_text_over_eight_kib_is_truncated | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-004 | ADC | adc_sec_004_open_external_is_https_only | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-005 | ADC | adc_sec_005_copy_quota_is_64_kib | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-006 | ADC | adc_sec_006_data_arrays_are_truncated_to_schema_quota | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-007 | ADC | adc_sec_007_malformed_trees_never_panic | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-008 | ADC | adc_sec_008_image_requires_content_addressed_attachment_id | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SEC-009 | ADC | adc_sec_009_security_quotas_are_public_constants | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-001 | ADC | adc_slot_001_builtin_catalog_loads_twelve_slots | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-002 | ADC | adc_slot_002_catalog_matches_spec_table | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-003 | ADC | adc_slot_003_builtin_catalog_self_validates | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-004 | ADC | adc_slot_004_key_domains | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-005 | ADC | adc_slot_005_catalog_rejects_unknown_kind | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-006 | ADC | adc_slot_006_catalog_rejects_duplicate_slot_id | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-007 | ADC | adc_slot_007_catalog_rejects_unknown_scope | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-008 | ADC | adc_slot_008_field_type_checks | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-009 | ADC | adc_slot_009_catalog_validate_flags_contract_drift | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-010 | ADC | adc_slot_010_single_replaces_previous_and_records_diagnostic | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-011 | ADC | adc_slot_011_single_exclusive_rejects_second | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-012 | ADC | adc_slot_012_list_sorted_by_order_then_registration_id | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-013 | ADC | adc_slot_013_list_duplicate_id_rejected | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-014 | ADC | adc_slot_014_unregister_is_idempotent | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-015 | ADC | adc_slot_015_keyed_replaces_same_key_and_isolates_keys | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-016 | ADC | adc_slot_016_keyed_closed_domain_rejects_unknown_key | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-017 | ADC | adc_slot_017_closed_domain_only_for_closed_keyed_slots | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-018 | ADC | adc_slot_018_chain_resolves_in_order | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-019 | ADC | adc_slot_019_invalidate_generation_removes_only_that_generation | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-020 | ADC | adc_slot_020_generation_invalidation_is_reverse_registration_order | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-021 | ADC | adc_slot_021_registration_validation_errors_are_structured | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-022 | ADC | adc_slot_022_plugin_id_is_optional_but_checked_when_present | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| ADC-SLOT-023 | ADC | adc_slot_023_resolve_dispatches_by_kind | implemented | PASS | cargo: dshr-ui-contributions | 包 dshr-ui-contributions 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-AUTHOR-001 | CPP | tools/authoring-check.ps1（外部作者 E2E 门禁） | manual | MANUAL | — | tools/authoring-check.ps1；仓库外按 docs/plugin-authoring.md + templates 构建/打包/安装（G2），人工/脚本判定。 |
+| CPP-EFF-001 | CPP | cpp_eff_001_dispose_runs_strictly_lifo | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-002 | CPP | cpp_eff_002_dispose_is_idempotent | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-003 | CPP | cpp_eff_003_single_panic_does_not_interrupt_cleanup | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-004 | CPP | cpp_eff_004_single_timeout_is_recorded_and_cleanup_continues | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-005 | CPP | cpp_eff_005_effect_ids_and_registration_labels_are_recorded | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-006 | CPP | cpp_eff_006_empty_dispose_is_ok | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-007 | CPP | cpp_eff_007_timeout_is_configurable | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-008 | CPP | cpp_eff_008_apply_failure_dispose_report_is_kept_on_fiber | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-009 | CPP | cpp_eff_009_unload_report_is_all_ok_for_cooperative_effects | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-EFF-010 | CPP | cpp_eff_010_effects_of_different_fibers_are_independent | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-001 | CPP | cpp_fiber_001_legal_transition_matrix_matches_spec | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-002 | CPP | cpp_fiber_002_illegal_transitions_are_rejected_without_state_change | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-003 | CPP | cpp_fiber_003_dependency_pause_and_resume_transitions | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-004 | CPP | cpp_fiber_004_pending_can_be_unloaded_into_terminal_state | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-005 | CPP | cpp_fiber_005_state_names_are_stable_and_complete | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-006 | CPP | cpp_fiber_006_load_succeeds_into_active_with_generation | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-007 | CPP | cpp_fiber_007_duplicate_load_is_rejected_while_active | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-008 | CPP | cpp_fiber_008_apply_failure_marks_failed_and_rolls_back_effects_lifo | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-009 | CPP | cpp_fiber_009_unload_disposes_effects_lifo_and_is_terminal | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-010 | CPP | cpp_fiber_010_second_unload_is_not_loaded_and_does_not_rerun_effects | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-011 | CPP | cpp_fiber_011_reload_after_dispose_gets_new_generation | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-012 | CPP | cpp_fiber_012_missing_required_service_fails_then_retry_succeeds | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-013 | CPP | cpp_fiber_013_apply_timeout_rolls_back_and_marks_failed | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-014 | CPP | cpp_fiber_014_missing_capability_fails_apply_and_rolls_back | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-015 | CPP | cpp_fiber_015_host_v1_capabilities_allow_apply | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-016 | CPP | cpp_fiber_016_load_with_manifest_uses_manifest_id_and_inject | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-017 | CPP | cpp_fiber_017_fiber_spec_from_manifest_validates_service_keys | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-018 | CPP | cpp_fiber_018_load_rejects_manifest_service_missing_before_apply_runs | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-019 | CPP | cpp_fiber_019_fiber_records_public_accessors | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-020 | CPP | cpp_fiber_020_loading_and_active_fibers_block_reload | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-021 | CPP | cpp_fiber_021_apply_can_publish_services_and_inspect_optional_ones | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-022 | CPP | cpp_fiber_022_cancellation_token_is_exposed_to_apply | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-023 | CPP | cpp_fiber_023_load_with_manifest_validates_then_loads | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-024 | CPP | cpp_fiber_024_load_with_manifest_rejects_too_old_host | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-025 | CPP | cpp_fiber_025_load_with_manifest_rejects_api_mismatch | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-026 | CPP | cpp_fiber_026_load_with_manifest_rejects_plugin_id_mismatch | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-027 | CPP | cpp_fiber_027_load_with_manifest_leaves_registry_untouched_on_plugin_failure | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-101 | CPP | cpp_fiber_101_capability_constants_are_valid | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-102 | CPP | cpp_fiber_102_capability_rejects_invalid_names | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-103 | CPP | cpp_fiber_103_empty_set_has_nothing_and_require_fails | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-104 | CPP | cpp_fiber_104_host_v1_grants_every_v1_capability | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-105 | CPP | cpp_fiber_105_grant_is_idempotent_and_case_sensitive | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-111 | CPP | cpp_fiber_111_new_token_is_not_cancelled_and_cancel_is_idempotent | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-112 | CPP | cpp_fiber_112_clones_share_state | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-113 | CPP | cpp_fiber_113_cancelled_future_pends_then_completes | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-114 | CPP | cpp_fiber_114_dropping_future_unregisters_waiter | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-115 | CPP | cpp_fiber_115_wait_timeout_returns_false_without_cancel | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-116 | CPP | cpp_fiber_116_wait_timeout_is_woken_by_cancel_from_other_thread | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-121 | CPP | cpp_fiber_121_text_constructor_sets_ok_flag | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-122 | CPP | cpp_fiber_122_json_constructor_keeps_value_in_sync | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-123 | CPP | cpp_fiber_123_error_constructor_sets_is_error | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-124 | CPP | cpp_fiber_124_serialization_matches_spec_shape | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-125 | CPP | cpp_fiber_125_round_trip_through_json | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-126 | CPP | cpp_fiber_126_empty_content_is_rejected_by_validate_but_not_constructor | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-127 | CPP | cpp_fiber_127_unknown_fields_are_ignored_and_metadata_optional | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-131 | CPP | cpp_fiber_131_error_codes_match_spec_table | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-132 | CPP | cpp_fiber_132_retryable_flags_match_spec_recoverable_column | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-FIBER-133 | CPP | cpp_fiber_133_errors_stay_eq_and_clone | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-001 | CPP | cpp_iso_001_spawn_ready_registers_tools_and_panels | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-002 | CPP | cpp_iso_002_call_echo_returns_model_visible_result | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-003 | CPP | cpp_iso_003_unload_exits_process_and_is_not_found_afterwards | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-004 | CPP | cpp_iso_004_health_check_and_ui_render_roundtrip | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-005 | CPP | cpp_iso_005_tool_timeout_kills_job_and_host_survives | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-006 | CPP | cpp_iso_006_oversized_result_is_e_too_large_and_plugin_survives | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-007 | CPP | cpp_iso_007_memory_limit_kills_process_and_host_survives | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-008 | CPP | cpp_iso_008_crash_invalidates_generation_but_host_survives | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-009 | CPP | cpp_iso_009_entry_path_escape_is_rejected | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-010 | CPP | cpp_iso_010_missing_entry_and_wrong_runtime_kind_are_rejected | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-011 | CPP | cpp_iso_011_non_executable_entry_is_rejected | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-012 | CPP | cpp_iso_012_child_environment_is_sanitized | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-013 | CPP | cpp_iso_013_unknown_tool_direct_call_returns_unknown_tool | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-014 | CPP | cpp_iso_014_two_plugins_are_isolated | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-015 | CPP | cpp_iso_015_api_and_host_version_are_checked_at_spawn | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-018 | CPP | cpp_iso_018_huge_single_line_is_rejected_and_job_killed | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-019 | CPP | cpp_iso_019_child_not_reading_stdin_hits_write_watchdog | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-020 | CPP | build_installable_package | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-021 | CPP | cpp_iso_021_trust_confirmation_blocks_unsigned_install | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-022 | CPP | chat --selftest-external-plugin（external-process 产品路径 E2E） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。 |
+| CPP-ISO-026 | CPP | cpp_iso_026_host_survives_fault_and_loads_healthy_plugin | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-027 | CPP | cpp_iso_027_stdout_channel_is_bounded | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-028 | CPP | cpp_iso_028_oversized_single_line_is_capped_before_allocation | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-029 | CPP | cpp_iso_029_valid_frames_are_trimmed_and_empty_lines_skipped | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-030 | CPP | cpp_iso_030_write_watchdog_times_out_when_child_stops_reading | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-ISO-031 | CPP | cpp_iso_031_write_ack_succeeds_for_healthy_child | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-001 | CPP | cpp_manifest_001_valid_full_manifest_parses_and_validates | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-002 | CPP | cpp_manifest_002_unknown_top_level_field_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-003 | CPP | cpp_manifest_003_unknown_runtime_field_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-004 | CPP | cpp_manifest_004_api_v2_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-005 | CPP | cpp_manifest_005_fuel_over_limit_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-006 | CPP | cpp_manifest_006_max_memory_out_of_range_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-007 | CPP | cpp_manifest_007_timeout_out_of_range_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-008 | CPP | cpp_manifest_008_min_host_version_newer_than_host_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-009 | CPP | cpp_manifest_009_inject_key_format_is_checked | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-010 | CPP | cpp_manifest_010_duplicate_tool_name_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-011 | CPP | cpp_manifest_011_ui_location_enum_is_checked | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-012 | CPP | cpp_manifest_012_empty_ui_slot_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-013 | CPP | cpp_manifest_013_from_path_missing_file_error_contains_path | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-014 | CPP | cpp_manifest_014_from_path_reads_and_parses_file | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-015 | CPP | cpp_manifest_015_tool_spec_validation_rejects_bad_fields | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-016 | CPP | cpp_manifest_016_unknown_nested_fields_are_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-017 | CPP | cpp_manifest_017_optional_sections_default_to_empty_and_false | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-018 | CPP | cpp_manifest_018_unknown_runtime_kind_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-019 | CPP | cpp_manifest_019_invalid_min_host_version_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-020 | CPP | cpp_manifest_020_validate_rechecks_api_on_mutated_manifest | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-021 | CPP | cpp_manifest_021_invalid_plugin_version_is_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-022 | CPP | cpp_manifest_022_quota_boundaries_are_inclusive | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-023 | CPP | cpp_manifest_023_toml_manifest_parses | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-024 | CPP | cpp_manifest_024_toml_unknown_field_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-025 | CPP | cpp_manifest_025_from_path_reads_toml | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-MANIFEST-026 | CPP | cpp_manifest_026_toml_api_mismatch_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PANEL-002 | CPP | cpp_panel_002_same_plugin_duplicate_panel_id_is_rejected | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-001 | CPP | cpp_proc_001_kind_and_error_codes_match_spec_table | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-002 | CPP | cpp_proc_002_envelope_round_trips_through_ndjson | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-003 | CPP | cpp_proc_003_envelope_rejects_wrong_version | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-004 | CPP | cpp_proc_004_envelope_rejects_malformed_frames | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-005 | CPP | cpp_proc_005_frame_limit_is_enforced_on_encode | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-006 | CPP | cpp_proc_006_error_envelope_helpers | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-007 | CPP | cpp_proc_007_tool_decl_validation | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-008 | CPP | cpp_proc_008_panel_decl_validation_and_defaults | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-009 | CPP | cpp_proc_009_ready_decls_round_trip_and_duplicate_tools_rejected | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-010 | CPP | cpp_proc_010_payloads_use_expected_wire_field_names | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-020 | CPP | cpp_proc_020_hello_ready_roundtrip_exposes_declarations | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-021 | CPP | cpp_proc_021_invoke_returns_tool_result | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-022 | CPP | cpp_proc_022_tool_error_maps_to_envelope_error | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-023 | CPP | cpp_proc_023_unknown_tool_is_schema_error | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-024 | CPP | cpp_proc_024_ping_pong_and_unknown_kind | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-025 | CPP | cpp_proc_025_malformed_frame_returns_protocol_error_and_session_survives | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-026 | CPP | cpp_proc_026_shutdown_replies_bye_and_stops | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-027 | CPP | cpp_proc_027_tool_cancel_sets_flag_and_handler_observes_it | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-028 | CPP | cpp_proc_028_wrong_hello_protocol_is_version_error | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-029 | CPP | cpp_proc_029_invoke_requires_request_id | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-030 | CPP | cpp_proc_030_oversized_result_becomes_e_too_large | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-031 | CPP | cpp_proc_031_ui_render_with_views_and_without | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-PROC-032 | CPP | cpp_proc_032_shutdown_payload_defaults | implemented | PASS | cargo: dshr-plugin-sdk | 包 dshr-plugin-sdk 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-001 | CPP | cpp_svc_001_service_key_parses_name_and_major | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-002 | CPP | cpp_svc_002_service_key_rejects_invalid_shapes | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-003 | CPP | cpp_svc_003_publish_get_and_type_erase | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-004 | CPP | cpp_svc_004_duplicate_key_is_conflict | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-005 | CPP | cpp_svc_005_revoke_is_idempotent | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-006 | CPP | cpp_svc_006_revoke_if_owned_only_removes_matching_provider | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-007 | CPP | cpp_svc_007_apply_failure_rolls_back_published_services | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-008 | CPP | cpp_svc_008_unload_revokes_published_services | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-009 | CPP | cpp_svc_009_revoke_service_pauses_dependent_fiber | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-010 | CPP | cpp_svc_010_provider_unload_pauses_and_republish_resumes_dependent | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-011 | CPP | cpp_svc_011_resume_requires_all_required_services | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-012 | CPP | cpp_svc_012_optional_service_missing_does_not_block | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-013 | CPP | cpp_svc_013_dependency_edges_are_cleared_on_unload | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-SVC-014 | CPP | cpp_svc_014_same_fiber_cannot_publish_same_key_twice | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-001 | CPP | digest_is_order_independent | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-002 | CPP | digest_detects_tampering | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-003 | CPP | digest_ignores_trust_file | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-004 | CPP | missing_trust_file_reports_unsigned | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-005 | CPP | integrity_match_without_signature_is_unsigned | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-006 | CPP | tampered_package_is_rejected | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-007 | CPP | trust_version_must_match_manifest | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-008 | CPP | valid_signature_is_verified | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-009 | CPP | invalid_signature_is_rejected | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-010 | CPP | unknown_key_is_rejected | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-011 | CPP | first_install_requires_confirmation | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-012 | CPP | confirmed_install_writes_metadata_and_audit | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-013 | CPP | verified_signature_installs_without_confirmation | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-014 | CPP | downgrade_is_rejected | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-015 | CPP | downgrade_can_be_forced | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-016 | CPP | tgz_package_uses_same_trust_path | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-017 | CPP | key_store_validation | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-018 | CPP | version_comparison | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-TRUST-019 | CPP | chat --selftest-trust-install（安装信任链端到端） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。 |
+| CPP-VER-001 | CPP | cpp_ver_001_core_segments_compare_numerically | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-VER-002 | CPP | cpp_ver_002_prerelease_is_lower_than_release | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-VER-003 | CPP | cpp_ver_003_semver_official_precedence_chain | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-VER-004 | CPP | cpp_ver_004_numeric_identifier_sorts_before_alphanumeric | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-VER-005 | CPP | cpp_ver_005_build_metadata_is_ignored_for_precedence | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-VER-006 | CPP | cpp_ver_006_invalid_versions_are_rejected | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-VER-007 | CPP | cpp_ver_007_host_version_parse_display_and_compare | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-001 | CPP | cpp_wasm_001_wat_module_validates | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-002 | CPP | cpp_wasm_002_invalid_module_is_rejected | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-003 | CPP | cpp_wasm_003_echo_invoke_roundtrips_json | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-004 | CPP | cpp_wasm_004_guest_can_return_fixed_json | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-005 | CPP | cpp_wasm_005_missing_dshr_invoke_is_abi_error | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-006 | CPP | cpp_wasm_006_missing_memory_is_abi_error | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-007 | CPP | cpp_wasm_007_missing_alloc_and_negative_alloc_are_abi_errors | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-008 | CPP | cpp_wasm_008_runtime_info_matches_config | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-009 | CPP | cpp_wasm_009_fuel_exhaustion_is_quota_error | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-010 | CPP | cpp_wasm_010_epoch_timeout_is_timeout_error | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-011 | CPP | cpp_wasm_011_memory_limit_is_quota_error | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-012 | CPP | cpp_wasm_012_output_limit_is_too_large | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-013 | CPP | cpp_wasm_013_guest_error_and_trap_are_reported_without_panicking | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-014 | CPP | cpp_wasm_014_invoke_after_trap_reuses_runtime | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-015 | CPP | cpp_wasm_015_relaunch_rebuilds_engine_and_module | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-016 | CPP | cpp_wasm_016_concurrency_limit_returns_backpressure | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-017 | CPP | cpp_wasm_017_trap_in_one_runtime_does_not_affect_another | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-018 | CPP | cpp_wasm_018_from_manifest_maps_quota_fields | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-019 | CPP | cpp_wasm_019_from_manifest_rejects_wrong_kind_and_out_of_range | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-020 | CPP | cpp_wasm_020_from_file_loads_wat | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-021 | CPP | unique_temp_dir | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-022 | CPP | cpp_wasm_022_oversized_table_is_rejected_by_store_limits | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-023 | CPP | cpp_wasm_023_zero_alloc_offset_is_abi_error | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-024 | CPP | cpp_wasm_024_small_table_still_works | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-025 | CPP | cpp_wasm_025_wasm_plugin_registers_tools_panels_and_calls | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-026 | CPP | cpp_wasm_026_wasm_plugin_trap_keeps_host_alive | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-027 | CPP | cpp_wasm_027_wasm_plugin_rejects_bad_manifest_or_entry | implemented | PASS | cargo: dshr-plugin-wasm | 包 dshr-plugin-wasm 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-033 | CPP | cpp_wasm_033_cross_plugin_panel_id_conflict_is_rejected_atomically | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| CPP-WASM-100 | CPP | chat --selftest-wasm（WASM 插件产品链路） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-wasm：安装→装载→调用→trap→卸载（review P1-1）；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
+| RPC-L2-001 | RPC | rpc_l2_001_v2_envelope_and_service_key_round_trip | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-002 | RPC | rpc_l2_002_invalid_service_keys_are_rejected | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-003 | RPC | rpc_l2_003_unknown_kinds_are_rejected | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-004 | RPC | rpc_l2_004_v2_only_kinds_require_negotiated_version_two | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-005 | RPC | rpc_l2_005_version_negotiation_matrix | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-006 | RPC | rpc_l2_006_service_error_codes_and_retry_classification | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-007 | RPC | rpc_l2_007_host_service_table_round_trip_and_validation | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-008 | RPC | rpc_l2_008_service_call_and_reply_payloads | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-009 | RPC | rpc_l2_009_protocol_constants_match_schema_vocabulary | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-010 | RPC | rpc_l2_010_depth_and_request_id_limits | implemented | PASS | cargo: dshr-compat-dsh-protocol | 包 dshr-compat-dsh-protocol 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-101 | RPC | rpc_l2_101_routes_read_method | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-102 | RPC | rpc_l2_102_unknown_service_key_is_unavailable | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-103 | RPC | rpc_l2_103_unknown_method_is_method_error | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-104 | RPC | rpc_l2_104_stream_method_is_rejected | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-105 | RPC | rpc_l2_105_missing_required_arg_has_no_side_effect | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-106 | RPC | rpc_l2_106_wrong_type_and_extra_field_are_args_errors | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-107 | RPC | rpc_l2_107_oversized_args_are_rejected | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-108 | RPC | rpc_l2_108_oversized_result_is_rejected | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-109 | RPC | rpc_l2_109_timeout_is_retryable | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-110 | RPC | rpc_l2_110_stale_generation_is_unavailable | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-111 | RPC | rpc_l2_111_proxy_capability_and_version_gate | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-112 | RPC | rpc_l2_112_manifest_inject_whitelist | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-113 | RPC | rpc_l2_113_cancel_is_idempotent_and_prevents_dispatch | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-114 | RPC | rpc_l2_114_idempotent_dedupe_window | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-115 | RPC | rpc_l2_115_backpressure_limits | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-116 | RPC | rpc_l2_116_depth_identity_and_session_gates | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-117 | RPC | rpc_l2_117_host_services_table_is_consistent | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-118 | RPC | rpc_l2_118_result_schema_violation_is_internal | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-119 | RPC | rpc_l2_119_service_errors_are_passed_through | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-121 | RPC | rpc_l2_121_working_directory_get_precedence | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-122 | RPC | rpc_l2_122_working_directory_set_appends_once_and_is_idempotent | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-123 | RPC | rpc_l2_123_working_directory_set_rejects_bad_paths | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-124 | RPC | rpc_l2_124_working_directory_set_resolves_relative_paths | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-125 | RPC | rpc_l2_125_working_directory_session_gates | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-126 | RPC | rpc_l2_126_working_directory_ensure_recovers | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-127 | RPC | rpc_l2_127_working_directory_ensure_keeps_existing | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-128 | RPC | rpc_l2_128_working_directory_router_integration | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-201 | RPC | 官方 dsh-tool-todo 在 v2 sidecar 下装载（official gate） | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 中该测试 #[ignore]，输出 0 passed/6 ignored（不计为通过）。 |
+| RPC-L2-202 | RPC | rpc_l2_202_session_projections_describe_header | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-203 | RPC | rpc_l2_203_session_projections_events_first_page | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-204 | RPC | rpc_l2_204_session_projections_events_next_page | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-205 | RPC | rpc_l2_205_session_projections_unknown_session | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-206 | RPC | rpc_l2_206_session_projections_page_count_limit | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-207 | RPC | rpc_l2_207_session_projections_page_byte_limit | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-208 | RPC | rpc_l2_208_session_projections_requires_session | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-221 | RPC | rpc_l2_221_session_describe_projects_header | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-222 | RPC | rpc_l2_222_events_read_paginates | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-223 | RPC | rpc_l2_223_events_read_page_limits | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-224 | RPC | rpc_l2_224_events_read_page_byte_limit | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-225 | RPC | rpc_l2_225_session_log_unknown_session | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-226 | RPC | rpc_l2_226_session_log_router_integration | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-227 | RPC | rpc_l2_227_session_log_session_gate | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-301 | RPC | rpc_l2_301_open_is_idempotent_per_descriptor | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-302 | RPC | rpc_l2_302_put_record_round_trips_in_single_layout | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-303 | RPC | rpc_l2_303_per_record_layout_round_trips | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-304 | RPC | rpc_l2_304_version_stamp_mismatch_and_upgrade | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-305 | RPC | rpc_l2_305_deletes_are_idempotent | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-306 | RPC | rpc_l2_306_global_semantics | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-307 | RPC | rpc_l2_307_oversized_load_all_is_too_large | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-308 | RPC | rpc_l2_308_concurrent_puts_do_not_lose_writes | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-309 | RPC | rpc_l2_309_cross_plugin_scopes_are_denied | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-310 | RPC | rpc_l2_310_close_and_restart_keep_data | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-311 | RPC | rpc_l2_311_invalid_descriptor_and_unknown_unit | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-312 | RPC | rpc_l2_312_descriptor_conflict_is_already_open | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-313 | RPC | rpc_l2_313_round_trips_through_router | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-401 | RPC | rpc_l2_401_v2_handshake_and_capabilities_list | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-402 | RPC | rpc_l2_402_without_router_stays_v1 | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-403 | RPC | rpc_l2_403_sidecar_v1_falls_back | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-404 | RPC | rpc_l2_404_storage_kv_round_trip_through_sidecar | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-405 | RPC | rpc_l2_405_working_directory_round_trip_through_sidecar | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-406 | RPC | rpc_l2_406_unknown_service_key_is_reported_to_sidecar | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-407 | RPC | rpc_l2_407_cancel_prevents_dispatch | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-408 | RPC | rpc_l2_408_late_result_is_ignored | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-409 | RPC | rpc_l2_409_generation_change_settles_unavailable_then_recovers | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-410 | RPC | rpc_l2_410_default_options_advertise_no_service_proxy | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| RPC-L2-411 | RPC | chat --selftest-l2（v2 host-service 端到端 smoke） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。 |
+| RPC-L2-501 | RPC | 官方 working_directory 包装载绿（official gate） | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/6 ignored（不计为通过）。 |
+| RPC-L2-502 | RPC | 官方工具 execute 被 exec.agent 阻塞（official gate） | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
+| RPC-L2-503 | RPC | 官方 working_directory 签名服务往返（official gate） | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
+| RPC-L2-504 | RPC | 官方 dsh-storage-domain 往返（official gate） | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
+| RPC-L2-505 | RPC | 官方 dsh-storage 是 Cordis Service class（official gate） | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
+| MCP-CLIENT-001 | MCP | MCP-001 initialize 协商成功（含幂等） | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-002 | MCP | MCP-002 不支持的协议版本被拒绝并断开 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-003 | MCP | MCP-003 tools/list nextCursor 分页聚合 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-004 | MCP | MCP-004 MCP tool 转 ToolDefinition | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-005 | MCP | MCP-005 tools/call echo 往返（structuredContent 优先） | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-006 | MCP | MCP-006 isError 保留为结果字段 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-007 | MCP | MCP-007 超时后客户端仍可用 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-008 | MCP | MCP-008 超大结果截断并计数 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-009 | MCP | MCP-009 进程崩溃 → 在途失败、restart 恢复 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-010 | MCP | MCP-010 shutdown 幂等且回收进程 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-011 | MCP | MCP-011 非法 JSON 行忽略并计数 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-012 | MCP | MCP-012 register_tools 注册进 Tool Registry | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-013 | MCP | MCP-013 spawn 失败映射为 McpError::Spawn | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-014 | MCP | MCP-014 JSON-RPC error 映射 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-015 | MCP | MCP-015 spec.cwd 传递给服务进程 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-016 | MCP | MCP-016 notifications 忽略并计数 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| MCP-CLIENT-017 | MCP | MCP-017 迟到答复丢弃且不串请求 | implemented | PASS | cargo: dshr-compat-mcp | 包 dshr-compat-mcp 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| JS-L2SVC-001 | JS | L2JS-001 builds host.service.request envelope | implemented | PASS | node-test: L2JS-001 | node 测试通过：L2JS-001（21/21 node tests passed） |
+| JS-L2SVC-002 | JS | L2JS-002 correlates results by request_id and counts late results | implemented | PASS | node-test: L2JS-002 | node 测试通过：L2JS-002（21/21 node tests passed） |
+| JS-L2SVC-003 | JS | L2JS-003 maps envelope errors to structured HostServiceError | implemented | PASS | node-test: L2JS-003 | node 测试通过：L2JS-003（21/21 node tests passed） |
+| JS-L2SVC-004 | JS | L2JS-004 timeout settles with E_SERVICE_TIMEOUT and sends cancel | implemented | PASS | node-test: L2JS-004 | node 测试通过：L2JS-004（21/21 node tests passed） |
+| JS-L2SVC-005 | JS | L2JS-005 cancelForCall cancels only that tool call chain | implemented | PASS | node-test: L2JS-005 | node 测试通过：L2JS-005（21/21 node tests passed） |
+| JS-L2SVC-006 | JS | L2JS-006 event hub enforces the v2 whitelist | implemented | PASS | node-test: L2JS-006 | node 测试通过：L2JS-006（21/21 node tests passed） |
+| JS-L2SVC-007 | JS | L2JS-007 host service enablement matrix | implemented | PASS | node-test: L2JS-007 | node 测试通过：L2JS-007（21/21 node tests passed） |
+| JS-L2SVC-008 | JS | L2JS-008 catalog describes the proxied host services | implemented | PASS | node-test: L2JS-008 | node 测试通过：L2JS-008（21/21 node tests passed） |
+| JS-L2SVC-009 | JS | L2JS-009 workingDirectory shim unwraps wire shapes | implemented | PASS | node-test: L2JS-009 | node 测试通过：L2JS-009（21/21 node tests passed） |
+| JS-L2SVC-010 | JS | L2JS-010 storage kv facet translates units to host.service.request | implemented | PASS | node-test: L2JS-010 | node 测试通过：L2JS-010（21/21 node tests passed） |
+| JS-L2SVC-011 | JS | L2JS-011 storage hub exposes the official storage surface | implemented | PASS | node-test: L2JS-011 | node 测试通过：L2JS-011（21/21 node tests passed） |
+| JS-L2SVC-012 | JS | L2JS-012 createHostServicesRuntime wires the sidecar surface | implemented | PASS | node-test: L2JS-012 | node 测试通过：L2JS-012（21/21 node tests passed） |
+| JS-L2SVC-013 | JS | L2JS-013 event subscriptions reach the host channel | implemented | PASS | node-test: L2JS-013 | node 测试通过：L2JS-013（21/21 node tests passed） |
+| JS-L2SVC-021 | JS | L2JS-021 register + ensureSession init(header) | implemented | PASS | node-test: L2JS-021 | node 测试通过：L2JS-021（21/21 node tests passed） |
+| JS-L2SVC-022 | JS | L2JS-022 register validates definition | implemented | PASS | node-test: L2JS-022 | node 测试通过：L2JS-022（21/21 node tests passed） |
+| JS-L2SVC-023 | JS | L2JS-023 session.event drives apply in order | implemented | PASS | node-test: L2JS-023 | node 测试通过：L2JS-023（21/21 node tests passed） |
+| JS-L2SVC-024 | JS | L2JS-024 duplicate seq is dropped | implemented | PASS | node-test: L2JS-024 | node 测试通过：L2JS-024（21/21 node tests passed） |
+| JS-L2SVC-025 | JS | L2JS-025 gap detected and backfilled via events.read | implemented | PASS | node-test: L2JS-025 | node 测试通过：L2JS-025（21/21 node tests passed） |
+| JS-L2SVC-026 | JS | L2JS-026 events.read errors are surfaced | implemented | PASS | node-test: L2JS-026 | node 测试通过：L2JS-026（21/21 node tests passed） |
+| JS-L2SVC-027 | JS | L2JS-027 backfill is bounded and diagnosed | implemented | PASS | node-test: L2JS-027 | node 测试通过：L2JS-027（21/21 node tests passed） |
+| JS-L2SVC-028 | JS | L2JS-028 release stops projection updates | implemented | PASS | node-test: L2JS-028 | node 测试通过：L2JS-028（21/21 node tests passed） |
+| M3-DEFAULT-001 | M3 | m3_default_001_reasoning_effort_parses_dsh_levels | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-002 | M3 | m3_default_002_reasoning_effort_maps_off_to_no_wire_value | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-003 | M3 | m3_default_003_invalid_reasoning_effort_is_ignored_not_fatal | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-004 | M3 | m3_default_004_reasoning_effort_env_name_is_stable | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-010 | M3 | repeated_calls | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-011 | M3 | m3_default_011_different_arguments_do_not_trigger | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-012 | M3 | m3_default_012_different_tools_with_same_arguments_do_not_trigger | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-013 | M3 | m3_default_013_repeat_reminder_can_be_disabled | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-014 | M3 | m3_default_014_repeat_reminder_custom_thresholds | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-015 | M3 | m3_default_015_repeat_threshold_config_parsing | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-020 | M3 | new | implemented | PASS | cargo: dshr-llm-retry | 包 dshr-llm-retry 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-021 | M3 | m3_default_021_is_empty_reply_detects_only_truly_empty_replies | implemented | PASS | cargo: dshr-llm-retry | 包 dshr-llm-retry 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-022 | M3 | m3_default_022_empty_response_is_retried_then_succeeds | implemented | PASS | cargo: dshr-llm-retry | 包 dshr-llm-retry 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-023 | M3 | m3_default_023_empty_response_retries_are_bounded | implemented | PASS | cargo: dshr-llm-retry | 包 dshr-llm-retry 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-024 | M3 | m3_default_024_streaming_retries_empty_response_before_any_delta | implemented | PASS | cargo: dshr-llm-retry | 包 dshr-llm-retry 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-025 | M3 | m3_default_025_tool_call_reply_is_not_treated_as_empty | implemented | PASS | cargo: dshr-llm-retry | 包 dshr-llm-retry 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-030 | M3 | m3_default_030_deepseek_parses_reasoning_effort_from_env | implemented | PASS | cargo: dshr-llm-deepseek | 包 dshr-llm-deepseek 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-031 | M3 | m3_default_031_deepseek_does_not_send_reasoning_effort_field | implemented | PASS | cargo: dshr-llm-deepseek | 包 dshr-llm-deepseek 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-032 | M3 | m3_default_032_deepseek_off_effort_has_no_wire_value | implemented | PASS | cargo: dshr-llm-deepseek | 包 dshr-llm-deepseek 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-035 | M3 | m3_default_035_openai_sends_reasoning_effort_verbatim | implemented | PASS | cargo: dshr-llm-openai | 包 dshr-llm-openai 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-036 | M3 | m3_default_036_openai_off_and_unset_omit_reasoning_effort | implemented | PASS | cargo: dshr-llm-openai | 包 dshr-llm-openai 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-037 | M3 | m3_default_037_openai_reads_reasoning_effort_from_env | implemented | PASS | cargo: dshr-llm-openai | 包 dshr-llm-openai 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-040 | M3 | long_log | implemented | PASS | cargo: dshr-agent-context | 包 dshr-agent-context 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-041 | M3 | m3_default_041_retain_ratio_env_parse_and_clamp | implemented | PASS | cargo: dshr-agent-context | 包 dshr-agent-context 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-042 | M3 | m3_default_042_compaction_targets_16_percent_of_window | implemented | PASS | cargo: dshr-agent-context | 包 dshr-agent-context 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-043 | M3 | m3_default_043_legacy_ratio_keeps_more_messages | implemented | PASS | cargo: dshr-agent-context | 包 dshr-agent-context 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-044 | M3 | m3_default_044_dsh_ratio_still_produces_legal_history | implemented | PASS | cargo: dshr-agent-context | 包 dshr-agent-context 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-045 | M3 | m3_default_045_retain_ratio_out_of_range_falls_back | implemented | PASS | cargo: dshr-agent-context | 包 dshr-agent-context 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-050 | M3 | m3_default_050_read_only_denies_mutating_tools | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-051 | M3 | m3_default_051_read_only_allows_read_tools | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-052 | M3 | m3_default_052_danger_full_access_allows_everything | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-053 | M3 | m3_default_053_desktop_policy_is_unchanged_and_is_workspace_write | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-054 | M3 | m3_default_054_permission_mode_parses_dsh_values | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-055 | M3 | m3_default_055_approval_policy_for_mode_maps_constructors | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-056 | M3 | m3_default_056_env_mode_resolution_is_pure_for_tests | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-060 | M3 | m3_default_060_tool_timeout_defaults_to_120s | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-061 | M3 | m3_default_061_per_tool_timeout_is_preserved_by_registry | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-062 | M3 | m3_default_062_effective_timeout_is_clamped_to_spec_bounds | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-063 | M3 | m3_default_063_effective_timeout_duration_matches_ms | implemented | PASS | cargo: dshr-tool-runtime | 包 dshr-tool-runtime 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DEFAULT-070 | M3 | chat --selftest-defaults（M3 默认差异接线自检） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-defaults：无网络自检 approval 默认/read-only/重复工具软提醒阈值/默认差异接线；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
+| M3-DIGEST-001 | M3 | m3_digest_001_only_package_root_metadata_is_skipped | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-DIGEST-002 | M3 | m3_digest_002_fixed_cross_fixture_digest | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-INSTALL-001 | M3 | m3_install_001_copy_failure_preserves_previous_version | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-INSTALL-002 | M3 | m3_install_002_upgrade_replaces_and_cleans_staging | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-INSTALL-003 | M3 | m3_install_003_install_package_leaves_no_staging_dirs | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-001 | M3 | m3_loader_001_single_include_expands_in_place | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-002 | M3 | m3_loader_002_nested_include_uses_each_file_directory | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-003 | M3 | m3_loader_003_include_array_expands_in_order | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-004 | M3 | m3_loader_004_include_cycle_warns_and_skips | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-005 | M3 | m3_loader_005_missing_include_is_a_warning | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-006 | M3 | m3_loader_006_include_path_escape_is_rejected | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-007 | M3 | m3_loader_007_group_expands_in_order | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-008 | M3 | m3_loader_008_nested_groups_expand_depth_first | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-009 | M3 | m3_loader_009_group_and_patch_interact | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-010 | M3 | m3_loader_010_group_depth_limit_is_enforced | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-011 | M3 | m3_loader_011_js_expressions_are_not_evaluated | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-012 | M3 | m3_loader_012_text_entry_warns_about_include_without_base | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-013 | M3 | m3_loader_013_json_include_is_supported | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-014 | M3 | m3_loader_014_cordis_include_and_top_level_include_shapes | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-LOADER-015 | M3 | m3_loader_015_include_depth_limit_is_enforced | implemented | PASS | cargo: dshr-profile | 包 dshr-profile 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-001 | M3 | m3_parallel_001_batch_default_is_sequential_and_ordered | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-002 | M3 | specs | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-003 | M3 | m3_parallel_003_budget_limits_the_batch | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-004 | M3 | specs | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-005 | M3 | m3_parallel_005_max_parallel_resolution_and_passthrough | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-006 | M3 | m3_parallel_006_repeat_reminder_counts_batch_calls | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-007 | M3 | cancel_during_batch_keeps_results_then_stops | implemented | PASS | cargo: dshr-agent-core | 包 dshr-agent-core 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-101 | M3 | m3_parallel_101_batch_correlates_results_and_chunks | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-102 | M3 | m3_parallel_102_batch_runs_concurrently | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-103 | M3 | m3_parallel_103_per_call_timeout_isolated | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-104 | M3 | m3_parallel_104_late_result_is_dropped | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-105 | M3 | m3_parallel_105_cancel_aborts_in_flight_calls | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-106 | M3 | m3_parallel_106_max_parallel_one_preserves_order | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-107 | M3 | m3_parallel_107_empty_batch_is_noop | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-108 | M3 | m3_parallel_108_cancel_grace_with_ignoring_sidecar | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-109 | M3 | m3_parallel_109_batch_passes_session_id | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-110 | M3 | m3_parallel_110_single_invoke_passes_session_id | implemented | PASS | cargo: dshr-compat-dsh-host | 包 dshr-compat-dsh-host 的测试二进制出现在 cargo 输出中；另有 official_packages(6 ignored/0 passed) 未执行（不计为通过）（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
+| M3-PARALLEL-201 | M3 | chat --selftest-parallel-tools（串行 vs 并行墙钟 + 顺序） | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-parallel-tools：sidecar 批 invoke 串行 6.1s→并行 2.0s（ratio 0.33）且事件顺序约束成立；需构建 chat 二进制 + vendored sidecar，harness 无 selftest suite，人工/脚本判定。 |
+| SELF-CHAT-001 | SELF | chat --selftest 基本对话 | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
+| SELF-CHAT-002 | SELF | chat --selftest-stream 流式 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-003 | SELF | chat --selftest-context 上下文计量 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-004 | SELF | chat --selftest-long-context 长上下文压缩 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-005 | SELF | chat --selftest-spill 外部化 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-006 | SELF | chat --selftest-approval 审批 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-007 | SELF | chat --selftest-sandbox 沙箱 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-008 | SELF | chat --selftest-profile 插件启停 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-009 | SELF | chat --selftest-loader Loader 派生 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-010 | SELF | chat --selftest-install 离线安装 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-011 | SELF | chat --selftest-retry 重试 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-012 | SELF | chat --selftest-perf 性能 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-013 | SELF | chat --selftest-dsh DSH L1 | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本（CI 无此环境）。 |
+| SELF-CHAT-014 | SELF | chat --selftest-dsh-write 官方写路径 | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
+| SELF-CHAT-015 | SELF | chat --selftest-cordis Cordis 插件 | pending | PENDING | — | 已存在但未纳入 harness；依赖本机 DSH 安装副本。 |
+| SELF-CHAT-016 | SELF | chat --selftest-tree 会话树 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| SELF-CHAT-017 | SELF | chat --selftest-export 会话导出 | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
+| GATE-G2-001 | GATE | 外部作者可发布实验（仓库外构建 + 安装 + 卸载） | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
 ## 说明与已知缺口
 
-- 本轮批量条目用 groups 登记：harness 扫描 source_dirs 中的测试函数（函数名内编码或注释标注 ID），找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。
-- 本地 --workspace 实跑（2026-11-15，本机受限会话）：harness 用 `cargo test --offline --workspace --no-fail-fast` 跑完 66 suites / 796 passed / 1 failed；逐包判定 implemented 441 pass / 1 fail（仅 CARGO-UNIT-001 workspace-wide）/ 34 skip。唯一失败是 dshr-sidecar-guard 的 process::tests::drop_terminates_the_guarded_process（沙箱进程限制，隔离复跑同样失败，非本轮代码改动；docs/m3-status.md §4 已记录；普通终端/Lead 环境同一 workspace 为 66 suites / 797 passed / 0 failed），cargo 仅此 1 条环境失败，其余全绿。plain `cargo test --workspace`（不加 --no-fail-fast）会在该包失败后中止后续 target，故 harness 加 --no-fail-fast 以取得完整逐包证据。
-- 第三轮新增证据：CPP-PROC（plugin-sdk，23）、CPP-ISO（plugin-host external_process，17）、CPP-MANIFEST-023..026（TOML，4）、MCP-CLIENT-001..017（compat-mcp）、RPC-L2-121..128/221..227（host services，15）均为 cargo implemented；sidecar JS 单测 13 个走新增 quick suite `node-test`（node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs），登记为 JS-L2SVC-001..013（源码 ID L2JS-xxx）。
-- 第四轮新增证据：RPC-L2-401..410（compat-dsh-host tests/l2_host_services.rs，端到端 v2 握手/storage/wd/cancel/迟到/generation）、M3-LOADER-001..015（profile loader.rs include/group/patch/!!js）、ADC-ELEM-PANEL-001..010（ui-gpui adc.rs panel 入口）、ADC-PERF-001..002（ui-gpui tests/adc_perf.rs 预算，debug 约 4.4s）均为 cargo implemented；chat --selftest-l2 登记 RPC-L2-411 manual（phase A 真实 sidecar+phase B fixture storage-kv）。
-- 第五轮新增证据：ADC-ELEM-PANEL-API-001..002（plugin-api）、ADC-ELEM-PANEL-HOST-001..004（plugin-host，含 external_process ui.render）、M3-DEFAULT-001..004/010..015/020..025/030..032/035..037/040..045/050..056/060..063（39 个，跨 agent-core/llm-*/agent-context/tool-runtime）、RPC-L2-501..505（compat-dsh-host tests/official_packages.rs，官方包装载/往返；依赖 .tmp/dsh-tools-all，缺失时测试内部 SKIP）均为 cargo implemented；chat --selftest-adc-panel 登记 ADC-PANEL-001 manual。
-- 第六轮（W5/W6）新增证据：CPP-WASM-001..020（crates/plugin-wasm/tests/wasm_isolation.rs，wasmtime 主机 fuel/epoch/内存/输出/并发配额隔离 + core-module ABI；根 workspace 已纳入 dshr-plugin-wasm，不再 exclude）为 cargo implemented，selector=dshr-plugin-wasm；chat --selftest-defaults 登记 M3-DEFAULT-070 manual；docs/wasm-host.md、ADR-0010 更新、session-log tool.repeat 为文档证据（links 增长）。
-- 第七轮（W7）新增证据：M3-PARALLEL-001..007（agent-core batch 调度：并发/顺序/预算截断/错误隔离/max_parallel/重复提醒/取消）、M3-PARALLEL-101..107（compat-dsh-host tests/parallel_batch.rs，sidecar 批 invoke 端到端）为 cargo implemented；chat --selftest-parallel-tools 登记 M3-PARALLEL-201 manual（串行 6.1s→并行 2.0s，ratio 0.33）；session-log 并行事件顺序约束等文档更新（links 变化）。
-- ID 兼容说明：MCP 源码标注是两段式 MCP-001..017，按 spec/README §3 的 <AREA>-<CATEGORY>-<NNN> 规范登记为 MCP-CLIENT-001..017，title/notes 保留源码 ID；JS 同理（L2JS-001..013 → JS-L2SVC-001..013）。
-- manual 证据：CPP-ISO-022 = chat --selftest-external-plugin（需构建 chat 二进制）、RPC-L2-411 = chat --selftest-l2（需 chat 二进制 + vendored sidecar）、ADC-PANEL-001 = chat --selftest-adc-panel（需 chat 二进制）、M3-DEFAULT-070 = chat --selftest-defaults（需 chat 二进制）、M3-PARALLEL-201 = chat --selftest-parallel-tools（需 chat 二进制 + vendored sidecar）、CPP-AUTHOR-001 = tools/authoring-check.ps1（需仓库外作者环境）、CPP-TRUST-019 = chat --selftest-trust-install；均按现有 schema 无法由 harness 自动判定，不计失败。
-- 提交矩阵用 --quick --compact 生成：cargo suite 未在 quick 中运行，implemented 且 suite=cargo 的 ID 记为 SKIP；cargo 全绿待普通终端或 CI 复核。
+- groups 批量条目的 source_dirs 由 harness 扫描：测试函数名内编码或 // ID / /// ID 注释匹配，找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。
+- 本地 --full 实跑（2026-11-15，本机受限会话）：67 suites / 836 passed / 1 failed / 6 ignored；失败包仅 dshr-sidecar-guard（process::tests::drop_terminates_the_guarded_process，沙箱进程限制，隔离复跑同样失败，非代码）。普通终端/Lead 环境同 workspace 0 failed / 6 ignored。默认 `cargo test --workspace`（无 --no-fail-fast）在本机会先止于 sidecar-guard、到不了 official_packages；--no-fail-fast 输出里 official_packages 为 0 passed / 6 ignored。
+- P1-6 ignored 检测：cargo suite 按 `Running ...(<binary>-<hash>.exe)` + 紧随 `test result:` 建 binary→counts 映射（stdout/stderr 合并同一文件以保顺序）；integration test 二进制用 `crates/<pkg>/tests/<binary>.rs` 反查归属。`passed=0 && ignored>0` 的整文件忽略二进制会列入 suite summary（实测：`未执行: official_packages(6 ignored)`），该包若无其它已执行用例则判 FAIL；所有依赖 official fixture 的 ID 已改 manual，不会把 ignored 算 pass。
+- W8/P0 证据：CPP-WASM-021..027、CPP-ISO-018/019/026..031、M3-INSTALL-001..003、M3-DIGEST-001/002、CPP-PANEL-002、CPP-WASM-033、RPC-L2-202..208、L2JS-021..028、M3-PARALLEL-108..110 为 cargo/node-test implemented；CPP-PROC-024..027 由既有 plugin-sdk 组覆盖（源码 session.rs/tool_result.rs 有同 ID 重复，注册表按唯一 ID 登记）；RPC-L2-201/501..505 与 chat --selftest-wasm（CPP-WASM-100）为 manual。
+- ID 兼容说明：MCP 源码两段式 MCP-001..017 / JS L2JS-001..028 按 spec/README §3 三段式登记为 MCP-CLIENT-001..017 / JS-L2SVC-001..028，title/notes 保留源码 ID。
+- manual 证据：official gate（RPC-L2-201/501..505）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 6 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100（需构建 chat 二进制，部分需 vendored sidecar）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。
+- 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）；quick 门禁仍用 `--quick`。cargo suite 会把 #[ignore] 计入 ignored、绝不当作 passed：包级 selector 遇 ignored>0 判 FAIL，all 通过时也在消息中标注 ignored 数。compact markdown 的 PASS 行只列 ID+结果，非 PASS（FAIL/SKIP/PENDING/MANUAL）保留完整 6 列；JSON tests.rows 为 [id, area, result]。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。
-- compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。
 - quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。
 - cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace --no-fail-fast）。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，本报告由本机命令生成。

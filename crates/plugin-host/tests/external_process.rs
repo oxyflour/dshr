@@ -11,6 +11,8 @@
 //! - `CPP-ISO-018/019`：P1-3 读写边界（巨大无换行单行 → E_TOO_LARGE；子进程不读
 //!   stdin → 写 watchdog E_TIMEOUT），两者都要求 Job 被杀、宿主存活；
 //! - `CPP-ISO-026`：故障实例之后宿主仍能装载/调用正常插件（"宿主存活"产品级证据）；
+//! - `CPP-ISO-032/033`：stderr 有界（16 MiB 无换行巨行 → tail ≤64 KiB + E_TIMEOUT + 杀 Job；
+//!   5000 条短行 → tail 只保留最近 64 行/≤64 KiB）；
 //! - `CPP-ISO-020..021`：G2 端到端（安装 → 装载 → 调用 → 卸载）与信任确认。
 
 use std::fs;
@@ -20,6 +22,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dshr_plugin_api::manifest::Manifest;
 use dshr_plugin_api::{HostVersion, Plugin, PluginError};
+use dshr_plugin_host::external::{
+    MAX_STDERR_LINE_BYTES, STDERR_TAIL_BYTES_LIMIT, STDERR_TAIL_LINE_LIMIT,
+};
 use dshr_plugin_host::{ExternalPlugin, ExternalPluginSpec, HostError, PluginHost};
 use dshr_profile::{
     install_package_trusted, package_digest, Profile, SignatureStatus, TrustPolicy,
@@ -156,6 +161,22 @@ fn spawn_fault(root: &Path, mode: &str, plugin_id: &str) -> ExternalPlugin {
         1,
     ))
     .expect("fault fixture spawns")
+}
+
+/// 轮询 stderr tail 直到满足 `predicate` 或超时，返回最后一次快照。
+fn wait_for_stderr(
+    plugin: &mut ExternalPlugin,
+    predicate: impl Fn(&[String]) -> bool,
+    timeout: Duration,
+) -> Vec<String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let tail = plugin.stderr_tail();
+        if predicate(&tail) || Instant::now() >= deadline {
+            return tail;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[cfg(windows)]
@@ -827,4 +848,122 @@ fn cpp_iso_026_host_survives_fault_and_loads_healthy_plugin() {
         .expect("host survives and dispatches");
     assert!(output.to_string().contains("still-alive"), "{output}");
     host.unload("cpp.iso.healthy").expect("unload");
+}
+
+// ---------------------------------------------------------------------------
+// P1-3 残余：stderr 有界（巨行 / 大量短行 tail 双上限）
+// ---------------------------------------------------------------------------
+
+// CPP-ISO-032：stderr 16 MiB 无换行巨行 → tail 内存有界（≤64 KiB、单行截断），
+// 调用路径返回结构化 E_TIMEOUT（不 OOM/不 panic），Job 按设计被杀，宿主存活并
+// 能继续装载/调用正常插件。
+#[test]
+fn cpp_iso_032_huge_stderr_line_is_bounded_and_timeout_kills() {
+    let root = TempDir::new("fault-stderr-huge");
+    let mut plugin = spawn_fault(root.path(), "stderr-huge", "cpp.iso.fault.stderr.huge");
+    let pid = plugin.pid();
+    let started = Instant::now();
+
+    // 等宿主把 16 MiB 巨行有界读完（出现截断标记），期间内存只保留 ≤ MAX 行前缀。
+    let tail = wait_for_stderr(
+        &mut plugin,
+        |tail| tail.iter().any(|line| line.contains("stderr truncated")),
+        Duration::from_secs(15),
+    );
+    assert!(
+        tail.iter().any(|line| line.contains("stderr truncated")),
+        "必须观察到截断标记: {tail:?}"
+    );
+    let retained_bytes: usize = tail.iter().map(String::len).sum();
+    assert!(
+        retained_bytes <= STDERR_TAIL_BYTES_LIMIT,
+        "tail {retained_bytes} 字节超过上限 {STDERR_TAIL_BYTES_LIMIT}"
+    );
+    assert!(
+        tail.iter()
+            .all(|line| line.len() <= MAX_STDERR_LINE_BYTES + 128),
+        "单行必须截断（上限 {MAX_STDERR_LINE_BYTES}）"
+    );
+    assert!(
+        plugin.is_alive(),
+        "stderr 巨行应被 drain+丢弃，不应阻塞或杀死进程"
+    );
+
+    // 16 MiB stderr 之后：子进程不读 stdin → 大请求填满管道，写 watchdog 结算 E_TIMEOUT
+    // （结构化错误，而不是 OOM/panic；也不是等 120s 的 per-tool timeout）。
+    let big = "x".repeat(900 * 1024);
+    let error = plugin
+        .call("fault_probe", &json!({ "text": big }))
+        .expect_err("不读 stdin 必须超时");
+    assert!(error.to_string().contains("E_TIMEOUT"), "{error}");
+    assert!(
+        wait_process_dead(pid, Duration::from_secs(10)),
+        "写超时后 Job 必须被杀（按设计）"
+    );
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(60), "耗时过长: {elapsed:?}");
+    eprintln!(
+        "[CPP-ISO-032] stderr_input=16MiB retained_lines={} retained_bytes={retained_bytes} elapsed={elapsed:?}",
+        tail.len()
+    );
+
+    // 宿主存活：故障实例之后仍能装载/调用正常插件。
+    let healthy = spawn_fixture(root.path(), "cpp.iso.stderr.healthy", None);
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(healthy)).expect("healthy plugin loads");
+    let output = host
+        .call("echo", &json!({ "text": "after-stderr-fault" }))
+        .expect("host still dispatches");
+    assert!(
+        output.to_string().contains("after-stderr-fault"),
+        "{output}"
+    );
+    host.unload("cpp.iso.stderr.healthy").expect("unload");
+}
+
+// CPP-ISO-033：stderr 5000 条短行 → tail 只保留最近 STDERR_TAIL_LINE_LIMIT 行，
+// 总字节也受 STDERR_TAIL_BYTES_LIMIT 约束（行/字节双上限）。
+#[test]
+fn cpp_iso_033_stderr_tail_retains_only_recent_flood_lines() {
+    let root = TempDir::new("fault-stderr-flood");
+    let mut plugin = spawn_fault(root.path(), "stderr-flood", "cpp.iso.fault.stderr.flood");
+    let pid = plugin.pid();
+    let started = Instant::now();
+
+    let tail = wait_for_stderr(
+        &mut plugin,
+        |tail| tail.last().is_some_and(|line| line.contains("flood-4999")),
+        Duration::from_secs(15),
+    );
+    assert_eq!(
+        tail.len(),
+        STDERR_TAIL_LINE_LIMIT,
+        "tail 必须只保留最近 {STDERR_TAIL_LINE_LIMIT} 行: {:?}",
+        tail.first()
+    );
+    assert!(
+        tail.first().is_some_and(|line| line.contains("flood-4936")),
+        "最旧保留行应为 flood-4936: {:?}",
+        tail.first()
+    );
+    assert!(
+        tail.last().is_some_and(|line| line.contains("flood-4999")),
+        "最新行应为 flood-4999"
+    );
+    let retained_bytes: usize = tail.iter().map(String::len).sum();
+    assert!(
+        retained_bytes <= STDERR_TAIL_BYTES_LIMIT,
+        "tail {retained_bytes} 字节超过上限 {STDERR_TAIL_BYTES_LIMIT}"
+    );
+    eprintln!(
+        "[CPP-ISO-033] flood_lines=5000 retained_lines={} retained_bytes={retained_bytes} elapsed={:?}",
+        tail.len(),
+        started.elapsed()
+    );
+
+    drop(plugin);
+    assert!(
+        wait_process_dead(pid, Duration::from_secs(10)),
+        "drop/unload 后 Job 必须终止"
+    );
 }

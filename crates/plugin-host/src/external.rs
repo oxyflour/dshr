@@ -69,8 +69,14 @@ pub const DEFAULT_MEMORY_MB: u64 = 128;
 pub const DEFAULT_CPU_MS: u64 = 60_000;
 /// fuel → CPU 毫秒的折算（1e9 fuel ≈ 1 s CPU；WASM 主方案就绪后以 epoch 为准）。
 pub const FUEL_PER_CPU_MS: u64 = 1_000_000;
-/// stderr 诊断保留行数。
-const STDERR_TAIL_LIMIT: usize = 64;
+/// stderr 诊断保留行数上限（行/字节双上限，P1-3 残余：stderr 巨行不能打爆宿主）。
+pub const STDERR_TAIL_LINE_LIMIT: usize = 64;
+/// stderr 单行最多保留的字节数：超限截断，但**继续丢弃**剩余字节（避免子进程写 stderr 阻塞）。
+pub const MAX_STDERR_LINE_BYTES: usize = 4 * 1024;
+/// stderr tail 保留的总字节上限（大量短行也不能撑爆内存）。
+pub const STDERR_TAIL_BYTES_LIMIT: usize = 64 * 1024;
+/// 单条超长 stderr 行最多丢弃多少字节；超过则停止读 stderr（子进程会因管道写失败/超时被收拾）。
+pub const MAX_STDERR_DISCARD_BYTES: u64 = 64 * 1024 * 1024;
 /// 每进程可执行文件的规范扩展名（Windows）。
 #[cfg(windows)]
 const EXECUTABLE_HINT: &str = ".exe";
@@ -911,20 +917,106 @@ fn enqueue_write(
     }
 }
 
+/// stderr 读线程：**有界**读行（P1-3 残余修复）。
+///
+/// stderr 只作诊断，绝不能因为恶意/失控子进程的巨行打爆宿主内存：
+/// - 单行只保留 [`MAX_STDERR_LINE_BYTES`]（用 `take(MAX+1)` 在分配前截断）；
+/// - 超限后**继续丢弃**到换行为止（避免子进程写 stderr 阻塞 → 死锁），丢弃量
+///   只计数不存储；单行丢弃超过 [`MAX_STDERR_DISCARD_BYTES`] 时停止读 stderr，
+///   让子进程的 stdout 调用按看门狗超时被杀；
+/// - tail 同时受行数 [`STDERR_TAIL_LINE_LIMIT`] 与字节 [`STDERR_TAIL_BYTES_LIMIT`] 约束。
 fn read_stderr(stderr: ChildStderr, tail: Arc<Mutex<VecDeque<String>>>) {
-    let mut reader = BufReader::new(stderr);
+    read_stderr_impl(BufReader::new(stderr), tail);
+}
+
+fn read_stderr_impl<R: BufRead>(mut reader: R, tail: Arc<Mutex<VecDeque<String>>>) {
+    let limit = MAX_STDERR_LINE_BYTES as u64 + 1;
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
+        let mut buf = Vec::new();
+        let read = {
+            let mut limited = (&mut reader).take(limit);
+            limited.read_until(b'\n', &mut buf)
+        };
+        match read {
+            Ok(0) => break,
             Ok(_) => {
-                let mut guard = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                if guard.len() >= STDERR_TAIL_LIMIT {
-                    guard.pop_front();
+                let mut end = buf.len();
+                while end > 0 && matches!(buf[end - 1], b'\n' | b'\r') {
+                    end -= 1;
                 }
-                guard.push_back(line.trim_end().to_owned());
+                let overflow = end > MAX_STDERR_LINE_BYTES;
+                let mut discarded: u64 = 0;
+                let mut stop = false;
+                if overflow {
+                    // 已经读到的部分只保留前 MAX 字节；剩余（可能 8–64 MiB）不存储地丢弃。
+                    discarded = drain_stderr_until_newline(&mut reader, MAX_STDERR_DISCARD_BYTES);
+                    stop = discarded >= MAX_STDERR_DISCARD_BYTES;
+                }
+                let keep = end.min(MAX_STDERR_LINE_BYTES);
+                let mut line = String::from_utf8_lossy(&buf[..keep]).into_owned();
+                if overflow {
+                    line.push_str(&format!("…(stderr truncated, {discarded} bytes discarded)"));
+                }
+                if !line.is_empty() {
+                    push_stderr_tail(&tail, line);
+                }
+                if stop {
+                    // 单行丢弃已达上限：停止消费 stderr，子进程后续 stderr 写会失败/阻塞，
+                    // 其业务调用由 stdout 看门狗结算为 E_TIMEOUT（按设计杀 Job）。
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+/// 丢弃当前未结束的 stderr 行直到换行（或 `cap` 字节），返回丢弃字节数。
+///
+/// 用 `fill_buf`/`consume` 精确停在换行：既不存储巨行，也不会吞掉下一行。
+fn drain_stderr_until_newline<R: BufRead>(reader: &mut R, cap: u64) -> u64 {
+    let mut discarded: u64 = 0;
+    loop {
+        let (newline_pos, available_len) = match reader.fill_buf() {
+            Ok(available) => {
+                if available.is_empty() {
+                    return discarded;
+                }
+                (
+                    available.iter().position(|byte| *byte == b'\n'),
+                    available.len(),
+                )
+            }
+            Err(_) => return discarded,
+        };
+        match newline_pos {
+            Some(position) => {
+                reader.consume(position + 1);
+                return discarded + (position as u64 + 1);
+            }
+            None => {
+                reader.consume(available_len);
+                discarded += available_len as u64;
+                if discarded >= cap {
+                    return discarded;
+                }
             }
         }
+    }
+}
+
+/// 入 tail：行数 + 总字节双上限（FIFO 淘汰最旧行）。
+fn push_stderr_tail(tail: &Arc<Mutex<VecDeque<String>>>, line: String) {
+    let mut guard = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.push_back(line);
+    while guard.len() > STDERR_TAIL_LINE_LIMIT {
+        guard.pop_front();
+    }
+    let mut total: usize = guard.iter().map(String::len).sum();
+    while total > STDERR_TAIL_BYTES_LIMIT {
+        let Some(front) = guard.front() else { break };
+        total = total.saturating_sub(front.len());
+        guard.pop_front();
     }
 }
 
@@ -1104,5 +1196,73 @@ mod tests {
             .expect("healthy child ack");
         drop(writer);
         let _ = worker.join();
+    }
+
+    // ---- P1-3 残余：stderr 有界（巨行 / tail 行·字节双上限） -----------------
+
+    fn drain_stderr(data: Vec<u8>) -> Vec<String> {
+        let tail = Arc::new(Mutex::new(VecDeque::new()));
+        read_stderr_impl(Cursor::new(data), tail.clone());
+        let guard = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.iter().cloned().collect()
+    }
+
+    // CPP-ISO-034：stderr 单行 1 MiB（无换行）在分配前截断，tail 只留短前缀 + 标记。
+    #[test]
+    fn cpp_iso_034_huge_stderr_line_is_truncated_not_allocated() {
+        let mut data = vec![b'E'; 1024 * 1024];
+        data.push(b'\n');
+        let lines = drain_stderr(data);
+        assert_eq!(lines.len(), 1, "巨行只算一行: {:?}", lines);
+        let line = &lines[0];
+        assert!(
+            line.len() <= MAX_STDERR_LINE_BYTES + 80,
+            "单行必须截断到上限附近（实际 {}）",
+            line.len()
+        );
+        assert!(line.starts_with('E'));
+        assert!(
+            line.contains("stderr truncated") && line.contains("bytes discarded"),
+            "必须带截断标记: {line}"
+        );
+    }
+
+    // CPP-ISO-035：大量短行 → tail 只保留最后 STDERR_TAIL_LINE_LIMIT 行（行数上限）。
+    #[test]
+    fn cpp_iso_035_stderr_tail_keeps_only_recent_lines() {
+        let mut data = Vec::new();
+        for index in 0..1000 {
+            data.extend_from_slice(format!("line-{index}\n").as_bytes());
+        }
+        let lines = drain_stderr(data);
+        assert_eq!(lines.len(), STDERR_TAIL_LINE_LIMIT);
+        assert_eq!(lines.first().map(String::as_str), Some("line-936"));
+        assert_eq!(lines.last().map(String::as_str), Some("line-999"));
+    }
+
+    // CPP-ISO-036：大量较长行 → tail 总字节受 STDERR_TAIL_BYTES_LIMIT 约束（字节上限）。
+    #[test]
+    fn cpp_iso_036_stderr_tail_respects_byte_limit() {
+        let long = "x".repeat(2_000);
+        let mut data = Vec::new();
+        for _ in 0..200 {
+            data.extend_from_slice(long.as_bytes());
+            data.push(b'\n');
+        }
+        let lines = drain_stderr(data);
+        let total: usize = lines.iter().map(String::len).sum();
+        assert!(
+            total <= STDERR_TAIL_BYTES_LIMIT,
+            "tail {total} 字节超过上限 {STDERR_TAIL_BYTES_LIMIT}"
+        );
+        assert!(lines.len() <= STDERR_TAIL_LINE_LIMIT);
+        assert!(lines.iter().all(|line| line.len() <= MAX_STDERR_LINE_BYTES));
+    }
+
+    // CPP-ISO-037：CRLF 去尾、空行跳过、普通短行原样保留。
+    #[test]
+    fn cpp_iso_037_stderr_lines_are_trimmed_and_blanks_skipped() {
+        let lines = drain_stderr(b"hello\r\n\nworld\n".to_vec());
+        assert_eq!(lines, vec!["hello".to_owned(), "world".to_owned()]);
     }
 }
