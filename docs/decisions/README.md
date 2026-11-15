@@ -41,3 +41,4 @@
 | [0009-plugin-trust.md](0009-plugin-trust.md) | 最小信任链：包级 `dshr-trust.json` + 摘要强制 + 可选 ed25519 + 首装确认/审计/降级拒绝 | Accepted | M3 |
 | [0010-isolation-runtime-quota.md](0010-isolation-runtime-quota.md) | 隔离运行时配额五维；WASM 主方案因本机离线暂由 `external-process`（Job Object）退路承担 G3 | Accepted（退路启用） | M3 |
 | [0011-adc-v1-freeze.md](0011-adc-v1-freeze.md) | ADC-v1 冻结范围、变更政策与已知渲染降级 | Accepted | M3（G1） |
+| [0012-m3-gate-closure.md](0012-m3-gate-closure.md) | 独立 review 后 M3 gate 口径修正：G2 Preview、WASM 接宿主/Component 移 M4、L2 官方包 manual gate、测试诚实性 | Accepted | M3 收尾 |
