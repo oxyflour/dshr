@@ -719,25 +719,30 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 - [x] **ADC-S 服务端**（`ui-contributions`）：12 slot、kind/scope、generation、逆序幂等撤销、
       注册校验与可读诊断。*（56 tests：`ADC-SLOT/ELEM/SEC`）*
 - [ ] **ADC-R 渲染器**（`ui-gpui`）：元素集 + 绑定/patch/动作 + 未知元素 `Placeholder` 降级 +
-      a11y + 渲染预算测试。*（26 元素 + Placeholder + a11y 已实现（26 tests）；绑定/事件、
-      渲染预算与 chat.rs 面板接线待做）*
+      a11y + 渲染预算测试。*（26 元素 + Placeholder + a11y + panel 入口（26+10 tests）；预算实测
+      release 最差 total p95 3.78ms（[m3-render-budget](m3-render-budget.md)）；**W5 已接 chat 右栏
+      ADC 面板**（`--selftest-adc-panel` PASS）；tool card renderer/交互/事件留 M4）*
 - [ ] **WASM Component**：`cpp-v1.wit` + Wasmtime + fuel/epoch/内存/输出/并发五维配额 +
-      三故障注入（超时/fuel/内存）。*（W3：`spec/cpp-v1.wit` + ADR-0010 配额模型已落盘；
-      本机离线无法获取 wasmtime，隔离证据由 external-process 退路提供（`CPP-ISO-*`））*
+      三故障注入（超时/fuel/内存）。*（**W6：wasmtime `=50.0.1` core-module ABI 已实现并集成**
+      （`CPP-WASM-001..020`：fuel/epoch/内存/输出四类隔离 + trap 存活/relaunch/并发背压）；
+      `cpp-v1.wit` 仍草案，**Component Model/WIT canonical ABI 未做**——见
+      [`wasm-host.md`](wasm-host.md)；external-process 退路保留）*
 - [ ] **DSH L2**：`sidecar-rpc` v2 host-service 代理 + 证据选出的 3 个 adapter + conformance。
-      *（W3：Rust 三个服务 + sidecar v2 host.service/event/storage 代理 + 15 Rust/13 JS 测试；
-      chat.rs Router/SessionAccess 接线与官方包真实往返待做）*
+      *（W4 端到端 + W5 官方包验收：未修改 `dsh-tool-working-directory` 装载绿 + `exec.agent` 债务
+      证据（`RPC-L2-502`）、官方 `dsh-storage-domain` 经 `defineDomain`/`DomainFacility` 与 storage-kv
+      后端真实往返（501/503/504/505）；storage hub 本体（Cordis Service class）未按普通 plugin 装载）*
 - [x] **最小信任链**：`spec/plugin-trust.md` + 包级 `dshr-trust.json`（摘要强制 + 可选 ed25519）
       + manifest `min_host_version` + 首次安装逐项确认 + 审计 + 降级拒绝（ADR-0009）。
       *（18 tests + `chat --selftest-trust-install` PASS）*
 - [ ] **外部作者验收**：`plugin-authoring.md` + 模板 + 仓库外样例 + "未读主程序源码" checklist；
       插件升级/迁移（先补 adc-v1 插件持久化状态章节，否则移出 M3）。
       *（W3：文档/模板/生成器/打包器 + E2E 五种结果 PASS；chat 产品路径 self-test PASS；
-      真仓库外目录受沙箱限制，Panel 渲染与 DSH JS 作者文档待补）*
+      W5 panel 已渲染；沙箱 danger-full-access 后"真仓库外"可复跑；DSH JS 作者文档待补）*
 - [ ] **M3 债务**（[ADR-0007](decisions/0007-m3-scope.md) §3）：工具并行执行、子会话并行 /
       sidecar 工具继承、默认差异对齐（reasoning effort / LLM 摘要压缩 / 重复调用提醒 /
       `EMPTY_RESPONSE` / approval 模式切换）、`timeoutMs` 透传、Loader `include`/group 子集、
-      MCP 最小闭环。*（W3：MCP 最小客户端完成（`MCP-001..017`）；其余待做）*
+      MCP 最小闭环。*（MCP 完成；W5 默认差异（`M3-DEFAULT-*` 39 ID）+ approval/重复提醒/
+      timeout 接线完成；Loader include/group 完成（`M3-LOADER-*`）；**剩余：工具并行、子会话并行**）*
 - [ ] **条件项**（不计入必达）：Script UI 5 日 spike（[ADR-0008](decisions/0008-script-ui-spike.md)）；
       HTML Widget 独立 WebView Panel（WebView 依赖决策未过则移 M4）；pnpm 捆绑（体积评估未过则移 M4）。
 

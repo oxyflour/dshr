@@ -54,11 +54,21 @@ pub const DEEPSEEK_API_CONTEXT_WINDOW: usize = 131_072;
 /// OpenAI 主流模型（gpt-4o / gpt-4.1 / o3 / o4）的 128K 窗口。
 pub const OPENAI_CONTEXT_WINDOW: usize = 128_000;
 
-/// 触发裁剪的窗口占比。
+/// 触发裁剪的窗口占比（DSH `thresholdRatio=0.8`，已对齐）。
 pub const TRIGGER_RATIO: f32 = 0.8;
 
-/// 裁剪后希望降到窗口占比（留出输出与工具 schema 余量）。
+/// DSH 压缩后的保留比：`retainRatio=0.16`（保留约 16% 窗口的消息）。
+///
+/// 官方 `@deepseek-ai/dsh-compaction-basic` 用 `DEFAULT_RETAIN_RATIO = .16`：
+/// 触发压缩后把历史压到窗口的 16% 以内，再交给 LLM 生成摘要。
+pub const DSH_RETAIN_RATIO: f32 = 0.16;
+
+/// 旧 dshr 保留比（裁到 0.6）。仅作为 `DSHR_CONTEXT_RETAIN_RATIO=0.6` 的
+/// 兼容回退值保留；正常路径默认取 [`DSH_RETAIN_RATIO`]。
 pub const TARGET_RATIO: f32 = 0.6;
+
+/// 覆盖保留比的环境变量（如 `0.6` 回退旧行为；范围 0.05–1.0，非法忽略）。
+pub const RETAIN_RATIO_ENV: &str = "DSHR_CONTEXT_RETAIN_RATIO";
 
 /// 单条工具结果超过这个 token 数就做头尾裁剪。
 pub const TOOL_RESULT_TOKEN_LIMIT: usize = 800;
@@ -125,6 +135,19 @@ fn context_window_for_model(model: &str) -> usize {
     } else {
         DEFAULT_CONTEXT_WINDOW
     }
+}
+
+/// 保留比解析（纯函数，测试与显式注入用）：范围 0.05–1.0，非法/越界回退 DSH 默认。
+pub fn resolve_retain_ratio(explicit: Option<&str>) -> f32 {
+    explicit
+        .and_then(|raw| raw.trim().parse::<f32>().ok())
+        .filter(|ratio| (0.05..=1.0).contains(ratio))
+        .unwrap_or(DSH_RETAIN_RATIO)
+}
+
+/// 从 `DSHR_CONTEXT_RETAIN_RATIO` 读取保留比；未设置/非法回退 DSH 默认 0.16。
+pub fn retain_ratio_from_env() -> f32 {
+    resolve_retain_ratio(std::env::var(RETAIN_RATIO_ENV).ok().as_deref())
 }
 
 /// 估算一段文本的 token 数。CJK 按字计，其它按 4 字符/token，再加少量消息开销。
@@ -232,7 +255,8 @@ pub fn plan_context_with_spill(
     plan_with_window_and_spill(log, next_user_text, context_window_from_env(), policy)
 }
 
-/// 可注入窗口的版本（测试/自检用）。行为与引入外部化前完全一致。
+/// 可注入窗口的版本（测试/自检用）。保留比取自 [`retain_ratio_from_env`]
+///（默认 DSH `retainRatio=0.16`；`DSHR_CONTEXT_RETAIN_RATIO=0.6` 可回退旧行为）。
 pub fn plan_with_window(log: &SessionLog, next_user_text: &str, window: usize) -> ContextPlan {
     plan_with_window_and_spill(log, next_user_text, window, &SpillPolicy::disabled())
 }
@@ -247,7 +271,39 @@ pub fn plan_with_window_and_spill(
     window: usize,
     policy: &SpillPolicy,
 ) -> ContextPlan {
+    plan_with_window_and_spill_ratio(log, next_user_text, window, policy, retain_ratio_from_env())
+}
+
+/// 显式保留比版本（测试/统计用）：`retain_ratio` 是压缩后目标窗口占比。
+pub fn plan_with_window_and_retain_ratio(
+    log: &SessionLog,
+    next_user_text: &str,
+    window: usize,
+    retain_ratio: f32,
+) -> ContextPlan {
+    plan_with_window_and_spill_ratio(
+        log,
+        next_user_text,
+        window,
+        &SpillPolicy::disabled(),
+        retain_ratio,
+    )
+}
+
+/// 可注入窗口 + 外部化策略 + 保留比的底层实现。
+pub fn plan_with_window_and_spill_ratio(
+    log: &SessionLog,
+    next_user_text: &str,
+    window: usize,
+    policy: &SpillPolicy,
+    retain_ratio: f32,
+) -> ContextPlan {
     let window = window.max(1);
+    let retain_ratio = if (0.05..=1.0).contains(&retain_ratio) {
+        retain_ratio
+    } else {
+        DSH_RETAIN_RATIO
+    };
     let recorded = spill::recorded_spills(log);
     let policy = (policy.threshold_bytes != usize::MAX).then_some(policy);
     let needs_externalization = policy.is_some() || !recorded.is_empty();
@@ -311,11 +367,11 @@ pub fn plan_with_window_and_spill(
             .collect::<Vec<_>>(),
     ) + estimate_tokens(next_user_text);
 
-    // 2. 仍超预算：从最旧的对话丢起，直到降到目标占比。
+    // 2. 仍超预算：从最旧的对话丢起，直到降到保留比（DSH retainRatio，默认 0.16）。
     let mut dropped = Vec::new();
     let mut dropped_range = None;
     if tokens > trigger {
-        let target = (window as f32 * TARGET_RATIO) as usize;
+        let target = (window as f32 * retain_ratio) as usize;
         let (kept, removed) = trim_to_budget(&working, target, estimate_tokens(next_user_text));
         if !removed.is_empty() {
             dropped_range = Some((
@@ -1273,5 +1329,111 @@ mod tests {
         assert!(to < 40, "to={to}");
         assert_eq!(plan.dropped.len(), plan.dropped_messages);
         assert!(plan.dropped_range.is_some());
+    }
+
+    // ------------------------------------------------------------------
+    // M3-DEFAULT-040..045：压缩保留比对齐 DSH retainRatio=0.16
+    // ------------------------------------------------------------------
+
+    fn long_log(rounds: usize) -> SessionLog {
+        let mut log = SessionLog::new("s-retain");
+        for index in 0..rounds {
+            log.append(EventSpec::durable(
+                "message.user",
+                "t0",
+                json!({ "message_id": format!("u{index}"), "text": "长用户消息".repeat(120) }),
+            ))
+            .expect("append user");
+            log.append(EventSpec::durable(
+                "message.assistant.settled",
+                "t0",
+                json!({ "message_id": format!("a{index}"), "text": "长助手回复".repeat(120) }),
+            ))
+            .expect("append assistant");
+        }
+        log
+    }
+
+    #[test]
+    fn m3_default_040_retain_ratio_defaults_to_dsh_016() {
+        assert_eq!(DSH_RETAIN_RATIO, 0.16, "DSH DEFAULT_RETAIN_RATIO = .16");
+        assert_eq!(TRIGGER_RATIO, 0.8, "DSH thresholdRatio = .8");
+        assert_eq!(resolve_retain_ratio(None), 0.16);
+        assert_eq!(TARGET_RATIO, 0.6, "旧行为仅作 env 回退值保留");
+    }
+
+    #[test]
+    fn m3_default_041_retain_ratio_env_parse_and_clamp() {
+        assert_eq!(resolve_retain_ratio(Some("0.6")), 0.6);
+        assert_eq!(resolve_retain_ratio(Some(" 0.16 ")), 0.16);
+        assert_eq!(resolve_retain_ratio(Some("garbage")), 0.16);
+        assert_eq!(resolve_retain_ratio(Some("2.0")), 0.16, "越界回退默认");
+        assert_eq!(resolve_retain_ratio(Some("0.01")), 0.16);
+        assert_eq!(resolve_retain_ratio(Some("1.0")), 1.0);
+        assert_eq!(resolve_retain_ratio(Some("0.05")), 0.05);
+        assert_eq!(RETAIN_RATIO_ENV, "DSHR_CONTEXT_RETAIN_RATIO");
+    }
+
+    #[test]
+    fn m3_default_042_compaction_targets_16_percent_of_window() {
+        let log = long_log(40);
+        let window = 8_000;
+        let plan = plan_with_window(&log, "继续", window);
+        assert!(plan.triggered(), "{plan:?}");
+        assert!(plan.dropped_messages > 0, "{plan:?}");
+        let target = (window as f32 * DSH_RETAIN_RATIO) as usize;
+        assert!(
+            plan.tokens_after <= target,
+            "压缩后 tokens={} 应 <= 16% 窗口 {target}",
+            plan.tokens_after
+        );
+        assert!(
+            (plan.tokens_after as f64) <= (window as f64 * 0.16) + 1.0,
+            "保留比应接近 16%: tokens_after={}",
+            plan.tokens_after
+        );
+    }
+
+    #[test]
+    fn m3_default_043_legacy_ratio_keeps_more_messages() {
+        let log = long_log(40);
+        let window = 8_000;
+        let dsh = plan_with_window_and_retain_ratio(&log, "继续", window, DSH_RETAIN_RATIO);
+        let legacy = plan_with_window_and_retain_ratio(&log, "继续", window, TARGET_RATIO);
+        assert!(dsh.triggered() && legacy.triggered());
+        assert!(
+            dsh.messages.len() <= legacy.messages.len(),
+            "0.16 保留的消息应 <= 0.6: {} vs {}",
+            dsh.messages.len(),
+            legacy.messages.len()
+        );
+        assert!(
+            dsh.tokens_after <= legacy.tokens_after,
+            "0.16 tokens_after 应更小: {} vs {}",
+            dsh.tokens_after,
+            legacy.tokens_after
+        );
+    }
+
+    #[test]
+    fn m3_default_044_dsh_ratio_still_produces_legal_history() {
+        let log = long_log(40);
+        let plan = plan_with_window_and_retain_ratio(&log, "继续", 8_000, DSH_RETAIN_RATIO);
+        assert!(!matches!(
+            plan.messages.first(),
+            Some(ChatMessage::Tool { .. })
+        ));
+        assert_paired(&plan.messages);
+        assert_eq!(plan.dropped.len(), plan.dropped_messages);
+        assert!(plan.dropped_range.is_some());
+    }
+
+    #[test]
+    fn m3_default_045_retain_ratio_out_of_range_falls_back() {
+        let log = long_log(20);
+        let weird = plan_with_window_and_retain_ratio(&log, "继续", 8_000, 9.5);
+        let default = plan_with_window_and_retain_ratio(&log, "继续", 8_000, DSH_RETAIN_RATIO);
+        assert_eq!(weird.messages, default.messages);
+        assert_eq!(weird.tokens_after, default.tokens_after);
     }
 }

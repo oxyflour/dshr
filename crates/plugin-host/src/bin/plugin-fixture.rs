@@ -45,7 +45,7 @@ fn declarations() -> ReadyDecls {
             "workspace.panel",
             "fixture.one",
             "Fixture One",
-            "fixture.one",
+            "fixture.adc",
         )
         .with_location("right")
         .with_order(100.0),
@@ -53,7 +53,7 @@ fn declarations() -> ReadyDecls {
             "workspace.panel",
             "fixture.two",
             "Fixture Two",
-            "fixture.two",
+            "fixture.unknown",
         )
         .with_location("bottom")
         .with_order(200.0),
@@ -121,6 +121,34 @@ fn views(view: &str, state_seq: u64) -> Result<Value, ToolError> {
             "props": { "title": "Fixture Two" },
             "children": [],
             "a11yLabel": "fixture two"
+        })),
+        // 合法 ADC-v1 树（`--selftest-adc-panel` 的 "合法树 0 诊断" 用例）。
+        "fixture.adc" => Ok(json!({
+            "type": "Card",
+            "props": { "title": "Fixture ADC" },
+            "children": [
+                { "type": "Text", "props": { "value": format!("external fixture seq={state_seq}") } },
+                { "type": "Row", "props": { "gap": 8, "align": "center" }, "children": [
+                    { "type": "Badge", "props": { "label": "external-process", "tone": "success" } },
+                    { "type": "Text", "props": { "value": "ADC panel 已接通", "style": "caption" } }
+                ]},
+                { "type": "Table", "props": {
+                    "columns": [
+                        { "key": "k", "title": "键" },
+                        { "key": "v", "title": "值" }
+                    ],
+                    "rows": [
+                        { "k": "来源", "v": "external-process" },
+                        { "k": "view", "v": "fixture.adc" }
+                    ],
+                    "a11yLabel": "fixture adc table"
+                }}
+            ]
+        })),
+        // 未知元素：运行时 MUST 降级为 Placeholder + 诊断（P4），不 panic。
+        "fixture.unknown" => Ok(json!({
+            "type": "Sparkline",
+            "props": { "unexpected": true }
         })),
         other => Err(ToolError::invalid_arguments(format!(
             "unknown fixture view `{other}`"

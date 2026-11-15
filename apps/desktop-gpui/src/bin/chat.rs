@@ -16,6 +16,8 @@
 //!   cargo run ... --bin chat -- --selftest                   # 无窗口自检
 //!   cargo run ... --bin chat -- --selftest-stream            # 流式自检
 //!   cargo run ... --bin chat -- --selftest-dsh               # 官方 DSH 插件自检
+//!   cargo run ... --bin chat -- --selftest-adc-panel         # ADC 插件面板链路自检
+//!   cargo run ... --bin chat -- --selftest-defaults          # M3 默认差异接线自检
 //!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
 use std::path::PathBuf;
@@ -39,14 +41,16 @@ use dshr_agent_context::{
 };
 use dshr_agent_core::{
     spawn_child_spec, Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider,
-    ModelProvider, ModelReply, SessionTreeRuntime, SpawnChildArgs, SpawnContext, ToolCallRequest,
-    ToolExecutor, ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
+    ModelProvider, ModelReply, ModelToolCall, ReasoningEffort, SessionTreeRuntime, SpawnChildArgs,
+    SpawnContext, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH,
+    SPAWN_CHILD_TOOL,
 };
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{
-    EventPage, HostOptions, HostServiceRouter, ServiceError, SessionAccess, SessionEventView,
-    SessionHeaderView, SessionLogService, SidecarHost, StorageKvService, WorkingDirectoryService,
-    CAP_SERVICE_PROXY, PROTOCOL_MAX, SESSION_LOG_V1, STORAGE_KV_V1, WORKING_DIRECTORY_V1,
+    parse_tool_registration, EventPage, HostOptions, HostServiceRouter, ServiceError,
+    SessionAccess, SessionEventView, SessionHeaderView, SessionLogService, SidecarHost,
+    StorageKvService, WorkingDirectoryService, CAP_SERVICE_PROXY, PROTOCOL_MAX, SESSION_LOG_V1,
+    STORAGE_KV_V1, WORKING_DIRECTORY_V1,
 };
 use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
 use dshr_llm_deepseek::DeepSeekProvider;
@@ -67,10 +71,12 @@ use dshr_session_store::{
 };
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
-    ApprovalBroker, ApprovalOutcome, ApprovalPolicy, RegistryError, ToolDefinition, ToolOrigin,
+    ApprovalBroker, ApprovalOutcome, ApprovalPolicy, PermissionMode, PolicyDecision, RegistryError,
+    ToolDefinition, ToolOrigin, ToolPolicy,
 };
 use dshr_ui_gpui::{
-    diff_view_from_text, markdown_view, terminal_view_from_text, TextInput, Theme, ThemeKind,
+    adc_panel_body, diff_view_from_text, markdown_view, terminal_view_from_text, DiagnosticCode,
+    TextInput, Theme, ThemeKind,
 };
 
 const SESSION_ID: &str = "s-chat";
@@ -522,6 +528,17 @@ fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
     out.chars().take(max_chars).collect()
 }
 
+/// 一个已取到的插件 ADC 面板（宿主侧缓存；渲染只读，避免每帧走插件 IPC）。
+#[derive(Clone)]
+struct AdcPanelView {
+    plugin_id: String,
+    title: String,
+    /// `render_panel` 成功时的元素树；失败为 `None`，错误在 `error`。
+    tree: Option<serde_json::Value>,
+    /// 渲染失败的可读错误（未知 view / 插件不实现 view / 进程错误）。
+    error: Option<String>,
+}
+
 struct ChatState {
     log: SessionLog,
     path: PathBuf,
@@ -548,6 +565,8 @@ struct ChatState {
     plugin_errors: Vec<String>,
     /// 原会话文件存在但读不出来时置位：禁止 save 覆盖（否则会把读失败当成空会话写回）。
     save_blocked: Option<String>,
+    /// 插件 ADC 面板缓存（`workspace.panel` 的 view → 元素树 JSON）。
+    adc_panels: Vec<AdcPanelView>,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
@@ -573,12 +592,34 @@ impl Plugin for ProbeNativePlugin {
             }))
             .with_presentation("generic"),
         )?;
-        ctx.register_panel(dshr_plugin_api::PanelContribution::new(
-            "probe.panel",
-            "Probe Panel",
-            "workspace.panel",
-        ));
+        ctx.register_panel(
+            dshr_plugin_api::PanelContribution::new(
+                "probe.panel",
+                "Probe Panel",
+                "workspace.panel",
+            )
+            // 插件面板的 ADC 视图名（`render_view` 的入参；与注册 id 分开）。
+            .with_view("probe.panel"),
+        );
         Ok(())
+    }
+
+    /// ADC-v1 面板 view：证明"原生插件 → 宿主 → adc_panel_body"的完整产品链路。
+    fn render_view(&mut self, view: &str) -> Result<serde_json::Value, PluginError> {
+        if view != "probe.panel" {
+            return Err(PluginError::Invalid(format!("unknown view `{view}`")));
+        }
+        Ok(json!({
+            "type": "Card",
+            "props": {"title": "Probe Panel"},
+            "children": [
+                {"type": "Text", "props": {"value": "原生插件 ADC 面板（probe_native）"}},
+                {"type": "Row", "props": {"gap": 8, "align": "center"}, "children": [
+                    {"type": "Badge", "props": {"label": "native", "tone": "success"}},
+                    {"type": "Text", "props": {"value": "只读渲染 · 事件留 M4", "style": "caption"}}
+                ]}
+            ]
+        }))
     }
 
     fn call(
@@ -890,6 +931,14 @@ fn cancel_aware(
 /// 真实 provider 统一包一层 `RetryingProvider`（429/5xx/连接中断指数退避）；
 /// 流式请求只在"还没有交付任何 delta"时重试，避免重复显示。
 fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
+    // reasoning effort 由 provider 自己在 `from_env()` 里读取（`DSHR_REASONING_EFFORT`）；
+    // chat 不做覆盖，只在配置了时打印一行便于诊断。DeepSeek 当前不发该字段（厂商差异）。
+    if let Some(effort) = ReasoningEffort::from_env() {
+        println!(
+            "[chat] reasoning_effort={}（由 provider 按 env 应用）",
+            effort.as_str()
+        );
+    }
     // 自检必须确定性：显式要求 mock 时不看环境里的 key。
     if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
         println!("[chat] provider=mock（DSHR_FORCE_MOCK=1）");
@@ -968,6 +1017,34 @@ fn sidecar_tool_timeout(definition: &ToolDefinition) -> Duration {
 /// 超时夹到 1s..=600s：太小会误伤正常工具，太大（或 0）会让界面像卡死。
 fn clamp_tool_timeout_ms(millis: u64) -> Duration {
     Duration::from_millis(millis.clamp(1_000, 600_000))
+}
+
+/// 把 agent 本轮触发的重复工具软提醒落成 durable `tool.repeat` 事件。
+///
+/// 模型侧的提醒由 `agent-core` 在每步工具执行完后以 system 消息注入（软提醒不失败）；
+/// 这里只负责**宿主侧留痕**：回放/审计可见，UI 不需要专门渲染。返回写入条数。
+///
+/// payload 形状 `{tool, count, threshold, message}`（`message` 即注入模型的提醒文本）。
+fn append_repeat_reminders<P: ModelProvider>(
+    agent: &mut Agent<P>,
+    log: &mut SessionLog,
+    ts: &str,
+) -> usize {
+    let reminders = agent.take_repeat_reminders();
+    let written = reminders.len();
+    for reminder in reminders {
+        let _ = log.append(EventSpec::durable(
+            "tool.repeat",
+            ts,
+            json!({
+                "tool": reminder.tool,
+                "count": reminder.count,
+                "threshold": reminder.threshold,
+                "message": reminder.text,
+            }),
+        ));
+    }
+    written
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,10 +1709,18 @@ impl ChatState {
         } else {
             None
         };
+        // 审批策略：`DSHR_TOOL_POLICY=ask-all` 保持最高优先级（自检/演示要更严）；
+        // 否则按 `DSHR_PERMISSION_MODE`（read-only / workspace-write / danger-full-access），
+        // 缺省 workspace-write = 原有 desktop 行为，不回归。
         let policy = if std::env::var("DSHR_TOOL_POLICY").as_deref() == Ok("ask-all") {
             ApprovalPolicy::ask_all()
         } else {
-            ApprovalPolicy::desktop()
+            let mode = PermissionMode::from_env();
+            eprintln!(
+                "[chat] approval mode={}（DSHR_PERMISSION_MODE）",
+                mode.as_str()
+            );
+            ApprovalPolicy::from_env()
         };
         let mut plugins = PluginHost::new(policy);
         if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
@@ -1653,7 +1738,7 @@ impl ChatState {
             .unwrap_or_default();
         plugin_errors.extend(boot_errors);
 
-        let state = Self {
+        let mut state = Self {
             log,
             path: path.clone(),
             host,
@@ -1669,12 +1754,51 @@ impl ChatState {
             allow_spawn,
             plugin_errors,
             save_blocked,
+            adc_panels: Vec::new(),
         };
+        // 原生面板在构造期就取一次树；external-process 面板由启动流程装载后再刷新。
+        state.refresh_adc_panels();
         // 新建的会话立刻落盘：索引/侧栏/树查询都从磁盘扫描，不能等第一轮才可见。
         if wrote_created {
             state.save();
         }
         state
+    }
+
+    /// 刷新 `workspace.panel` 的 ADC 视图缓存（装载/重载插件后调用一次）。
+    ///
+    /// 渲染路径（`plugins_panel`）只读缓存：插件 IPC 不进入每帧渲染，避免 UI 线程
+    /// 等外部进程（`ui.render` 超时默认 10s）。未知 view / 不实现 view 的插件只留下
+    /// 可读错误，不影响其它面板。
+    fn refresh_adc_panels(&mut self) {
+        let registrations: Vec<(String, String, String)> = self
+            .plugins
+            .panels()
+            .iter()
+            .filter(|registration| registration.panel.slot == "workspace.panel")
+            .map(|registration| {
+                (
+                    registration.plugin_id.clone(),
+                    registration.panel.title.clone(),
+                    registration.panel.view_name().to_owned(),
+                )
+            })
+            .collect();
+        let mut panels = Vec::with_capacity(registrations.len());
+        for (plugin_id, title, view) in registrations {
+            let mut panel = AdcPanelView {
+                plugin_id: plugin_id.clone(),
+                title,
+                tree: None,
+                error: None,
+            };
+            match self.plugins.render_panel(&plugin_id, &view) {
+                Ok(tree) => panel.tree = Some(tree),
+                Err(error) => panel.error = Some(format!("view `{view}`: {error}")),
+            }
+            panels.push(panel);
+        }
+        self.adc_panels = panels;
     }
 
     /// 组装上下文计划：先按阈值把超大工具结果外部化（写对象 + 事件留痕），再重新计划。
@@ -1965,6 +2089,15 @@ impl ChatState {
                     | AgentEvent::TurnEnded { .. } => {}
                 },
             );
+        }
+        // 重复工具软提醒：本轮结束后一次性落 durable 事件（模型侧注入由 agent-core 完成）。
+        {
+            let repeat_ts = now_ts();
+            let mut log = log_cell.borrow_mut();
+            let written = append_repeat_reminders(&mut self.agent, &mut log, &repeat_ts);
+            if written > 0 {
+                eprintln!("[chat] tool.repeat: {written} 条（重复工具调用软提醒已落日志）");
+            }
         }
         // 还原父日志：spawn_child 可能已往里追加 child.spawned / child.finished。
         self.log = std::rc::Rc::try_unwrap(log_cell)
@@ -2304,8 +2437,10 @@ struct ChatApp {
     frame_probe: Option<FrameProbe>,
     /// 会话树深度（session id → depth）；侧栏按树顺序展示并缩进子会话。
     session_depths: std::collections::BTreeMap<String, u32>,
-    /// sidecar 启动/插件装载错误：插件面板顶部提示（避免"插件失败但界面无感"）。
+    /// sidecar 启动/插件装载/插件面板错误：插件面板顶部提示（避免"插件失败但界面无感"）。
     plugin_errors: Vec<String>,
+    /// 插件 ADC 面板快照（渲染路径只读；刷新见加载插件/打开面板处，不持锁渲染）。
+    adc_panels: Vec<AdcPanelView>,
 }
 
 impl ChatApp {
@@ -2747,6 +2882,82 @@ impl ChatApp {
             );
         }
 
+        // ADC-v1 插件面板：对 `workspace.panel` 的每条注册渲染它的 view。
+        // 树由装载/打开面板时取好并快照在 `ChatApp` 里（**渲染路径不碰 state 锁**，
+        // 否则工作线程跑一轮时会冻住 UI）；事件轮留 M4（ADR-0011 降级清单）。
+        let adc_panels = self.adc_panels.clone();
+        if !adc_panels.is_empty() {
+            list = list.child(
+                div()
+                    .w_full()
+                    .pt(px(6.0))
+                    .text_size(t.type_scale.small)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.color(p.label_secondary))
+                    .child("插件面板 · ADC-v1"),
+            );
+            for (index, panel) in adc_panels.iter().enumerate() {
+                let mut card = div()
+                    .id(("adc-panel", index))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .bg(p.color(p.bg_layer_1))
+                    .child(
+                        div()
+                            .w_full()
+                            .text_size(t.type_scale.small)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.color(p.label_secondary))
+                            .text_overflow(TextOverflow::Truncate("…".into()))
+                            .child(format!("{} · {}", panel.plugin_id, panel.title)),
+                    );
+                match &panel.tree {
+                    Some(tree) => {
+                        let (body, diagnostics) = adc_panel_body(t, tree);
+                        card = card.child(body);
+                        if !diagnostics.is_empty() {
+                            // 未知元素 Placeholder / 配额裁剪仍然可见，诊断只作提示。
+                            let errors = diagnostics
+                                .iter()
+                                .filter(|diagnostic| diagnostic.is_error())
+                                .count();
+                            card = card.child(
+                                div()
+                                    .text_size(t.type_scale.small)
+                                    .line_height(t.type_scale.small_line)
+                                    .text_color(p.color(p.state_warn))
+                                    .child(format!(
+                                        "ADC 诊断 {} 条（error {errors}）",
+                                        diagnostics.len()
+                                    )),
+                            );
+                        }
+                    }
+                    None => {
+                        let message = panel
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "（没有可渲染的 view）".to_owned());
+                        card = card.child(
+                            div()
+                                .text_size(t.type_scale.small)
+                                .line_height(t.type_scale.small_line)
+                                .text_color(p.color(p.state_error))
+                                .child(format!("面板渲染失败：{message}")),
+                        );
+                    }
+                }
+                list = list.child(card);
+            }
+        }
+
         Some(
             div()
                 .w(px(300.0))
@@ -3167,6 +3378,13 @@ impl ChatApp {
                             })
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.plugins_open = !this.plugins_open;
+                                // 打开时补一次面板快照；用 try_lock：工作线程持有 state 时
+                                // 保持旧快照，绝不阻塞 UI 渲染路径。
+                                if this.plugins_open {
+                                    if let Ok(guard) = this.state.try_lock() {
+                                        this.adc_panels = guard.adc_panels.clone();
+                                    }
+                                }
                                 cx.notify();
                             })),
                     ),
@@ -5721,15 +5939,28 @@ fn load_enabled_external_plugins(
 }
 
 /// 自检：external-process 插件产品路径（安装 → profile 装载 → 工具调用 → 卸载 → 重载）。
-fn selftest_external_plugin() -> i32 {
-    let root = PathBuf::from(".tmp/external-plugin-selftest");
-    let _ = std::fs::remove_dir_all(&root);
+/// external-process fixture 插件的一次性准备（复制 exe → 写 manifest/包摘要 → 信任安装）。
+///
+/// `--selftest-external-plugin` 与 `--selftest-adc-panel` 共用；失败已按 `tag` 前缀打印，
+/// 调用方直接返回 1 即可。
+struct FixturePluginSetup {
+    profile: Profile,
+    sidecar: PathBuf,
+    installed: bool,
+}
+
+fn prepare_fixture_plugin(
+    root: &std::path::Path,
+    plugin_id: &str,
+    tag: &str,
+) -> Option<FixturePluginSetup> {
+    let _ = std::fs::remove_dir_all(root);
     let package = root.join("pkg");
     let sidecar = root.join("sidecar");
     let profile_dir = root.join("profile");
     if std::fs::create_dir_all(&package).is_err() {
-        eprintln!("[selftest-external] 创建目录失败");
-        return 1;
+        eprintln!("[{tag}] 创建目录失败");
+        return None;
     }
     let fixture_name = if cfg!(windows) {
         "plugin-fixture.exe"
@@ -5740,30 +5971,31 @@ fn selftest_external_plugin() -> i32 {
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(fixture_name)))
     else {
-        eprintln!("[selftest-external] 无法定位 fixture 可执行文件");
-        return 1;
+        eprintln!("[{tag}] 无法定位 fixture 可执行文件");
+        return None;
     };
     if !fixture.is_file() {
         eprintln!(
-            "[selftest-external] 缺少 {}；先运行 `cargo build -p dshr-plugin-host --bins`",
+            "[{tag}] 缺少 {}；先运行 `cargo build -p dshr-plugin-host --bins`",
             fixture.display()
         );
-        return 1;
+        return None;
     }
     if std::fs::copy(&fixture, package.join(fixture_name)).is_err() {
-        eprintln!("[selftest-external] 复制 fixture 失败");
-        return 1;
+        eprintln!("[{tag}] 复制 fixture 失败");
+        return None;
     }
-    let manifest = r#"
+    let manifest = format!(
+        r#"
 [plugin]
-id = "selftest.external"
+id = "{plugin_id}"
 version = "0.1.0"
 api = "cordis-portable/v1"
 description = "external-process selftest fixture"
 
 [runtime]
 kind = "external-process"
-entry = "plugin-fixture.exe"
+entry = "{fixture_name}"
 max_memory_mb = 128
 timeout_ms = 60000
 
@@ -5771,17 +6003,18 @@ timeout_ms = 60000
 workspace_read = false
 workspace_write = false
 network = false
-"#;
-    let package_json = json!({ "name": "selftest.external", "version": "0.1.0" });
+"#
+    );
+    let package_json = json!({ "name": plugin_id, "version": "0.1.0" });
     let _ = std::fs::write(package.join("plugin.toml"), manifest);
     let _ = std::fs::write(package.join("package.json"), package_json.to_string());
     let Ok(digest) = package_digest(&package) else {
-        eprintln!("[selftest-external] 计算包摘要失败");
-        return 1;
+        eprintln!("[{tag}] 计算包摘要失败");
+        return None;
     };
     let trust = json!({
         "schema_version": 1,
-        "plugin_id": "selftest.external",
+        "plugin_id": plugin_id,
         "version": "0.1.0",
         "package": { "digest_sha256": digest }
     });
@@ -5790,8 +6023,8 @@ network = false
     let mut profile = match Profile::load(&profile_dir) {
         Ok(profile) => profile,
         Err(err) => {
-            eprintln!("[selftest-external] 加载 profile 失败: {err}");
-            return 1;
+            eprintln!("[{tag}] 加载 profile 失败: {err}");
+            return None;
         }
     };
     let policy = TrustPolicy {
@@ -5804,9 +6037,23 @@ network = false
     {
         Ok(report) => report,
         Err(err) => {
-            eprintln!("[selftest-external] 安装失败（{}）: {err}", err.code());
-            return 1;
+            eprintln!("[{tag}] 安装失败（{}）: {err}", err.code());
+            return None;
         }
+    };
+    let installed = install.install.destination.join("plugin.toml").is_file();
+    Some(FixturePluginSetup {
+        profile,
+        sidecar,
+        installed,
+    })
+}
+
+fn selftest_external_plugin() -> i32 {
+    let root = PathBuf::from(".tmp/external-plugin-selftest");
+    let Some(setup) = prepare_fixture_plugin(&root, "selftest.external", "selftest-external")
+    else {
+        return 1;
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -5819,7 +6066,7 @@ network = false
         false,
         false,
     );
-    let errors = load_enabled_external_plugins(&mut state.plugins, &profile, &sidecar);
+    let errors = load_enabled_external_plugins(&mut state.plugins, &setup.profile, &setup.sidecar);
     if !errors.is_empty() {
         for error in &errors {
             eprintln!("[selftest-external] {error}");
@@ -5837,7 +6084,8 @@ network = false
         .map(|value| value.to_string().contains("hi"))
         .unwrap_or(false);
     let unloaded = state.plugins.unload("selftest.external").is_ok();
-    let reload_errors = load_enabled_external_plugins(&mut state.plugins, &profile, &sidecar);
+    let reload_errors =
+        load_enabled_external_plugins(&mut state.plugins, &setup.profile, &setup.sidecar);
     let reload_ok = reload_errors.is_empty()
         && state.plugins.is_loaded("selftest.external")
         && state
@@ -5851,7 +6099,7 @@ network = false
         .panels()
         .iter()
         .any(|panel| panel.plugin_id == "selftest.external");
-    let installed_ok = install.install.destination.join("plugin.toml").is_file();
+    let installed_ok = setup.installed;
     let ok = echo_ok && unloaded && reload_ok && panel_ok && installed_ok;
     println!(
         "[selftest-external] installed_ok={installed_ok} echo_ok={echo_ok} unloaded={unloaded} reload_ok={reload_ok} panel_ok={panel_ok}"
@@ -5861,6 +6109,331 @@ network = false
         0
     } else {
         println!("[selftest-external] FAIL");
+        1
+    }
+}
+
+/// `--selftest-adc-panel`：ADC panel 产品链路（无窗口，验证到 `AnyElement` 构造层）。
+///
+/// 链路：external fixture 装载 → `PluginHost::render_panel` → `adc_panel_body` →
+/// GPUI 元素。断言：合法树 0 诊断、未知元素 → Placeholder + 诊断、未知 view /
+/// 未知插件 / 不实现 view 都是可读错误、面板缓存可全部构造且无 panic。
+fn selftest_adc_panel() -> i32 {
+    let root = PathBuf::from(".tmp/adc-panel-selftest");
+    let Some(setup) = prepare_fixture_plugin(&root, "selftest.adc", "selftest-adc-panel") else {
+        return 1;
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::open(
+        root.join("session.jsonl"),
+        SESSION_ID,
+        &cancel,
+        ApprovalBroker::new(),
+        false,
+        false,
+    );
+    let errors = load_enabled_external_plugins(&mut state.plugins, &setup.profile, &setup.sidecar);
+    if !errors.is_empty() {
+        for error in &errors {
+            eprintln!("[selftest-adc-panel] {error}");
+        }
+        println!("[selftest-adc-panel] FAIL（装载失败）");
+        return 1;
+    }
+    if !state.plugins.is_loaded("selftest.adc") {
+        println!("[selftest-adc-panel] FAIL（插件未装载）");
+        return 1;
+    }
+    // 装载后刷新面板缓存——产品面（右侧 panel）渲染读的就是这份缓存。
+    state.refresh_adc_panels();
+    let theme = Theme::light();
+    let mut ok = true;
+
+    // 1) 合法树：render_panel → adc_panel_body，0 诊断、元素构造成功。
+    let legal_tree = match state.plugins.render_panel("selftest.adc", "fixture.adc") {
+        Ok(tree) => tree,
+        Err(error) => {
+            eprintln!("[selftest-adc-panel] render_panel 失败: {error}");
+            println!("[selftest-adc-panel] FAIL");
+            return 1;
+        }
+    };
+    let (legal_element, legal_diagnostics) = adc_panel_body(&theme, &legal_tree);
+    drop(legal_element);
+    let legal_ok = legal_diagnostics.is_empty();
+    ok &= legal_ok;
+
+    // 2) 未知元素（插件返回 Sparkline）：Placeholder + 诊断，不 panic。
+    let unknown_tree = match state
+        .plugins
+        .render_panel("selftest.adc", "fixture.unknown")
+    {
+        Ok(tree) => tree,
+        Err(error) => {
+            eprintln!("[selftest-adc-panel] 未知元素 view 渲染失败: {error}");
+            println!("[selftest-adc-panel] FAIL");
+            return 1;
+        }
+    };
+    let (unknown_element, unknown_diagnostics) = adc_panel_body(&theme, &unknown_tree);
+    drop(unknown_element);
+    let unknown_ok = unknown_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == DiagnosticCode::UnknownElement);
+    ok &= unknown_ok;
+
+    // 3) 未知 view / 未知插件 / 不实现 view：可读错误，不 panic。
+    let unknown_view_ok = state.plugins.render_panel("selftest.adc", "nope").is_err();
+    let unknown_plugin_ok = state
+        .plugins
+        .render_panel("missing.plugin", "fixture.adc")
+        .as_ref()
+        .is_err_and(|error| error.to_string().contains("missing.plugin"));
+    let default_view_ok = state
+        .plugins
+        .render_panel("builtin.probe-write", "anything")
+        .as_ref()
+        .is_err_and(|error| error.to_string().contains("does not render views"));
+    ok &= unknown_view_ok && unknown_plugin_ok && default_view_ok;
+
+    // 4) 面板缓存：至少 2 条 workspace.panel（fixture 声明了 right/bottom 两条），
+    //    每条都能构造元素；失败走错误占位（这里不应失败）。
+    let panels = state.adc_panels.len();
+    let mut rendered = 0usize;
+    let mut panel_errors = 0usize;
+    let mut diag_total = 0usize;
+    for panel in &state.adc_panels {
+        match &panel.tree {
+            Some(tree) => {
+                let (element, diagnostics) = adc_panel_body(&theme, tree);
+                drop(element);
+                diag_total += diagnostics.len();
+                rendered += 1;
+            }
+            None => panel_errors += 1,
+        }
+    }
+    let panels_ok = panels >= 2 && rendered == panels && panel_errors == 0;
+    ok &= panels_ok;
+
+    println!(
+        "[selftest-adc-panel] panels={panels} rendered={rendered} panel_errors={panel_errors} legal_diags={} unknown_diag={unknown_ok} diag_total={diag_total} unknown_view={unknown_view_ok} unknown_plugin={unknown_plugin_ok} default_view={default_view_ok}",
+        legal_diagnostics.len()
+    );
+    if ok {
+        println!("[selftest-adc-panel] PASS");
+        0
+    } else {
+        println!("[selftest-adc-panel] FAIL");
+        1
+    }
+}
+
+/// 自检用的"重复同一工具调用" provider：前 3 步都发同一个工具+参数，第 4 步收尾。
+///
+/// 只用于 `--selftest-defaults` 验证 `agent-core` 的重复工具软提醒阈值（3/5/8）。
+struct RepeatProbeProvider;
+
+impl ModelProvider for RepeatProbeProvider {
+    fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+        let executed = request
+            .messages
+            .iter()
+            .filter(|message| matches!(message, ChatMessage::Tool { .. }))
+            .count();
+        if executed >= 3 {
+            return Ok(ModelReply::text_only("done"));
+        }
+        Ok(ModelReply {
+            text: String::new(),
+            tool_calls: vec![ModelToolCall {
+                id: format!("repeat-{executed}"),
+                name: "probe_repeat".to_owned(),
+                arguments: json!({ "text": "same" }),
+            }],
+        })
+    }
+}
+
+/// 自检用的执行器：无论调用什么都返回成功。
+struct ProbeRepeatExecutor;
+
+impl ToolExecutor for ProbeRepeatExecutor {
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "probe_repeat".to_owned(),
+            description: "repeat probe".to_owned(),
+            parameters: json!({ "type": "object" }),
+        }]
+    }
+
+    fn execute(&mut self, _call: &ToolCallRequest) -> ToolOutcome {
+        ToolOutcome::success(
+            json!([{ "type": "json", "value": { "ok": true } }]),
+            json!({ "ok": true }),
+        )
+    }
+}
+
+/// `--selftest-defaults`：M3 默认差异接线的无网络自检。
+///
+/// 覆盖：approval 三种权限模式（`DSHR_PERMISSION_MODE`）、重复工具软提醒在真实 agent
+/// 序列里触发并经 `tool.repeat` 落 durable 日志、sidecar per-tool timeout 往返、
+/// retainRatio 与 reasoning effort 的 env 解析。全部断言走纯函数/内存日志，不联网。
+fn selftest_defaults() -> i32 {
+    let mut ok = true;
+
+    // 1) approval 模式：env → ApprovalPolicy（缺省 workspace-write = 原 desktop 行为）。
+    let write_tool = ToolDefinition::new(
+        "write",
+        "写文件（自检探针）",
+        ToolOrigin::Native {
+            plugin_id: "selftest.defaults".to_owned(),
+        },
+    )
+    .with_presentation("diff");
+    let read_tool = ToolDefinition::new(
+        "read",
+        "读文件（自检探针）",
+        ToolOrigin::Native {
+            plugin_id: "selftest.defaults".to_owned(),
+        },
+    )
+    .with_presentation("read");
+
+    std::env::remove_var(PermissionMode::ENV);
+    let default_mode_ok = PermissionMode::from_env() == PermissionMode::WorkspaceWrite;
+    let default_policy_ok = matches!(
+        ApprovalPolicy::from_env().check(&write_tool, &json!({})),
+        PolicyDecision::Ask
+    ) && matches!(
+        ApprovalPolicy::from_env().check(&read_tool, &json!({})),
+        PolicyDecision::Allow
+    );
+
+    std::env::set_var(PermissionMode::ENV, "read-only");
+    let read_only_mode = PermissionMode::from_env();
+    let read_only_policy = ApprovalPolicy::from_env();
+    let read_only_ok = read_only_mode == PermissionMode::ReadOnly
+        && matches!(
+            read_only_policy.check(&write_tool, &json!({})),
+            PolicyDecision::Deny(_)
+        )
+        && matches!(
+            read_only_policy.check(&read_tool, &json!({})),
+            PolicyDecision::Allow
+        );
+
+    std::env::set_var(PermissionMode::ENV, "danger-full-access");
+    let danger_mode = PermissionMode::from_env();
+    let danger_policy = ApprovalPolicy::from_env();
+    let danger_ok = danger_mode == PermissionMode::DangerFullAccess
+        && matches!(
+            danger_policy.check(&write_tool, &json!({})),
+            PolicyDecision::Allow
+        )
+        && matches!(
+            danger_policy.check(&read_tool, &json!({})),
+            PolicyDecision::Allow
+        );
+    std::env::remove_var(PermissionMode::ENV);
+    ok &= default_mode_ok && default_policy_ok && read_only_ok && danger_ok;
+
+    // 2) 重复工具软提醒：默认阈值 3 在真实 agent 序列里触发，并落成 `tool.repeat`。
+    std::env::remove_var(dshr_agent_core::REPEAT_TOOL_REMINDER_CONFIG_ENV);
+    std::env::remove_var(dshr_agent_core::REPEAT_TOOL_REMINDER_THRESHOLDS_ENV);
+    let mut agent = Agent::new(RepeatProbeProvider);
+    let default_thresholds_ok = agent.repeat_reminder_config().enabled
+        && agent.repeat_reminder_config().thresholds == vec![3, 5, 8];
+    let mut executor = ProbeRepeatExecutor;
+    let events = agent.run_turn("repeat", &mut executor);
+    let tool_calls = events
+        .iter()
+        .filter(|event| matches!(event, AgentEvent::ToolCall(_)))
+        .count();
+    let mut log = SessionLog::new("s-selftest-defaults");
+    let ts = now_ts();
+    let _ = log.append(EventSpec::durable(
+        "session.created",
+        &ts,
+        SessionCreated::root(".").payload(),
+    ));
+    let written = append_repeat_reminders(&mut agent, &mut log, &ts);
+    let reminder = log
+        .events()
+        .iter()
+        .find(|event| event.event_type == "tool.repeat");
+    let repeat_event_ok = reminder.is_some_and(|event| {
+        event.payload["tool"] == json!("probe_repeat")
+            && event.payload["count"] == json!(3)
+            && event.payload["threshold"] == json!(3)
+            && event.payload["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("重复工具调用提醒"))
+    });
+    let repeat_ok = default_thresholds_ok && tool_calls == 3 && written == 1 && repeat_event_ok;
+    ok &= repeat_ok;
+
+    // 3) sidecar per-tool timeout：`tool.register.timeout_ms` 往返 + 归一化。
+    let registration = parse_tool_registration(
+        &json!({"name": "bash", "description": "run", "timeout_ms": 5_000}),
+        "dsh-official",
+        "reg-selftest-1",
+    );
+    let definition = registration.to_tool_definition("gen-selftest");
+    let timeout_ok = registration.timeout_ms == Some(5_000)
+        && definition.timeout_ms == 5_000
+        && definition.effective_timeout_ms() == 5_000
+        && definition.origin.generation() == Some("gen-selftest")
+        && parse_tool_registration(
+            &json!({"name": "slow", "timeout_ms": 50_000_000u64}),
+            "p",
+            "r",
+        )
+        .timeout_ms
+            == Some(600_000)
+        && parse_tool_registration(&json!({"name": "read"}), "p", "r")
+            .timeout_ms
+            .is_none();
+    ok &= timeout_ok;
+
+    // 4) retainRatio：默认 DSH 0.16，env 可回退旧行为 0.6。
+    std::env::remove_var(dshr_agent_context::RETAIN_RATIO_ENV);
+    let retain_default = dshr_agent_context::retain_ratio_from_env();
+    let retain_default_ok = (retain_default - dshr_agent_context::DSH_RETAIN_RATIO).abs() < 1e-6;
+    std::env::set_var(dshr_agent_context::RETAIN_RATIO_ENV, "0.6");
+    let retain_override = dshr_agent_context::retain_ratio_from_env();
+    let retain_override_ok = (retain_override - 0.6).abs() < 1e-6;
+    std::env::remove_var(dshr_agent_context::RETAIN_RATIO_ENV);
+    ok &= retain_default_ok && retain_override_ok;
+
+    // 5) reasoning effort：provider 构造时读 env，chat 不覆盖。
+    std::env::remove_var(ReasoningEffort::ENV);
+    let reasoning_unset_ok = DeepSeekProvider::new("selftest-key")
+        .reasoning_effort()
+        .is_none();
+    std::env::set_var(ReasoningEffort::ENV, "high");
+    let reasoning_high_ok = DeepSeekProvider::new("selftest-key").reasoning_effort()
+        == Some(ReasoningEffort::High)
+        && OpenAiProvider::new("selftest-key").reasoning_effort() == Some(ReasoningEffort::High);
+    std::env::set_var(ReasoningEffort::ENV, "max");
+    let reasoning_max_ok =
+        OpenAiProvider::new("selftest-key").reasoning_effort() == Some(ReasoningEffort::Max);
+    std::env::remove_var(ReasoningEffort::ENV);
+    ok &= reasoning_unset_ok && reasoning_high_ok && reasoning_max_ok;
+
+    println!(
+        "[selftest-defaults] approval_default={default_policy_ok} approval_read_only={read_only_ok} \
+         approval_danger={danger_ok} repeat_reminders={tool_calls} tool_repeat_events={written} \
+         repeat_event_ok={repeat_event_ok} timeout_roundtrip={timeout_ok} \
+         retain_default={retain_default:.2} retain_env={retain_override:.2} \
+         reasoning_env={reasoning_high_ok}"
+    );
+    if ok {
+        println!("[selftest-defaults] PASS");
+        0
+    } else {
+        println!("[selftest-defaults] FAIL");
         1
     }
 }
@@ -6822,6 +7395,12 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
     }
+    if std::env::args().any(|arg| arg == "--selftest-adc-panel") {
+        std::process::exit(selftest_adc_panel());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-defaults") {
+        std::process::exit(selftest_defaults());
+    }
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {
             eprintln!(
@@ -6967,12 +7546,18 @@ fn main() {
         let external_errors =
             load_enabled_external_plugins(&mut guard.plugins, &profile, &sidecar_dir_for_app());
         guard.plugin_errors.extend(external_errors);
+        // external-process 面板也在这里取一次树（之后渲染只读缓存）。
+        guard.refresh_adc_panels();
     }
-    let (rows, plugin_errors) = {
+    let (rows, plugin_errors, adc_panels) = {
         let guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (rows_snapshot(&guard.log, None), guard.plugin_errors.clone())
+        (
+            rows_snapshot(&guard.log, None),
+            guard.plugin_errors.clone(),
+            guard.adc_panels.clone(),
+        )
     };
 
     application().run(move |cx: &mut App| {
@@ -6993,6 +7578,7 @@ fn main() {
         let profile = profile;
         let session_depths = session_depths;
         let plugin_errors = plugin_errors;
+        let adc_panels = adc_panels;
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -7038,6 +7624,7 @@ fn main() {
                     frame_probe,
                     session_depths,
                     plugin_errors,
+                    adc_panels,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
                 let weak = app.downgrade();

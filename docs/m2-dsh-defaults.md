@@ -12,6 +12,15 @@ temperature / max_tokens / retry / context window 的默认值。压缩、裁剪
 - 相关代码：`crates/agent-core`、`crates/agent-context`、`crates/llm-retry`、
   `crates/llm-deepseek`、`crates/llm-openai`
 
+> **M3 更新（2026-11-15）**：表 1 中标注 "M3" 的差异已逐项收口（默认差异对齐见
+> `crates/agent-core` 的 `ReasoningEffort`/重复提醒、`crates/llm-retry` 的 `EMPTY_RESPONSE`、
+> `crates/agent-context` 的 `retainRatio=0.16`、`crates/tool-runtime` 的 `PermissionMode`/
+> `ApprovalPolicy::from_env`、`crates/llm-openai` 的 `reasoning_effort`）。仍差：
+> **每步并行工具数仍是 1**（工具并发改造未做）、DeepSeek Chat Completions 无
+> `reasoning_effort` 字段（已解析但不发送）、compaction 的 `headroomTokens`/
+> `compactionRetries`/`maxOverflowRetries` 未对齐。逐项状态以表 1 的"M3 状态"列与
+> `docs/m3-status.md` 为准。
+
 ## 用户现场（修复前）
 
 release 版 `chat.exe`（默认 probe sidecar）输入"从 1 数到 10，间隔 2 s"，模型在
@@ -31,20 +40,20 @@ assistant 文本：12345678处理失败：tool call budget exhausted (8)
 | 配置项 | DSH 0.2.2-rc.1 默认 | dshr 修复前 | dshr 修复后 | 影响 |
 |---|---|---|---|---|
 | 每轮工具调用总数 | **无上限**（`dsh-agent-loop` 只有 `maxParallelToolCalls`） | **8，超出即 `TurnFailed`** | **无上限**；可用 `DSHR_MAX_TOOL_CALLS` 显式收紧，命中后**降级**（未执行的调用仍发 `ToolCall` + `is_error` 的 `ToolResult`，随后 `TurnEnded`，不失败） | 修复用户现场故障；默认行为与 DSH 一致 |
-| 每步并行工具数 | `maxParallelToolCalls = 10`，按批并发 | 串行 1 个（`Agent` 顺序 `for` 执行） | 串行 1 个（未改） | 功能不受影响；一个 step 10 个 2s 调用从 2s 变 20s。**有意差异，M3 做并发** |
+| 每步并行工具数 | `maxParallelToolCalls = 10`，按批并发 | 串行 1 个（`Agent` 顺序 `for` 执行） | 串行 1 个（未改） | 功能不受影响；一个 step 10 个 2s 调用从 2s 变 20s。**仍有意的差异（M3 未完成）** |
 | step 数上限 | 无 | 无（仅被 8 次调用间接限制） | 无；`DSHR_MAX_STEPS` 可显式收紧，命中后 `TurnEnded` | 与 DSH 一致 |
 | context window | `deepseek-flash` / `deepseek-v4-pro`：`1_048_576`；`DEFAULT_CONTEXT_WINDOW = 1_000_000` | 固定 `64_000`（`DSHR_CONTEXT_WINDOW` 才能改） | `DSHR_CONTEXT_WINDOW` 优先；否则按模型名：`flash`/`v4-pro`/`v4.1` → 1M，`deepseek-chat`/`reasoner` → 128K，`gpt-4o`/`gpt-4.1`/`o3`/`o4` → 128K，其余 / 未配置模型 → 128K（两家默认模型口径） | 默认模型 `deepseek-chat` 不再被低估到 64K；选 1M 模型时自动吃满窗口 |
 | output max tokens | `DEFAULT_MAX_TOKENS = 256_000`，每个请求都发 `max_tokens` | 不发送（provider 默认） | **仍默认不发送**；新增 `DEEPSEEK_MAX_TOKENS` / `OPENAI_MAX_TOKENS` 显式开启 | 有意差异：dshr 默认模型 `deepseek-chat` 与 DSH desktop 的 `deepseek-flash` 不同，不盲目照抄 256k |
 | temperature | 默认**不发送**（`temperature === void 0 ? {} : { temperature }`） | 硬编码 `0.3` | 默认不发送；`DEEPSEEK_TEMPERATURE` / `OPENAI_TEMPERATURE` 显式设置才发送 | 采样行为回到服务端默认，与 DSH 一致 |
-| reasoning effort | `off` / `low` / `high` / `max`；desktop profile 配 `high` | 不支持 | 不支持（**M3**） | 输出质量/成本与 DSH desktop 有差异 |
-| retry | `maxRetries=5`（总尝试 **6**）、`initialDelayMs=500`、`maxDelayMs=10000`、`jitterRatio=0.1`；可重试码含 `EMPTY_RESPONSE`/`RATE_LIMIT`/`SERVER`/`TIMEOUT`/`TRANSPORT` | 3 次尝试、200ms 起、2s 封顶、无抖动 | **6 次尝试、500ms 起、10s 封顶、±10% 抖动**；`DSHR_RETRY_*` 可覆盖 | 瞬时错误更耐扛；抖动降低多客户端同刻重试风暴 |
+| reasoning effort | `off` / `low` / `high` / `max`；desktop profile 配 `high` | 不支持 | **M3 已实现**：`agent-core::ReasoningEffort`（共享档位/`DSHR_REASONING_EFFORT`/非法值警告）；OpenAI 请求体发 `reasoning_effort`（off 不发）；DeepSeek Chat Completions 无该字段 → 解析但不发送（`SUPPORTS_REASONING_EFFORT=false`）。**无显式配置时默认不发送**（不假设账号权限） | 与 DSH desktop `high` 的口径差异保留为"默认不发送"，显式 `DSHR_REASONING_EFFORT=high` 可对齐 |
+| retry | `maxRetries=5`（总尝试 **6**）、`initialDelayMs=500`、`maxDelayMs=10000`、`jitterRatio=0.1`；可重试码含 `EMPTY_RESPONSE`/`RATE_LIMIT`/`SERVER`/`TIMEOUT`/`TRANSPORT` | 3 次尝试、200ms 起、2s 封顶、无抖动 | **6 次尝试、500ms 起、10s 封顶、±10% 抖动**；`DSHR_RETRY_*` 可覆盖；**M3 补 `EMPTY_RESPONSE`**（无 text 且无 tool_calls 归一化为可重试，受 `max_attempts` 上限；流式仅未交付 delta 时重试） | 瞬时错误更耐扛；抖动降低多客户端同刻重试风暴 |
 | 历史条数 | 无条数上限（按 token 触发压缩） | `DEFAULT_MAX_MESSAGES = 60` 兜底 | 未改（兜底仍在，正常路径先按 token 触发裁剪） | 保持既有回放语义 |
-| 压缩触发 / 保留 | `thresholdRatio=0.8`、`headroomTokens=65536`、`maxTokens=headroomTokens`、`retainRatio=0.16`（保留约 16% 消息）+ LLM 摘要；`compactionRetries=1`、`maxOverflowRetries=1` | 触发 `0.8`、裁到 `0.6`，**有 LLM 摘要**（`chat.rs summarize_dropped` 生成摘要消息 + `context.compacted` 留痕） | 未改 | 都有摘要；差异在保留比（0.6 vs 0.16）与 overflow/重试策略，M3 可对齐 |
+| 压缩触发 / 保留 | `thresholdRatio=0.8`、`headroomTokens=65536`、`maxTokens=headroomTokens`、`retainRatio=0.16`（保留约 16% 消息）+ LLM 摘要；`compactionRetries=1`、`maxOverflowRetries=1` | 触发 `0.8`、裁到 `0.6`，**有 LLM 摘要**（`chat.rs summarize_dropped` 生成摘要消息 + `context.compacted` 留痕） | **M3 对齐 retainRatio=0.16**（`agent-context` 的 `DSH_RETAIN_RATIO`，可用 `DSHR_CONTEXT_RETAIN_RATIO` 覆盖/回退 0.6）；触发 0.8 不变；**headroomTokens/compactionRetries/maxOverflowRetries 未对齐** | 保留比与 DSH 一致；`headroom/retries` 仍差 |
 | 工具结果裁剪 | `thresholdChars=8192`、`headChars=4096`、`tailChars=1024`（按字符） | `TOOL_RESULT_TOKEN_LIMIT=800` tokens，头 1200 / 尾 400 字符（按估算 token） | 未改 | 口径不同（token vs char），效果同量级 |
 | 大结果 spill | `maxInlineTokens=12500` → 大结果外部化 | `SpillPolicy::default()`：**16 KiB 字节**阈值，内容寻址落盘 + 512 字符预览 | 未改 | 阈值口径不同，均为"超阈值落盘 + 模型只见引用" |
-| 工具超时 | 每个工具声明 `timeoutMs`（`dsh-tool-call-timeout-policy` 按声明执行，无声明则不设限） | sidecar 工具固定 **5s** | 按工具声明 `timeout_ms`，clamp 到 1s–600s，`DSHR_TOOL_TIMEOUT_MS` 可整体覆盖（**由并行任务修复，见 `chat.rs`**） | 慢工具不再被 5s 误杀 |
-| approval / sandbox | 默认 `workspace-write` + `ask`；`DSH_PERMISSION_MODE=danger-full-access` 时 `never` | 读类放行、写入/执行类 `Ask`（`ApprovalPolicy::desktop`）；写入限制在 workspace 根内；`DSHR_TOOL_POLICY=ask-all` 更严 | 未改 | 默认安全口径一致；缺 `read-only` / `danger-full-access` 模式切换（**M3**） |
-| 重复工具调用提醒 | `repeat-tool-reminder thresholds: [3, 5, 8]`（软提醒，不是失败） | 无 | 无（**M3**） | DSH 用软提醒防自激；dshr 目前只靠模型自觉 + 可选硬预算 |
+| 工具超时 | 每个工具声明 `timeoutMs`（`dsh-tool-call-timeout-policy` 按声明执行，无声明则不设限） | sidecar 工具固定 **5s** | 按工具声明 `timeout_ms`，clamp 到 1s–600s，`DSHR_TOOL_TIMEOUT_MS` 可整体覆盖（**由并行任务修复，见 `chat.rs`**）；**M3 补 tool-runtime 常量/`effective_timeout_ms()` 与注册表保留测试；sidecar wire 透传见 W5 接线** | 慢工具不再被 5s 误杀 |
+| approval / sandbox | 默认 `workspace-write` + `ask`；`DSH_PERMISSION_MODE=danger-full-access` 时 `never` | 读类放行、写入/执行类 `Ask`（`ApprovalPolicy::desktop`）；写入限制在 workspace 根内；`DSHR_TOOL_POLICY=ask-all` 更严 | **M3 已实现 crate 层**：`tool-runtime::PermissionMode` + `ApprovalPolicy::{read_only,workspace_write,danger_full_access,for_mode,from_env}`（`DSHR_PERMISSION_MODE`）；chat 接线见 W5 | 默认安全口径不变；三模式可切换 |
+| 重复工具调用提醒 | `repeat-tool-reminder thresholds: [3, 5, 8]`（软提醒，不是失败） | 无 | 无 | **M3 已实现 crate 层**：`agent-core` 默认开启、阈值 `[3,5,8]`（`DSHR_REPEAT_TOOL_REMINDERS` 可配/关），第 3/5/8 次注入 System 软提醒（不失败、不破坏 tool 配对），`take_repeat_reminders()` 供 chat 落 `tool.repeat`；不同参数/工具不触发 | 与 DSH 一致（chat 事件接线见 W5） |
 | 默认 provider / model | desktop profile：`deepseek-account` / `deepseek-flash` / `reasoningEffort=high` | `DEEPSEEK_MODEL` 默认 `deepseek-chat`；`OPENAI_MODEL` 默认 `gpt-4o-mini`；provider 按 key 自动选 | 未改（避免假设 API key 权限） | 有意差异；要 1M 需 `DEEPSEEK_MODEL=deepseek-flash` + `DSHR_CONTEXT_WINDOW=1048576` |
 
 ## 表 2：证据索引

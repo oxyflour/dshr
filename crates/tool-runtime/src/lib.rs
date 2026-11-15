@@ -92,6 +92,13 @@ impl Presentation {
     }
 }
 
+/// 工具声明的最小超时：1 s（spec/cpp-v1.md §3.5）。
+pub const TOOL_TIMEOUT_MIN_MS: u64 = 1_000;
+/// 工具声明的最大超时：600 s（spec/cpp-v1.md §3.5）。
+pub const TOOL_TIMEOUT_MAX_MS: u64 = 600_000;
+/// 未声明时的默认工具超时：120 s（spec/cpp-v1.md §7.1）。
+pub const DEFAULT_TOOL_TIMEOUT_MS: u64 = 120_000;
+
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
     pub name: String,
@@ -103,6 +110,8 @@ pub struct ToolDefinition {
     pub output_schema: Option<Value>,
     /// 展示卡片类型（对齐 DSH 的 `presentResult` 视图：generic/terminal/diff/search/read/web）。
     pub presentation: Option<String>,
+    /// 工具声明的超时（ms）；执行方应通过 [`ToolDefinition::effective_timeout_ms`]
+    /// 取值，保证 1 s–600 s 的上下限（DSH `dsh-tool-call-timeout-policy` 语义）。
     pub timeout_ms: u64,
 }
 
@@ -119,7 +128,7 @@ impl ToolDefinition {
             input_schema: Value::Object(Default::default()),
             output_schema: None,
             presentation: None,
-            timeout_ms: 120_000,
+            timeout_ms: DEFAULT_TOOL_TIMEOUT_MS,
         }
     }
 
@@ -136,6 +145,26 @@ impl ToolDefinition {
     pub fn with_schema(mut self, schema: Value) -> Self {
         self.input_schema = schema;
         self
+    }
+
+    /// 显式声明工具超时（per-tool timeout 透传的注册侧入口）。
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// 实际执行超时：把声明值 clamp 到 spec 的 1 s–600 s（无声明时的默认值也合法）。
+    ///
+    /// 宿主/执行器应使用这个值，保证"按工具声明 timeout 执行"（DSH
+    /// `dsh-tool-call-timeout-policy`）不会因脏数据变成 0 或无限等待。
+    pub fn effective_timeout_ms(&self) -> u64 {
+        self.timeout_ms
+            .clamp(TOOL_TIMEOUT_MIN_MS, TOOL_TIMEOUT_MAX_MS)
+    }
+
+    /// 执行超时的 `Duration` 形式。
+    pub fn effective_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.effective_timeout_ms())
     }
 
     /// 把字符串卡片类型解析成枚举；未知/缺省一律 `Generic`。
@@ -171,8 +200,9 @@ impl ToolPolicy for AllowAll {
 
 /// 桌面默认策略：读类工具直接放行，写入/执行类需要用户确认。
 ///
-/// 判定顺序：显式 deny 名单 → 名字命中写入/执行名单 → 展示类型是 `terminal`/`diff`
-/// → 其余 Allow。名单可通过 `MUTATING_TOOL_NAMES` 扩展，保持"默认拒绝破坏性操作"。
+/// 判定顺序：显式 deny 名单 → read-only 的 terminal/diff 拒绝 → 名字命中写入/执行
+/// 名单 → 展示类型是 `terminal`/`diff` → 其余 Allow。名单可通过
+/// [`MUTATING_TOOL_NAMES`] 扩展，保持"默认拒绝破坏性操作"。
 #[derive(Debug, Default)]
 pub struct ApprovalPolicy {
     pub deny: Vec<String>,
@@ -181,6 +211,60 @@ pub struct ApprovalPolicy {
     pub ask_terminal_and_diff: bool,
     /// 无条件 Ask（自检/演示用）。
     pub ask_everything: bool,
+    /// `read-only` 模式：terminal/diff 等执行类展示类型直接 Deny。
+    pub deny_terminal_and_diff: bool,
+}
+
+/// DSH 的权限模式（`DSH_PERMISSION_MODE`：`read-only` / `workspace-write` /
+/// `danger-full-access`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl PermissionMode {
+    /// 环境变量名；`ApprovalPolicy::from_env` 读取它。
+    pub const ENV: &'static str = "DSHR_PERMISSION_MODE";
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "read-only" | "read_only" | "readonly" => Some(Self::ReadOnly),
+            "workspace-write" | "workspace_write" | "workspacewrite" => Some(Self::WorkspaceWrite),
+            "danger-full-access" | "danger_full_access" | "dangerfullaccess" => {
+                Some(Self::DangerFullAccess)
+            }
+            _ => None,
+        }
+    }
+
+    /// 从 `DSHR_PERMISSION_MODE` 读取；未配置默认 `workspace-write`（与 DSH 一致）；
+    /// 非法值记录警告后回退默认，不失败。
+    pub fn from_env() -> Self {
+        let raw = match std::env::var(Self::ENV) {
+            Ok(raw) => raw,
+            Err(_) => return Self::WorkspaceWrite,
+        };
+        match Self::parse(&raw) {
+            Some(mode) => mode,
+            None => {
+                eprintln!(
+                    "[tool-runtime] ignoring invalid {}={raw} (allowed: read-only/workspace-write/danger-full-access)",
+                    Self::ENV
+                );
+                Self::WorkspaceWrite
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::DangerFullAccess => "danger-full-access",
+        }
+    }
 }
 
 impl ApprovalPolicy {
@@ -194,7 +278,52 @@ impl ApprovalPolicy {
                 .collect(),
             ask_terminal_and_diff: true,
             ask_everything: false,
+            deny_terminal_and_diff: false,
         }
+    }
+
+    /// `workspace-write` 模式 = 现有的桌面默认（写入/执行类 Ask）。
+    pub fn workspace_write() -> Self {
+        Self::desktop()
+    }
+
+    /// `read-only`：所有已知写入/执行工具与 terminal/diff 卡片直接拒绝，读类放行。
+    pub fn read_only() -> Self {
+        Self {
+            deny: MUTATING_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            ask: Vec::new(),
+            ask_terminal_and_diff: false,
+            ask_everything: false,
+            deny_terminal_and_diff: true,
+        }
+    }
+
+    /// `danger-full-access`：全部放行（对齐 DSH `approval: never`）。
+    pub fn danger_full_access() -> Self {
+        Self {
+            deny: Vec::new(),
+            ask: Vec::new(),
+            ask_terminal_and_diff: false,
+            ask_everything: false,
+            deny_terminal_and_diff: false,
+        }
+    }
+
+    /// 按权限模式构造策略。
+    pub fn for_mode(mode: PermissionMode) -> Self {
+        match mode {
+            PermissionMode::ReadOnly => Self::read_only(),
+            PermissionMode::WorkspaceWrite => Self::workspace_write(),
+            PermissionMode::DangerFullAccess => Self::danger_full_access(),
+        }
+    }
+
+    /// 从 `DSHR_PERMISSION_MODE` 构造（缺省 workspace-write，默认行为不变）。
+    pub fn from_env() -> Self {
+        Self::for_mode(PermissionMode::from_env())
     }
 
     /// 全部工具都要求确认（自检/演示用）。
@@ -204,6 +333,7 @@ impl ApprovalPolicy {
             ask: Vec::new(),
             ask_terminal_and_diff: false,
             ask_everything: true,
+            deny_terminal_and_diff: false,
         }
     }
 }
@@ -212,6 +342,11 @@ impl ToolPolicy for ApprovalPolicy {
     fn check(&self, tool: &ToolDefinition, _arguments: &Value) -> PolicyDecision {
         if self.deny.iter().any(|name| name == &tool.name) {
             return PolicyDecision::Deny(format!("工具 {} 在拒绝名单中", tool.name));
+        }
+        if self.deny_terminal_and_diff
+            && matches!(tool.card(), Presentation::Terminal | Presentation::Diff)
+        {
+            return PolicyDecision::Deny(format!("read-only 模式拒绝执行类工具 {}", tool.name));
         }
         if self.ask_everything {
             return PolicyDecision::Ask;
@@ -628,6 +763,7 @@ mod tests {
             ask: vec!["bash".to_owned()],
             ask_terminal_and_diff: false,
             ask_everything: false,
+            deny_terminal_and_diff: false,
         };
         assert!(matches!(
             policy.check(&native("bash"), &json!({})),
@@ -665,5 +801,196 @@ mod tests {
             registry.authorize_approved("write", &json!({})),
             Err(RegistryError::InvalidArguments { .. })
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // M3-DEFAULT-050..056：approval 模式（read-only / danger-full-access）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn m3_default_050_read_only_denies_mutating_tools() {
+        let policy = ApprovalPolicy::read_only();
+        for name in ["write", "edit", "bash", "pwsh", "delete", "git_push"] {
+            assert!(
+                matches!(
+                    policy.check(&native(name), &json!({})),
+                    PolicyDecision::Deny(_)
+                ),
+                "read-only 必须拒绝 {name}"
+            );
+        }
+        // terminal/diff 卡片（执行类）同样拒绝，即使工具名不在名单里。
+        for card in ["terminal", "diff"] {
+            let tool = native("custom_exec").with_presentation(card);
+            assert!(
+                matches!(policy.check(&tool, &json!({})), PolicyDecision::Deny(_)),
+                "read-only 必须拒绝 {card} 卡片"
+            );
+        }
+    }
+
+    #[test]
+    fn m3_default_051_read_only_allows_read_tools() {
+        let policy = ApprovalPolicy::read_only();
+        assert_eq!(
+            policy.check(&native("read").with_presentation("read"), &json!({})),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            policy.check(&native("grep"), &json!({})),
+            PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn m3_default_052_danger_full_access_allows_everything() {
+        let policy = ApprovalPolicy::danger_full_access();
+        for name in ["write", "bash", "delete", "anything"] {
+            assert_eq!(
+                policy.check(&native(name), &json!({})),
+                PolicyDecision::Allow,
+                "danger-full-access 应放行 {name}"
+            );
+        }
+        assert_eq!(
+            policy.check(&native("exec").with_presentation("terminal"), &json!({})),
+            PolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn m3_default_053_desktop_policy_is_unchanged_and_is_workspace_write() {
+        let desktop = ApprovalPolicy::desktop();
+        assert_eq!(
+            desktop.check(&native("write"), &json!({})),
+            PolicyDecision::Ask
+        );
+        assert_eq!(
+            desktop.check(&native("read").with_presentation("read"), &json!({})),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            ApprovalPolicy::workspace_write().check(&native("bash"), &json!({})),
+            PolicyDecision::Ask
+        );
+        // from_env 缺省 = workspace-write（默认行为不回归）。
+        assert_eq!(
+            ApprovalPolicy::for_mode(PermissionMode::from_env())
+                .check(&native("write"), &json!({})),
+            PolicyDecision::Ask
+        );
+    }
+
+    #[test]
+    fn m3_default_054_permission_mode_parses_dsh_values() {
+        assert_eq!(
+            PermissionMode::parse("read-only"),
+            Some(PermissionMode::ReadOnly)
+        );
+        assert_eq!(
+            PermissionMode::parse("READ_ONLY"),
+            Some(PermissionMode::ReadOnly)
+        );
+        assert_eq!(
+            PermissionMode::parse("workspace-write"),
+            Some(PermissionMode::WorkspaceWrite)
+        );
+        assert_eq!(
+            PermissionMode::parse("danger-full-access"),
+            Some(PermissionMode::DangerFullAccess)
+        );
+        assert_eq!(PermissionMode::parse("bogus"), None);
+        assert_eq!(PermissionMode::ENV, "DSHR_PERMISSION_MODE");
+        for mode in [
+            PermissionMode::ReadOnly,
+            PermissionMode::WorkspaceWrite,
+            PermissionMode::DangerFullAccess,
+        ] {
+            assert_eq!(PermissionMode::parse(mode.as_str()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn m3_default_055_approval_policy_for_mode_maps_constructors() {
+        assert!(matches!(
+            ApprovalPolicy::for_mode(PermissionMode::ReadOnly).check(&native("bash"), &json!({})),
+            PolicyDecision::Deny(_)
+        ));
+        assert_eq!(
+            ApprovalPolicy::for_mode(PermissionMode::DangerFullAccess)
+                .check(&native("bash"), &json!({})),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            ApprovalPolicy::for_mode(PermissionMode::WorkspaceWrite)
+                .check(&native("bash"), &json!({})),
+            PolicyDecision::Ask
+        );
+    }
+
+    #[test]
+    fn m3_default_056_env_mode_resolution_is_pure_for_tests() {
+        // 环境读取只发生在 `from_env`；这里断言纯映射与默认回退，避免并行 env 干扰。
+        assert_eq!(
+            ApprovalPolicy::for_mode(PermissionMode::WorkspaceWrite)
+                .check(&native("write"), &json!({})),
+            PolicyDecision::Ask
+        );
+        assert!(PermissionMode::parse("").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // M3-DEFAULT-060..063：per-tool timeout 注册侧透传
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn m3_default_060_tool_timeout_defaults_to_120s() {
+        let tool = native("read");
+        assert_eq!(tool.timeout_ms, DEFAULT_TOOL_TIMEOUT_MS);
+        assert_eq!(tool.timeout_ms, 120_000);
+        assert_eq!(tool.effective_timeout_ms(), 120_000);
+    }
+
+    #[test]
+    fn m3_default_061_per_tool_timeout_is_preserved_by_registry() {
+        let mut registry = ToolRegistry::new(AllowAll);
+        registry
+            .register(native("slow_tool").with_timeout_ms(45_000))
+            .unwrap();
+        let registered = registry.get("slow_tool").expect("registered");
+        assert_eq!(registered.timeout_ms, 45_000, "注册表不得吞掉声明值");
+        assert_eq!(registered.effective_timeout_ms(), 45_000);
+    }
+
+    #[test]
+    fn m3_default_062_effective_timeout_is_clamped_to_spec_bounds() {
+        assert_eq!(
+            native("too_fast").with_timeout_ms(0).effective_timeout_ms(),
+            TOOL_TIMEOUT_MIN_MS
+        );
+        assert_eq!(
+            native("too_fast")
+                .with_timeout_ms(500)
+                .effective_timeout_ms(),
+            TOOL_TIMEOUT_MIN_MS
+        );
+        assert_eq!(
+            native("too_slow")
+                .with_timeout_ms(TOOL_TIMEOUT_MAX_MS + 1)
+                .effective_timeout_ms(),
+            TOOL_TIMEOUT_MAX_MS
+        );
+        assert_eq!(TOOL_TIMEOUT_MIN_MS, 1_000);
+        assert_eq!(TOOL_TIMEOUT_MAX_MS, 600_000);
+    }
+
+    #[test]
+    fn m3_default_063_effective_timeout_duration_matches_ms() {
+        let tool = native("slow").with_timeout_ms(2_500);
+        assert_eq!(
+            tool.effective_timeout(),
+            std::time::Duration::from_millis(2_500)
+        );
+        assert_eq!(tool.effective_timeout().as_millis(), 2_500);
     }
 }

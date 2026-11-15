@@ -164,8 +164,68 @@ pub struct Registration {
     pub output_schema: Option<serde_json::Value>,
     /// 对齐 DSH 的 `presentResult` 卡片类型。
     pub presentation: Option<String>,
+    /// 对齐 DSH 工具声明的 `timeoutMs`（已归一化到 1s..=600s；未声明为 None）。
+    pub timeout_ms: Option<u64>,
     pub registration_id: String,
     pub plugin_id: String,
+}
+
+impl Registration {
+    /// 映射成注册表可登记的 `ToolDefinition`（携带 per-tool 超时）。
+    pub fn to_tool_definition(&self, generation: &str) -> dshr_tool_runtime::ToolDefinition {
+        let mut definition = dshr_tool_runtime::ToolDefinition::new(
+            self.name.clone(),
+            self.description.clone(),
+            dshr_tool_runtime::ToolOrigin::Sidecar {
+                plugin_id: self.plugin_id.clone(),
+                registration_id: self.registration_id.clone(),
+                generation: generation.to_owned(),
+            },
+        );
+        if let Some(schema) = &self.output_schema {
+            definition = definition.with_output_schema(schema.clone());
+        }
+        if let Some(card) = &self.presentation {
+            definition = definition.with_presentation(card.clone());
+        }
+        if let Some(timeout_ms) = self.timeout_ms {
+            definition = definition.with_timeout_ms(timeout_ms);
+        }
+        definition
+    }
+}
+
+/// 从 `tool.register` 载荷构造 [`Registration`]（纯函数：不需要 sidecar 进程）。
+///
+/// `timeout_ms` 对齐 DSH 工具定义的 `timeoutMs`：sidecar 原样上报，这里归一化
+/// 到 `MIN_TOOL_TIMEOUT_MS..=MAX_TOOL_TIMEOUT_MS`（与运行期 clamp 同口径）。
+pub fn parse_tool_registration(
+    payload: &serde_json::Value,
+    plugin_id: &str,
+    registration_id: impl Into<String>,
+) -> Registration {
+    Registration {
+        name: payload["name"].as_str().unwrap_or_default().to_owned(),
+        description: payload["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        output_schema: payload
+            .get("output_schema")
+            .cloned()
+            .filter(|value| !value.is_null()),
+        presentation: payload
+            .get("presentation")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        timeout_ms: dshr_compat_dsh_protocol::normalize_tool_timeout_ms(
+            payload
+                .get("timeout_ms")
+                .and_then(serde_json::Value::as_u64),
+        ),
+        registration_id: registration_id.into(),
+        plugin_id: plugin_id.to_owned(),
+    }
 }
 
 #[derive(Debug)]
@@ -516,24 +576,7 @@ impl SidecarHost {
     pub fn tool_definitions(&self) -> Vec<dshr_tool_runtime::ToolDefinition> {
         self.registrations
             .iter()
-            .map(|reg| {
-                let mut definition = dshr_tool_runtime::ToolDefinition::new(
-                    reg.name.clone(),
-                    reg.description.clone(),
-                    dshr_tool_runtime::ToolOrigin::Sidecar {
-                        plugin_id: reg.plugin_id.clone(),
-                        registration_id: reg.registration_id.clone(),
-                        generation: self.generation.clone(),
-                    },
-                );
-                if let Some(schema) = &reg.output_schema {
-                    definition = definition.with_output_schema(schema.clone());
-                }
-                if let Some(card) = &reg.presentation {
-                    definition = definition.with_presentation(card.clone());
-                }
-                definition
-            })
+            .map(|registration| registration.to_tool_definition(&self.generation))
             .collect()
     }
 
@@ -730,40 +773,20 @@ impl SidecarHost {
                     self.note_log_emit(&envelope);
                 }
                 Ok(envelope) if envelope.kind == "tool.register" => {
-                    let name = envelope.payload["name"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned();
-                    let description = envelope.payload["description"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned();
-                    let output_schema = envelope
-                        .payload
-                        .get("output_schema")
-                        .cloned()
-                        .filter(|value| !value.is_null());
-                    let presentation = envelope
-                        .payload
-                        .get("presentation")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
                     let plugin_id = envelope.plugin_id.clone().unwrap_or_default();
                     self.seq += 1;
                     let registration_id = format!("reg-{}", self.seq);
+                    let registration = parse_tool_registration(
+                        &envelope.payload,
+                        &plugin_id,
+                        registration_id.clone(),
+                    );
                     let ack = envelope.reply(
                         "tool.register",
-                        json!({ "registration_id": registration_id, "name": name }),
+                        json!({ "registration_id": registration_id, "name": registration.name }),
                     );
                     self.write(&ack)?;
-                    self.registrations.push(Registration {
-                        name,
-                        description,
-                        output_schema,
-                        presentation,
-                        registration_id,
-                        plugin_id,
-                    });
+                    self.registrations.push(registration);
                 }
                 Ok(envelope) => {
                     self.maybe_serve_host_service(&envelope)?;
@@ -1007,5 +1030,58 @@ mod capability_tests {
             options.registration_window,
             Some(Duration::from_millis(1500))
         );
+    }
+
+    // M3-DEFAULT-011..013：`tool.register` 的 per-tool timeout 往返。
+    #[test]
+    fn m3_default_011_registration_carries_declared_timeout() {
+        let payload = json!({
+            "name": "bash",
+            "description": "run a command",
+            "output_schema": {"type": "object"},
+            "presentation": "terminal",
+            "timeout_ms": 5_000,
+        });
+        let registration = parse_tool_registration(&payload, "dsh-official", "reg-1");
+        assert_eq!(registration.name, "bash");
+        assert_eq!(registration.timeout_ms, Some(5_000));
+        assert_eq!(registration.presentation.as_deref(), Some("terminal"));
+
+        // 与 ToolDefinition 的往返（chat 注册进 Registry 的就是它）。
+        let definition = registration.to_tool_definition("gen-1");
+        assert_eq!(definition.name, "bash");
+        assert_eq!(definition.timeout_ms, 5_000);
+        assert_eq!(definition.effective_timeout_ms(), 5_000);
+        assert_eq!(definition.card(), dshr_tool_runtime::Presentation::Terminal);
+        assert_eq!(definition.origin.generation(), Some("gen-1"));
+    }
+
+    #[test]
+    fn m3_default_012_absent_timeout_keeps_tool_default() {
+        let registration = parse_tool_registration(&json!({"name": "read"}), "p", "reg-2");
+        assert_eq!(registration.timeout_ms, None);
+        let definition = registration.to_tool_definition("gen-2");
+        assert_eq!(
+            definition.timeout_ms,
+            dshr_tool_runtime::DEFAULT_TOOL_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn m3_default_013_timeout_is_normalized_on_the_way_in() {
+        // 0 / 非法值 = 未声明；过小/过大按运行期口径 clamp（1s..=600s）。
+        for raw in [json!(0), json!(-5), json!("3000"), json!(null)] {
+            let registration =
+                parse_tool_registration(&json!({"name": "t", "timeout_ms": raw}), "p", "reg-3");
+            assert_eq!(registration.timeout_ms, None, "raw={raw}");
+        }
+        let small = parse_tool_registration(&json!({"name": "t", "timeout_ms": 10}), "p", "reg-4");
+        assert_eq!(small.timeout_ms, Some(1_000));
+        let huge = parse_tool_registration(
+            &json!({"name": "t", "timeout_ms": 5_000_000u64}),
+            "p",
+            "reg-5",
+        );
+        assert_eq!(huge.timeout_ms, Some(600_000));
     }
 }

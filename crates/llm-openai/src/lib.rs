@@ -17,12 +17,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dshr_agent_core::{ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall};
+use dshr_agent_core::{
+    ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort,
+};
 use serde_json::{json, Value};
 
 const DEFAULT_BASE: &str = "https://api.openai.com/v1";
 const DEFAULT_MODEL: &str = "gpt-4o-mini";
 const SYSTEM_PROMPT: &str = "你是一个桌面 Agent。回答简洁；需要外部能力时调用提供的工具。";
+
+/// OpenAI Chat Completions 接受 `reasoning_effort`（`off` 时不发送）。
+///
+/// 注意：OpenAI 官方 o 系列目前认 `low`/`medium`/`high`；DSH 的档位还含 `max`，
+/// 这里按 DSH 映射原样发送（兼容端点可能扩展支持），非法/不被接受由服务端报错。
+pub const SUPPORTS_REASONING_EFFORT: bool = true;
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -32,6 +40,8 @@ pub struct OpenAiProvider {
     temperature: Option<f64>,
     /// 显式输出上限；`None` = 不发送（保持 provider 默认）。
     max_tokens: Option<u64>,
+    /// DSH reasoning effort 档位（`off/low/high/max`）；来自 `DSHR_REASONING_EFFORT`。
+    reasoning_effort: Option<ReasoningEffort>,
     timeout: Duration,
     cancel: Option<Arc<AtomicBool>>,
 }
@@ -44,6 +54,7 @@ impl OpenAiProvider {
             model: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned()),
             temperature: parse_env_number("OPENAI_TEMPERATURE"),
             max_tokens: parse_env_number("OPENAI_MAX_TOKENS"),
+            reasoning_effort: ReasoningEffort::from_env(),
             timeout: Duration::from_secs(60),
             cancel: None,
         }
@@ -74,6 +85,19 @@ impl OpenAiProvider {
     pub fn with_max_tokens(mut self, max_tokens: Option<u64>) -> Self {
         self.max_tokens = max_tokens;
         self
+    }
+
+    /// 显式设置 reasoning effort（未配置时沿用 `DSHR_REASONING_EFFORT`）。
+    ///
+    /// `off` 不发送；`low` / `high` / `max` 原样写入 `reasoning_effort`（DSH 映射）。
+    pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.reasoning_effort = effort;
+        self
+    }
+
+    /// 当前 reasoning effort 档位（诊断/测试用）。
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
     }
 
     pub fn model(&self) -> &str {
@@ -107,6 +131,10 @@ impl OpenAiProvider {
         }
         if let Some(max_tokens) = self.max_tokens {
             body["max_tokens"] = json!(max_tokens);
+        }
+        // DSH 映射：off 不发，low/high/max 原样发送。
+        if let Some(value) = self.reasoning_effort.and_then(ReasoningEffort::wire_value) {
+            body["reasoning_effort"] = json!(value);
         }
         if !request.tool_specs.is_empty() {
             body["tools"] = Value::Array(
@@ -331,6 +359,49 @@ mod tests {
         let body = provider.request_body(&request(vec![ChatMessage::user("hi")]));
         assert_eq!(body["temperature"], json!(0.2));
         assert_eq!(body["max_tokens"], json!(4_096));
+    }
+
+    // M3-DEFAULT-035..037：OpenAI reasoning effort 序列化（DSH 映射）。
+    #[test]
+    fn m3_default_035_openai_sends_reasoning_effort_verbatim() {
+        for (effort, expected) in [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::Max, "max"),
+        ] {
+            let provider = OpenAiProvider::new("k").with_reasoning_effort(Some(effort));
+            let body = provider.request_body(&request(vec![ChatMessage::user("hi")]));
+            assert_eq!(body["reasoning_effort"], json!(expected), "{effort:?}");
+        }
+    }
+
+    #[test]
+    fn m3_default_036_openai_off_and_unset_omit_reasoning_effort() {
+        let unset = OpenAiProvider::new("k").with_reasoning_effort(None);
+        assert!(unset
+            .request_body(&request(vec![ChatMessage::user("hi")]))
+            .get("reasoning_effort")
+            .is_none());
+
+        let off = OpenAiProvider::new("k").with_reasoning_effort(Some(ReasoningEffort::Off));
+        let body = off.request_body(&request(vec![ChatMessage::user("hi")]));
+        assert!(body.get("reasoning_effort").is_none(), "off 不发送: {body}");
+        const {
+            assert!(SUPPORTS_REASONING_EFFORT, "OpenAI 支持 reasoning_effort");
+        }
+    }
+
+    #[test]
+    fn m3_default_037_openai_reads_reasoning_effort_from_env() {
+        const VAR: &str = ReasoningEffort::ENV;
+        let previous = std::env::var(VAR).ok();
+        std::env::set_var(VAR, "max");
+        let provider = OpenAiProvider::new("k");
+        assert_eq!(provider.reasoning_effort(), Some(ReasoningEffort::Max));
+        match previous {
+            Some(value) => std::env::set_var(VAR, value),
+            None => std::env::remove_var(VAR),
+        }
     }
 
     #[test]

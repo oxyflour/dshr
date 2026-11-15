@@ -1,7 +1,10 @@
 //! `ModelProvider` 的重试/退避包装。
 //!
-//! 只重试**可判定为瞬时**的错误（429 / 5xx / 超时 / 连接被重置等），
-//! 并且流式请求必须满足"还没有向 UI 交付任何 delta"才能重试——否则重试会把
+//! 与 DSH 的对齐（M3）：retryableCodes 含 `EMPTY_RESPONSE`——模型返回
+//! “无 text 且无 tool_calls”的空响应时按可重试错误处理（受 `max_attempts` 上限约束），
+//! 避免空回复被当成"本轮正常结束"。
+//!
+//! 流式请求仍必须满足"还没有向 UI 交付任何 delta"才能重试——否则重试会把
 //! 已经显示过的文本再吐一遍，用户会看到重复内容。
 //!
 //! 参数默认对齐官方 DSH 0.2.2-rc.1 的 `@deepseek-ai/dsh-llm` retry-policy：
@@ -9,9 +12,6 @@
 //! `jitterRatio=0.1`（±10% 抖动）。可用 `DSHR_RETRY_ATTEMPTS`（1–10）、
 //! `DSHR_RETRY_BASE_MS`、`DSHR_RETRY_MAX_MS`、`DSHR_RETRY_JITTER`（0–1）覆盖。
 //! 指数退避：base * 2^(n-1)，封顶 max，再叠加 ±jitter。
-//!
-//! 与 DSH 的差异：DSH 的 retryableCodes 还包含 `EMPTY_RESPONSE`，dshr 的 provider
-//! 目前不产生这个错误码，故 [`is_retryable_error`] 未处理（M3 补）。
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dshr_agent_core::{CompletionRequest, ModelProvider, ModelReply};
+
+/// 空响应的稳定标记（DSH retryableCodes 之一）。
+pub const EMPTY_RESPONSE: &str = "EMPTY_RESPONSE";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryPolicy {
@@ -115,7 +118,7 @@ fn random_unit() -> f64 {
     f64::from(nanos % 1_000_000) / 1_000_000.0
 }
 
-/// 错误字符串是否属于"值得重试"的瞬时错误。
+/// 错误字符串是否属于"值得重试"的瞬时错误（含 DSH 的 `EMPTY_RESPONSE`）。
 pub fn is_retryable_error(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     const NEEDLES: &[&str] = &[
@@ -135,8 +138,22 @@ pub fn is_retryable_error(error: &str) -> bool {
         "unexpected eof",
         "temporarily unavailable",
         "overloaded",
+        // DSH retryableCodes 的 EMPTY_RESPONSE
+        "empty_response",
+        "empty response",
     ];
     NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
+/// 模型回复是否为空响应（无 text 且无 tool_calls）。
+///
+/// DSH 把这种回复视为可重试的 `EMPTY_RESPONSE`，而不是"本轮正常结束"。
+pub fn is_empty_reply(reply: &ModelReply) -> bool {
+    reply.text.trim().is_empty() && reply.tool_calls.is_empty()
+}
+
+fn empty_response_error(attempts: u32) -> String {
+    format!("{EMPTY_RESPONSE}: model returned an empty response after {attempts} attempt(s)")
 }
 
 pub struct RetryingProvider {
@@ -178,6 +195,15 @@ impl ModelProvider for RetryingProvider {
             attempt += 1;
             match self.inner.complete(request) {
                 Ok(reply) => {
+                    if is_empty_reply(&reply) {
+                        // DSH 对齐：空响应按可重试的 EMPTY_RESPONSE 处理（有上限）。
+                        if attempt < self.policy.max_attempts {
+                            self.sleep_before_retry(attempt);
+                            continue;
+                        }
+                        self.last_attempts = attempt;
+                        return Err(empty_response_error(attempt));
+                    }
                     self.last_attempts = attempt;
                     return Ok(reply);
                 }
@@ -208,6 +234,15 @@ impl ModelProvider for RetryingProvider {
             };
             match self.inner.complete_streaming(request, &mut forward) {
                 Ok(reply) => {
+                    // 空响应且尚未交付任何 delta：可安全重试（有上限）。
+                    if is_empty_reply(&reply) && !delivered {
+                        if attempt < self.policy.max_attempts {
+                            self.sleep_before_retry(attempt);
+                            continue;
+                        }
+                        self.last_attempts = attempt;
+                        return Err(empty_response_error(attempt));
+                    }
                     self.last_attempts = attempt;
                     return Ok(reply);
                 }
@@ -431,5 +466,135 @@ mod tests {
         assert!(is_retryable_error("connection reset by peer"));
         assert!(!is_retryable_error("HTTP 401 unauthorized"));
         assert!(!is_retryable_error("invalid tool arguments"));
+    }
+
+    // ------------------------------------------------------------------
+    // M3-DEFAULT-020..025：EMPTY_RESPONSE 重试
+    // ------------------------------------------------------------------
+
+    /// 前 `empties` 次返回空响应，之后返回正常文本。
+    struct EmptyThenOk {
+        empties: usize,
+        calls: usize,
+        tool_call_only: bool,
+    }
+
+    impl EmptyThenOk {
+        fn new(empties: usize) -> Self {
+            Self {
+                empties,
+                calls: 0,
+                tool_call_only: false,
+            }
+        }
+
+        fn tool_call_only() -> Self {
+            Self {
+                empties: 0,
+                calls: 0,
+                tool_call_only: true,
+            }
+        }
+    }
+
+    impl ModelProvider for EmptyThenOk {
+        fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+            self.calls += 1;
+            if self.tool_call_only {
+                return Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: vec![dshr_agent_core::ModelToolCall {
+                        id: "call-1".to_owned(),
+                        name: "probe_echo".to_owned(),
+                        arguments: Default::default(),
+                    }],
+                });
+            }
+            if self.calls <= self.empties {
+                Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: Vec::new(),
+                })
+            } else {
+                Ok(ModelReply::text_only("ok"))
+            }
+        }
+    }
+
+    #[test]
+    fn m3_default_020_empty_response_is_retryable_error() {
+        assert!(is_retryable_error(EMPTY_RESPONSE));
+        assert!(is_retryable_error(
+            "EMPTY_RESPONSE: model returned an empty response"
+        ));
+        assert!(is_retryable_error("provider returned empty response"));
+        assert!(!is_retryable_error("HTTP 400 invalid request"));
+        assert_eq!(EMPTY_RESPONSE, "EMPTY_RESPONSE");
+    }
+
+    #[test]
+    fn m3_default_021_is_empty_reply_detects_only_truly_empty_replies() {
+        assert!(is_empty_reply(&ModelReply {
+            text: String::new(),
+            tool_calls: Vec::new(),
+        }));
+        assert!(is_empty_reply(&ModelReply::text_only("   ")));
+        assert!(!is_empty_reply(&ModelReply::text_only("hi")));
+        assert!(!is_empty_reply(&ModelReply {
+            text: String::new(),
+            tool_calls: vec![dshr_agent_core::ModelToolCall {
+                id: "c1".to_owned(),
+                name: "probe_echo".to_owned(),
+                arguments: Default::default(),
+            }],
+        }));
+    }
+
+    #[test]
+    fn m3_default_022_empty_response_is_retried_then_succeeds() {
+        let inner = Box::new(EmptyThenOk::new(2));
+        let mut provider = RetryingProvider::new(inner, RetryPolicy::immediate(4));
+        let reply = provider.complete(&request()).expect("eventually a reply");
+        assert_eq!(reply.text, "ok");
+        assert_eq!(provider.last_attempts(), 3, "两次空响应后第 3 次成功");
+    }
+
+    #[test]
+    fn m3_default_023_empty_response_retries_are_bounded() {
+        let inner = Box::new(EmptyThenOk::new(10));
+        let mut provider = RetryingProvider::new(inner, RetryPolicy::immediate(2));
+        let error = provider
+            .complete(&request())
+            .expect_err("空响应不能无限重试");
+        assert!(error.contains(EMPTY_RESPONSE), "{error}");
+        assert_eq!(provider.last_attempts(), 2, "受 max_attempts 上限约束");
+    }
+
+    #[test]
+    fn m3_default_024_streaming_retries_empty_response_before_any_delta() {
+        let inner = Box::new(EmptyThenOk::new(1));
+        let mut provider = RetryingProvider::new(inner, RetryPolicy::immediate(3));
+        let mut deltas = Vec::new();
+        let reply = provider
+            .complete_streaming(&request(), &mut |delta| deltas.push(delta.to_owned()))
+            .expect("eventually a reply");
+        assert_eq!(reply.text, "ok");
+        assert_eq!(provider.last_attempts(), 2);
+        assert_eq!(
+            deltas,
+            vec!["ok".to_owned()],
+            "只交付最终回复一次，空响应没有 delta 泄漏"
+        );
+    }
+
+    #[test]
+    fn m3_default_025_tool_call_reply_is_not_treated_as_empty() {
+        let inner = Box::new(EmptyThenOk::tool_call_only());
+        let mut provider = RetryingProvider::new(inner, RetryPolicy::immediate(3));
+        let reply = provider
+            .complete(&request())
+            .expect("tool call reply is valid");
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(provider.last_attempts(), 1, "有 tool_calls 不算空响应");
     }
 }

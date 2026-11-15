@@ -233,6 +233,10 @@ let effect = ctx.publish::<dyn ToolRegistry>("tool-registry/v1", impl_)?;
 - Service key 的 major 变化即不兼容；宿主同时最多提供一个 major。
 - WASM 插件额外固定 WIT 包版本；组件与宿主 WIT 版本不匹配即 `E_VERSION`。
   WIT 世界定义（草案）见 [`cpp-v1.wit`](cpp-v1.wit)；Wasmtime 主机接入时由 `wit-bindgen` 校验后冻结。
+  **M3 实施注记**：当前 wasmtime 主机先实现 **core module ABI**（`dshr-wasm-core/v1`，
+  `memory`+`dshr_alloc`+`dshr_invoke`，JSON 传参），Component Model/WIT canonical ABI 未启用；
+  工具声明来自 manifest `[[tools]]`。细节与偏离见 [`../wasm-host.md`](../wasm-host.md)。
+  在 Component 主机落地前，WASM 插件不得依赖 WIT 导出的类型。
 - `cdylib` 不作为公开扩展通道：不承诺 ABI 稳定，仅内部使用。
 - 弃用流程：规范标记 `deprecated` → 至少一个 major 周期保留 → 删除。
 

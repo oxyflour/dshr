@@ -132,12 +132,17 @@ impl PluginError {
     }
 }
 
-/// 一个 UI 贡献（当前只承载元数据；渲染由 ui-contributions 在 M2 接）。
+/// 一个 UI 贡献（元数据 + 可选 ADC-v1 view 名称；渲染由 ui-contributions/ui-gpui 在 M3 接）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelContribution {
     pub id: String,
     pub title: String,
     pub slot: String,
+    /// ADC-v1 `view` 名称（`declareView` 声明的那个）；`None` 表示插件不渲染视图。
+    ///
+    /// 与 `id` 分开：`id` 是注册身份（`workspace.panel` 下的唯一键），`view` 是
+    /// `Plugin::render_view` 的入参（spec/adc-v1.md §4.4/§8）。
+    pub view: Option<String>,
 }
 
 impl PanelContribution {
@@ -146,7 +151,19 @@ impl PanelContribution {
             id: id.into(),
             title: title.into(),
             slot: slot.into(),
+            view: None,
         }
+    }
+
+    /// 声明该 panel 渲染哪个 ADC view（additive：旧调用点不传 view 时行为不变）。
+    pub fn with_view(mut self, view: impl Into<String>) -> Self {
+        self.view = Some(view.into());
+        self
+    }
+
+    /// 该 panel 渲染的 view；未声明时回落到 `id`（便于只注册一个名字的插件）。
+    pub fn view_name(&self) -> &str {
+        self.view.as_deref().unwrap_or(&self.id)
     }
 }
 
@@ -208,6 +225,16 @@ pub trait Plugin: Send {
 
     /// 执行一次工具调用。宿主已完成 Policy 与 schema 校验。
     fn call(&mut self, tool: &str, arguments: &Value) -> Result<Value, PluginError>;
+
+    /// 渲染一个 ADC-v1 view（`declareView` 声明的名称，见 spec/adc-v1.md §8）。
+    ///
+    /// 默认实现返回可读错误：不支持 UI 的插件不需要改代码即可继续工作（additive 契约）。
+    /// 返回值是元素树 JSON，由宿主用 `parse_tree` + `adc_panel_body` 渲染。
+    fn render_view(&mut self, _view: &str) -> Result<Value, PluginError> {
+        Err(PluginError::Invalid(
+            "plugin does not render views".to_owned(),
+        ))
+    }
 
     /// 清理钩子：宿主已经保证注册被撤销，这里只处理插件自己的资源。
     fn unload(&mut self) {}
@@ -294,5 +321,43 @@ mod tests {
         };
         assert_eq!(error.clone(), error);
         assert_eq!(error.code(), "E_INTERNAL");
+    }
+
+    // ADC-ELEM-PANEL-API-001：trait 默认 render_view 不破坏既有插件。
+    struct NoViewPlugin;
+
+    impl Plugin for NoViewPlugin {
+        fn id(&self) -> &'static str {
+            "api.no-view"
+        }
+
+        fn apply(&mut self, _ctx: &mut PluginContext) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn call(&mut self, _tool: &str, _arguments: &Value) -> Result<Value, PluginError> {
+            Err(PluginError::Invalid("no tools".to_owned()))
+        }
+    }
+
+    #[test]
+    fn adc_elem_panel_api_001_default_render_view_is_a_readable_error() {
+        let mut plugin = NoViewPlugin;
+        let error = plugin.render_view("workspace.panel").unwrap_err();
+        assert!(error.to_string().contains("does not render views"));
+        assert_eq!(error.code(), "E_INTERNAL");
+    }
+
+    // ADC-ELEM-PANEL-API-002：panel 的 view 与 id 分开，未声明 view 时回落到 id。
+    #[test]
+    fn adc_elem_panel_api_002_panel_view_falls_back_to_id() {
+        let plain = PanelContribution::new("probe.panel", "Probe", "workspace.panel");
+        assert_eq!(plain.view, None);
+        assert_eq!(plain.view_name(), "probe.panel");
+
+        let with_view = PanelContribution::new("probe.panel", "Probe", "workspace.panel")
+            .with_view("probe.view");
+        assert_eq!(with_view.view.as_deref(), Some("probe.view"));
+        assert_eq!(with_view.view_name(), "probe.view");
     }
 }

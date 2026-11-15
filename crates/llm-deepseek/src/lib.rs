@@ -24,11 +24,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dshr_agent_core::{ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall};
+use dshr_agent_core::{
+    ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort,
+};
 use serde_json::{json, Value};
 
 const DEFAULT_BASE: &str = "https://api.deepseek.com";
 const DEFAULT_MODEL: &str = "deepseek-chat";
+
+/// DeepSeek Chat Completions 当前**没有** `reasoning_effort` 字段。
+///
+/// DSH 的 DeepSeek 适配器把 `reasoningEffort` 作为自己的配置项（desktop profile
+/// 配 `high`），线上映射由厂商适配层决定；dshr 的 DeepSeek provider 直连官方
+/// Chat Completions API，因此这里**记录差异并跳过**发送（档位仍被解析/暴露，
+/// 便于将来 API 支持或换兼容端点时打开，见 [`DeepSeekProvider::reasoning_effort`]）。
+pub const SUPPORTS_REASONING_EFFORT: bool = false;
 
 const SYSTEM_PROMPT: &str = "你是一个桌面 Agent。回答简洁；需要外部能力时调用提供的工具。";
 
@@ -40,6 +50,9 @@ pub struct DeepSeekProvider {
     temperature: Option<f64>,
     /// 显式输出上限；`None` = 不发送（保持 provider 默认）。
     max_tokens: Option<u64>,
+    /// DSH reasoning effort 档位（`off/low/high/max`）；来自 `DSHR_REASONING_EFFORT`。
+    /// DeepSeek Chat Completions 无该字段，暂不发送（见 [`SUPPORTS_REASONING_EFFORT`]）。
+    reasoning_effort: Option<ReasoningEffort>,
     timeout: Duration,
     /// UI 置 true 即请求停止生成。
     ///
@@ -58,6 +71,7 @@ impl DeepSeekProvider {
             model: std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_owned()),
             temperature: parse_env_number("DEEPSEEK_TEMPERATURE"),
             max_tokens: parse_env_number("DEEPSEEK_MAX_TOKENS"),
+            reasoning_effort: ReasoningEffort::from_env(),
             timeout: Duration::from_secs(60),
             cancel: None,
         }
@@ -88,6 +102,20 @@ impl DeepSeekProvider {
     pub fn with_max_tokens(mut self, max_tokens: Option<u64>) -> Self {
         self.max_tokens = max_tokens;
         self
+    }
+
+    /// 显式设置 reasoning effort（未配置时沿用 `DSHR_REASONING_EFFORT`）。
+    ///
+    /// `off` 与 `None` 都不发送；DeepSeek Chat Completions 暂不支持该字段，
+    /// 这里只保留档位供将来打开（见 [`SUPPORTS_REASONING_EFFORT`]）。
+    pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.reasoning_effort = effort;
+        self
+    }
+
+    /// 当前 reasoning effort 档位（诊断/测试用）。
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
     }
 
     pub fn model(&self) -> &str {
@@ -143,6 +171,9 @@ impl DeepSeekProvider {
         if let Some(max_tokens) = self.max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }
+        // DeepSeek Chat Completions 没有 `reasoning_effort` 字段：明确记录差异并跳过。
+        // 将来官方 API（或兼容端点）支持时，把 SUPPORTS_REASONING_EFFORT 打开并写
+        // `body["reasoning_effort"] = effort.wire_value()` 即可。
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
             body["tool_choice"] = json!("auto");
@@ -724,6 +755,47 @@ mod tests {
         let body = provider.request_body(&request(vec![ChatMessage::user("hi")]), false);
         assert_eq!(body["temperature"], json!(0.7));
         assert_eq!(body["max_tokens"], json!(8_192));
+    }
+
+    // M3-DEFAULT-030..032：DeepSeek 的 reasoning effort 差异（记录并跳过）。
+    #[test]
+    fn m3_default_030_deepseek_parses_reasoning_effort_from_env() {
+        const VAR: &str = ReasoningEffort::ENV;
+        let previous = std::env::var(VAR).ok();
+        std::env::set_var(VAR, "high");
+        let provider = DeepSeekProvider::new("test-key");
+        assert_eq!(provider.reasoning_effort(), Some(ReasoningEffort::High));
+        match previous {
+            Some(value) => std::env::set_var(VAR, value),
+            None => std::env::remove_var(VAR),
+        }
+    }
+
+    #[test]
+    fn m3_default_031_deepseek_does_not_send_reasoning_effort_field() {
+        let provider = DeepSeekProvider::new("test-key")
+            .with_reasoning_effort(Some(ReasoningEffort::Max))
+            .with_temperature(None)
+            .with_max_tokens(None);
+        let body = provider.request_body(&request(vec![ChatMessage::user("hi")]), false);
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "DeepSeek Chat Completions 无该字段，应记录差异并跳过: {body}"
+        );
+        const {
+            assert!(
+                !SUPPORTS_REASONING_EFFORT,
+                "DeepSeek 目前不发 reasoning_effort"
+            );
+        }
+    }
+
+    #[test]
+    fn m3_default_032_deepseek_off_effort_has_no_wire_value() {
+        assert_eq!(ReasoningEffort::Off.wire_value(), None);
+        assert_eq!(ReasoningEffort::Max.wire_value(), Some("max"));
+        // 非法 env 被忽略（不 panic、不阻断构造）。
+        assert_eq!(ReasoningEffort::resolve(Some("bogus")), None);
     }
 
     #[test]

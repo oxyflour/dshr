@@ -73,8 +73,10 @@
 | `tool.aborted` | durable | `call_id`, `reason`(`crash`/`cancel`/`timeout`/`unload`) |
 | `tool.late_result` | durable | `call_id`, `discarded: true`（诊断用） |
 | `tool.result.pruned` | durable | `call_id`, `原始大小`, `spill_ref`（见 §5） |
+| `tool.repeat` | durable | `tool`, `count`, `threshold`, `message`（M3：同一工具+参数在本轮第 N 次调用触发软提醒；actor=`system`；**不失败、不改变工具结果**；读取端必须容忍未知 type，UI 可不渲染，用于自激诊断/审计） |
 
 不变量：一个 `call_id` 至多一条 `tool.result`；`tool.aborted` 与 `tool.result` 互斥（先到者胜）。
+`tool.repeat` 是旁路诊断事件，不参与工具结算，也不影响 `tool.call/tool.result` 的配对。
 
 ### 3.4 审批与策略
 

@@ -128,6 +128,11 @@ const toolsService = {
         input_schema: definition.parameters ?? { type: 'object' },
         output_schema: definition.output?.schema ?? null,
         presentation: 'generic',
+        // 每个工具自己的超时（DSH `ToolDefinition.timeoutMs`；未声明则不设限）。
+        // 宿主按它执行（Rust 侧 clamp 到 1s..=600s），不再统一写死 5s。
+        ...(Number.isFinite(definition.timeoutMs) && definition.timeoutMs > 0
+          ? { timeout_ms: definition.timeoutMs }
+          : {}),
       },
       { plugin_id: 'dsh-official' },
     )
@@ -621,7 +626,13 @@ async function bootPlugins(entries) {
     // L2（spec §13）：只有协商到 service.proxy 时才注入这些代理；
     // 未协商时官方插件对 `workingDirectory`/`storage` 的 inject 失败，保持 M2 行为。
     root.provide('workingDirectory', hostServices.createWorkingDirectory())
-    root.provide('storage', hostServices.createStorage())
+    const storageHub = hostServices.createStorage()
+    root.provide('storage', storageHub)
+    // 官方 `dsh-storage-domain` 通过 `ctx.inject(['storage.backend.<name>'])` 等后端
+    // 生命周期键；我们的 `storage-kv` backend（Rust 介质的 adapter）在这里以同一
+    // 实例挂上，等价于官方 json/sqlite backend 的 provide（介质后端本来就由 Rust 实现）。
+    const storageBackend = storageHub.backend.get('storage-kv')
+    root.provide('storage.backend.storage-kv', storageBackend)
   }
   for (const entry of entries) {
     try {

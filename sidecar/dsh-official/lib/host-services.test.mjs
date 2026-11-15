@@ -314,7 +314,12 @@ test('L2JS-009 workingDirectory shim unwraps wire shapes', async () => {
   assert.equal(await shim.set('src'), 'C:\\ws\\src')
   assert.equal(await shim.ensure(), 'C:\\ws')
   assert.equal(shim.lastRecovered, true)
-  assert.equal(calls.length, 3)
+  // 官方 dsh-working-directory 的签名：get(agent) / ensure(agent, signal) / set(agent, path, signal)。
+  const fakeAgent = { id: 'agent-1' }
+  assert.equal(await shim.get(fakeAgent), 'C:\\ws\\src')
+  assert.equal(await shim.set(fakeAgent, 'src', undefined), 'C:\\ws\\src')
+  assert.equal(await shim.ensure(fakeAgent, undefined), 'C:\\ws')
+  assert.equal(calls.length, 6)
   for (const request of calls) {
     assert.equal(request.serviceKey, SERVICE_KEYS.workingDirectory)
     assert.equal(request.sessionId, 's-0001')

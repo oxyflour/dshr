@@ -280,10 +280,13 @@ impl StorageKvService {
         let file = read_unit_file(&snapshot.path)?
             .ok_or_else(|| storage_error("unknown-state", "unit medium is missing"))?;
         ensure_compatible(&snapshot.descriptor, &file)?;
-        let mut result = json!({ "tables": file.tables });
-        if let Some(global) = file.global {
-            result["global"] = global;
-        }
+        let UnitFile { tables, global, .. } = file;
+        // 官方 dsh-storage-domain 用 `snapshot.global === null` 判定"从未写过"并回落到
+        // schema 的 `initial`；所以未写 global 时也必须显式返回 null，不能省略字段。
+        let result = json!({
+            "tables": tables,
+            "global": global.unwrap_or(Value::Null),
+        });
         let bytes = serde_json::to_vec(&result)
             .map_err(|error| storage_error("unknown-state", format!("serialize loadAll: {error}")))?
             .len() as u64;
@@ -1005,8 +1008,8 @@ mod tests {
         assert_eq!(snapshot["tables"]["items"]["a"]["n"], 1);
         assert_eq!(snapshot["tables"]["items"]["b"]["n"], 2);
         assert!(
-            snapshot.get("global").is_none(),
-            "未写 global 时不返回该字段"
+            snapshot["global"].is_null(),
+            "未写 global 时必须显式返回 null（官方 domain 用 null 触发 initial）"
         );
 
         let file = read_medium(&root, PLUGIN, "todos");
@@ -1147,8 +1150,8 @@ mod tests {
         .expect("open with global");
         let snapshot = load_all(&mut service, PLUGIN, &unit_id).expect("loadAll");
         assert!(
-            snapshot.get("global").is_none(),
-            "未写 global 时按 initial 处理"
+            snapshot["global"].is_null(),
+            "未写 global 时返回 null（官方 domain 据此回落到 initial）"
         );
 
         service

@@ -636,11 +636,10 @@ impl Plugin for ExternalPlugin {
             ctx.register_tool(definition)?;
         }
         for panel in &self.ready.panels {
-            ctx.register_panel(PanelContribution::new(
-                panel.id.clone(),
-                panel.label.clone(),
-                panel.slot.clone(),
-            ));
+            ctx.register_panel(
+                PanelContribution::new(panel.id.clone(), panel.label.clone(), panel.slot.clone())
+                    .with_view(panel.view.clone()),
+            );
         }
         Ok(())
     }
@@ -721,6 +720,17 @@ impl Plugin for ExternalPlugin {
                 Err(error.into_plugin_error(tool))
             }
         }
+    }
+
+    /// `Plugin::render_view` 的 override：把子进程 `ui.render` 错误映射成插件错误，
+    /// 这样 `PluginHost::render_panel` 对所有插件来源都返回同一种错误类型。
+    fn render_view(&mut self, view: &str) -> Result<serde_json::Value, PluginError> {
+        ExternalPlugin::render_view(self, view).map_err(|error| {
+            PluginError::Invalid(format!(
+                "external plugin `{}` view `{view}`: {error}",
+                self.plugin_id
+            ))
+        })
     }
 
     fn unload(&mut self) {

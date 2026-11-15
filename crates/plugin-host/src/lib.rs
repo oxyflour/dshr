@@ -171,6 +171,20 @@ impl PluginHost {
         }
     }
 
+    /// 渲染一个插件 view（ADC-v1）：`ui.render` → 元素树 JSON。
+    ///
+    /// 这是 chat 右侧 panel 的宿主入口；宿主只负责取树，不碰 GPUI（渲染由
+    /// `ui-gpui::adc_panel_body` 完成，保持本 crate 的边界）：
+    /// - 未知插件 → [`HostError::NotFound`]；
+    /// - 插件不支持 view 或 view 不存在 → 插件的可读 [`PluginError`]（`HostError::Plugin`）。
+    pub fn render_panel(&mut self, plugin_id: &str, view: &str) -> Result<Value, HostError> {
+        let plugin = self
+            .plugins
+            .get_mut(plugin_id)
+            .ok_or_else(|| HostError::NotFound(plugin_id.to_owned()))?;
+        plugin.render_view(view).map_err(HostError::Plugin)
+    }
+
     /// 已通过策略审批后的调用：只做 schema 校验，不再问策略。
     pub fn call_approved(&mut self, tool: &str, arguments: &Value) -> Result<Value, HostError> {
         let definition = self.registry.authorize_approved(tool, arguments)?.clone();
@@ -265,11 +279,10 @@ mod tests {
                     "properties": { "text": { "type": "string" } }
                 })),
             )?;
-            ctx.register_panel(PanelContribution::new(
-                "probe.panel",
-                "Probe Panel",
-                "workspace.panel",
-            ));
+            ctx.register_panel(
+                PanelContribution::new("probe.panel", "Probe Panel", "workspace.panel")
+                    .with_view("probe.panel"),
+            );
 
             if self.fail_apply {
                 // 故意在注册之后失败：宿主必须回滚。
@@ -295,6 +308,38 @@ mod tests {
 
         fn unload(&mut self) {
             self.unloaded = true;
+        }
+
+        /// ADC panel：原生插件也能渲染 view（与 external-process 走同一 trait 方法）。
+        fn render_view(&mut self, view: &str) -> Result<Value, PluginError> {
+            if view != "probe.panel" {
+                return Err(PluginError::Invalid(format!("unknown view `{view}`")));
+            }
+            Ok(json!({
+                "type": "Card",
+                "props": {"title": "Probe Panel"},
+                "children": [
+                    {"type": "Text", "props": {"value": "原生插件 ADC 面板"}},
+                    {"type": "Badge", "props": {"label": "native", "tone": "success"}}
+                ]
+            }))
+        }
+    }
+
+    /// 不实现 view 的插件（验证 trait 默认实现的降级错误）。
+    struct NoViewNative;
+
+    impl Plugin for NoViewNative {
+        fn id(&self) -> &'static str {
+            "builtin.no-view"
+        }
+
+        fn apply(&mut self, _ctx: &mut PluginContext) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn call(&mut self, _tool: &str, _arguments: &Value) -> Result<Value, PluginError> {
+            Err(PluginError::Invalid("no tools".to_owned()))
         }
     }
 
@@ -487,5 +532,61 @@ mod tests {
         assert!(host.registry().is_empty());
         assert!(host.panels().is_empty());
         assert!(!host.is_loaded("builtin.probe"));
+    }
+
+    // ---- ADC-v1 panel 渲染入口（ADC-ELEM-PANEL-HOST-*） --------------------
+
+    // ADC-ELEM-PANEL-HOST-001
+    #[test]
+    fn render_panel_returns_adc_tree_from_native_plugin() {
+        let mut host = PluginHost::new(AllowAll);
+        host.load(Box::new(ProbeNative::new())).unwrap();
+
+        // panel 元数据带 view：render_panel 的入参（id 与 view 可以不同）。
+        let registration = host
+            .panels()
+            .into_iter()
+            .find(|registration| registration.panel.slot == "workspace.panel")
+            .expect("panel registered");
+        assert_eq!(registration.panel.view_name(), "probe.panel");
+
+        let tree = host
+            .render_panel("builtin.probe", "probe.panel")
+            .expect("render_panel");
+        assert_eq!(tree["type"], json!("Card"));
+        assert_eq!(tree["props"]["title"], json!("Probe Panel"));
+
+        // 未知 view → 插件的可读错误（不是 panic / NotFound）。
+        let error = host
+            .render_panel("builtin.probe", "missing.view")
+            .unwrap_err();
+        assert!(matches!(&error, HostError::Plugin(PluginError::Invalid(_))));
+        assert!(error.to_string().contains("missing.view"), "{error}");
+    }
+
+    // ADC-ELEM-PANEL-HOST-002
+    #[test]
+    fn render_panel_unknown_plugin_is_not_found() {
+        let mut host = PluginHost::new(AllowAll);
+        let error = host
+            .render_panel("missing.plugin", "workspace.panel")
+            .unwrap_err();
+        assert!(matches!(&error, HostError::NotFound(_)));
+        assert!(error.to_string().contains("missing.plugin"), "{error}");
+    }
+
+    // ADC-ELEM-PANEL-HOST-003
+    #[test]
+    fn render_panel_default_impl_is_readable_for_plugins_without_views() {
+        let mut host = PluginHost::new(AllowAll);
+        host.load(Box::new(NoViewNative)).unwrap();
+        let error = host
+            .render_panel("builtin.no-view", "anything")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not render views"),
+            "{error}"
+        );
+        assert!(matches!(&error, HostError::Plugin(PluginError::Invalid(_))));
     }
 }

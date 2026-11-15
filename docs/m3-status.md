@@ -1,37 +1,39 @@
 # M3 状态 — 插件平台 Preview
 
-> 更新：2026-11-14（W4：L2 端到端 / Loader 债务 / ADC 渲染预算）。范围、gate 与砍单顺序见
-> [`decisions/0007-m3-scope.md`](decisions/0007-m3-scope.md)；计划基线见 [`PLAN.md`](PLAN.md) §8 M3 / §9.1；
-> 计划评审见 [`review-m3-plan.md`](review-m3-plan.md)；给最终 review 的证据索引见
-> [`m3-gate-evidence.md`](m3-gate-evidence.md)。
+> 更新：2026-11-15（W5/W6：G1 产品面板 / G3 官方包 + WASM 主机 / M3 默认差异；沙箱 danger-full-access、网络恢复）。
+> 范围、gate 与砍单顺序见 [`decisions/0007-m3-scope.md`](decisions/0007-m3-scope.md)；
+> 计划基线见 [`PLAN.md`](PLAN.md) §8 M3 / §9.1；计划评审见 [`review-m3-plan.md`](review-m3-plan.md)；
+> 给最终 review 的证据索引见 [`m3-gate-evidence.md`](m3-gate-evidence.md)。
 > 本文是**活文档**：每完成一个 gate 项就更新证据命令与结果，不写"计划中的证据"。
 
 ## 1. 当前结论
 
-M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链路 + W4 L2 端到端/渲染预算**。
-三条 gate 现在都**只剩产品面与收尾项**：
+M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链路 + W4 L2 端到端/渲染预算 +
+W5 产品面板/官方包验收/默认差异**。G1、G2、G3 的库层/产品路径证据基本齐备，剩余集中在
+"可选增强 + WASM 主方案（网络已恢复，进行中）+ 工具并发"：
 
-- **G1（契约冻结）**：ADC-v1 已 `Frozen`；冻结工件/服务端/解析降级/渲染器/panel 入口齐备；
-  渲染预算实测完成（release 10 棵典型树最差 total p95 **3.78 ms**，占 60fps 预算 23%；
-  见 [`m3-render-budget.md`](m3-render-budget.md)）。剩余：把 `adc_panel_body` / 注册表接进
-  chat 的 panel 与 tool card（产品面）。
+- **G1（契约冻结）**：ADC-v1 `Frozen`；服务端/解析降级/渲染器/panel 入口齐备；**W5 已把
+  ADC panel 接进 chat**（右栏「插件面板 · ADC-v1」，`--selftest-adc-panel` PASS：合法树 0 诊断、
+  未知元素 Placeholder、未知 view/插件可读错误）。剩余：tool card 的 ADC renderer 与交互/事件
+  （ADR-0011 降级清单，M4）。
 - **G2（外部作者可发布）**：SDK 0.1.0 + external-process 运行时 + 作者文档/模板/生成器/打包器 +
-  E2E 五态 + chat 产品路径 self-test PASS（W3）。剩余：真仓库外目录实验（沙箱限制用 `.tmp/`）、
-  Panel 产品渲染、DSH JS 作者文档。
-- **G3（隔离与兼容）**：W4 已完成 **chat ↔ sidecar ↔ L2 Router 端到端**：`chat --selftest-l2`
-  phase A（真实 vendored sidecar 协商 protocol=2 / host_services=3）+ phase B（fixture
-  storage-kv 真实 `host.service.request` 往返）PASS；v1 宿主安全回退；M2 `--selftest-dsh` /
-  `--selftest-dsh-write` 不回归。隔离由 external-process 承担（CPP-ISO 17）。剩余：三个 L2 服务
-  用**未修改官方包**验收（受官方工具 `exec.agent` 债务限制，口径为装载绿+方法往返+错误面）、
-  WASM 主方案离线偏离说明。
+  E2E 五态 + chat 产品路径 self-test PASS。剩余：真仓库外目录实验（沙箱限制用 `.tmp/`）、
+  Panel 渲染已接但交互未接、DSH JS 作者文档。
+- **G3（隔离与兼容）**：L2 端到端已通（`--selftest-l2` A+B）；**W5 官方包验收**：
+  `dsh-tool-working-directory`（未修改）装载绿 + execute 的 `exec.agent` 债务证据（`RPC-L2-502`）、
+  `dsh-storage-domain`（未修改）经官方 `defineDomain`/`DomainFacility` 与 `storage-kv` 后端真实往返
+  （`RPC-L2-501..505`）；workingDirectory 官方签名代理往返 PASS。**W6 WASM 主机已落地**：
+  wasmtime `=50.0.1` core-module ABI（`CPP-WASM-001..020` 四类隔离：fuel/epoch/内存/输出 +
+  trap 后宿主存活/relaunch/并发背压）；Component Model/WIT 未启用（偏离，见
+  [`wasm-host.md`](wasm-host.md)）。剩余：工具并发（M3 债务最后一项）、可选 Component 主机。
 
 ## 2. Exit gate 对账
 
 | Gate | 判定 | 当前状态 | 缺口（下一步） |
 |---|---|---|---|
-| **G1 契约冻结** | ADC `Frozen`；12 slot 一一对应；元素 props 字段级；§12 清零；未知元素 Placeholder + 诊断 + 不 panic | **达标（库层）/产品面待接**：spec Frozen + ADR-0011；ADC 56+10 tests、渲染 26+10 panel tests；预算 release 最差 3.78 ms（[m3-render-budget](m3-render-budget.md)）；未知元素 P4 有测试 | ① `adc_panel_body`/注册表接进 chat 的 panel 与 tool card；② 窗口内 draw 预算（M4/手动） |
-| **G2 外部作者可发布** | 仓库外只用文档+模板+semver SDK 构建并安装 Tool+Panel；首装确认/审计/来源校验；篡改/降级被拒 | **大部分**：SDK 0.1.0；作者文档/模板/生成器/打包器；E2E PASS（安装/升级/降级/篡改/未确认）；chat 安装→装载→调用→卸载 self-test PASS；信任链完整 | ① 真仓库外目录实验（沙箱限制，当前 `.tmp/` + 不读源码 checklist）；② Panel 产品渲染；③ DSH JS 插件作者文档补章 |
-| **G3 隔离与兼容** | WASM 三故障注入隔离且宿主存活；3 个 L2 service 用未修改官方插件跑通 | **端到端已通（退路口径）**：external-process 四类隔离（CPP-ISO）；`RPC-L2-401..410` 覆盖 v2 握手/storage 往返/wd 事件/取消/迟到/generation；`chat --selftest-l2` phase A+B PASS（真实 sidecar protocol=2 + fixture 往返）；v1 安全回退；WASM 由 ADR-0010 退路替代 | ① 三服务**官方包**验收（官方工具 `exec.agent` 债务下按"装载绿+方法往返+错误面"）；② WASM 主机离线偏离说明（review 明示） |
+| **G1 契约冻结** | ADC `Frozen`；12 slot 一一对应；元素 props 字段级；§12 清零；未知元素 Placeholder + 诊断 + 不 panic | **达标（产品面板已接）**：spec Frozen + ADR-0011；ADC 56+10 tests、渲染 26+10 panel tests；预算 release 最差 3.78 ms；W5 chat 右栏「插件面板 · ADC-v1」+ `--selftest-adc-panel` PASS（未知元素 Placeholder/可读错误） | tool card 的 ADC renderer、交互/事件/焦点（ADR-0011 降级，M4） |
+| **G2 外部作者可发布** | 仓库外只用文档+模板+semver SDK 构建并安装 Tool+Panel；首装确认/审计/来源校验；篡改/降级被拒 | **大部分**：SDK 0.1.0；作者文档/模板/生成器/打包器；E2E PASS（安装/升级/降级/篡改/未确认）；chat 安装→装载→调用→卸载 self-test PASS；信任链完整；panel 渲染已接 | ① 真仓库外目录实验（沙箱限制，当前 `.tmp/` + 不读源码 checklist）；② DSH JS 插件作者文档补章；③ panel 交互（M4） |
+| **G3 隔离与兼容** | WASM 三故障注入隔离且宿主存活；3 个 L2 service 用未修改官方插件跑通 | **达标（收窄口径）**：WASM 主机 core-module 四类隔离（`CPP-WASM-001..020`，wasmtime 50.0.1）；external-process 退路保留（CPP-ISO）；L2 端到端 + 官方包验收（501..505）；`--selftest-l2` A+B | ① Component Model/WIT canonical ABI（PLAN 字面 "WASM Component" 的偏离，M4/后续）；② 工具并发（M3 债务） |
 
 ## 3. 交付与证据
 
@@ -83,19 +85,27 @@ M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链
 | **ADC panel 入口** | `crates/ui-gpui/src/adc.rs`：`adc_panel_body(theme, &Value) -> (AnyElement, Vec<Diagnostic>)` + `_from_str` | `ADC-ELEM-PANEL-001..010`（合法/未知根/配额/空/null/非法 JSON/a11y/叶子 children/容器） |
 | **稳定性修正** | `crates/plugin-host/tests/external_process.rs` | 内存超限用例接受 E_INTERNAL/E_QUOTA/E_TIMEOUT/exited 多种观测并延长等待（全量并行负载下曾偶发）；其余隔离断言不变 |
 
+### 3.5 W5（G1 产品面板 / G3 官方包验收 / M3 默认差异）
+
+| 交付 | 文件 | 证据（测试 ID / 命令） |
+|---|---|---|
+| **ADC panel 产品面** | `chat.rs`：右栏「插件面板 · ADC-v1」（`refresh_adc_panels`/`AdcPanelView`）+ `plugin-api::Plugin::render_view` 默认方法 + `PanelContribution.view` + `PluginHost::render_panel`；external fixture panel view（合法树/未知元素） | `--selftest-adc-panel` PASS（panels=3 rendered=3 panel_errors=0 legal_diags=0 unknown_diag=true，未知 view/插件可读错误）；`ADC-ELEM-PANEL-API-*`/`-HOST-*` 测试 |
+| **官方包 L2 验收** | `crates/compat-dsh-host/tests/official_packages.rs`（5 个）+ `sidecar/dsh-official/lib/official-l2-driver.mjs`（测试）；adapter 修正：wd shim 官方签名、`storage.backend.storage-kv` 生命周期、`loadAll` 未写 global 返回 `null` | `RPC-L2-501..505`：未修改 `dsh-tool-working-directory` 装载绿 + execute `exec.agent` 债务证据（502）；官方 `dsh-storage-domain` 经 `defineDomain`/`DomainFacility` → storage-kv 后端真实往返（put/get/delete/initial/close + already-open）；workingDirectory 官方签名代理往返 |
+| **M3 默认差异** | `agent-core`（ReasoningEffort/重复提醒）、`llm-openai`（reasoning_effort）、`llm-retry`（EMPTY_RESPONSE）、`agent-context`（retainRatio 0.16 + env）、`tool-runtime`（PermissionMode/ApprovalPolicy/from_env/effective_timeout_ms） | `M3-DEFAULT-001..063`（39 唯一 ID；6 crate 176 tests）；细节见 [`m2-dsh-defaults.md`](m2-dsh-defaults.md) 的 M3 更新；chat 接线见下一行 |
+| **债务接线（W5 并行）** | `chat.rs`/compat/host/sidecar：approval env、`tool.repeat` 事件、reasoning/retain env 路径、sidecar per-tool timeout、`--selftest-defaults` | 见 W5 接线报告；`--selftest*` 全 PASS（完成后补 ID） |
+| **WASM 主机（W6，已集成）** | `crates/plugin-wasm`（wasmtime `=50.0.1`；ABI `dshr-wasm-core/v1`：`memory`+`dshr_alloc`+`dshr_invoke` JSON）；`WasmEngineConfig::from_manifest`；已并回根 workspace | `CPP-WASM-001..020`（20 tests）：fuel→`E_QUOTA(OutOfFuel)`、epoch 100ms→`E_TIMEOUT`、`StoreLimits`→`E_QUOTA(MemoryLimit)`、输出超限→`E_TOO_LARGE`、trap 后同 runtime 可用/relaunch、跨 runtime 隔离、并发→`E_BACKPRESSURE`、缺导出/非法模块/guest -1/unreachable；详见 [`wasm-host.md`](wasm-host.md) |
+
 ## 4. Conformance 现状
 
 - **契约**：`node schema/check.mjs` → **71/71**。
-- **文档互链**：`node tools/check-links.mjs` → **307 链接 0 broken**。
-- **Rust 单测**：harness `--no-fail-fast` → **61 suites / 709 passed / 1 failed**；plain `cargo test`
-  仍会在第一个失败处中止。唯一失败仍是 `dshr-sidecar-guard` 的沙箱进程限制（非本轮代码；
-  普通桌面会话/CI 复验）。
+- **文档互链**：`node tools/check-links.mjs` → 待 W5/W6 同步后刷新（W4 为 307/0 broken）。
+- **Rust 单测**：**65 suites / 784 passed / 0 failed**（含 `dshr-plugin-wasm` 20 个；沙箱
+  danger-full-access 下原 sidecar-guard 进程测试也通过）。CI 仍需普通 runner 复验。
 - **JS 测试**：`node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs`
   → 13/13（conformance 的 `node-test` suite 已纳入 `--quick`）。
-- **矩阵**：`docs/conformance-matrix.json` / `.md`（generated_at 2026-11-14T15:19Z）由
-  `tools/conformance.mjs` 生成；注册表 **416 ID：implemented 392 / pending 19 / manual 5**
-  （manual：`chat --selftest-l2`、`--selftest-external-plugin`、`authoring-check`、`CPP-TRUST-019`、
-  `CPP-WASM-*` 待实现说明）；quick 门禁 schema+links+node-test 全绿、0 failed。
+- **矩阵**：`docs/conformance-matrix.json` / `.md` 由 `tools/conformance.mjs` 生成；W5/W6 新增
+  ADC panel API/HOST、`M3-DEFAULT-*`、`RPC-L2-501..505`、`CPP-WASM-001..020`、`--selftest-defaults`
+  正在并入 registry（W5/W6 同步任务），完成后以矩阵统计为准。
 - **CI**：`.github/workflows/conformance.yml` 未在 GitHub Actions 实跑。
 
 ## 5. L2（摘要）
@@ -105,32 +115,33 @@ M3 已完成 **W1 契约冻结 + W2 Rust 实现 + W3 插件运行时与作者链
 `storage-kv/v1`（官方 kv facet，生态押注）。Rust 侧已实现 `HostServiceRouter`（白名单/args/超时/取消/
 去重/背压/generation）+ `StorageKvService` + `WorkingDirectoryService` + `SessionLogService`；
 sidecar 侧实现了 v2 协商、`host.service.request/result/cancel`、event 订阅白名单、`ctx.storage`/
-`workingDirectory` 代理（默认关闭，v1 行为不变）。**剩余**：chat.rs 把 Router/SessionAccess 接进
-sidecar 读循环，之后用官方包跑 `RPC-L2-*` 真实往返并回填耗时；`event.*` 的 Cordis 总线桥仍是最小形态。
+`workingDirectory` 代理（默认关闭，v1 行为不变）；**W4 已接 chat**（Router + `SessionAccess` +
+三读循环 + `--selftest-l2` A/B），**W5 官方包验收**：未修改 `dsh-tool-working-directory` 装载绿 +
+`exec.agent` 债务证据；官方 `dsh-storage-domain` 经 `defineDomain`/`DomainFacility` 与 storage-kv
+后端真实往返。剩余：`event.*` 的 Cordis 总线桥仍是最小形态（TODO）；`dsh-storage` hub 本体是
+Cordis Service class，当前 sidecar plugin seam 不能按普通 plugin 装载（需扩展 boot，另开任务）。
 
 ## 6. 未决与风险
 
 | 项 | 影响 | 处理 |
 |---|---|---|
-| WASM 主机（离线不可获取 wasmtime） | G3 原口径 | [ADR-0010](decisions/0010-isolation-runtime-quota.md)：external-process 退路承担隔离；WIT/配额已备；review 必须明示偏离 |
-| 渲染器/slot 注册表未接 chat 产品面 | G1 的"产品可见" | 下一轮：`adc_view` + `ContributionRegistry` 接入 tool/panel 渲染；渲染预算实测 |
-| L2 未接 chat.rs | G3 真实往返 | 下一轮：spawn_sidecar 协商 v2 + Router + SessionAccess + 三读循环 |
-| 外部作者"仓库外"实验 | G2 字面口径 | 沙箱只允许 workspace 写入；当前 `.tmp/` 生成样例 + "未读 crates 源码" checklist；review 中说明 |
-| 工具并行/子会话并行/默认差异 | M3 债务 | 下一轮（tool concurrency、reasoning effort、摘要压缩、重复提醒、EMPTY_RESPONSE、approval 模式） |
+| WASM 主机 = core module（非 Component/WIT） | PLAN 字面 "WASM Component" | 已实现四类隔离并集成；Component Model/WIT canonical ABI 作为后续项（M4/独立任务），review 明示偏离 |
+| 工具并行 | M3 债务最后一项 | 待做：`maxParallelToolCalls=10` 批并发 + 取消/错误语义（下一轮） |
+| ADC 交互/事件/tool card | G1 增强项 | ADR-0011 降级清单，M4 |
+| 外部作者"仓库外"实验 | G2 字面口径 | 沙箱 danger-full-access，可在普通目录复跑 `tools/authoring-check.ps1`（`.tmp/` 证据仍有效） |
 | `plugin-api` trait 冻结 | 插件 ABI | external SDK 已 0.1.0；`Plugin` trait 仍同步 `call`（`&'static str` leak 一次），冻结留到并发改造 |
 | Beta 对外口径 290–470 | 产品 | 待产品确认；按 ADR-0007 §5 砍单 |
-| 环境项：sidecar-guard 进程测试、docs/ shell 写 ACL、node --test 子进程隔离 | 本机验证 | 记录；正常桌面/CI 复验；矩阵用文件工具落盘 |
+| 环境项：docs/ shell 写 ACL、node --test 子进程隔离 | 本机验证 | 新策略下部分已改善；CI 普通 runner 复验；矩阵用文件工具落盘 |
 
 ## 7. 下一步（按依赖排序）
 
-1. **G3 收口**：chat.rs 接 L2 Router + SessionAccess（真实 sidecar 往返）；三服务官方包验收。
-2. **G1 收口**：ADC 渲染器/注册表接 chat 面板与 tool card；渲染预算测试。
-3. **M3 债务**：工具并行（DSH maxParallelToolCalls=10）、子会话并行/sidecar 工具继承、默认差异对齐、
-   `timeoutMs` 透传、Loader `include`/group 子集。
-4. **WASM 决策收口**：如仍离线，提交 ADR-0010 偏离说明 + `external-process` 隔离证据；
-   如可获取运行时，接 Wasmtime 并跑 `CPP-WASM-*`。
-5. **最终 gate 证据 + 子 agent 独立 review**。
-6. 条件项：Script UI 5 日 spike、HTML Widget（WebView 决策）、pnpm 捆绑。
+1. **工具并行**：`maxParallelToolCalls=10` 批并发 + 取消/错误/结果顺序语义；保持默认不限总量。
+2. **可选 Component 主机**：`wit-bindgen`/`wasmtime::component` canonical ABI（替换 core-module ABI），
+   以及 `plugin-host::load_with_manifest` 的 wasm 分支装载。
+3. **子会话并行 / sidecar 工具继承**、`headroomTokens`/`compactionRetries` 对齐、`tool.chunk` 消费
+   （M3 债务剩余）；条件项（Script UI/HTML Widget/pnpm）按时间决定。
+4. **最终 gate 证据**：更新 m3-gate-evidence/conformance 矩阵；`--full` 全绿（WASM 主机纳入）。
+5. **子 agent 独立 review**（M3 收尾）。
 
 ## 8. 复现命令
 

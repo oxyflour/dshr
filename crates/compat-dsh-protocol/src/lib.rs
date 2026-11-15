@@ -23,6 +23,29 @@ pub const PROTOCOL_MAX: u32 = 2;
 pub const PROTOCOL_MIN: u32 = 1;
 pub const MAX_DEPTH: u32 = 4;
 
+// ---------------------------------------------------------------------------
+// 工具声明（`tool.register`）的跨语言字段
+// ---------------------------------------------------------------------------
+//
+// DSH 的 `ToolDefinition` 允许声明 `timeoutMs`（每个工具自己的超时，见
+// `@deepseek-ai/dsh-tools` 的 `definition.timeoutMs`；未声明则不限）。dshr 早先把
+// sidecar 工具统一写死 5s，慢工具会被误杀；现在由 sidecar 透传、宿主归一化，
+// 运行期再按 `ToolDefinition.timeout_ms` 执行（`chat::sidecar_tool_timeout`）。
+
+/// 工具声明超时的缺省值（对齐 `tool-runtime::DEFAULT_TOOL_TIMEOUT_MS`）。
+pub const DEFAULT_TOOL_TIMEOUT_MS: u64 = 120_000;
+/// `tool.register.timeout_ms` 的合法下界（太小会误伤正常工具）。
+pub const MIN_TOOL_TIMEOUT_MS: u64 = 1_000;
+/// 合法上界（与 `chat` 的运行期 clamp 一致，避免界面像卡死）。
+pub const MAX_TOOL_TIMEOUT_MS: u64 = 600_000;
+
+/// 归一化 sidecar 声明的 `timeout_ms`：非正数视为"未声明"；其余 clamp 到
+/// [`MIN_TOOL_TIMEOUT_MS`]..=[`MAX_TOOL_TIMEOUT_MS`]，与运行期 clamp 同口径。
+pub fn normalize_tool_timeout_ms(raw: Option<u64>) -> Option<u64> {
+    raw.filter(|millis| *millis > 0)
+        .map(|millis| millis.clamp(MIN_TOOL_TIMEOUT_MS, MAX_TOOL_TIMEOUT_MS))
+}
+
 /// 能力协商（`docs/spec/sidecar-rpc.md` §3）：host → sidecar 的 `host_caps` 词表。
 ///
 /// `fs.write` 是 M2 写工具的门闩：sidecar 未收到它时必须保持只读行为，
@@ -1294,5 +1317,25 @@ mod tests {
             validate_envelope(&unsupported, 3).unwrap_err().code,
             "E_VERSION"
         );
+    }
+
+    // M3-DEFAULT-010：`tool.register.timeout_ms` 的跨语言归一化。
+    #[test]
+    fn m3_default_010_tool_timeout_normalization() {
+        assert_eq!(normalize_tool_timeout_ms(None), None);
+        assert_eq!(normalize_tool_timeout_ms(Some(0)), None);
+        // 下界/上界 clamp（与 chat 的运行期 clamp 同口径 1s..=600s）。
+        assert_eq!(
+            normalize_tool_timeout_ms(Some(1)),
+            Some(MIN_TOOL_TIMEOUT_MS)
+        );
+        assert_eq!(normalize_tool_timeout_ms(Some(5_000)), Some(5_000));
+        assert_eq!(
+            normalize_tool_timeout_ms(Some(u64::MAX)),
+            Some(MAX_TOOL_TIMEOUT_MS)
+        );
+        assert_eq!(DEFAULT_TOOL_TIMEOUT_MS, 120_000);
+        assert_eq!(MIN_TOOL_TIMEOUT_MS, 1_000);
+        assert_eq!(MAX_TOOL_TIMEOUT_MS, 600_000);
     }
 }

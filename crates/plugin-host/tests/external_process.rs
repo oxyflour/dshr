@@ -677,3 +677,47 @@ fn cpp_iso_021_trust_confirmation_blocks_unsigned_install() {
         .iter()
         .any(|entry| entry.name == package_name));
 }
+
+// ADC-ELEM-PANEL-HOST-004：`PluginHost::render_panel` 走 external-process 的 `ui.render`。
+#[test]
+fn adc_elem_panel_host_004_render_panel_through_external_plugin() {
+    let root = TempDir::new("adc-panel");
+    let plugin = spawn_fixture(root.path(), "cpp.adc.fixture", None);
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(plugin)).unwrap();
+
+    // panel 元数据携带 view（来自 PanelDecl），与注册 id 分开。
+    let views: Vec<String> = host
+        .panels()
+        .iter()
+        .map(|registration| registration.panel.view_name().to_owned())
+        .collect();
+    assert!(
+        views.contains(&"fixture.adc".to_owned()),
+        "panels 应携带 ADC view: {views:?}"
+    );
+    assert!(
+        views.contains(&"fixture.unknown".to_owned()),
+        "panels 应携带未知元素演示 view: {views:?}"
+    );
+
+    let tree = host
+        .render_panel("cpp.adc.fixture", "fixture.adc")
+        .expect("render_panel");
+    assert_eq!(tree["type"], json!("Card"));
+    assert!(tree["children"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+
+    // 未知 view：外部进程返回 schema 错误，宿主映射成可读插件错误。
+    let error = host.render_panel("cpp.adc.fixture", "nope").unwrap_err();
+    assert!(error.to_string().contains("nope"), "{error}");
+
+    // 未知插件：NotFound（可读）。
+    let missing = host
+        .render_panel("missing.plugin", "fixture.adc")
+        .unwrap_err();
+    assert!(matches!(&missing, HostError::NotFound(_)), "{missing}");
+
+    host.unload("cpp.adc.fixture").unwrap();
+}

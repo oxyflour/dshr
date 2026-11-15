@@ -52,6 +52,12 @@ ADR-0007 的反悔条件已经预留："WASM 若与线程模型冲突 → `exter
 
 ## 后果
 
+**实施更新（2026-11-15，网络恢复后）**：WASM 主方案已落地为 **core WASM module 主机**
+（wasmtime `=50.0.1`，`crates/plugin-wasm`，`CPP-WASM-001..020`：fuel/epoch/内存/输出四类隔离）。
+**仍未做 Component Model/WIT canonical ABI**（`cpp-v1.wit` 保持草案）；因此 G3 的"WASM 隔离"
+按 core-module 口径成立，与 PLAN "WASM Component" 的偏离需在 review 中记录。`external-process`
+退路保留（`CPP-ISO-*`），两者共用本 ADR 的五维配额映射。详见 [`../wasm-host.md`](../wasm-host.md)。
+
 **好消息**：G3 的"隔离"语义可以真正验证（Job Object 是 OS 级）；不需要网络；复用 M2 已测试的
 `sidecar-guard`，风险低；协议复用 sidecar envelope，未来 WASM 主机可复用同一配额/结算模型。
 

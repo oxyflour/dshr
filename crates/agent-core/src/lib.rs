@@ -19,6 +19,7 @@ pub use session_tree::{
     SpawnContext, SpawnError, SpawnedChild, TreeSession, DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -74,6 +75,191 @@ fn parse_budget_env(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
         .and_then(|value| parse_positive_limit(&value))
+}
+
+// ---------------------------------------------------------------------------
+// DSH 默认差异（M3）：reasoning effort / 重复工具调用软提醒
+// ---------------------------------------------------------------------------
+
+/// DSH reasoning effort 档位（`@deepseek-ai/dsh-llm-deepseek` 的
+/// `off` / `low` / `high` / `max`）。
+///
+/// 官方 desktop profile 默认 `high`；dshr 不设默认——未配置时不发送该参数，
+/// 保持“服务端默认”语义（与 temperature 的处理一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    Off,
+    Low,
+    High,
+    Max,
+}
+
+impl ReasoningEffort {
+    /// 环境变量名；provider 构造时读取（crate 内完成，不要求调用方改）。
+    pub const ENV: &'static str = "DSHR_REASONING_EFFORT";
+
+    /// 解析档位；大小写不敏感，非法返回 `None`。
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "low" => Some(Self::Low),
+            "high" => Some(Self::High),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    /// 从 `DSHR_REASONING_EFFORT` 读取；未配置 / 非法都返回 `None`（非法会警告）。
+    pub fn from_env() -> Option<Self> {
+        Self::resolve(std::env::var(Self::ENV).ok().as_deref())
+    }
+
+    /// 纯函数版（测试/显式注入）：非法值写 stderr 警告后忽略，不失败。
+    pub fn resolve(raw: Option<&str>) -> Option<Self> {
+        let raw = raw?;
+        if raw.trim().is_empty() {
+            return None;
+        }
+        match Self::parse(raw) {
+            Some(effort) => Some(effort),
+            None => {
+                eprintln!(
+                    "[agent-core] ignoring invalid {}={raw} (allowed: off/low/high/max)",
+                    Self::ENV
+                );
+                None
+            }
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+
+    /// 线上值：`off` 不发送，`low` / `high` / `max` 原样发送（DSH 映射）。
+    pub fn wire_value(self) -> Option<&'static str> {
+        match self {
+            Self::Off => None,
+            other => Some(other.as_str()),
+        }
+    }
+}
+
+/// 重复工具调用的默认阈值（DSH `repeat-tool-reminder.thresholds` = `[3, 5, 8]`）。
+pub const REPEAT_TOOL_REMINDER_THRESHOLDS: [usize; 3] = [3, 5, 8];
+/// 开关（`on`/`off`）。
+pub const REPEAT_TOOL_REMINDER_CONFIG_ENV: &str = "DSHR_REPEAT_TOOL_REMINDERS";
+/// 自定义阈值（逗号分隔，如 `3,5,8`）。
+pub const REPEAT_TOOL_REMINDER_THRESHOLDS_ENV: &str = "DSHR_REPEAT_TOOL_REMINDER_THRESHOLDS";
+
+/// 重复工具调用软提醒配置（默认开启，阈值 `[3,5,8]`，与 DSH 一致）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepeatToolReminderConfig {
+    pub enabled: bool,
+    /// 触发提醒的“第 N 次”计数；升序、去重、只保留正数。
+    pub thresholds: Vec<usize>,
+}
+
+impl Default for RepeatToolReminderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            thresholds: REPEAT_TOOL_REMINDER_THRESHOLDS.to_vec(),
+        }
+    }
+}
+
+impl RepeatToolReminderConfig {
+    /// 从 env 读取：`DSHR_REPEAT_TOOL_REMINDERS=off` 关闭；
+    /// `DSHR_REPEAT_TOOL_REMINDER_THRESHOLDS=3,5,8` 覆盖阈值（非法值回退默认）。
+    pub fn from_env() -> Self {
+        let enabled = match std::env::var(REPEAT_TOOL_REMINDER_CONFIG_ENV) {
+            Ok(raw) => !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "0" | "off" | "false" | "no" | "disabled"
+            ),
+            Err(_) => true,
+        };
+        let thresholds = std::env::var(REPEAT_TOOL_REMINDER_THRESHOLDS_ENV)
+            .ok()
+            .and_then(|raw| parse_repeat_thresholds(&raw))
+            .unwrap_or_else(|| REPEAT_TOOL_REMINDER_THRESHOLDS.to_vec());
+        Self {
+            enabled,
+            thresholds,
+        }
+    }
+
+    /// 关闭提醒（测试 / 需要完全静默的调用方）。
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            thresholds: Vec::new(),
+        }
+    }
+
+    /// 自定义阈值：过滤 0、去重、升序。
+    pub fn with_thresholds(mut self, thresholds: impl IntoIterator<Item = usize>) -> Self {
+        let mut values: Vec<usize> = thresholds.into_iter().filter(|count| *count > 0).collect();
+        values.sort_unstable();
+        values.dedup();
+        self.thresholds = values;
+        self
+    }
+}
+
+/// 解析逗号分隔阈值；任意一项非法即整体非法（返回 `None`，调用方回退默认）。
+pub fn parse_repeat_thresholds(raw: &str) -> Option<Vec<usize>> {
+    let mut values = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let count = part.parse::<usize>().ok().filter(|count| *count > 0)?;
+        values.push(count);
+    }
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    values.dedup();
+    Some(values)
+}
+
+/// 一次触发的软提醒（供宿主记录 `tool.repeat` 诊断/日志）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepeatToolReminder {
+    pub tool: String,
+    pub arguments: Value,
+    /// 本轮内该（工具 + 参数）出现的第几次。
+    pub count: usize,
+    /// 命中的阈值（与 `count` 相同；显式保留便于日志核对）。
+    pub threshold: usize,
+    /// 注入模型的提醒文本。
+    pub text: String,
+}
+
+impl RepeatToolReminder {
+    fn new(tool: &str, arguments: &Value, count: usize) -> Self {
+        let text = format!(
+            "[重复工具调用提醒] 你已在本轮第 {count} 次用相同参数调用工具 `{tool}`。\
+             如果已经拿到足够信息，请停止重复调用并直接给出最终回答；\
+             如果确实还需要调用，请换一种参数或说明为什么必须重复。"
+        );
+        Self {
+            tool: tool.to_owned(),
+            arguments: arguments.clone(),
+            count,
+            threshold: count,
+            text,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,6 +481,9 @@ pub struct Agent<P> {
     provider: P,
     turn: u64,
     budget: ToolBudget,
+    /// 重复工具调用软提醒（默认开启，与 DSH `repeat-tool-reminder` 一致）。
+    repeat_reminders: RepeatToolReminderConfig,
+    reminder_log: Vec<RepeatToolReminder>,
 }
 
 impl<P: ModelProvider> Agent<P> {
@@ -304,6 +493,8 @@ impl<P: ModelProvider> Agent<P> {
             provider,
             turn: 0,
             budget: ToolBudget::from_env(),
+            repeat_reminders: RepeatToolReminderConfig::from_env(),
+            reminder_log: Vec::new(),
         }
     }
 
@@ -313,7 +504,29 @@ impl<P: ModelProvider> Agent<P> {
             provider,
             turn: 0,
             budget,
+            repeat_reminders: RepeatToolReminderConfig::from_env(),
+            reminder_log: Vec::new(),
         }
+    }
+
+    /// 显式注入重复提醒配置（测试 / 静默运行）。
+    pub fn with_repeat_reminders(mut self, config: RepeatToolReminderConfig) -> Self {
+        self.repeat_reminders = config;
+        self
+    }
+
+    pub fn repeat_reminder_config(&self) -> &RepeatToolReminderConfig {
+        &self.repeat_reminders
+    }
+
+    /// 已触发的软提醒（累计；宿主可在每轮结束后落成 `tool.repeat` 诊断）。
+    pub fn repeat_reminder_log(&self) -> &[RepeatToolReminder] {
+        &self.reminder_log
+    }
+
+    /// 取走已触发的软提醒（调用方负责写 Session Log）。
+    pub fn take_repeat_reminders(&mut self) -> Vec<RepeatToolReminder> {
+        std::mem::take(&mut self.reminder_log)
     }
 
     pub fn turn_count(&self) -> u64 {
@@ -397,6 +610,9 @@ impl<P: ModelProvider> Agent<P> {
         let mut text = String::new();
         // 命中 max_tool_calls 后置位：本步剩余调用全部标记失败，本步结束后直接收尾。
         let mut budget_exhausted = false;
+        // 重复工具调用软提醒：key = (tool, canonical arguments)，计数按“本轮”累计。
+        let mut repeat_counts: HashMap<(String, String), usize> = HashMap::new();
+        let mut pending_reminders: Vec<RepeatToolReminder> = Vec::new();
 
         loop {
             // 取消检查点 1：步与步之间，StepStarted 之前。
@@ -513,6 +729,21 @@ impl<P: ModelProvider> Agent<P> {
                     content: tool_content_for_model(&outcome),
                 });
 
+                // 重复工具调用软提醒：只统计**真正执行**的调用；命中阈值先排队，
+                // 本步工具都执行完后统一注入 System 消息（不打断配对协议）。
+                if over_budget.is_none() && self.repeat_reminders.enabled {
+                    let key = (call.tool.clone(), canonical_arguments(&call.arguments));
+                    let count = repeat_counts.entry(key).or_insert(0);
+                    *count += 1;
+                    if self.repeat_reminders.thresholds.contains(count) {
+                        pending_reminders.push(RepeatToolReminder::new(
+                            &call.tool,
+                            &call.arguments,
+                            *count,
+                        ));
+                    }
+                }
+
                 // 取消检查点 4：执行后。已执行调用的 ToolResult 保留；本步剩余调用
                 // 不再执行，逐条补 ToolCall + ToolCancelled，然后 TurnCancelled。
                 if cancel_requested(cancel.as_ref()) {
@@ -521,6 +752,13 @@ impl<P: ModelProvider> Agent<P> {
                         reason: CANCEL_REASON.to_owned(),
                     });
                     return;
+                }
+            }
+            // 本步结束：把命中的软提醒注入历史（system 消息，软提醒不失败）。
+            if !pending_reminders.is_empty() {
+                for reminder in pending_reminders.drain(..) {
+                    messages.push(ChatMessage::System(reminder.text.clone()));
+                    self.reminder_log.push(reminder);
                 }
             }
             step += 1;
@@ -546,6 +784,12 @@ fn tool_call_request(tool_call: &ModelToolCall) -> ToolCallRequest {
         tool: tool_call.name.clone(),
         arguments: tool_call.arguments.clone(),
     }
+}
+
+/// 参数规范化：`serde_json::Value` 的数字/对象序列化是确定性的（对象键有序），
+/// 用来判断“同一工具 + 同一参数”。
+fn canonical_arguments(arguments: &Value) -> String {
+    serde_json::to_string(arguments).unwrap_or_else(|_| arguments.to_string())
 }
 
 /// 取消后本步剩余的调用：只发 `ToolCall` + `ToolCancelled`，一个都不执行。
@@ -1561,5 +1805,207 @@ mod tests {
             &requests[1][2],
             ChatMessage::Tool { content, .. } if content.starts_with("ERROR: ")
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // M3-DEFAULT-001..004：reasoning effort（共享档位类型）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn m3_default_001_reasoning_effort_parses_dsh_levels() {
+        assert_eq!(ReasoningEffort::parse("off"), Some(ReasoningEffort::Off));
+        assert_eq!(ReasoningEffort::parse("LOW"), Some(ReasoningEffort::Low));
+        assert_eq!(
+            ReasoningEffort::parse(" high "),
+            Some(ReasoningEffort::High)
+        );
+        assert_eq!(ReasoningEffort::parse("max"), Some(ReasoningEffort::Max));
+        assert_eq!(ReasoningEffort::parse("medium"), None);
+        assert_eq!(ReasoningEffort::parse(""), None);
+    }
+
+    #[test]
+    fn m3_default_002_reasoning_effort_maps_off_to_no_wire_value() {
+        assert_eq!(ReasoningEffort::Off.wire_value(), None);
+        assert_eq!(ReasoningEffort::Low.wire_value(), Some("low"));
+        assert_eq!(ReasoningEffort::High.wire_value(), Some("high"));
+        assert_eq!(ReasoningEffort::Max.wire_value(), Some("max"));
+        for effort in [
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+        ] {
+            assert_eq!(ReasoningEffort::parse(effort.as_str()), Some(effort));
+        }
+    }
+
+    #[test]
+    fn m3_default_003_invalid_reasoning_effort_is_ignored_not_fatal() {
+        assert_eq!(ReasoningEffort::resolve(None), None);
+        assert_eq!(ReasoningEffort::resolve(Some("  ")), None);
+        assert_eq!(ReasoningEffort::resolve(Some("turbo")), None);
+        assert_eq!(
+            ReasoningEffort::resolve(Some("max")),
+            Some(ReasoningEffort::Max)
+        );
+    }
+
+    #[test]
+    fn m3_default_004_reasoning_effort_env_name_is_stable() {
+        assert_eq!(ReasoningEffort::ENV, "DSHR_REASONING_EFFORT");
+    }
+
+    // ------------------------------------------------------------------
+    // M3-DEFAULT-010..015：重复工具调用软提醒
+    // ------------------------------------------------------------------
+
+    fn repeated_calls(count: usize, arguments: Value) -> ModelReply {
+        ModelReply {
+            text: String::new(),
+            tool_calls: (0..count)
+                .map(|index| ModelToolCall {
+                    id: format!("repeat-call-{index}"),
+                    name: "probe_echo".to_owned(),
+                    arguments: arguments.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn m3_default_010_repeat_reminder_fires_at_3_5_8() {
+        let script = vec![repeated_calls(8, json!({ "text": "same" }))];
+        let (provider, requests) = recording(script);
+        let mut agent = Agent::new(provider);
+        let mut executor = EchoExecutor::new();
+        agent.run_turn("重复调用", &mut executor);
+
+        let reminders = agent.take_repeat_reminders();
+        let counts: Vec<usize> = reminders.iter().map(|reminder| reminder.count).collect();
+        assert_eq!(counts, vec![3, 5, 8], "thresholds [3,5,8]：{reminders:?}");
+        assert!(reminders
+            .iter()
+            .all(|reminder| reminder.tool == "probe_echo"));
+        assert!(reminders
+            .iter()
+            .all(|reminder| reminder.text.contains("重复工具调用提醒")));
+        assert!(agent.repeat_reminder_log().is_empty(), "take 后清空");
+
+        // 提醒作为 system 消息注入到了下一次请求，且不打断 tool 配对。
+        let requests = recorded(&requests);
+        let second = &requests[1];
+        let system_reminders = second
+            .iter()
+            .filter(|message| {
+                matches!(message, ChatMessage::System(text) if text.contains("重复工具调用提醒"))
+            })
+            .count();
+        assert_eq!(system_reminders, 3);
+        assert_eq!(
+            second
+                .iter()
+                .filter(|message| matches!(message, ChatMessage::Tool { .. }))
+                .count(),
+            8
+        );
+    }
+
+    #[test]
+    fn m3_default_011_different_arguments_do_not_trigger() {
+        let calls: Vec<ModelToolCall> = (0..8)
+            .map(|index| ModelToolCall {
+                id: format!("diff-call-{index}"),
+                name: "probe_echo".to_owned(),
+                arguments: json!({ "text": format!("value-{index}") }),
+            })
+            .collect();
+        let script = vec![ModelReply {
+            text: String::new(),
+            tool_calls: calls,
+        }];
+        let (provider, _requests) = recording(script);
+        let mut agent = Agent::new(provider);
+        let mut executor = EchoExecutor::new();
+        agent.run_turn("不同参数", &mut executor);
+        assert!(agent.take_repeat_reminders().is_empty(), "参数不同不得提醒");
+    }
+
+    #[test]
+    fn m3_default_012_different_tools_with_same_arguments_do_not_trigger() {
+        // 3 个不同工具 × 各 2 次 + 相同参数：每个 (tool, args) 计数都 < 3。
+        let names = ["probe_echo", "probe_native", "probe_extra"];
+        let calls: Vec<ModelToolCall> = (0..6)
+            .map(|index| ModelToolCall {
+                id: format!("tool-call-{index}"),
+                name: names[index % names.len()].to_owned(),
+                arguments: json!({ "text": "same" }),
+            })
+            .collect();
+        let script = vec![ModelReply {
+            text: String::new(),
+            tool_calls: calls,
+        }];
+        let (provider, _requests) = recording(script);
+        let mut agent = Agent::new(provider);
+        let mut executor = EchoExecutor::new();
+        agent.run_turn("不同工具", &mut executor);
+        assert!(agent.take_repeat_reminders().is_empty(), "工具不同不得提醒");
+    }
+
+    #[test]
+    fn m3_default_013_repeat_reminder_can_be_disabled() {
+        let script = vec![repeated_calls(8, json!({ "text": "same" }))];
+        let (provider, requests) = recording(script);
+        let mut agent =
+            Agent::new(provider).with_repeat_reminders(RepeatToolReminderConfig::disabled());
+        let mut executor = EchoExecutor::new();
+        agent.run_turn("重复调用", &mut executor);
+        assert!(agent.take_repeat_reminders().is_empty());
+        let requests = recorded(&requests);
+        assert!(
+            !requests[1]
+                .iter()
+                .any(|message| matches!(message, ChatMessage::System(text) if text.contains("重复工具调用提醒"))),
+            "关闭后不得注入提醒"
+        );
+    }
+
+    #[test]
+    fn m3_default_014_repeat_reminder_custom_thresholds() {
+        let script = vec![repeated_calls(4, json!({ "text": "same" }))];
+        let (provider, _requests) = recording(script);
+        let mut agent = Agent::new(provider)
+            .with_repeat_reminders(RepeatToolReminderConfig::default().with_thresholds([2, 4]));
+        let mut executor = EchoExecutor::new();
+        agent.run_turn("自定义阈值", &mut executor);
+        let counts: Vec<usize> = agent
+            .take_repeat_reminders()
+            .iter()
+            .map(|reminder| reminder.count)
+            .collect();
+        assert_eq!(counts, vec![2, 4]);
+    }
+
+    #[test]
+    fn m3_default_015_repeat_threshold_config_parsing() {
+        assert_eq!(
+            parse_repeat_thresholds("3,5,8"),
+            Some(vec![3, 5, 8]),
+            "DSH 默认阈值"
+        );
+        assert_eq!(
+            parse_repeat_thresholds("8, 3, 5, 3"),
+            Some(vec![3, 5, 8]),
+            "排序去重"
+        );
+        assert_eq!(parse_repeat_thresholds("3,x,8"), None);
+        assert_eq!(parse_repeat_thresholds("0,3"), None);
+        assert_eq!(parse_repeat_thresholds("  "), None);
+        assert_eq!(
+            RepeatToolReminderConfig::default().thresholds,
+            REPEAT_TOOL_REMINDER_THRESHOLDS.to_vec()
+        );
+        assert!(RepeatToolReminderConfig::disabled().thresholds.is_empty());
     }
 }

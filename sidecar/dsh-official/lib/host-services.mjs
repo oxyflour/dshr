@@ -514,11 +514,16 @@ export function handleHostEventEmit(message, eventHub) {
 /**
  * `ctx.workingDirectory` shim：wire 形状 `{cwd}`/`{cwd,recovered}` → 官方 shim 的
  * `string` 返回值（m3-l2-services §3.1）；`ensure` 的 recovered 通过 `lastRecovered` 暴露。
+ *
+ * 官方 `dsh-working-directory` 的签名是 `ensure(agent, signal)` / `set(agent, path, signal)` /
+ * `get(agent)`；agent 由 Sidecar 的调用上下文（AsyncLocalStorage 的 callId/sessionId）替代，
+ * 这里忽略 agent 参数，同时兼容旧的单参调用（`set(path)`）。
  */
 export function createWorkingDirectoryShim({ callService, callContext } = {}) {
   let lastRecovered = false
   const sessionId = () => callContext?.()?.sessionId
   const depth = () => Number(callContext?.()?.depth ?? 0) + 1
+  const pathOf = (first, second) => (typeof first === 'string' ? first : second)
   const call = (method, args) =>
     callService({
       serviceKey: SERVICE_KEYS.workingDirectory,
@@ -528,16 +533,17 @@ export function createWorkingDirectoryShim({ callService, callContext } = {}) {
       depth: depth(),
     })
   return {
-    async get() {
+    async get(_agent) {
       const reply = await call('get', {})
       return typeof reply?.cwd === 'string' ? reply.cwd : ''
     },
-    async ensure() {
+    async ensure(_agent, _signal) {
       const reply = await call('ensure', {})
       lastRecovered = Boolean(reply?.recovered)
       return typeof reply?.cwd === 'string' ? reply.cwd : ''
     },
-    async set(path) {
+    async set(agentOrPath, pathOrSignal, _signal) {
+      const path = pathOf(agentOrPath, pathOrSignal)
       const reply = await call('set', { path })
       return typeof reply?.cwd === 'string' ? reply.cwd : ''
     },
