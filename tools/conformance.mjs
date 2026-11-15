@@ -212,7 +212,7 @@ function scanTestIds(sourceDirs) {
     const lines = readFileSync(file, 'utf8').split(/\r?\n/)
     let pendingId = null
     for (const line of lines) {
-      const comment = line.match(/^\s*\/\/\s*((?:ADC|CPP|RPC)(?:-[A-Z0-9]+)+-\d{3})\b/)
+      const comment = line.match(/^\s*\/{2,3}\s*((?:ADC|CPP|RPC|M3)(?:-[A-Z0-9]+)+-\d{3})\b/)
       if (comment) pendingId = comment[1]
       const fn = line.match(/^\s*(?:pub\s+)?fn\s+([a-z0-9_]+)\s*\(/)
       if (!fn) continue

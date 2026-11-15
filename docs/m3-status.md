@@ -103,13 +103,17 @@ W5 产品面板/官方包验收/默认差异**。G1、G2、G3 的库层/产品�
 
 - **契约**：`node schema/check.mjs` → **71/71**。
 - **文档互链**：`node tools/check-links.mjs` → 待 W5/W6 同步后刷新（W4 为 307/0 broken）。
-- **Rust 单测**：**66 suites / 797 passed / 0 failed**（含 `dshr-plugin-wasm` 20 个与工具并行
-  14 个；沙箱 danger-full-access 下原 sidecar-guard 进程测试也通过）。CI 仍需普通 runner 复验。
+- **Rust 单测**：**66 suites / 797 passed / 0 failed**（Lead 环境；含 `dshr-plugin-wasm` 20 个与
+  工具并行 14 个；沙箱 danger-full-access 下原 sidecar-guard 进程测试也通过）。本机受限会话偶发
+  sidecar-guard 1 失败（环境，非代码）；CI 仍需普通 runner 复验。
 - **JS 测试**：`node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs`
   → 13/13（conformance 的 `node-test` suite 已纳入 `--quick`）。
-- **矩阵**：`docs/conformance-matrix.json` / `.md` 由 `tools/conformance.mjs` 生成；W5/W6 新增
-  ADC panel API/HOST、`M3-DEFAULT-*`、`RPC-L2-501..505`、`CPP-WASM-001..020`、`--selftest-defaults`
-  正在并入 registry（W5/W6 同步任务），完成后以矩阵统计为准。
+- **矩阵**：`docs/conformance-matrix.json` / `.md` 由 `tools/conformance.mjs` 生成；最终注册表
+  **502 ID：implemented 476 / pending 18 / manual 8**（pending 仅 `ADC-BIND-001` + 17 个
+  `SELF-CHAT`；manual 含 trust/external/adc-panel/l2/defaults/parallel/authoring 七个自检与
+  `CPP-TRUST-019`）；quick 门禁 schema+links+node-test 全绿、0 failed。
+- **矩阵生成时间/环境**：2026-11-15T11:51Z，HEAD e10ba8f；本机受限会话 `--workspace` 为
+  66/796/1（sidecar-guard 沙箱抖动，隔离复跑同样失败），普通终端 Lead 环境为 66/797/0。
 - **CI**：`.github/workflows/conformance.yml` 未在 GitHub Actions 实跑。
 
 ## 5. L2（摘要）
