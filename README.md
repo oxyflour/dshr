@@ -69,15 +69,19 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
 
-**M3 实现完成（插件平台 Preview，等待独立 review）。** 范围与 exit gate 见
-[`docs/decisions/0007-m3-scope.md`](docs/decisions/0007-m3-scope.md)、计划基线见
+**M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见
+[`docs/decisions/0007-m3-scope.md`](docs/decisions/0007-m3-scope.md) 与收尾口径
+[`docs/decisions/0012-m3-gate-closure.md`](docs/decisions/0012-m3-gate-closure.md)、计划基线见
 [`docs/PLAN.md`](docs/PLAN.md) §8 M3；证据与偏离索引见
 [`docs/m3-gate-evidence.md`](docs/m3-gate-evidence.md)，过程对账见
 [`docs/m3-status.md`](docs/m3-status.md)。已交付：ADC-v1 冻结 + 服务端/渲染器/chat 面板；
 CPP-v1（manifest/Fiber/Service/Effect/external-process 运行时 + SDK 0.1.0 + 作者模板/打包/信任链）；
-WASM 主机（wasmtime，core-module 四类隔离）；DSH L2（协议 v2 + 三个服务 + 官方包验收）；
-M3 默认差异与工具并行（sidecar ≤10 批并发）；conformance 502 ID。
-截至本行，独立 review 尚未落盘；发现 P0/P1 会在 review 后修复并更新状态。
+WASM 主机（wasmtime，core-module 四类隔离 + 接入宿主）；DSH L2（协议 v2 + 三个服务 +
+`sessionProjections` + 官方包 manual gate）；M3 默认差异与工具并行（sidecar ≤10 批并发）；
+conformance 544 ID / `--full` 在 Lead 环境 exit 0（67 suites/837 passed/0 failed/6 ignored）。
+独立评审见 [`review-m3-implementation.md`](docs/review-m3-implementation.md) 与
+[`review-m3-implementation-2.md`](docs/review-m3-implementation-2.md)（P0/P1 已修复，等待最终确认）；
+未确认的项按 ADR-0012 列入 M4。
 
 **M1 完成（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
 
