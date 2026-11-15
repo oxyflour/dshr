@@ -40,8 +40,8 @@
 
 pub mod protocol;
 pub mod session;
+pub mod tool_result;
 
-pub use dshr_plugin_api::{ContentPart, ToolResult};
 pub use protocol::{
     error_code, kind, CancelPayload, Envelope, EnvelopeError, HelloPayload, InvokePayload,
     PanelDecl, ProtocolError, ReadyDecls, ReadyPayload, RenderPayload, ShutdownPayload, ToolDecl,
@@ -51,3 +51,4 @@ pub use protocol::{
 pub use session::{
     CancelFlag, ChildSession, SessionError, ToolCall, ToolError, ToolHandler, ViewHandler,
 };
+pub use tool_result::{ContentPart, ToolResult, ToolResultError};

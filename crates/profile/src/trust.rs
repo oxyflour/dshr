@@ -293,10 +293,13 @@ pub struct AuditRecord {
     pub downgrade: bool,
 }
 
-/// 计算包摘要（`dshr-trust/v1` §3）。`dshr-trust.json` 自身不参与。
+/// 计算包摘要（`dshr-trust/v1` §3）。
+///
+/// 只跳过**包根**的 `dshr-trust.json`（签名文件自身）与 `.dshr-install.json`
+/// （本机安装元数据）；嵌套同名文件是普通包内容，参与摘要。
 pub fn package_digest(root: &Path) -> Result<String, TrustError> {
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
-    collect_files(root, root, &mut entries)?;
+    collect_files(root, root, true, &mut entries)?;
     entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
     let mut ctx = ring::digest::Context::new(&SHA256);
@@ -314,6 +317,7 @@ pub fn package_digest(root: &Path) -> Result<String, TrustError> {
 fn collect_files(
     root: &Path,
     current: &Path,
+    is_root: bool,
     out: &mut Vec<(String, PathBuf)>,
 ) -> Result<(), TrustError> {
     let mut dirs = Vec::new();
@@ -332,7 +336,8 @@ fn collect_files(
             }
             dirs.push(path);
         } else if metadata.is_file() {
-            if name == TRUST_FILE {
+            // 只跳过包根本身的签名/安装元数据；嵌套同名文件参与摘要（spec §3.2）。
+            if is_root && (name == TRUST_FILE || name == INSTALL_META_FILE) {
                 continue;
             }
             let relative = path
@@ -346,7 +351,7 @@ fn collect_files(
         }
     }
     for dir in dirs {
-        collect_files(root, &dir, out)?;
+        collect_files(root, &dir, false, out)?;
     }
     Ok(())
 }
@@ -1253,5 +1258,109 @@ mod tests {
         assert!(!version_less("1.0.0", "1.0.0"));
         assert!(!version_less("1.0.1", "1.0.0"));
         assert!(!version_less("not-semver", "1.0.0"));
+    }
+
+    // ---- P2-5 摘要规范统一（只跳过包根 trust/install-meta） ------------------
+
+    /// 构造带"根元数据 + 嵌套同名文件 + 应跳过目录"的包（与
+    /// `tests/fixtures/digest-cross` 同形状，便于 Rust/Node 交叉对账）。
+    fn digest_fixture(root: &Path) -> PathBuf {
+        let dir = root.join("pkg");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::create_dir_all(dir.join("vendor")).unwrap();
+        fs::create_dir_all(dir.join(".cache")).unwrap();
+        fs::create_dir_all(dir.join("node_modules").join("demo")).unwrap();
+        fs::write(
+            dir.join("package.json"),
+            "{\n  \"name\": \"digest.cross\",\n  \"version\": \"0.1.0\"\n}\n",
+        )
+        .unwrap();
+        fs::write(dir.join("README.md"), "digest cross fixture\n").unwrap();
+        fs::write(
+            dir.join("bin").join("plugin-demo.exe"),
+            "MZ fixture entry (digest only, never executed)\n",
+        )
+        .unwrap();
+        fs::write(dir.join("dshr-trust.json"), "root trust file — excluded\n").unwrap();
+        fs::write(
+            dir.join(".dshr-install.json"),
+            "root install metadata — excluded\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("vendor").join("dshr-trust.json"),
+            "nested trust file — hashed\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("vendor").join(".dshr-install.json"),
+            "nested install metadata — hashed\n",
+        )
+        .unwrap();
+        fs::write(dir.join("vendor").join("data.txt"), "vendor data\n").unwrap();
+        fs::write(
+            dir.join(".cache").join("ignored.txt"),
+            "dot dir — skipped\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("node_modules").join("demo").join("index.js"),
+            "node_modules — skipped\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    // M3-DIGEST-001：根 trust/install-meta 不影响摘要；嵌套同名文件参与摘要。
+    #[test]
+    fn m3_digest_001_only_package_root_metadata_is_skipped() {
+        let root = temp_root("digest-root-meta");
+        let dir = digest_fixture(&root);
+        let base = package_digest(&dir).unwrap();
+
+        // 根 metadata 改了：摘要不变（签名文件/本机安装元数据不属于包内容）。
+        fs::write(dir.join("dshr-trust.json"), "changed root trust\n").unwrap();
+        assert_eq!(package_digest(&dir).unwrap(), base);
+        fs::write(dir.join(".dshr-install.json"), "changed root meta\n").unwrap();
+        assert_eq!(package_digest(&dir).unwrap(), base);
+
+        // 嵌套同名文件是普通内容：改了就换摘要。
+        fs::write(
+            dir.join("vendor").join("dshr-trust.json"),
+            "changed nested trust\n",
+        )
+        .unwrap();
+        assert_ne!(package_digest(&dir).unwrap(), base);
+
+        // 点目录/node_modules 不参与（写入不改变摘要）。
+        let after_nested = package_digest(&dir).unwrap();
+        fs::write(
+            dir.join(".cache").join("ignored.txt"),
+            "changed skipped file\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("node_modules").join("demo").join("index.js"),
+            "changed skipped dep\n",
+        )
+        .unwrap();
+        assert_eq!(package_digest(&dir).unwrap(), after_nested);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M3-DIGEST-002：仓库内固定 fixture 的摘要必须稳定（与 `tools/plugin-pack.mjs`
+    // 交叉比对用；Node 侧同一目录的 digest 见 tools/authoring-check.ps1 / 报告）。
+    #[test]
+    fn m3_digest_002_fixed_cross_fixture_digest() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("digest-cross");
+        let digest = package_digest(&fixture).unwrap();
+        assert_eq!(
+            digest, "ec652b76464236c0cb3f71cd5a24013050f417394d8da3cc0c7c869e362cce08",
+            "若 fixture 有变更请同步更新期望值（并与 tools/plugin-pack.mjs --verify 对齐）"
+        );
     }
 }

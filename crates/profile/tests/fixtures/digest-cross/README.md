@@ -1,0 +1,1 @@
+digest cross fixture

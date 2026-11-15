@@ -6,10 +6,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dshr_plugin_api::Manifest;
+use dshr_plugin_api::{HostVersion, Manifest, Plugin, PluginContext};
 use dshr_plugin_wasm::{
-    WasmEngineConfig, WasmError, WasmPluginRuntime, ABI_VERSION, DEFAULT_MAX_CONCURRENCY,
-    DEFAULT_MAX_MEMORY_MB, DEFAULT_TIMEOUT_MS, MAX_FUEL, MAX_MEMORY_MB, WASMTIME_VERSION,
+    WasmEngineConfig, WasmError, WasmPlugin, WasmPluginRuntime, ABI_VERSION,
+    DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_MEMORY_MB, DEFAULT_TIMEOUT_MS, MAX_FUEL, MAX_MEMORY_MB,
+    WASMTIME_VERSION,
 };
 use serde_json::json;
 
@@ -130,6 +131,86 @@ const BAD_ALLOC_WAT: &str = r#"
   (func (export "dshr_alloc") (param $len i32) (result i32) (i32.const -1))
   (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
     (i64.const 0))
+)
+"#;
+
+/// P3：`dshr_alloc` 返回 0 也要视为失败（0 不是合法可写地址）。
+const ZERO_ALLOC_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (func (export "dshr_alloc") (param $len i32) (result i32) (i32.const 0))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (i64.const 0))
+)
+"#;
+
+/// P1-2：两个 linear memory（`memories` 上限 1）→ 实例化应被拒。
+const MULTI_MEMORY_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (memory 1)
+  (func (export "dshr_alloc") (param $len i32) (result i32) (i32.const 4096))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (i64.const 0))
+)
+"#;
+
+/// P1-2：5000 元素的 table（`table_elements` 上限 1024）→ 实例化应被拒。
+const BIG_TABLE_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (table 5000 funcref)
+  (func (export "dshr_alloc") (param $len i32) (result i32) (i32.const 4096))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (i64.const 0))
+)
+"#;
+
+/// 上限内的 table（512 元素）仍应正常工作（防止限得过死）。
+const SMALL_TABLE_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (table 512 funcref)
+  (global $heap (mut i32) (i32.const 4096))
+  (func (export "dshr_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (i64.or
+      (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32))
+      (i64.extend_i32_u (local.get $len))))
+)
+"#;
+
+/// `WasmPlugin` 用的分发 fixture：
+/// - 工具名首字符 `'u'`（ui.render=117）→ 返回 data 段里的 ADC 元素树；
+/// - `'e'`（echo=101）→ 回显请求 JSON；
+/// - 其它（如 `trap`=116）→ 死循环，触发 fuel/epoch 隔离。
+const PLUGIN_DISPATCH_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (data (i32.const 1024) "{\"type\":\"Text\",\"props\":{\"text\":\"wasm\"}}")
+  (global $heap (mut i32) (i32.const 4096))
+  (func (export "dshr_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (local $tag i32)
+    (local.set $tag (i32.load8_u offset=9 (local.get $ptr)))
+    (if (i32.eq (local.get $tag) (i32.const 117))
+      (then (return (i64.or
+        (i64.shl (i64.extend_i32_u (i32.const 1024)) (i64.const 32))
+        (i64.const 39)))))
+    (if (i32.eq (local.get $tag) (i32.const 101))
+      (then (return (i64.or
+        (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32))
+        (i64.extend_i32_u (local.get $len))))))
+    (loop $spin (br $spin))
+    (i64.const -1))
 )
 "#;
 
@@ -510,4 +591,229 @@ fn cpp_wasm_020_from_file_loads_wat() {
     )
     .expect_err("不存在的文件必须报错");
     assert!(matches!(error, WasmError::InvalidModule(_)));
+}
+
+// ---------------------------------------------------------------------------
+// CPP-WASM-021..027：P1-2 资源上限（多 memory/大 table）+ P3 + WasmPlugin 适配
+// ---------------------------------------------------------------------------
+
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("dshr-wasm-{tag}-{}-{nanos}", std::process::id()))
+}
+
+fn host_sdk_version() -> HostVersion {
+    HostVersion::new(0, 1, 0)
+}
+
+/// 构造 WasmPlugin 测试包：plugin.wasm（WAT 文本）+ 工具 schema 文件。
+fn write_plugin_package(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("schemas")).expect("create schemas dir");
+    std::fs::write(dir.join("plugin.wasm"), PLUGIN_DISPATCH_WAT).expect("write wat");
+    for name in ["echo", "trap"] {
+        std::fs::write(
+            dir.join(format!("schemas/{name}.input.json")),
+            json!({ "type": "object" }).to_string(),
+        )
+        .expect("write input schema");
+        std::fs::write(
+            dir.join(format!("schemas/{name}.output.json")),
+            json!({ "type": "object" }).to_string(),
+        )
+        .expect("write output schema");
+    }
+}
+
+fn plugin_manifest() -> Manifest {
+    let raw = json!({
+        "plugin": { "id": "selftest.wasm", "version": "0.1.0", "api": "cordis-portable/v1" },
+        "runtime": {
+            "kind": "wasm-component",
+            "entry": "plugin.wasm",
+            "fuel": 2_000_000,
+            "max_memory_mb": 32,
+            "timeout_ms": 30_000
+        },
+        "tools": [
+            {
+                "name": "echo",
+                "description": "echo the request JSON",
+                "input_schema": "schemas/echo.input.json",
+                "output_schema": "schemas/echo.output.json"
+            },
+            {
+                "name": "trap",
+                "description": "spin until fuel/epoch kills the invocation",
+                "input_schema": "schemas/trap.input.json",
+                "output_schema": "schemas/trap.output.json",
+                "timeout_ms": 30_000
+            }
+        ],
+        "ui": [{
+            "slot": "workspace.panel",
+            "id": "selftest.wasm.panel",
+            "label": "WASM Panel",
+            "view": "selftest.wasm.view",
+            "location": "right"
+        }]
+    })
+    .to_string();
+    Manifest::from_json_str(&raw).expect("plugin manifest parses")
+}
+
+// P1-2：多 linear memory 绕过 `memory_size` → 实例化即被拒（memories=1）。
+#[test]
+fn cpp_wasm_021_multi_memory_is_rejected_by_store_limits() {
+    let runtime = WasmPluginRuntime::from_wat(MULTI_MEMORY_WAT, base_config()).unwrap();
+    let error = runtime.invoke("echo", &json!({})).unwrap_err();
+    assert!(
+        matches!(error, WasmError::MemoryLimit(_)),
+        "error={error:?}"
+    );
+    assert_eq!(error.code(), "E_QUOTA");
+    assert_eq!(runtime.trap_count(), 1);
+    // 宿主存活：另一个（合法）runtime 仍可工作。
+    let echo = WasmPluginRuntime::from_wat(ECHO_WAT, base_config()).unwrap();
+    assert_eq!(
+        echo.invoke("echo", &json!({ "alive": 1 })).unwrap()["arguments"]["alive"],
+        json!(1)
+    );
+}
+
+// P1-2：大 table（5000 元素 > 1024 上限）→ 实例化即被拒。
+#[test]
+fn cpp_wasm_022_oversized_table_is_rejected_by_store_limits() {
+    let runtime = WasmPluginRuntime::from_wat(BIG_TABLE_WAT, base_config()).unwrap();
+    let error = runtime.invoke("echo", &json!({})).unwrap_err();
+    assert!(
+        matches!(error, WasmError::MemoryLimit(_)),
+        "error={error:?}"
+    );
+    assert_eq!(error.code(), "E_QUOTA");
+}
+
+// P3：`dshr_alloc` 返回 0 也按失败处理（不再把它当合法指针）。
+#[test]
+fn cpp_wasm_023_zero_alloc_offset_is_abi_error() {
+    let runtime = WasmPluginRuntime::from_wat(ZERO_ALLOC_WAT, base_config()).unwrap();
+    let error = runtime.invoke("echo", &json!({})).unwrap_err();
+    assert!(matches!(error, WasmError::Abi(_)), "error={error:?}");
+    assert!(error.to_string().contains("non-positive"), "{error}");
+    assert_eq!(error.code(), "E_PROTOCOL");
+}
+
+// 上限内的 table（512 元素）仍正常工作：限制不能过死。
+#[test]
+fn cpp_wasm_024_small_table_still_works() {
+    let runtime = WasmPluginRuntime::from_wat(SMALL_TABLE_WAT, base_config()).unwrap();
+    let value = runtime.invoke("echo", &json!({ "table": "ok" })).unwrap();
+    assert_eq!(value["arguments"]["table"], json!("ok"));
+}
+
+// P1-1：WasmPlugin 适配器：manifest [[tools]]/[[ui]] 注册 + call + render_view + unload。
+#[test]
+fn cpp_wasm_025_wasm_plugin_registers_tools_panels_and_calls() {
+    let dir = unique_temp_dir("plugin");
+    write_plugin_package(&dir);
+    let manifest = plugin_manifest();
+    let mut plugin = WasmPlugin::from_manifest(&manifest, &dir, &host_sdk_version())
+        .expect("WasmPlugin::from_manifest");
+    assert_eq!(plugin.id(), "selftest.wasm");
+    assert_eq!(plugin.version(), "0.1.0");
+    assert!(plugin.is_loaded());
+
+    let mut ctx = PluginContext::new("selftest.wasm");
+    plugin.apply(&mut ctx).expect("apply");
+    let (tools, panels) = ctx.take_registrations();
+    let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(names, vec!["echo", "trap"]);
+    assert_eq!(
+        tools[0].input_schema,
+        json!({ "type": "object" }),
+        "schema 应从包内相对路径内联"
+    );
+    assert_eq!(panels.len(), 1);
+    assert_eq!(panels[0].id, "selftest.wasm.panel");
+    assert_eq!(panels[0].slot, "workspace.panel");
+    assert_eq!(panels[0].view_name(), "selftest.wasm.view");
+
+    let echo = plugin
+        .call("echo", &json!({ "text": "wasm" }))
+        .expect("echo call");
+    assert_eq!(echo["tool"], json!("echo"));
+    assert_eq!(echo["arguments"]["text"], json!("wasm"));
+
+    // ui.render 分发（guest 对 `'u'` 返回 data 段里的元素树）。
+    let tree = plugin
+        .render_view("selftest.wasm.view")
+        .expect("render_view");
+    assert_eq!(tree["type"], json!("Text"));
+    assert_eq!(tree["props"]["text"], json!("wasm"));
+
+    plugin.unload();
+    assert!(!plugin.is_loaded());
+    assert!(
+        plugin.call("echo", &json!({})).is_err(),
+        "unload 后调用必须报错"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// P1-1：WasmPlugin 的 trap 隔离：trap 后宿主存活（同 runtime 的 echo 仍可调用）。
+#[test]
+fn cpp_wasm_026_wasm_plugin_trap_keeps_host_alive() {
+    let dir = unique_temp_dir("plugin-trap");
+    write_plugin_package(&dir);
+    let manifest = plugin_manifest();
+    let mut plugin =
+        WasmPlugin::from_manifest(&manifest, &dir, &host_sdk_version()).expect("from_manifest");
+    let mut ctx = PluginContext::new("selftest.wasm");
+    plugin.apply(&mut ctx).expect("apply");
+
+    let error = plugin.call("trap", &json!({})).expect_err("trap 必须失败");
+    assert!(
+        error.to_string().contains("E_QUOTA") || error.to_string().contains("E_TIMEOUT"),
+        "error={error}"
+    );
+    assert!(plugin.trap_count() >= 1, "trap 计数应 +1");
+    // 同插件其它工具仍可用（每次 invoke 新建 Store）。
+    let echo = plugin
+        .call("echo", &json!({ "text": "alive" }))
+        .expect("trap 后 echo 仍可用");
+    assert_eq!(echo["arguments"]["text"], json!("alive"));
+    plugin.unload();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// P1-1：WasmPlugin 装载期拒绝：kind 不符 / entry 逃逸 / entry 缺失。
+#[test]
+fn cpp_wasm_027_wasm_plugin_rejects_bad_manifest_or_entry() {
+    let dir = unique_temp_dir("plugin-bad");
+    write_plugin_package(&dir);
+
+    // kind 不是 wasm-component。
+    let raw = json!({
+        "plugin": { "id": "bad.wasm", "version": "0.1.0", "api": "cordis-portable/v1" },
+        "runtime": { "kind": "rust-static" }
+    })
+    .to_string();
+    let manifest = Manifest::from_json_str(&raw).unwrap();
+    let error = WasmPlugin::from_manifest(&manifest, &dir, &host_sdk_version()).unwrap_err();
+    assert_eq!(error.code(), "E_MANIFEST");
+
+    // entry 逃逸包目录。
+    let mut manifest = plugin_manifest();
+    manifest.runtime.entry = Some("../evil.wasm".to_owned());
+    let error = WasmPlugin::from_manifest(&manifest, &dir, &host_sdk_version()).unwrap_err();
+    assert_eq!(error.code(), "E_MANIFEST");
+
+    // entry 不存在。
+    manifest.runtime.entry = Some("missing.wasm".to_owned());
+    let error = WasmPlugin::from_manifest(&manifest, &dir, &host_sdk_version()).unwrap_err();
+    assert_eq!(error.code(), "E_MANIFEST");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -57,7 +57,7 @@
 
 ## 3. G3 — 隔离与兼容
 
-**状态：WASM 主方案（core-module 口径）已实现并通过四类隔离；L2 端到端 + 官方包验收已完成（按收窄口径）；external-process 退路保留。**
+**状态：WASM 已接宿主/产品链路（core-module 口径）并通过四类隔离 + 资源上限；L2 三适配器 + sessionProjections 已实现，官方包证据=显式 manual gate（缺 fixture 失败）；external-process 退路保留。**
 
 证据：
 
@@ -68,32 +68,33 @@
 | 三个 L2 服务（Rust） | `crates/compat-dsh-host/src/{service,services,storage_kv}.rs`；`RPC-L2-001..010`（协议）、`101..119`（路由）、`121..128`（working-directory）、`221..227`（session-log）、`301..313`（storage） |
 | sidecar v2 代理（JS） | `sidecar/dsh-official/sidecar-dsh.mjs` v2 分支 + `lib/host-services.mjs`；`L2JS-001..013`（node:test 13/13） |
 | **宿主 v2 集成 + chat 端到端** | `crates/compat-dsh-host`（HostOptions.host_services、hello protocol_max=2、三读循环 `maybe_serve_host_service`、capabilities、generation）；`chat --selftest-l2` phase A（真实 vendored sidecar：protocol=2 / active=true / host_services=3）+ phase B（fixture storage-kv 真实往返）；`RPC-L2-401..410`（10 个集成测试，fixture Node sidecar） |
-| **官方包验收（W5）** | `crates/compat-dsh-host/tests/official_packages.rs`（`RPC-L2-501..505`）：未修改 `dsh-tool-working-directory` 装载绿 + `tool.register`；execute 的 `exec.agent` 债务证据（502，结构化 `E_TOOL`）；官方 `dsh-storage-domain`（未修改）经 `defineDomain`/`DomainFacility` → `storage-kv` backend → Rust `StorageKvService` 真实往返（put/get/delete/initial/close + already-open，504）；官方签名 workingDirectory 代理 `get/ensure/set` 往返（503）；`dsh-storage` hub 是 Cordis Service class，plugin seam 不按普通 plugin 装载（505 证据） |
-| 协议 v2 向后兼容 | 无 router / sidecar max=1 → negotiated=1、不发 v2 kind、capabilities 回 `E_VERSION`；M2 `--selftest-dsh` / `--selftest-dsh-write` 不回归 |
-| WASM 主方案（W5 完成，core-module） | `crates/plugin-wasm`（wasmtime `=50.0.1`，ABI `dshr-wasm-core/v1`）+ `CPP-WASM-001..020`：fuel→`E_QUOTA(OutOfFuel)`、epoch 100ms→`E_TIMEOUT`、`StoreLimits` 1MiB→`E_QUOTA(MemoryLimit)`、输出 1MiB>4KiB→`E_TOO_LARGE`；trap 后同 runtime 可继续/relaunch、跨 runtime 隔离、并发→`E_BACKPRESSURE`；`WasmEngineConfig::from_manifest` | 见 [`wasm-host.md`](wasm-host.md) |
-| external-process 退路 | `CPP-ISO-001..017`（Job Object 内存/CPU/进程配额、四类隔离） | 见 [`cpp-v1.md`](spec/cpp-v1.md) §12 |
-| 工具并行（W7） | `agent-core::ToolExecutor::execute_batch` + `max_parallel_tool_calls`（override>env>10）；`SidecarHost::invoke_batch`（按波写 `tool.invoke` → 按 `call_id` 收 chunk/result/aborted，per-call timeout/取消/迟到丢弃）；chat sidecar 并行、native/MCP 串行、结果保持原序 | `M3-PARALLEL-001..007` + `101..107`（14 tests）；`--selftest-parallel-tools` PASS：3×2s 串行 6.1s → 并行 2.0s（ratio 0.33），order_ok=true；事件序 `ToolCall×N → 终态×N`（session-log 已注） |
+| **官方包验收（W5/W8，manual gate）** | `tools/official-l2-gate.ps1`（缺 `.tmp/dsh-tools-all` → exit 1；有 fixture → 6/6 PASS）。`crates/compat-dsh-host/tests/official_packages.rs` 6 个测试 `#[ignore]`（默认 cargo **0 passed / 6 ignored**，不会静默 pass）：`RPC-L2-201`（官方 `dsh-tool-todo` 装载绿，execute pending `exec.agent`）+ `501..505`（working-directory 装载绿+execute 债务证据、官方 dsh-storage-domain 经 `defineDomain`/`DomainFacility` → storage-kv 真实往返、官方签名 wd 代理往返、storage hub Service class 证据） |
+| WASM 主方案（W6/W8，已接宿主） | `crates/plugin-wasm`（wasmtime `=50.0.1`，ABI `dshr-wasm-core/v1`）：`CPP-WASM-001..020` 四类隔离 + `CPP-WASM-021..027`（多 memory/大 table/alloc=0/panel 冲突）；`WasmPlugin` + `PluginHost::load_wasm_plugin` + profile loader + `--selftest-wasm`（安装→装载→echo→ui.render→trap→存活→卸载 PASS） |
+| L2 sessionProjections（W8） | Rust `SessionProjectionsService`（`session-projections/v1`）+ sidecar `session-projections.mjs` shim；`RPC-L2-202..208`（7）+ `L2JS-021..028`（8） |
+| 工具并行（W7/W8） | `agent-core::ToolExecutor::execute_batch` + `max_parallel_tool_calls`（override>env>10）；`SidecarHost::invoke_batch`（按波写 `tool.invoke` → 按 `call_id` 收 chunk/result/aborted，per-call timeout/取消 2s 宽限/迟到丢弃）；chat sidecar 并行、native/MCP 串行、结果保持原序；`M3-PARALLEL-001..007` + `101..110`（16 tests，含取消宽限/session_id 透传）；`--selftest-parallel-tools` PASS：3×2s 串行 6.1s → 并行 2.0s（ratio 0.33），order_ok=true；事件序 `ToolCall×N → 终态×N`（session-log 已注） |
+| external-process 退路 | `CPP-ISO-001..026`（Job Object 内存/CPU/进程配额、四类隔离；W8 增有界读帧/bounded channel/stdin watchdog 故障注入 `CPP-ISO-018/019/026..031`） | 见 [`cpp-v1.md`](spec/cpp-v1.md) §12、[`wasm-host.md`](wasm-host.md) |
+| 协议 v2 向后兼容 | 无 router / sidecar max=1 → negotiated=1、不发 v2 kind、capabilities 回 `E_VERSION`；M2 `--selftest-dsh` / `--selftest-dsh-write` 不回归 | `RPC-L2-402/403`；`--selftest-l2` phase A/B |
 
 未完成/偏离（**review 重点**）：
-1. **WASM 主方案是 core module，不是 Component/WIT**：`cpp-v1.wit` 仍是草案，未用
-   canonical ABI/wit-bindgen；工具声明来自 manifest。与 PLAN "WASM Component 插件" 的字面表述有偏离，
-   review 需确认可接受；Component 主机作为后续项（不影响"隔离"这一 G3 判定）。
-2. 官方包验收的**边界**：`dsh-tool-working-directory` 的 execute 受 `exec.agent` 债务阻塞，用 502
-   作为可判定证据；storage hub 本体未装载（Service class seam），由官方消费者 storage-domain 代表。
-   这是 G3 收窄后的口径，review 需确认可接受。
-3. **工具并行的剩余差异**：native/MCP/`spawn_child` 仍串行（native 是同步插件调用）；并行仅约束
-   sidecar 批；`tool.chunk` 尚未被 agent 消费；同 step 事件顺序变化要求 UI/回放按 `call_id` 配对。
+1. **WASM 主方案是 core module，不是 Component/WIT**：host 已接入（`WasmPlugin`/loader/`--selftest-wasm`），
+   Component Model/WIT canonical ABI 仍移 M4；已由 [ADR-0012](decisions/0012-m3-gate-closure.md) 记录，
+   不再声称"WASM Component 已交付"。
+2. **官方包证据=manual gate**：`tools/official-l2-gate.ps1` 显式跑、缺 fixture exit 1；默认 cargo 中
+   `RPC-L2-201/501..505` 为 `#[ignore]`（P0 已修，不再静默 pass）。官方 execute 仍受 `exec.agent` 债务，
+   storage hub 本体是 Cordis Service class；`sessionProjections` 已实现（Rust+JS），官方 todo 仅装载绿。
+3. **工具并行的剩余差异**：native/MCP/`spawn_child` 仍串行；并行仅约束 sidecar 批；`tool.chunk` 尚未被
+   agent 消费；同 step 事件顺序变化要求 UI/回放按 `call_id` 配对（已在 session-log 规范化）。
 4. `event.*` 的 Cordis 总线桥是最小形态（TODO）；storage 无游标/backupRecord/fsync（记录在
-   [`m3-l2-services.md`](m3-l2-services.md) §6.3）；子会话并行/sidecar 工具继承仍在 M4 候选。
+   [`m3-l2-services.md`](m3-l2-services.md) §6.3）；G2 已降级为内部作者 Preview（ADR-0012）。
 
 ## 4. 环境限制（不是代码失败，需在 review 中区分）
 
 | 项 | 现象 | 处置 |
 |---|---|---|
-| crates.io 不可达 | 无法新增 `wasmtime`/`cordis-rs` 等外部 crate | ADR-0010 退路；自研最小 Fiber（CPP-A）；WASM 待运行时 |
-| 文件沙箱 | shell 子进程写 `docs/` 报 `EPERM`；写 workspace 外目录被拒 | 矩阵/文档用文件工具落盘；"仓库外"实验用 `.tmp/` 近似 |
-| 进程限制 | `dshr-sidecar-guard` 的 `drop_terminates_the_guarded_process` 在受限会话恒失败；`node --test` 默认子进程隔离 EPERM | 记为环境项，普通桌面/CI 复验；`node --test --test-isolation=none` |
-| GitHub Actions | 仓库无 CI 历史，workflow 未实跑 | 首次推送后 `workflow_dispatch` 验证；本地 `--quick`/`--workspace` 可复现 |
+| 网络/沙箱策略 | 早期 crates.io 不可达、workspace-write；2026-11-15 起 danger-full-access + 网络可用 | WASM/cordis 可通过新依赖实现；`wasmtime` 已缓存；文档保留"离线退路"（ADR-0010） |
+| 进程限制 | `dshr-sidecar-guard` 的 `drop_terminates_the_guarded_process` 在部分受限会话偶发失败 | 记为环境项；Lead 普通会话 67 suites/831 passed/0 failed；CI 用普通 runner 复验 |
+| `node --test` 子进程隔离 | 受限会话报 EPERM | 用 `--test-isolation=none` 或直接 `node <file>`（conformance node-test suite 已处理） |
+| GitHub Actions | 仓库无 CI 历史，workflow 未实跑；官方包 fixture 无法自动 vendor | 首次推送后 `workflow_dispatch` 验证；官方包证据走 manual gate（`tools/official-l2-gate.ps1`） |
 | 数据目录 ACL | `%LOCALAPPDATA%\dshr` 不可写 → 回退 `target/debug` | 不影响自检；真机 GUI 需普通用户上下文 |
 
 ## 5. 复现命令（review 建议顺序）

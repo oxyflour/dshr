@@ -21,7 +21,8 @@ pub use service::{
 };
 pub use services::{
     EventPage, SessionAccess, SessionEventView, SessionHeaderView, SessionLogService,
-    WorkingDirectoryService, SESSION_LOG_V1, WORKING_DIRECTORY_CHANGED, WORKING_DIRECTORY_V1,
+    SessionProjectionsService, WorkingDirectoryService, SESSION_LOG_V1, SESSION_PROJECTIONS_V1,
+    WORKING_DIRECTORY_CHANGED, WORKING_DIRECTORY_V1,
 };
 pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
 
@@ -244,6 +245,8 @@ pub struct BatchInvokeCall {
     pub tool: String,
     pub arguments: Value,
     pub timeout: Duration,
+    /// 会话身份（信封 `session_id`）；`None` = 兼容旧的 `s-probe` 占位。
+    pub session_id: Option<String>,
 }
 
 impl BatchInvokeCall {
@@ -258,7 +261,14 @@ impl BatchInvokeCall {
             tool: tool.into(),
             arguments,
             timeout,
+            session_id: None,
         }
+    }
+
+    /// 显式透传会话 id（L2 服务方法按会话授权时必需）。
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 }
 
@@ -277,6 +287,10 @@ fn hide_console_window(_command: &mut Command) {}
 
 /// 批量调用等待读循环的轮询片段：既保证及时检查超时/取消，又不空转。
 const WAIT_SLICE: Duration = Duration::from_millis(50);
+
+/// 取消后的宽限：`invoke_batch` 发出 `tool.cancel` 后最多再等这么久
+/// （P1-7：不能等到 per-call 120s；sidecar 忽略 cancel 时也必须按时结算）。
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 pub struct SidecarHost {
     child: ChildHandle,
@@ -629,6 +643,16 @@ impl SidecarHost {
     }
 
     pub fn begin_invoke(&mut self, tool: &str, arguments: Value) -> Result<String, HostError> {
+        self.begin_invoke_in_session(tool, arguments, None)
+    }
+
+    /// 带显式会话 id 的 `tool.invoke`（`None` = 兼容旧 `s-probe` 占位）。
+    pub fn begin_invoke_in_session(
+        &mut self,
+        tool: &str,
+        arguments: Value,
+        session_id: Option<&str>,
+    ) -> Result<String, HostError> {
         self.seq += 1;
         let call_id = format!("call-{}", self.seq);
         let request_id = format!("req-invoke-{}", self.seq);
@@ -639,7 +663,7 @@ impl SidecarHost {
         )
         .with_generation(self.generation.clone())
         .with_call(call_id.clone())
-        .with_session("s-probe");
+        .with_session(session_id.unwrap_or("s-probe"));
         self.write(&envelope)?;
         Ok(call_id)
     }
@@ -670,6 +694,22 @@ impl SidecarHost {
         timeout: Duration,
         cancel: Option<&AtomicBool>,
     ) -> Result<InvokeOutcome, HostError> {
+        self.invoke_as_cancellable_in_session(call_id, None, tool, arguments, timeout, cancel)
+    }
+
+    /// [`SidecarHost::invoke_as_cancellable`] + 显式 `session_id` 透传（P2-10）。
+    ///
+    /// `session_id` 是 L2 服务方法按会话授权的唯一身份锚点；`None` 保持旧行为
+    /// （`s-probe` 占位，供探针/旧测试）。
+    pub fn invoke_as_cancellable_in_session(
+        &mut self,
+        call_id: &str,
+        session_id: Option<&str>,
+        tool: &str,
+        arguments: Value,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<InvokeOutcome, HostError> {
         self.seq += 1;
         let request_id = format!("req-invoke-{}", self.seq);
         let envelope = Envelope::host(
@@ -679,9 +719,21 @@ impl SidecarHost {
         )
         .with_generation(self.generation.clone())
         .with_call(call_id.to_owned())
-        .with_session("s-probe");
+        .with_session(session_id.unwrap_or("s-probe"));
         self.write(&envelope)?;
         self.wait_terminal_cancellable(call_id, timeout, cancel)
+    }
+
+    /// 单调用 + 显式会话 id 的便捷入口（无取消句柄）。
+    pub fn invoke_in_session(
+        &mut self,
+        call_id: &str,
+        session_id: Option<&str>,
+        tool: &str,
+        arguments: Value,
+        timeout: Duration,
+    ) -> Result<InvokeOutcome, HostError> {
+        self.invoke_as_cancellable_in_session(call_id, session_id, tool, arguments, timeout, None)
     }
 
     pub fn cancel(&mut self, call_id: &str) -> Result<(), HostError> {
@@ -721,6 +773,8 @@ impl SidecarHost {
             call_id: String,
             started: Instant,
             deadline: Instant,
+            /// 取消宽限截止（发出 tool.cancel 后置位；P1-7）。
+            cancel_deadline: Option<Instant>,
             chunks: Vec<String>,
             done: bool,
         }
@@ -749,7 +803,7 @@ impl SidecarHost {
                 )
                 .with_generation(self.generation.clone())
                 .with_call(call.call_id.clone())
-                .with_session("s-probe");
+                .with_session(call.session_id.as_deref().unwrap_or("s-probe"));
                 match self.write(&envelope) {
                     Ok(()) => {
                         by_call.insert(call.call_id.clone(), offset);
@@ -757,6 +811,7 @@ impl SidecarHost {
                             call_id: call.call_id.clone(),
                             started,
                             deadline: started + call.timeout.max(Duration::from_millis(1)),
+                            cancel_deadline: None,
                             chunks: Vec::new(),
                             done: false,
                         });
@@ -766,6 +821,7 @@ impl SidecarHost {
                             call_id: call.call_id.clone(),
                             started,
                             deadline: started,
+                            cancel_deadline: None,
                             chunks: Vec::new(),
                             done: true,
                         });
@@ -777,16 +833,32 @@ impl SidecarHost {
             let mut cancel_sent = false;
             let mut fatal: Option<String> = None;
             loop {
-                // 取消：对本波所有在途调用发一次 tool.cancel，然后继续收终态。
+                // 取消：对本波所有在途调用发一次 tool.cancel，并置 2s 宽限；
+                // 宽限内收到终态按终态结算，宽限到期未结算的一律 `Cancelled`
+                //（sidecar 忽略 cancel 时不能等到 per-call 120s，P1-7）。
                 if !cancel_sent && cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
                     cancel_sent = true;
-                    for slot in slots.iter().filter(|slot| !slot.done) {
+                    let grace_deadline = Instant::now() + CANCEL_GRACE;
+                    for slot in slots.iter_mut().filter(|slot| !slot.done) {
                         let _ = self.cancel(&slot.call_id);
+                        slot.cancel_deadline = Some(grace_deadline);
                     }
                 }
                 let now = Instant::now();
                 for (offset, slot) in slots.iter_mut().enumerate() {
-                    if slot.done || now < slot.deadline {
+                    if slot.done {
+                        continue;
+                    }
+                    if slot.cancel_deadline.is_some_and(|deadline| now >= deadline) {
+                        slot.done = true;
+                        results[next + offset] = Some(Err(HostError::Cancelled(format!(
+                            "tool {} did not settle within {}s of cancellation",
+                            slot.call_id,
+                            CANCEL_GRACE.as_secs()
+                        ))));
+                        continue;
+                    }
+                    if now < slot.deadline {
                         continue;
                     }
                     slot.done = true;
@@ -799,7 +871,11 @@ impl SidecarHost {
                 }
                 let mut wait = WAIT_SLICE;
                 for slot in slots.iter().filter(|slot| !slot.done) {
-                    let remaining = slot.deadline.saturating_duration_since(now);
+                    let mut slot_deadline = slot.deadline;
+                    if let Some(cancel_deadline) = slot.cancel_deadline {
+                        slot_deadline = slot_deadline.min(cancel_deadline);
+                    }
+                    let remaining = slot_deadline.saturating_duration_since(now);
                     wait = wait.min(remaining.max(Duration::from_millis(1)));
                 }
                 match self.rx.recv_timeout(wait) {

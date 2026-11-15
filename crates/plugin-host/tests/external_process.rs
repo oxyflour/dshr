@@ -8,6 +8,9 @@
 //! - `CPP-ISO-001..004`：正常生命周期（spawn → ready → 注册 → call → unload，进程退出）；
 //! - `CPP-ISO-005..008`：超时 / 超大输出 / 内存超限 / 崩溃四类隔离，宿主存活；
 //! - `CPP-ISO-010..013`：entry 路径安全 / 环境清洗 / ui.render / 多插件互不影响；
+//! - `CPP-ISO-018/019`：P1-3 读写边界（巨大无换行单行 → E_TOO_LARGE；子进程不读
+//!   stdin → 写 watchdog E_TIMEOUT），两者都要求 Job 被杀、宿主存活；
+//! - `CPP-ISO-026`：故障实例之后宿主仍能装载/调用正常插件（"宿主存活"产品级证据）；
 //! - `CPP-ISO-020..021`：G2 端到端（安装 → 装载 → 调用 → 卸载）与信任确认。
 
 use std::fs;
@@ -26,6 +29,8 @@ use serde_json::json;
 
 /// fixture 可执行文件（Cargo 为集成测试注入的绝对路径）。
 const FIXTURE_EXE: &str = env!("CARGO_BIN_EXE_plugin-fixture");
+/// 故障注入 fixture（P1-3：巨大单行 / 不读 stdin）。
+const FAULT_FIXTURE_EXE: &str = env!("CARGO_BIN_EXE_plugin-fault-fixture");
 
 // ---------------------------------------------------------------------------
 // 测试脚手架
@@ -131,6 +136,26 @@ fn spawn_fixture(root: &Path, plugin_id: &str, memory_mb: Option<u64>) -> Extern
         1,
     ))
     .expect("fixture plugin spawns")
+}
+
+/// 复制故障 fixture 为 `fault-<mode>[.exe]`（行为按文件名选择），并启动。
+fn spawn_fault(root: &Path, mode: &str, plugin_id: &str) -> ExternalPlugin {
+    let package = root.join(format!("fault-{mode}"));
+    fs::create_dir_all(&package).expect("create fault package dir");
+    let entry = if cfg!(windows) {
+        format!("fault-{mode}.exe")
+    } else {
+        format!("fault-{mode}")
+    };
+    fs::copy(FAULT_FIXTURE_EXE, package.join(&entry)).expect("copy fault fixture exe");
+    let manifest = manifest_for(plugin_id, &entry, None, None);
+    ExternalPlugin::spawn(ExternalPluginSpec::new(
+        manifest,
+        package,
+        host_version(),
+        1,
+    ))
+    .expect("fault fixture spawns")
 }
 
 #[cfg(windows)]
@@ -720,4 +745,86 @@ fn adc_elem_panel_host_004_render_panel_through_external_plugin() {
     assert!(matches!(&missing, HostError::NotFound(_)), "{missing}");
 
     host.unload("cpp.adc.fixture").unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// P1-3：external-process 读写边界（巨大单行 / 子进程不读 stdin）
+// ---------------------------------------------------------------------------
+
+// CPP-ISO-018：子进程输出 >1MiB 的无换行单行 → E_TOO_LARGE、Job 被杀、宿主存活。
+#[test]
+fn cpp_iso_018_huge_single_line_is_rejected_and_job_killed() {
+    let root = TempDir::new("fault-huge-line");
+    let mut plugin = spawn_fault(root.path(), "huge-line", "cpp.iso.fault.huge");
+    let pid = plugin.pid();
+
+    let error = plugin
+        .call("fault_probe", &json!({ "text": "x" }))
+        .expect_err("超长帧必须失败");
+    let text = error.to_string();
+    assert!(text.contains("E_TOO_LARGE"), "err={text}");
+    assert!(!plugin.is_alive(), "输出超限后 Job 必须被杀");
+    assert!(
+        wait_process_dead(pid, Duration::from_secs(5)),
+        "pid {pid} 应被杀死"
+    );
+
+    // 宿主侧实例状态机不 panic：后续调用返回明确的 E_INTERNAL（generation 已失效）。
+    let again = plugin
+        .call("fault_probe", &json!({}))
+        .expect_err("失效 generation 必须报错");
+    assert!(again.to_string().contains("E_INTERNAL"), "{again}");
+}
+
+// CPP-ISO-019：子进程不读 stdin + 大请求 → 写 watchdog E_TIMEOUT，宿主存活、Job 被杀。
+#[test]
+fn cpp_iso_019_child_not_reading_stdin_hits_write_watchdog() {
+    let root = TempDir::new("fault-no-stdin");
+    let mut plugin = spawn_fault(root.path(), "no-stdin", "cpp.iso.fault.stdin");
+    let pid = plugin.pid();
+
+    // ~900 KiB 参数：合法帧（<1MiB），但足以填满管道让 write_all 阻塞。
+    let big = "x".repeat(900 * 1024);
+    let started = Instant::now();
+    let error = plugin
+        .call("fault_probe", &json!({ "text": big }))
+        .expect_err("不读 stdin 的子进程必须触发写 watchdog");
+    let text = error.to_string();
+    assert!(text.contains("E_TIMEOUT"), "err={text}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(1_000),
+        "必须真的等过写 watchdog（不是立即失败）: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "不能在 per-tool timeout（120s）上等: {:?}",
+        started.elapsed()
+    );
+    assert!(!plugin.is_alive(), "写超时后 Job 必须被杀");
+    assert!(
+        wait_process_dead(pid, Duration::from_secs(5)),
+        "pid {pid} 应被杀死"
+    );
+}
+
+// CPP-ISO-026：故障实例之后，宿主仍能启动并调用正常插件（G3"宿主存活"）。
+#[test]
+fn cpp_iso_026_host_survives_fault_and_loads_healthy_plugin() {
+    let root = TempDir::new("fault-recover");
+    {
+        let mut faulty = spawn_fault(root.path(), "huge-line", "cpp.iso.fault.recover");
+        let _ = faulty.call("fault_probe", &json!({ "text": "x" }));
+        drop(faulty);
+    }
+
+    // 全新的正常 fixture 仍能 spawn/装载/调用。
+    let healthy = spawn_fixture(root.path(), "cpp.iso.healthy", None);
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(healthy)).expect("healthy plugin loads");
+    let output = host
+        .call("echo", &json!({ "text": "still-alive" }))
+        .expect("host survives and dispatches");
+    assert!(output.to_string().contains("still-alive"), "{output}");
+    host.unload("cpp.iso.healthy").expect("unload");
 }

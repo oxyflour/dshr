@@ -3,12 +3,12 @@
 //! 这是 CPP-v1 的第一条真实路径（`rust-static`）。`PluginHost` 负责 ToolRegistry /
 //! 面板的原子提交；Fiber 状态机、Service 依赖与 Effect 撤销在 [`fiber`] 模块里
 //! （本机离线，按 PLAN §3.5 采用自研最小实现，替换点为 `fiber` 模块文档里的适配表）；
-//! `external-process` 插件运行时在 [`external`] 模块里（spec/cpp-v1.md §12）。
-//! `PluginHost::load_with_manifest` 是先校验 manifest / 版本 / 配额再走 `load` 的衔接点，
-//! 因此 `chat.rs` 依赖的公共 API 完全不变。
+//! `external-process` 插件运行时在 [`external`] 模块里（spec/cpp-v1.md §12）；
+//! `wasm-component` 由 [`dshr_plugin_wasm::WasmPlugin`] 适配后经
+//! [`PluginHost::load_wasm_plugin`] 装载（P1-1）。
 //!
 //! 保证：
-//! 1. `apply` 失败 → 本次声明**一条都不落库**（原子性）；
+//! 1. `apply` 失败 / 工具或 panel 冲突 → 本次声明**一条都不落库**（原子性）；
 //! 2. `unload` → 该插件的工具与面板全部撤销；
 //! 3. 工具来源标识为 `Native { plugin_id }`，与 sidecar/MCP 在 Registry 中可区分。
 
@@ -17,10 +17,14 @@
 pub mod external;
 pub mod fiber;
 
+pub use dshr_plugin_wasm::{WasmEngineConfig, WasmPlugin};
 pub use external::{ExternalPlugin, ExternalPluginSpec};
+
+use std::path::Path;
 
 use std::collections::BTreeMap;
 
+use dshr_plugin_api::manifest::RuntimeKind;
 use dshr_plugin_api::{
     HostVersion, Manifest, PanelContribution, Plugin, PluginContext, PluginError,
 };
@@ -41,6 +45,12 @@ pub enum HostError {
     /// `external-process` 运行时错误：启动/握手/协议/子进程退出（spec/cpp-v1.md §12）。
     #[error("external plugin `{plugin_id}`: {reason}")]
     External { plugin_id: String, reason: String },
+    /// `wasm-component` 运行时错误：模块校验/实例化/配额/ABI（review P1-1）。
+    #[error("wasm plugin `{plugin_id}`: {reason}")]
+    Wasm { plugin_id: String, reason: String },
+    /// panel id 全局冲突（review P2-3）：拒绝覆盖其它插件（或自己重复）的面板。
+    #[error("panel id `{panel_id}` conflicts with plugin `{owner}`")]
+    PanelConflict { panel_id: String, owner: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +85,26 @@ impl PluginHost {
         plugin.apply(&mut ctx)?;
         let (tools, panels) = ctx.take_registrations();
 
-        // 2) 原子提交：逐个注册，失败则回滚已提交的部分。
+        // 2) panel id 全局唯一（review P2-3）：在提交任何东西之前拒绝覆盖。
+        //    同一插件内重复声明也算冲突（否则 BTreeMap 会静默丢弃后一条）。
+        let mut declared_panels: Vec<String> = Vec::new();
+        for panel in &panels {
+            if let Some(existing) = self.panels.get(&panel.id) {
+                return Err(HostError::PanelConflict {
+                    panel_id: panel.id.clone(),
+                    owner: existing.plugin_id.clone(),
+                });
+            }
+            if declared_panels.contains(&panel.id) {
+                return Err(HostError::PanelConflict {
+                    panel_id: panel.id.clone(),
+                    owner: id,
+                });
+            }
+            declared_panels.push(panel.id.clone());
+        }
+
+        // 3) 原子提交工具：逐个注册，失败则回滚已提交的部分。
         let mut committed: Vec<String> = Vec::new();
         for mut tool in tools {
             tool.origin = ToolOrigin::Native {
@@ -107,10 +136,36 @@ impl PluginHost {
         Ok(())
     }
 
+    /// 装载一个 `wasm-component` 插件（review P1-1）：
+    /// 1. `Manifest::validate`（api / min_host / 配额 / inject / tools / ui）；
+    /// 2. `runtime.kind` 必须是 `wasm-component`（否则可读错误）；
+    /// 3. 按 manifest 的 `runtime.entry` 在 `package_dir` 内加载模块并适配成
+    ///    [`WasmPlugin`]，再走原子 [`PluginHost::load`]。
+    ///
+    /// 失败返回 [`HostError::Wasm`]（模块/ABI/配额）或 [`HostError::Plugin`]（manifest）。
+    pub fn load_wasm_plugin(
+        &mut self,
+        manifest: &Manifest,
+        package_dir: impl AsRef<Path>,
+        host: &HostVersion,
+    ) -> Result<(), HostError> {
+        let plugin_id = manifest.plugin.id.clone();
+        let plugin =
+            WasmPlugin::from_manifest(manifest, package_dir.as_ref(), host).map_err(|error| {
+                HostError::Wasm {
+                    plugin_id: plugin_id.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+        self.load(Box::new(plugin))
+    }
+
     /// 从 typed manifest 装载（CPP-A 接入点）：
     /// 1. `Manifest::validate` 校验 api / `min_host_version` / 配额 / `inject` / tool / ui；
     /// 2. `manifest.plugin.id` 必须与插件实现声明的 id 一致（防止包与代码错配）；
-    /// 3. 再走原有 [`PluginHost::load`] 的原子提交路径。
+    /// 3. `runtime.kind == "wasm-component"` 走 [`PluginHost::load_wasm_plugin`]（需要包目录），
+    ///    不能把 WASM 宿主误当 native trait 对象塞进来；
+    /// 4. 再走原有 [`PluginHost::load`] 的原子提交路径。
     ///
     /// 这是 additive API：`load` 与既有测试保持不变。
     pub fn load_with_manifest(
@@ -120,6 +175,18 @@ impl PluginHost {
         host: &HostVersion,
     ) -> Result<(), HostError> {
         manifest.validate(host)?;
+        // review P1-1：wasm-component 必须走带包目录的专用入口，不能静默塞进 native 路径。
+        match manifest.runtime.kind {
+            RuntimeKind::WasmComponent => {
+                return Err(HostError::Wasm {
+                    plugin_id: manifest.plugin.id.clone(),
+                    reason:
+                        "wasm-component requires `load_wasm_plugin(manifest, package_dir, host)`"
+                            .to_owned(),
+                })
+            }
+            RuntimeKind::RustStatic | RuntimeKind::ExternalProcess => {}
+        }
         if plugin.id() != manifest.plugin.id {
             return Err(HostError::Plugin(PluginError::InvalidManifest(format!(
                 "manifest plugin.id `{}` does not match plugin id `{}`",
@@ -588,5 +655,232 @@ mod tests {
             "{error}"
         );
         assert!(matches!(&error, HostError::Plugin(PluginError::Invalid(_))));
+    }
+
+    // ---- review P2-3：panel id 全局冲突 -----------------------------------
+
+    /// 与 `ProbeNative` 用**同一个 panel id** 的第二个插件：原名应被拒绝而不是覆盖。
+    struct ProbePanelConflict {
+        plugin_id: &'static str,
+        repeat_panel: bool,
+    }
+
+    impl ProbePanelConflict {
+        fn new(plugin_id: &'static str) -> Self {
+            Self {
+                plugin_id,
+                repeat_panel: false,
+            }
+        }
+
+        fn repeating(plugin_id: &'static str) -> Self {
+            Self {
+                plugin_id,
+                repeat_panel: true,
+            }
+        }
+    }
+
+    impl Plugin for ProbePanelConflict {
+        fn id(&self) -> &'static str {
+            self.plugin_id
+        }
+
+        fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+            ctx.register_tool(ToolDefinition::new(
+                format!("{}_tool", self.plugin_id.replace('.', "_")),
+                "conflict probe tool",
+                ToolOrigin::Native {
+                    plugin_id: self.plugin_id.to_owned(),
+                },
+            ))?;
+            ctx.register_panel(PanelContribution::new(
+                "probe.panel",
+                "Probe Panel",
+                "workspace.panel",
+            ));
+            if self.repeat_panel {
+                // 同一插件内重复声明同一 panel id 也必须拒绝。
+                ctx.register_panel(PanelContribution::new(
+                    "probe.panel",
+                    "Probe Panel Duplicated",
+                    "workspace.panel",
+                ));
+            }
+            Ok(())
+        }
+
+        fn call(&mut self, _tool: &str, _arguments: &Value) -> Result<Value, PluginError> {
+            Ok(json!({ "ok": true }))
+        }
+    }
+
+    // CPP-WASM-033 / review P2-3：跨插件 panel id 冲突 → 拒绝且原子回滚。
+    #[test]
+    fn cpp_wasm_033_cross_plugin_panel_id_conflict_is_rejected_atomically() {
+        let mut host = PluginHost::new(AllowAll);
+        host.load(Box::new(ProbeNative::new())).expect("first load");
+        let error = host
+            .load(Box::new(ProbePanelConflict::new("builtin.conflict")))
+            .expect_err("panel id 冲突必须拒绝");
+        assert!(
+            matches!(&error, HostError::PanelConflict { panel_id, owner } if panel_id == "probe.panel" && owner == "builtin.probe"),
+            "error={error:?}"
+        );
+        // 原子性：第二个插件的工具一条都不能落库，第一个插件的 panel 原样保留。
+        assert!(host.registry().get("builtin_conflict_tool").is_none());
+        assert!(!host.is_loaded("builtin.conflict"));
+        assert_eq!(host.panels().len(), 1);
+        assert_eq!(host.panels()[0].plugin_id, "builtin.probe");
+    }
+
+    // review P2-3：同一插件内重复声明 panel id 也拒绝（不能静默丢一条）。
+    #[test]
+    fn cpp_panel_002_same_plugin_duplicate_panel_id_is_rejected() {
+        let mut host = PluginHost::new(AllowAll);
+        let error = host
+            .load(Box::new(ProbePanelConflict::repeating("builtin.repeat")))
+            .expect_err("同一插件重复 panel id 必须拒绝");
+        assert!(
+            matches!(&error, HostError::PanelConflict { panel_id, owner } if panel_id == "probe.panel" && owner == "builtin.repeat"),
+            "error={error:?}"
+        );
+        assert!(host.panels().is_empty());
+        assert!(!host.is_loaded("builtin.repeat"));
+    }
+
+    // ---- review P1-1：WASM 接入 PluginHost --------------------------------
+
+    /// 最简 echo WAT（回显请求 JSON；`WasmPlugin` 测试用）。
+    const WASM_ECHO_WAT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 4096))
+  (func (export "dshr_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (i64.or
+      (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32))
+      (i64.extend_i32_u (local.get $len))))
+)
+"#;
+
+    fn write_wasm_package(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir.join("schemas")).expect("schemas dir");
+        std::fs::write(dir.join("plugin.wasm"), WASM_ECHO_WAT).expect("write wat");
+        for suffix in ["input", "output"] {
+            std::fs::write(
+                dir.join(format!("schemas/echo.{suffix}.json")),
+                json!({ "type": "object" }).to_string(),
+            )
+            .unwrap();
+        }
+    }
+
+    fn wasm_manifest() -> Manifest {
+        let raw = json!({
+            "plugin": { "id": "cpp.wasm.host", "version": "0.1.0", "api": "cordis-portable/v1" },
+            "runtime": {
+                "kind": "wasm-component",
+                "entry": "plugin.wasm",
+                "fuel": 2_000_000,
+                "max_memory_mb": 32,
+                "timeout_ms": 30_000
+            },
+            "tools": [{
+                "name": "echo",
+                "description": "echo",
+                "input_schema": "schemas/echo.input.json",
+                "output_schema": "schemas/echo.output.json"
+            }],
+            "ui": [{
+                "slot": "workspace.panel",
+                "id": "cpp.wasm.host.panel",
+                "label": "WASM Host Panel",
+                "view": "cpp.wasm.host.view"
+            }]
+        })
+        .to_string();
+        Manifest::from_json_str(&raw).expect("wasm manifest")
+    }
+
+    fn temp_wasm_package(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dshr-host-wasm-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        write_wasm_package(&dir);
+        dir
+    }
+
+    // CPP-WASM-031：load_wasm_plugin 装载 → 工具注册 → 调用 → 卸载。
+    #[test]
+    fn cpp_wasm_031_load_wasm_plugin_registers_tool_and_calls() {
+        let dir = temp_wasm_package("ok");
+        let manifest = wasm_manifest();
+        let mut host = PluginHost::new(AllowAll);
+        host.load_wasm_plugin(&manifest, &dir, &host_version())
+            .expect("load wasm plugin");
+        assert!(host.is_loaded("cpp.wasm.host"));
+        assert!(host.registry().get("echo").is_some());
+        assert_eq!(host.panels().len(), 1);
+        assert_eq!(host.panels()[0].panel.id, "cpp.wasm.host.panel");
+        assert_eq!(host.panels()[0].panel.view_name(), "cpp.wasm.host.view");
+
+        let value = host
+            .call("echo", &json!({ "text": "wasm-host" }))
+            .expect("call wasm tool");
+        assert_eq!(value["tool"], json!("echo"));
+        assert_eq!(value["arguments"]["text"], json!("wasm-host"));
+
+        host.unload("cpp.wasm.host").expect("unload");
+        assert!(!host.is_loaded("cpp.wasm.host"));
+        assert!(host.registry().is_empty());
+        assert!(host.panels().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // CPP-WASM-032：wasm-component 走 native `load_with_manifest` 必须报错（不能静默）。
+    #[test]
+    fn cpp_wasm_032_load_with_manifest_rejects_wasm_component() {
+        let manifest = wasm_manifest();
+        let mut host = PluginHost::new(AllowAll);
+        let error = host
+            .load_with_manifest(&manifest, Box::new(ProbeNative::new()), &host_version())
+            .expect_err("wasm-component 不能被 native 路径静默装载");
+        assert!(
+            matches!(&error, HostError::Wasm { plugin_id, reason } if plugin_id == "cpp.wasm.host" && reason.contains("load_wasm_plugin")),
+            "error={error:?}"
+        );
+        assert!(error.to_string().contains("load_wasm_plugin"), "{error}");
+        assert!(!host.is_loaded("cpp.wasm.host"));
+    }
+
+    // CPP-WASM-034：wasm 装载失败（entry 缺失）→ 结构化错误且宿主无残留。
+    #[test]
+    fn cpp_wasm_034_load_wasm_plugin_missing_entry_is_structured_error() {
+        let dir = temp_wasm_package("missing");
+        let mut manifest = wasm_manifest();
+        manifest.runtime.entry = Some("missing.wasm".to_owned());
+        let mut host = PluginHost::new(AllowAll);
+        let error = host
+            .load_wasm_plugin(&manifest, &dir, &host_version())
+            .expect_err("entry 缺失必须失败");
+        assert!(matches!(&error, HostError::Wasm { .. }), "error={error:?}");
+        assert!(
+            error.to_string().contains("manifest error")
+                || error.to_string().contains("not accessible"),
+            "{error}"
+        );
+        assert!(!host.is_loaded("cpp.wasm.host"));
+        assert!(host.registry().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

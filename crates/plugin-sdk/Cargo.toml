@@ -2,10 +2,11 @@
 name = "dshr-plugin-sdk"
 description = "CPP-v1 external-process 插件作者 SDK（cpp-process/v1，spec/cpp-v1.md §12）"
 version = "0.1.0"
-edition.workspace = true
+# 自包含（P1-4）：SDK 目录可以被生成器整目录复制到 `<plugin>/sdk/` 独立编译，
+# 因此不继承 workspace edition、也不依赖仓库内其它 crate。
+edition = "2021"
 
 [dependencies]
-dshr-plugin-api = { path = "../plugin-api" }
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = "=1.0.154"
+thiserror = "=2.0.21"

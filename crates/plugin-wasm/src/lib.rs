@@ -48,6 +48,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod plugin;
+
+pub use plugin::WasmPlugin;
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -59,6 +63,15 @@ use dshr_plugin_api::PluginError;
 use serde_json::Value;
 use thiserror::Error;
 use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, Trap};
+
+/// 单个 Store 允许的 table 个数上限（P1-2：防止用多 table 绕过内存预算）。
+pub const MAX_TABLES: usize = 1;
+/// 单个 Store 允许的 table 元素总数上限（P1-2）。
+pub const MAX_TABLE_ELEMENTS: usize = 1024;
+/// 单个 Store 允许的 linear memory 个数上限（P1-2：`memory_size` 是按 memory 计的）。
+pub const MAX_MEMORIES: usize = 1;
+/// 单个 Store 允许的实例数上限（P1-2）。
+pub const MAX_INSTANCES: usize = 1;
 
 /// 本 crate 的 ABI 版本（进入 manifest/capability 协商时使用）。
 pub const ABI_VERSION: &str = "dshr-wasm-core/v1";
@@ -418,9 +431,15 @@ impl WasmPluginRuntime {
     }
 
     fn invoke_inner(&self, tool: &str, args: &Value) -> Result<Value, WasmError> {
-        let request = serde_json::json!({ "tool": tool, "arguments": args });
-        let request_bytes = serde_json::to_vec(&request)
-            .map_err(|error| WasmError::Protocol(format!("cannot serialize request: {error}")))?;
+        // ABI 请求形状固定为 `{"tool":"<name>","arguments":<json>}`：**tool 在前**，
+        // 这样 guest 可以在固定偏移（9）读到工具名首字符做最简分发（WAT fixture 依赖）。
+        // 不直接用 `json!` 是因为 serde_json 的 Map 默认按 key 排序（arguments 会在前）。
+        let tool_json = serde_json::to_string(tool)
+            .map_err(|error| WasmError::Protocol(format!("cannot serialize tool name: {error}")))?;
+        let args_json = serde_json::to_string(args)
+            .map_err(|error| WasmError::Protocol(format!("cannot serialize arguments: {error}")))?;
+        let request_bytes =
+            format!("{{\"tool\":{tool_json},\"arguments\":{args_json}}}").into_bytes();
         // 输入与输出用同一上限：避免把超大参数灌进 guest（spec §3.5 单值 ≤1MB）。
         if request_bytes.len() as u64 > self.config.max_output_bytes {
             return Err(WasmError::OutputTooLarge {
@@ -456,9 +475,10 @@ impl WasmPluginRuntime {
         let ptr = alloc
             .call(&mut store, request_len)
             .map_err(|error| self.classify(error))?;
-        if ptr < 0 {
+        // P3：ABI 约定 0 也是无效地址（wasm 线性内存 0 页/0 偏移不可写），统一按失败处理。
+        if ptr <= 0 {
             return Err(WasmError::Abi(format!(
-                "`dshr_alloc` returned negative offset {ptr}"
+                "`dshr_alloc` returned non-positive offset {ptr}"
             )));
         }
         let start = ptr as usize;
@@ -506,8 +526,14 @@ impl WasmPluginRuntime {
     }
 
     fn new_store(&self) -> Result<Store<StoreLimits>, WasmError> {
+        // P1-2：只限 `memory_size` 会被"多 memory / 多 table / 多实例"绕过，
+        // 所以 table/memories/instances 都设置保守上限（与 manifest 内存预算联动）。
         let limits = StoreLimitsBuilder::new()
             .memory_size(self.config.max_memory_bytes as usize)
+            .table_elements(MAX_TABLE_ELEMENTS)
+            .tables(MAX_TABLES)
+            .memories(MAX_MEMORIES)
+            .instances(MAX_INSTANCES)
             .trap_on_grow_failure(true)
             .build();
         let mut store = Store::new(&self.engine, limits);
@@ -602,6 +628,9 @@ fn classify_wasmtime_error(error: wasmtime::Error, timeout_ms: u64) -> WasmError
         return WasmError::Timeout { timeout_ms };
     }
     if lower.contains("memory") || lower.contains("grow") {
+        return WasmError::MemoryLimit(text);
+    }
+    if lower.contains("table") || lower.contains("instance") {
         return WasmError::MemoryLimit(text);
     }
     WasmError::Trap(text)

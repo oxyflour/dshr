@@ -15,8 +15,8 @@ name = "__BIN_NAME__"
 path = "src/main.rs"
 
 [dependencies]
-# 生成器会把 __DSHR_REPO__ 替换成绝对仓库路径（正斜杠）。
-# 对外发布 SDK 后改成名 + 版本：dshr-plugin-sdk = "0.1"
-dshr-plugin-sdk = { path = "__DSHR_REPO__/crates/plugin-sdk" }
+# 生成器会把仓库内的 `crates/plugin-sdk` 复制到 `<out>/sdk/`（自包含、独立编译），
+# 因此模板只引用相对路径 `sdk`，**不依赖 dshr 仓库的绝对路径**（P1-4）。
+dshr-plugin-sdk = { path = "sdk" }
 # 只用于构造 panel 的 ADC-v1 元素树（serde_json::Value）。
 serde_json = "=1.0.154"

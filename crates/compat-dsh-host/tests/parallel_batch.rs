@@ -281,3 +281,125 @@ fn m3_parallel_107_empty_batch_is_noop() {
         .expect("host usable");
     assert_eq!(value_of(&outcome)["ok"], true);
 }
+
+// ---------------------------------------------------------------------------
+// batch fixture：取消 2s 宽限 + session_id 透传（P1-7 / P2-10）
+// ---------------------------------------------------------------------------
+
+fn batch_fixture_paths() -> (PathBuf, PathBuf) {
+    let dir = std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"))
+        .expect("fixtures dir");
+    let script = dir.join("batch-sidecar.mjs");
+    (script.clone(), script)
+}
+
+fn spawn_batch_fixture() -> Option<SidecarHost> {
+    if !node_available() {
+        eprintln!("SKIP: node not found in PATH");
+        return None;
+    }
+    let (script, plugin) = batch_fixture_paths();
+    let options = HostOptions::default().with_registration_window(Duration::from_millis(1500));
+    match SidecarHost::spawn_with(script, plugin, options) {
+        Ok(host) => Some(host),
+        Err(error) => {
+            eprintln!("SKIP: batch fixture 启动失败: {error}");
+            None
+        }
+    }
+}
+
+/// M3-PARALLEL-108：sidecar 忽略 `tool.cancel` 时，批在 2s 宽限内以 `Cancelled` 结算，
+/// 不能等到 per-call timeout（120s）。
+#[test]
+fn m3_parallel_108_cancel_grace_with_ignoring_sidecar() {
+    let Some(mut host) = spawn_batch_fixture() else {
+        return;
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let setter = Arc::clone(&cancel);
+    let canceller = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        setter.store(true, Ordering::Relaxed);
+    });
+    let calls: Vec<BatchInvokeCall> = (0..2)
+        .map(|index| {
+            BatchInvokeCall::new(
+                format!("call-ignore-{index}"),
+                "batch_ignore_cancel",
+                json!({ "ms": 10_000 }),
+                Duration::from_secs(30),
+            )
+        })
+        .collect();
+    let started = Instant::now();
+    let results = host.invoke_batch(&calls, 2, Some(cancel.as_ref()));
+    let elapsed = started.elapsed();
+    let _ = canceller.join();
+
+    assert_eq!(results.len(), 2);
+    for result in &results {
+        assert!(
+            matches!(result, Err(HostError::Cancelled(_))),
+            "忽略 cancel 的 sidecar 也必须在宽限后结算为 Cancelled: {result:?}"
+        );
+    }
+    assert!(
+        elapsed >= Duration::from_millis(1_800),
+        "应给 sidecar 2s 宽限: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(5_000),
+        "不能等到 per-call 30s/120s: {elapsed:?}"
+    );
+}
+
+/// M3-PARALLEL-109：批内 `session_id` 透传到 `tool.invoke` 信封（L2 会话方法的前提）。
+#[test]
+fn m3_parallel_109_batch_passes_session_id() {
+    let Some(mut host) = spawn_batch_fixture() else {
+        return;
+    };
+    let calls = vec![
+        BatchInvokeCall::new("call-s1", "batch_fast", json!({}), Duration::from_secs(5))
+            .with_session("s-l2-test"),
+        BatchInvokeCall::new("call-s2", "batch_fast", json!({}), Duration::from_secs(5))
+            .with_session("s-l2-test"),
+    ];
+    let results = host.invoke_batch(&calls, 2, None);
+    for result in &results {
+        let outcome = result.as_ref().unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            value_of(outcome)["session_id"],
+            "s-l2-test",
+            "批调用必须透传 session_id"
+        );
+    }
+}
+
+/// M3-PARALLEL-110：单调用 `invoke_in_session` 同样透传 session_id；`None` 保持旧占位。
+#[test]
+fn m3_parallel_110_single_invoke_passes_session_id() {
+    let Some(mut host) = spawn_batch_fixture() else {
+        return;
+    };
+    let outcome = host
+        .invoke_in_session(
+            "call-single",
+            Some("s-l2-single"),
+            "batch_fast",
+            json!({}),
+            Duration::from_secs(5),
+        )
+        .expect("single invoke in session");
+    assert_eq!(value_of(&outcome)["session_id"], "s-l2-single");
+
+    let legacy = host
+        .invoke("batch_fast", json!({}), Duration::from_secs(5))
+        .expect("legacy invoke");
+    assert_eq!(
+        value_of(&legacy)["session_id"],
+        "s-probe",
+        "None 保持旧 s-probe 占位（探针/旧测试兼容）"
+    );
+}

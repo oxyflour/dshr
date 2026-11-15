@@ -723,27 +723,33 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
       release 最差 total p95 3.78ms（[m3-render-budget](m3-render-budget.md)）；**W5 已接 chat 右栏
       ADC 面板**（`--selftest-adc-panel` PASS）；tool card renderer/交互/事件留 M4）*
 - [ ] **WASM Component**：`cpp-v1.wit` + Wasmtime + fuel/epoch/内存/输出/并发五维配额 +
-      三故障注入（超时/fuel/内存）。*（**W6：wasmtime `=50.0.1` core-module ABI 已实现并集成**
-      （`CPP-WASM-001..020`：fuel/epoch/内存/输出四类隔离 + trap 存活/relaunch/并发背压）；
-      `cpp-v1.wit` 仍草案，**Component Model/WIT canonical ABI 未做**——见
-      [`wasm-host.md`](wasm-host.md)；external-process 退路保留）*
+      三故障注入（超时/fuel/内存）。*（**W6/W8：wasmtime `=50.0.1` core-module ABI 已实现并接入
+      宿主/产品链路**（`WasmPlugin` + loader + `--selftest-wasm`；`CPP-WASM-001..027` 含资源上限
+      多 memory/大 table 负面测试）；`cpp-v1.wit` 仍草案，**Component Model/WIT canonical ABI 未做**
+      ——见 [ADR-0012](decisions/0012-m3-gate-closure.md)、[`wasm-host.md`](wasm-host.md)；
+      external-process 退路保留）*
 - [ ] **DSH L2**：`sidecar-rpc` v2 host-service 代理 + 证据选出的 3 个 adapter + conformance。
-      *（W4 端到端 + W5 官方包验收：未修改 `dsh-tool-working-directory` 装载绿 + `exec.agent` 债务
-      证据（`RPC-L2-502`）、官方 `dsh-storage-domain` 经 `defineDomain`/`DomainFacility` 与 storage-kv
-      后端真实往返（501/503/504/505）；storage hub 本体（Cordis Service class）未按普通 plugin 装载）*
+      *（W4 端到端 + W5/W8 官方包验收 + W8 sessionProjections：未修改 `dsh-tool-working-directory`
+      / `dsh-tool-todo` 装载绿 + `exec.agent` 债务证据、官方 `dsh-storage-domain` 经
+      `defineDomain`/`DomainFacility` 与 storage-kv 后端真实往返；`session-projections/v1` +
+      `RPC-L2-202..208`/`L2JS-021..028`；**官方包证据=manual gate** `tools/official-l2-gate.ps1`
+      （缺 fixture 失败，默认 cargo 6 ignored），storage hub 本体（Cordis Service class）未按普通
+      plugin 装载）*
 - [x] **最小信任链**：`spec/plugin-trust.md` + 包级 `dshr-trust.json`（摘要强制 + 可选 ed25519）
       + manifest `min_host_version` + 首次安装逐项确认 + 审计 + 降级拒绝（ADR-0009）。
       *（18 tests + `chat --selftest-trust-install` PASS）*
 - [ ] **外部作者验收**：`plugin-authoring.md` + 模板 + 仓库外样例 + "未读主程序源码" checklist；
       插件升级/迁移（先补 adc-v1 插件持久化状态章节，否则移出 M3）。
-      *（W3：文档/模板/生成器/打包器 + E2E 五种结果 PASS；chat 产品路径 self-test PASS；
-      W5 panel 已渲染；沙箱 danger-full-access 后"真仓库外"可复跑；DSH JS 作者文档待补）*
+      *（文档/模板/生成器/打包器 + E2E 五种结果 PASS；chat 产品路径 self-test PASS；
+      W8：SDK 自包含、生成器把 SDK 复制到 `<out>/sdk/`，样例不引用仓库路径；但 SDK 未发布、
+      无 uninstall/真实签名安装 → **G2 按 [ADR-0012](decisions/0012-m3-gate-closure.md) 降级为
+      "内部作者 Preview"**，不再宣称"外部作者可发布"）*
 - [ ] **M3 债务**（[ADR-0007](decisions/0007-m3-scope.md) §3）：工具并行执行、子会话并行 /
       sidecar 工具继承、默认差异对齐（reasoning effort / LLM 摘要压缩 / 重复调用提醒 /
       `EMPTY_RESPONSE` / approval 模式切换）、`timeoutMs` 透传、Loader `include`/group 子集、
-      MCP 最小闭环。*（MCP 完成；默认差异（`M3-DEFAULT-*` 39+）、approval/重复提醒/timeout 接线、
-      Loader include/group（`M3-LOADER-*`）、**工具并行（`M3-PARALLEL-*` 14 tests，3×2s 串行 6.1s→
-      并行 2.0s）均完成**；剩余：子会话并行 / sidecar 工具继承（M4 候选））*
+      MCP 最小闭环。*（MCP、默认差异（`M3-DEFAULT-*` 39+）、approval/重复提醒/timeout 接线、
+      Loader include/group（`M3-LOADER-*`）、**工具并行（`M3-PARALLEL-*` 16 tests，3×2s 串行
+      6.1s→并行 2.0s，sidecar 范围）均完成**；剩余：子会话并行 / sidecar 工具继承（M4 候选））*
 - [ ] **条件项**（不计入必达）：Script UI 5 日 spike（[ADR-0008](decisions/0008-script-ui-spike.md)）；
       HTML Widget 独立 WebView Panel（WebView 依赖决策未过则移 M4）；pnpm 捆绑（体积评估未过则移 M4）。
 

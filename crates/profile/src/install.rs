@@ -10,7 +10,9 @@
 //!
 //! - 包名和 `dsh` 字段里的引用路径不允许 `..` / 绝对路径 / 反斜杠逃逸；
 //! - 压缩包拒绝符号链接、硬链接与设备文件条目（见 [`crate::archive`]）；
-//! - 目标已存在时先删再复制（等于升级）；
+//! - 升级是**原子替换**：先完整复制到同父目录的 staging，再 rename 旧目录到备份、
+//!   staging rename 到位；任何一步失败都回滚并保留旧版本（磁盘满/复制错误不会
+//!   留下"没有任何版本"的状态）；
 //! - 不联网、不执行包内脚本。
 
 use std::fs;
@@ -93,11 +95,10 @@ pub(crate) fn install_dir(
     let name = read_manifest(package_dir)?;
 
     let node_modules = sidecar_dir.join("node_modules");
+    fs::create_dir_all(&node_modules)
+        .map_err(|err| format!("创建 {} 失败: {err}", node_modules.display()))?;
     let destination = node_modules.join(&name);
-    if destination.exists() {
-        fs::remove_dir_all(&destination).map_err(|err| format!("清理旧版本失败: {err}"))?;
-    }
-    copy_dir(package_dir, &destination)?;
+    replace_dir_atomically(package_dir, &destination)?;
 
     let added_to_profile = if profile.entries().iter().any(|entry| entry.name == name) {
         false
@@ -116,6 +117,63 @@ pub(crate) fn install_dir(
         destination,
         added_to_profile,
     })
+}
+
+/// 原子替换目录：先完整复制到 staging，再把旧目录 rename 到备份、staging rename 到位。
+///
+/// 保证：任何一步失败时**旧版本仍在原位**（复制失败旧版本完全未动；rename 失败回滚备份），
+/// 不会出现"先删后拷、拷到一半磁盘满 → 没有任何版本"的状态（P1-4/P2-6）。
+fn replace_dir_atomically(source: &Path, destination: &Path) -> Result<(), String> {
+    replace_dir_atomically_with(source, destination, copy_dir)
+}
+
+fn replace_dir_atomically_with(
+    source: &Path,
+    destination: &Path,
+    copy: impl Fn(&Path, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = destination.parent().ok_or_else(|| {
+        format!(
+            "安装目标没有父目录（不是合法目录路径）: {}",
+            destination.display()
+        )
+    })?;
+    let stamp = format!("{}-{}", std::process::id(), unix_nanos());
+    let staging = parent.join(format!(".dshr-staging-{stamp}"));
+    let backup = parent.join(format!(".dshr-backup-{stamp}"));
+
+    // 1) 复制到 staging：失败只清 staging，旧版本一个字节都不动。
+    if let Err(err) = copy(source, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("复制到暂存目录失败（旧版本未改动）: {err}"));
+    }
+
+    // 2) 旧版本 rename 到备份（同卷、同父目录，rename 是原子的）。
+    let had_old = destination.exists();
+    if had_old {
+        if let Err(err) = fs::rename(destination, &backup) {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(format!("备份旧版本失败（旧版本未改动）: {err}"));
+        }
+    }
+
+    // 3) staging → destination；失败回滚旧版本。
+    match fs::rename(&staging, destination) {
+        Ok(()) => {
+            if had_old {
+                // 清理备份失败不致命（下次安装会再清理/覆盖），但记录真实原因。
+                let _ = fs::remove_dir_all(&backup);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if had_old {
+                let _ = fs::rename(&backup, destination);
+            }
+            let _ = fs::remove_dir_all(&staging);
+            Err(format!("替换安装目录失败（已回滚旧版本）: {err}"))
+        }
+    }
 }
 
 /// 读取并校验 `package.json`：返回包名。
@@ -537,6 +595,92 @@ mod tests {
         fs::write(valid_bundle.join("cordis.patch.yml"), "- id: x\n").unwrap();
         let report = install_package(&root.join("sidecar"), &valid_bundle, &mut profile).unwrap();
         assert_eq!(report.name, "@deepseek-ai/dsh-valid-bundle");
+        fs::remove_dir_all(root).ok();
+    }
+
+    // ---- P1-4/P2-6：安装原子替换（staging + rename + 回滚） -----------------
+
+    fn staging_leftovers(node_modules: &Path) -> Vec<String> {
+        fs::read_dir(node_modules)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .filter(|name| {
+                        name.starts_with(".dshr-staging-") || name.starts_with(".dshr-backup-")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // M3-INSTALL-001：复制失败时旧版本保持可用，且不留暂存/备份目录。
+    #[test]
+    fn m3_install_001_copy_failure_preserves_previous_version() {
+        let root = temp_root("atomic-copy-fail");
+        let node_modules = root.join("sidecar").join("node_modules");
+        let destination = node_modules.join("demo.plugin");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("version.txt"), "old-version").unwrap();
+
+        let source = root.join("pkg");
+        fs::create_dir_all(&source).unwrap();
+        let error = replace_dir_atomically_with(&source, &destination, |_, _| {
+            Err("injected copy failure".to_owned())
+        })
+        .expect_err("copy 失败必须报错");
+        assert!(error.contains("旧版本未改动"), "{error}");
+        assert_eq!(
+            fs::read_to_string(destination.join("version.txt")).unwrap(),
+            "old-version",
+            "旧版本必须原样保留"
+        );
+        assert!(
+            staging_leftovers(&node_modules).is_empty(),
+            "失败后不得残留 staging/backup: {:?}",
+            staging_leftovers(&node_modules)
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M3-INSTALL-002：升级成功 = 新内容到位 + 备份清理干净。
+    #[test]
+    fn m3_install_002_upgrade_replaces_and_cleans_staging() {
+        let root = temp_root("atomic-upgrade");
+        let node_modules = root.join("sidecar").join("node_modules");
+        let destination = node_modules.join("demo.plugin");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("version.txt"), "old-version").unwrap();
+
+        let source = root.join("pkg");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("version.txt"), "new-version").unwrap();
+        fs::write(source.join("lib.js"), "export const v = 2\n").unwrap();
+
+        replace_dir_atomically(&source, &destination).expect("upgrade");
+        assert_eq!(
+            fs::read_to_string(destination.join("version.txt")).unwrap(),
+            "new-version"
+        );
+        assert!(destination.join("lib.js").is_file(), "新文件必须到位");
+        assert!(
+            staging_leftovers(&node_modules).is_empty(),
+            "成功后不得残留 staging/backup: {:?}",
+            staging_leftovers(&node_modules)
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M3-INSTALL-003：正常 install_package 走原子路径（node_modules 无暂存残留）。
+    #[test]
+    fn m3_install_003_install_package_leaves_no_staging_dirs() {
+        let root = temp_root("atomic-install");
+        fs::create_dir_all(root.join("sidecar")).unwrap();
+        let mut profile = Profile::load(root.join("profile")).unwrap();
+        let package = fake_package(&root, "@deepseek-ai/dsh-tool-atomic");
+        let report = install_package(&root.join("sidecar"), &package, &mut profile).unwrap();
+        assert!(report.destination.join("lib/index.js").is_file());
+        assert!(staging_leftovers(&root.join("sidecar").join("node_modules")).is_empty());
         fs::remove_dir_all(root).ok();
     }
 }

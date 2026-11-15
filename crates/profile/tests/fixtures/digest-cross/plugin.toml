@@ -1,0 +1,8 @@
+[plugin]
+id = "digest.cross"
+version = "0.1.0"
+api = "cordis-portable/v1"
+
+[runtime]
+kind = "external-process"
+entry = "bin/plugin-demo.exe"

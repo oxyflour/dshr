@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 dshr-plugin-api = { path = "../plugin-api" }
+dshr-tool-runtime = { path = "../tool-runtime" }
 # 精确 pin；升级必须连同 conformance 一起走（ADR-008）。core-module ABI 见 lib.rs 文档。
 wasmtime = "=50.0.1"
 serde.workspace = true

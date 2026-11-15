@@ -11,7 +11,9 @@
 //   2. Copy the package content to --out (skipping dshr-trust.json/.git/node_modules/dot dirs).
 //   3. Compute the dshr-trust/v1 package digest exactly as docs/spec/plugin-trust.md §3:
 //        - regular files only, symlinks skipped
-//        - skip `dshr-trust.json`, `.git/`, `node_modules/`, and any dot-prefixed directory
+//        - skip **package-root** `dshr-trust.json` and `.dshr-install.json` only
+//          (nested same-name files are normal package content and are hashed)
+//        - skip `.git/`, `node_modules/`, and any dot-prefixed directory
 //        - relative paths use `/`, sorted by UTF-8 bytes
 //        - per file: path_bytes, 0x00, decimal size bytes, 0x00, file bytes
 //        - SHA-256, lowercase hex
@@ -41,6 +43,8 @@ import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const TRUST_FILE = 'dshr-trust.json'
+// 本机安装元数据：只在**包根**排除，嵌套同名文件参与摘要（与 Rust `package_digest` 一致）。
+const INSTALL_META_FILE = '.dshr-install.json'
 const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9._-]{1,63}$/
 const VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$/
 const SKIPPED_DIRS = new Set(['.git', 'node_modules'])
@@ -157,8 +161,9 @@ function parseToml(text) {
   return root
 }
 
-// 与 Rust `collect_files` 等价：普通文件、跳过 dshr-trust.json、跳过 .git/node_modules/点目录、
-// 不跟随符号链接。返回按相对路径 UTF-8 字节序升序排列。
+// 与 Rust `collect_files` 等价：普通文件、只跳过**包根**的 dshr-trust.json 与
+// .dshr-install.json、跳过 .git/node_modules/点目录、不跟随符号链接。
+// 返回按相对路径 UTF-8 字节序升序排列。
 function collectFiles(root) {
   const files = []
   const walk = (dir, prefix) => {
@@ -171,7 +176,7 @@ function collectFiles(root) {
         if (SKIPPED_DIRS.has(name) || name.startsWith('.')) continue
         walk(absolute, rel)
       } else if (entry.isFile()) {
-        if (prefix === '' && name === TRUST_FILE) continue
+        if (prefix === '' && (name === TRUST_FILE || name === INSTALL_META_FILE)) continue
         files.push({ rel, absolute })
       }
     }

@@ -8,8 +8,11 @@
 // - Validates the plugin id (same rule as schema/cpp-v1/manifest.schema.json) and version.
 // - Refuses to write into an existing non-empty directory.
 // - Inside this repository, only `.tmp/` targets are allowed (keeps the repo clean).
-// - Replaces `__DSHR_REPO__`, `__PLUGIN_ID__`, `__PLUGIN_NAME__`, `__PLUGIN_VERSION__`,
-//   `__CRATE_NAME__`, `__BIN_NAME__` placeholders in the copied template.
+// - Replaces `__PLUGIN_ID__`, `__PLUGIN_NAME__`, `__PLUGIN_VERSION__`,
+//   `__CRATE_NAME__`, `__BIN_NAME__`, `__TOOL_NAME__` placeholders in the copied template.
+// - Copies `crates/plugin-sdk` into `<out>/sdk/` (self-contained, see P1-4) and appends
+//   `[workspace]` to the copied SDK manifest; the generated Cargo.toml only references
+//   the relative path `sdk` and **never the dshr repository path**.
 // - Prints the exact build / pack / install commands for the generated project.
 //
 // Zero npm dependencies.
@@ -35,7 +38,7 @@ function usage(exitCode = 0) {
   const out = exitCode === 0 ? console.log : console.error
   out(`用法:
   node tools/new-plugin.mjs --out <dir> [--id vendor.name] [--name "Display Name"]
-                            [--version 0.1.0] [--repo <repo-root>]
+                            [--version 0.1.0]
 
 示例:
   node tools/new-plugin.mjs --out .tmp/authoring/sample --id example.echo --name "Echo Panel"
@@ -44,7 +47,8 @@ function usage(exitCode = 0) {
 --id      插件 ID / 包名，形如 vendor.name（默认 example.echo）
 --name    人类可读名称（默认由 id 推导，如 "Example Echo"）
 --version SemVer（默认 0.1.0）
---repo    模板 path 依赖指向的仓库根（默认当前仓库）
+
+生成物内含自包含 SDK（<out>/sdk/），Cargo.toml 只用相对路径 "sdk"，不引用 dshr 仓库。
 `)
   process.exit(exitCode)
 }
@@ -133,13 +137,11 @@ const toolName = `${crateName.replace(/-/g, '_')}_echo`
 if (toolName.length > 64) {
   fail(`派生的工具名过长（${toolName.length} > 64）：请用更短的 --id`)
 }
-const repoForTemplate = (args.repo ? resolve(args.repo) : repoRoot).replace(/\\/g, '/')
 
 const outDir = resolve(args.out)
 checkOutPath(outDir)
 
 const replacements = new Map([
-  ['__DSHR_REPO__', repoForTemplate],
   ['__PLUGIN_ID__', pluginId],
   ['__PLUGIN_NAME__', displayName],
   ['__PLUGIN_VERSION__', version],
@@ -182,6 +184,45 @@ function copyTemplate(source, destination) {
 copyTemplate(TEMPLATE_DIR, outDir)
 // 保证 bin/ 存在（构建后把可执行文件复制到这里）
 mkdirSync(join(outDir, 'bin'), { recursive: true })
+
+// ---------------------------------------------------------------------------
+// 自包含 SDK（P1-4）：SDK 是插件作者唯一依赖，必须随生成物拷贝，模板 Cargo.toml
+// 只写 `path = "sdk"`，绝不出现 dshr 仓库绝对路径。
+// ---------------------------------------------------------------------------
+function copyTree(source, destination) {
+  mkdirSync(destination, { recursive: true })
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name)
+    const to = join(destination, entry.name)
+    if (entry.isDirectory()) {
+      if (entry.name === 'target' || entry.name === '.git' || entry.name === 'node_modules') continue
+      copyTree(from, to)
+    } else if (entry.isFile()) {
+      copyFileSync(from, to)
+    }
+  }
+}
+
+const sdkSource = join(repoRoot, 'crates', 'plugin-sdk')
+if (!existsSync(join(sdkSource, 'Cargo.toml'))) fail(`SDK 不存在: ${sdkSource}`)
+const sdkOut = join(outDir, 'sdk')
+copyTree(sdkSource, sdkOut)
+
+// SDK 的 Cargo.toml 必须自包含：不能有 `*.workspace = true`（拷到仓库外无 workspace 可继承）。
+// 不额外写 `[workspace]`：作为样例 workspace 的 path 依赖时它就是成员；单独拷出时
+// 没有上层 workspace，Cargo 会把它当作独立 crate 处理。
+const sdkCargoPath = join(sdkOut, 'Cargo.toml')
+const sdkCargo = readFileSync(sdkCargoPath, 'utf8')
+if (/\.workspace\s*=\s*true/.test(sdkCargo)) {
+  fail('SDK Cargo.toml 仍继承 workspace 字段；请改成具体版本/edition 后再生成')
+}
+const sampleCargo = readFileSync(join(outDir, 'Cargo.toml'), 'utf8')
+if (!sampleCargo.includes('path = "sdk"')) {
+  fail('生成的 Cargo.toml 没有引用相对路径 sdk')
+}
+if (sampleCargo.includes(repoRoot.replace(/\\/g, '/')) || sampleCargo.includes(repoRoot)) {
+  fail('生成的 Cargo.toml 仍包含 dshr 仓库绝对路径（禁止：包必须可离开仓库独立构建）')
+}
 
 // 兜底检查：模板里不允许残留未替换的占位符（.gitkeep 之类不动）。
 function walkFiles(dir, out = []) {

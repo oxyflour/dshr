@@ -41,6 +41,7 @@ import {
   handleHostEventEmit,
   shouldEnableHostServices,
 } from './lib/host-services.mjs'
+import { createSessionProjectionsShim } from './lib/session-projections.mjs'
 
 const PROTOCOL_MAX = 2
 // 协商结果：min(host, sidecar)。v1 宿主（M2 及以前）保持纯 v1 行为。
@@ -55,6 +56,8 @@ let writeEnabled = false
 
 // L2 Host Service 代理（spec §13）：仅协商到 v2 且宿主支持 service.proxy 时启用。
 let hostServices = null
+// P1-5：投影注册表留在 Sidecar（`ctx.sessionProjections`），宿主只提供 session-log 数据面。
+let sessionProjections = null
 // 当前工具调用上下文（callId/sessionId/depth）：服务代理用它关联 tool.cancel 与 session_id。
 const callStore = new AsyncLocalStorage()
 // Cordis 根 Context：bootPlugins 后用于把服务事件桥接回插件总线。
@@ -626,6 +629,7 @@ async function bootPlugins(entries) {
     // L2（spec §13）：只有协商到 service.proxy 时才注入这些代理；
     // 未协商时官方插件对 `workingDirectory`/`storage` 的 inject 失败，保持 M2 行为。
     root.provide('workingDirectory', hostServices.createWorkingDirectory())
+    if (sessionProjections) root.provide('sessionProjections', sessionProjections)
     const storageHub = hostServices.createStorage()
     root.provide('storage', storageHub)
     // 官方 `dsh-storage-domain` 通过 `ctx.inject(['storage.backend.<name>'])` 等后端
@@ -763,6 +767,26 @@ async function handle(msg) {
         hostCaps,
         env: process.env,
       })
+      sessionProjections = serviceProxyEnabled
+        ? createSessionProjectionsShim({
+            callService: (request) => hostServices.call(request),
+            onDiagnostic: (diagnostic) =>
+              send('log.emit', `proj-${Date.now()}`, {
+                level: 'debug',
+                message: JSON.stringify(diagnostic),
+              }),
+            onCreated: (sessionView) => {
+              if (cordisRoot && typeof cordisRoot.emit === 'function') {
+                cordisRoot.emit('session/created', sessionView)
+              }
+            },
+            onEvent: (sessionView, event) => {
+              if (cordisRoot && typeof cordisRoot.emit === 'function') {
+                cordisRoot.emit('session/event', sessionView, event)
+              }
+            },
+          })
+        : null
       hostServices = serviceProxyEnabled
         ? createHostServicesRuntime({
             sendEnvelope,
@@ -867,6 +891,15 @@ async function handle(msg) {
       // 事件白名单在 EventHub 内（session.event / service.event）；其余拒绝并诊断。
       if (!hostServices) return
       handleHostEventEmit(msg, hostServices.eventHub)
+      // P1-5：session.event 再折进投影注册表（gap 时由 shim 用 events.read 补齐）。
+      if (sessionProjections) {
+        sessionProjections.handleHostEvent(msg).catch((error) =>
+          send('log.emit', `proj-${Date.now()}`, {
+            level: 'error',
+            message: `session projection failed: ${String(error?.message ?? error)}`,
+          }),
+        )
+      }
       return
     }
     default:

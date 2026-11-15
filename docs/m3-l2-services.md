@@ -263,6 +263,16 @@ session）、`E_SERVICE_TIMEOUT`、`E_SERVICE_DENIED`（白名单/未协商）�
 | `RPC-L2-207` | 冷启动 fold 超 2000 事件 → 分页完成并记 `projection.backfill` 诊断（不阻塞其它工具） |
 | `RPC-L2-208` | 插件卸载/revoke → 该 session 的推送停止，`ctx.sessionProjections` 的 handle 释放，不泄漏 Fiber |
 
+**实施状态（W8，review P1-5 后）**：Rust `SessionProjectionsService`（`session-projections/v1`：
+`session.describe`/`events.read`，7 个测试 `RPC-L2-202..208`）与 sidecar `session-projections.mjs`
+最小注册表 shim（register/release/init/apply/gap-backfill，8 个 node:test `L2JS-021..028`）已实现，
+`ctx.sessionProjections` 已注入。**201 仍只是"装载绿"**（未修改 `dsh-tool-todo`：inject 满足、
+`todo_write` 注册成功；execute 受 `exec.agent` 债务阻塞，明确 pending）。204/205/207 的"官方 todo
+端到端"仍 pending，用 shim/fixture 验证机制；官方包证据必须通过
+`tools/official-l2-gate.ps1`（缺 fixture 会失败），不得把默认 cargo 的 `#[ignore]` 当 pass。
+官方 `sessionProjections` 事件推送由宿主 `event.emit` 驱动，chat 侧还需把 session_id/事件流接上
+（见 [ADR-0012](decisions/0012-m3-gate-closure.md) 与 review P2）。
+
 **成本（推断）**：2.5–3.5 日（事件通道与 gap 补齐 1–1.5、`SessionView`/注册表接线 1、conformance 0.5–1）。
 **风险**：冷启动 fold 成本（大 session 的 `events.read` 页数与并发）；事件保序/重入（`apply` 在
 Committed 事件派发内同步执行，见官方 `onEventChanged` 注释）；**依赖 v1 `event.*` 通道先落地**——

@@ -12,7 +12,8 @@ CPP-v1 `external-process` 插件模板：一个 `__TOOL_NAME__` 工具 + 一个 
 
 ```text
 .
-├── Cargo.toml        # 独立 workspace；SDK 走 path 依赖（生成器已注入仓库路径）
+├── Cargo.toml        # 独立 workspace；SDK 走 `path = "sdk"`（生成器已复制自包含 SDK）
+├── sdk/              # 自包含的 dshr-plugin-sdk（不引用仓库路径，可单独编译）
 ├── src/main.rs       # __TOOL_NAME__ 工具 + workspace.panel 的 ui.render 元素树
 ├── plugin.toml       # CPP-v1 manifest：id/version/runtime/权限
 ├── package.json      # name/version（必须与 plugin.toml 一致）

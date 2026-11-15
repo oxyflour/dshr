@@ -17,8 +17,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dshr_compat_dsh_host::{
     EventPage, HostOptions, HostServiceRouter, ServiceError, SessionAccess, SessionEventView,
-    SessionHeaderView, SessionLogService, SidecarHost, StorageKvService, WorkingDirectoryService,
-    SESSION_LOG_V1, STORAGE_KV_V1, WORKING_DIRECTORY_V1,
+    SessionHeaderView, SessionLogService, SessionProjectionsService, SidecarHost, StorageKvService,
+    WorkingDirectoryService, SESSION_LOG_V1, SESSION_PROJECTIONS_V1, STORAGE_KV_V1,
+    WORKING_DIRECTORY_V1,
 };
 use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
 use serde_json::{json, Value};
@@ -76,24 +77,34 @@ fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 /// 把 `.tmp/dsh-tools-all` 里的官方工具包放进 sidecar 的 node_modules（仅运行期，gitignored）。
-/// 返回 `false` = 该验收路径不可用（调用方 SKIP）。
-fn ensure_official_tool_package() -> bool {
-    let source = repo_root().join(".tmp/dsh-tools-all/dsh-tool-working-directory");
-    if !source.is_dir() {
-        return false;
-    }
-    let destination = repo_root()
-        .join("sidecar/dsh-official/node_modules/@deepseek-ai/dsh-tool-working-directory");
-    if destination.join("lib/index.js").exists() {
-        return true;
-    }
-    match copy_dir_all(&source, &destination) {
-        Ok(()) => destination.join("lib/index.js").exists(),
-        Err(error) => {
-            eprintln!("SKIP official packages: 无法复制官方工具包到 node_modules: {error}");
-            false
+/// 返回 `false` = 该验收路径不可用（调用方 panic，**不静默跳过**）。
+///
+/// 测试并行运行时用一个进程内锁串行化复制，避免两个测试同时 copy 同一目录造成半成品。
+fn ensure_official_tool_packages() -> bool {
+    static COPY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = COPY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for name in ["dsh-tool-working-directory", "dsh-tool-todo"] {
+        let source = repo_root().join(".tmp/dsh-tools-all").join(name);
+        if !source.is_dir() {
+            return false;
+        }
+        let destination = repo_root()
+            .join("sidecar/dsh-official/node_modules/@deepseek-ai")
+            .join(name);
+        if destination.join("lib/index.js").exists() {
+            continue;
+        }
+        if let Err(error) = copy_dir_all(&source, &destination) {
+            eprintln!("official packages: 复制 {name} 到 node_modules 失败: {error}");
+            return false;
+        }
+        if !destination.join("lib/index.js").exists() {
+            return false;
         }
     }
+    true
 }
 
 fn file_url(path: &Path) -> String {
@@ -240,39 +251,42 @@ impl Fixture {
     }
 }
 
-fn official_plugins(driver_url: &str) -> String {
-    json!([
-        {
+fn official_plugins(driver_url: &str, include_todo: bool) -> String {
+    let mut plugins = vec![
+        json!({
             "name": "@deepseek-ai/dsh-storage-domain",
             "config": { "backend": "storage-kv" },
-        },
-        {
+        }),
+        json!({
             "name": "@deepseek-ai/dsh-tool-working-directory",
             "config": {},
-        },
-        { "name": driver_url },
-    ])
-    .to_string()
+        }),
+    ];
+    if include_todo {
+        // 官方 dsh-tool-todo：inject ["tools","sessionProjections"]（P1-5 装载绿证据）。
+        plugins.push(json!({
+            "name": "@deepseek-ai/dsh-tool-todo",
+            "config": { "allowParallelInProgress": true },
+        }));
+    }
+    plugins.push(json!({ "name": driver_url }));
+    Value::Array(plugins).to_string()
 }
 
-fn spawn_official_sidecar(label: &str) -> Option<Fixture> {
+fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
     if !node_available() {
-        eprintln!("SKIP {label}: node not found");
-        return None;
+        panic!("#[{label}] official-package gate 需要 node（PATH 上找不到）；先运行 tools/official-l2-gate.ps1 的环境检查");
     }
     let sidecar_dir = repo_root().join("sidecar/dsh-official");
     if !sidecar_dir.join("sidecar-dsh.mjs").exists() || !sidecar_dir.join("node_modules").exists() {
-        eprintln!("SKIP {label}: 未准备 vendored 官方 sidecar（node tools/dsh-vendor.mjs）");
-        return None;
+        panic!("#[{label}] official-package gate 需要 vendored 官方 sidecar：先运行 node tools/dsh-vendor.mjs");
     }
-    if !ensure_official_tool_package() {
-        eprintln!("SKIP {label}: 缺少 .tmp/dsh-tools-all/dsh-tool-working-directory");
-        return None;
+    if !ensure_official_tool_packages() {
+        panic!("#[{label}] official-package gate 需要 .tmp/dsh-tools-all/dsh-tool-working-directory：请从本机 DSH 安装抽取（见 docs/m3-l2-services.md §9）");
     }
     let driver = sidecar_dir.join("lib/official-l2-driver.mjs");
     if !driver.exists() {
-        eprintln!("SKIP {label}: 缺少 official-l2-driver.mjs");
-        return None;
+        panic!("#[{label}] 缺少 sidecar/dsh-official/lib/official-l2-driver.mjs");
     }
 
     let workspace = temp_dir(&format!("{label}-ws"));
@@ -297,18 +311,25 @@ fn spawn_official_sidecar(label: &str) -> Option<Fixture> {
         )))
         .expect("register working-directory");
     router
-        .register(Box::new(SessionLogService::new(access)))
+        .register(Box::new(SessionLogService::new(access.clone())))
         .expect("register session-log");
+    router
+        .register(Box::new(SessionProjectionsService::new(access)))
+        .expect("register session-projections");
     router.register_plugin_inject(
         "dsh-official",
         vec![
             STORAGE_KV_V1.to_owned(),
             WORKING_DIRECTORY_V1.to_owned(),
             SESSION_LOG_V1.to_owned(),
+            SESSION_PROJECTIONS_V1.to_owned(),
         ],
     );
     let options = HostOptions::default()
-        .with_env("DSHR_DSH_PLUGINS", official_plugins(&file_url(&driver)))
+        .with_env(
+            "DSHR_DSH_PLUGINS",
+            official_plugins(&file_url(&driver), include_todo),
+        )
         .with_registration_window(Duration::from_secs(8))
         .with_host_services(Arc::new(Mutex::new(router)));
     let script = sidecar_dir.join("sidecar-dsh.mjs");
@@ -320,11 +341,7 @@ fn spawn_official_sidecar(label: &str) -> Option<Fixture> {
             storage,
         }),
         Err(error) => {
-            eprintln!("SKIP {label}: sidecar 启动失败: {error}");
-            let _ = std::fs::remove_dir_all(&workspace);
-            let _ = std::fs::remove_dir_all(&target);
-            let _ = std::fs::remove_dir_all(&storage);
-            None
+            panic!("#[{label}] sidecar 启动失败（official-package gate 不静默跳过）: {error}");
         }
     }
 }
@@ -351,11 +368,40 @@ fn invoke(host: &mut SidecarHost, tool: &str, arguments: Value) -> Envelope {
     outcome.terminal
 }
 
+/// RPC-L2-201（P1-5）：未修改官方 `@deepseek-ai/dsh-tool-todo` 在 v2 sidecar 下装载绿：
+/// `inject ["tools","sessionProjections"]` 满足（Sidecar 提供投影注册表 shim），
+/// `todo_write` 注册成功、无 plugin load 失败。`execute` 受 exec.agent 债务限制（m3 口径）。
+#[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
+fn rpc_l2_201_official_tool_todo_loads_green() {
+    let fixture = spawn_official_sidecar("201", true)
+        .expect("spawn_official_sidecar panics on missing fixtures; expect only for Option");
+    assert_eq!(fixture.host.negotiated_protocol(), 2);
+    assert!(fixture.host.host_services_active());
+    let names = registration_names(&fixture.host);
+    assert!(
+        names.iter().any(|name| name == "todo_write"),
+        "官方 dsh-tool-todo 未注册 todo_write: {names:?}"
+    );
+    let load_errors: Vec<&String> = fixture
+        .host
+        .boot_errors()
+        .iter()
+        .filter(|message| message.contains("failed to load"))
+        .collect();
+    assert!(
+        load_errors.is_empty(),
+        "官方 todo 包装载失败: {load_errors:?}"
+    );
+    fixture.cleanup();
+}
+
 /// RPC-L2-501：官方工具包装载绿（v2）——`working_directory` 与 driver 都收到 tool.register，
 /// 无 plugin load 失败；握手协商到 v2。
 #[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
 fn rpc_l2_501_official_working_directory_tool_loads_green() {
-    let Some(fixture) = spawn_official_sidecar("501") else {
+    let Some(fixture) = spawn_official_sidecar("501", false) else {
         return;
     };
     assert_eq!(fixture.host.negotiated_protocol(), 2);
@@ -382,8 +428,9 @@ fn rpc_l2_501_official_working_directory_tool_loads_green() {
 /// RPC-L2-502：官方工具的 `execute` 依赖 `exec.agent`（M3 明确不计入闭环）——
 /// 未提供 agent 时返回结构化错误，不是挂起/崩溃。
 #[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
 fn rpc_l2_502_official_tool_execute_is_blocked_by_exec_agent() {
-    let Some(mut fixture) = spawn_official_sidecar("502") else {
+    let Some(mut fixture) = spawn_official_sidecar("502", false) else {
         return;
     };
     let envelope = invoke(
@@ -414,8 +461,9 @@ fn rpc_l2_502_official_tool_execute_is_blocked_by_exec_agent() {
 /// RPC-L2-503：官方 `dsh-working-directory` 签名的服务调用（get/ensure/set）经 shim →
 /// host.service.request 真实往返（driver 触发，不依赖 execute/agent）。
 #[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
 fn rpc_l2_503_working_directory_official_signature_round_trip() {
-    let Some(mut fixture) = spawn_official_sidecar("503") else {
+    let Some(mut fixture) = spawn_official_sidecar("503", false) else {
         return;
     };
     let envelope = invoke(
@@ -437,8 +485,9 @@ fn rpc_l2_503_working_directory_official_signature_round_trip() {
 /// RPC-L2-504：未修改官方 `dsh-storage-domain`（defineDomain/zod + DomainFacility）经
 /// storage-kv backend → Rust `StorageKvService` 的真实 kv facet 往返 + `already-open` 错误面。
 #[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
 fn rpc_l2_504_official_storage_domain_round_trip() {
-    let Some(mut fixture) = spawn_official_sidecar("504") else {
+    let Some(mut fixture) = spawn_official_sidecar("504", false) else {
         return;
     };
     let envelope = invoke(
@@ -485,18 +534,17 @@ fn rpc_l2_504_official_storage_domain_round_trip() {
 /// 不能作为普通 Cordis plugin 装载；官方 kv facet 契约由它的消费者（storage-domain）验证。
 /// 这条用例固化"官方 hub + Rust backend adapter"的边界证据。
 #[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
 fn rpc_l2_505_official_storage_is_a_service_class_not_a_plugin() {
     if !node_available() {
-        eprintln!("SKIP rpc_l2_505: node not found");
-        return;
+        panic!("rpc_l2_505 需要 node；先运行 tools/official-l2-gate.ps1 的环境检查");
     }
     let sidecar_dir = repo_root().join("sidecar/dsh-official");
     if !sidecar_dir
         .join("node_modules/@deepseek-ai/dsh-storage")
         .exists()
     {
-        eprintln!("SKIP rpc_l2_505: dsh-storage 未 vendored");
-        return;
+        panic!("rpc_l2_505 需要 vendored dsh-storage：先运行 node tools/dsh-vendor.mjs");
     }
     let script = "import('@deepseek-ai/dsh-storage').then((m) => { console.log(JSON.stringify({ hasApply: typeof m.apply === 'function', hasInject: Array.isArray(m.inject), hasDefaultClass: typeof m.default === 'function' })) })";
     let output = std::process::Command::new("node")

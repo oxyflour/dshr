@@ -106,18 +106,35 @@ if (-not (Test-Path $chat)) {
     if ($LASTEXITCODE -ne 0) { Write-Host '[FAIL] 无法构建 chat.exe' -ForegroundColor Red; exit 1 }
 }
 
-Write-Step '1) new-plugin 生成仓库外样例'
+Write-Step '0c) 摘要规范交叉检查（Rust package_digest == tools/plugin-pack.mjs）'
+# 固定 fixture：根 dshr-trust.json/.dshr-install.json 不参与摘要，嵌套同名文件参与。
+# 期望值与 crates/profile/src/trust.rs 的 M3-DIGEST-002 是同一个常量（两侧交叉对账）。
+$digestFixture = Join-Path $repo 'crates\profile\tests\fixtures\digest-cross'
+$expectedCrossDigest = 'ec652b76464236c0cb3f71cd5a24013050f417394d8da3cc0c7c869e362cce08'
+$verifyOutput = & node (Join-Path $repo 'tools\plugin-pack.mjs') --verify $digestFixture --digest $expectedCrossDigest 2>&1
+$verifyOutput | ForEach-Object { Write-Host "    $_" }
+Assert-True ($LASTEXITCODE -eq 0) "Node 摘要命中 Rust 期望常量（$expectedCrossDigest）"
+
+Write-Step '1) new-plugin 生成仓库外样例（自包含 SDK）'
 $genOutput = & node (Join-Path $repo 'tools\new-plugin.mjs') --out $sample --id $pluginId --name 'Authoring Check' 2>&1
 $genOutput | ForEach-Object { Write-Host "    $_" }
 if ($LASTEXITCODE -ne 0) { Write-Host '[FAIL] new-plugin 失败' -ForegroundColor Red; exit 1 }
-foreach ($relative in @('Cargo.toml', 'plugin.toml', 'package.json', 'src\main.rs', 'README.md', '.gitignore')) {
+foreach ($relative in @('Cargo.toml', 'plugin.toml', 'package.json', 'src\main.rs', 'README.md', '.gitignore', 'sdk\Cargo.toml', 'sdk\src\lib.rs')) {
     Assert-True (Test-Path (Join-Path $sample $relative)) "生成文件存在: $relative"
 }
 $allText = (Get-ChildItem $sample -Recurse -File | Where-Object { $_.Extension -in '.toml', '.json', '.rs', '.md' } | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
 Assert-True (-not $allText.Contains('__DSHR_REPO__')) '模板占位符已全部替换'
+Assert-True (-not $allText.Contains('__PLUGIN_')) '生成物无残留 __PLUGIN_* 占位符'
 Assert-True ($allText.Contains($pluginId)) "生成内容包含 plugin_id=$pluginId"
+$sampleCargo = [System.IO.File]::ReadAllText((Join-Path $sample 'Cargo.toml'))
+Assert-True ($sampleCargo.Contains('path = "sdk"')) '样例 Cargo.toml 只引用相对路径 sdk'
+Assert-True (-not $sampleCargo.Contains($repo)) '样例 Cargo.toml 不含 dshr 仓库绝对路径'
+Assert-True (-not $allText.Contains($repo)) '生成物任何文本都不含 dshr 仓库绝对路径（可离开仓库构建）'
+$sdkCargo = [System.IO.File]::ReadAllText((Join-Path $sample 'sdk\Cargo.toml'))
+Assert-True (-not $sdkCargo.Contains('.workspace = true')) '拷贝的 SDK 不继承 workspace 字段'
+Assert-True (-not $sdkCargo.Contains($repo)) '拷贝的 SDK 不含 dshr 仓库绝对路径'
 
-Write-Step '2) cargo build --release（独立 workspace，SDK path 依赖）'
+Write-Step '2) cargo build --release（独立 workspace，SDK 来自 <out>/sdk）'
 if (-not $SkipBuild) {
     Push-Location $sample
     try {
@@ -212,3 +229,4 @@ if ($failures -eq 0) {
     Write-Host "[authoring-check] FAIL: $failures 项断言失败" -ForegroundColor Red
     exit 1
 }
+

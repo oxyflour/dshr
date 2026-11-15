@@ -93,7 +93,10 @@ credential_use = false
 
 ## 4. 用 SDK 写工具
 
-SDK crate：`dshr-plugin-sdk`（0.1.0，模板以 path 依赖引入；对外发布后改 `dshr-plugin-sdk = "0.1"`）。
+SDK crate：`dshr-plugin-sdk`（0.1.0，**自包含、无仓库内依赖**）。生成器会把 SDK 复制到样例的
+`<out>/sdk/`，模板用 `dshr-plugin-sdk = { path = "sdk" }`；在 SDK 正式发布到 registry 之前，
+这是"内部作者 Preview"口径（见 [ADR-0012](decisions/0012-m3-gate-closure.md)），发布后改成
+`dshr-plugin-sdk = "0.1"` 即可。
 入口是一个 `ChildSession`：读 stdin 的 NDJSON、写 stdout，SDK 负责握手/取消/错误帧。
 
 工具名必须匹配 `[a-z][a-z0-9_]*`（≤ 64 字节）且**全局唯一**；建议带插件前缀（模板生成器会派生 `<crate>_echo`）。
@@ -264,7 +267,8 @@ cargo build --release
 Copy-Item "$env:CARGO_TARGET_DIR\release\my-plugin.exe" "bin\my-plugin.exe"
 ```
 
-模板的 SDK 依赖是 path 形式（生成器已注入本机仓库路径）；SDK 对外发布后改成 `dshr-plugin-sdk = "0.1"`。
+模板的 SDK 依赖是 `<out>/sdk` 的相对 path（生成器复制自包含 SDK）；**样例工程不引用本仓库绝对路径**，
+可以整体拷到任意目录离线构建。SDK 正式发布到 registry 后改成 `dshr-plugin-sdk = "0.1"`。
 不要依赖宿主进程内的任何 Rust 类型——跨进程只有 JSON。
 
 ### 6.2 打包与 `dshr-trust.json`

@@ -17,6 +17,7 @@
 //!   cargo run ... --bin chat -- --selftest-stream            # 流式自检
 //!   cargo run ... --bin chat -- --selftest-dsh               # 官方 DSH 插件自检
 //!   cargo run ... --bin chat -- --selftest-adc-panel         # ADC 插件面板链路自检
+//!   cargo run ... --bin chat -- --selftest-wasm              # WASM 插件链路自检（安装→装载→调用→trap→卸载）
 //!   cargo run ... --bin chat -- --selftest-defaults          # M3 默认差异接线自检
 //!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
@@ -6029,9 +6030,12 @@ fn host_sdk_version() -> HostVersion {
     HostVersion::parse(dshr_plugin_api::HOST_VERSION).unwrap_or_else(|_| HostVersion::new(0, 1, 0))
 }
 
-/// 从 profile 的 enabled 条目装载已安装的 `external-process` 插件（spec/cpp-v1.md §12）。
+/// 从 profile 的 enabled 条目装载已安装插件（spec/cpp-v1.md §3.3）：
+/// - `external-process` → [`ExternalPluginSpec`] + [`ExternalPlugin::spawn`]；
+/// - `wasm-component` → [`PluginHost::load_wasm_plugin`]（P1-1：不再静默跳过）；
+/// - 其它 runtime kind（如 `rust-static`）装错位置 → 记为 plugin error（不静默）。
 ///
-/// 单个插件失败只记诊断，不影响其它插件与内置工具；非 external-process 条目跳过。
+/// 单个插件失败只记诊断，不影响其它插件与内置工具。
 fn load_enabled_external_plugins(
     plugins: &mut PluginHost,
     profile: &Profile,
@@ -6052,21 +6056,35 @@ fn load_enabled_external_plugins(
                 continue;
             }
         };
-        if manifest.runtime.kind != RuntimeKind::ExternalProcess {
-            continue;
-        }
-        let plugin_id = manifest.plugin.id.clone();
-        let spec = ExternalPluginSpec::new(manifest, &package_dir, host_sdk_version(), 1);
-        match ExternalPlugin::spawn(spec) {
-            Ok(plugin) => {
-                let id = plugin.id().to_owned();
-                if let Err(err) = plugins.load(Box::new(plugin)) {
-                    errors.push(format!("插件 {id} 装载失败: {err}"));
-                } else {
-                    eprintln!("[plugin] external-process 已装载: {id}");
+        match manifest.runtime.kind {
+            RuntimeKind::ExternalProcess => {
+                let plugin_id = manifest.plugin.id.clone();
+                let spec = ExternalPluginSpec::new(manifest, &package_dir, host_sdk_version(), 1);
+                match ExternalPlugin::spawn(spec) {
+                    Ok(plugin) => {
+                        let id = plugin.id().to_owned();
+                        if let Err(err) = plugins.load(Box::new(plugin)) {
+                            errors.push(format!("插件 {id} 装载失败: {err}"));
+                        } else {
+                            eprintln!("[plugin] external-process 已装载: {id}");
+                        }
+                    }
+                    Err(err) => errors.push(format!("插件 {plugin_id} 启动失败: {err}")),
                 }
             }
-            Err(err) => errors.push(format!("插件 {plugin_id} 启动失败: {err}")),
+            RuntimeKind::WasmComponent => {
+                let plugin_id = manifest.plugin.id.clone();
+                match plugins.load_wasm_plugin(&manifest, &package_dir, &host_sdk_version()) {
+                    Ok(()) => eprintln!("[plugin] wasm-component 已装载: {plugin_id}"),
+                    Err(err) => errors.push(format!("插件 {plugin_id} WASM 装载失败: {err}")),
+                }
+            }
+            // 安装包里出现 native-kind 的 plugin.toml 属于包装错位：必须报错，
+            // 不能像 W5 前那样静默 `continue`（review P1-1）。
+            other => errors.push(format!(
+                "插件 {} 的 runtime.kind={other:?} 不支持从安装包装载（rust-static 需内置）",
+                entry.name
+            )),
         }
     }
     errors
@@ -6243,6 +6261,233 @@ fn selftest_external_plugin() -> i32 {
         0
     } else {
         println!("[selftest-external] FAIL");
+        1
+    }
+}
+
+/// `--selftest-wasm`：WASM 插件的产品链路（review P1-1）。
+///
+/// 链路：临时 WASM 包（package.json + plugin.toml + plugin.wasm(WAT) + schemas +
+/// `dshr-trust.json`）→ `install_package_trusted` → 从 profile 装载（走
+/// `PluginHost::load_wasm_plugin`）→ 调用 `echo` → 渲染 `ui.render` panel →
+/// `trap` 工具撞 fuel 看门狗 → 宿主存活（再 call echo）→ unload。
+///
+/// 包建在 data root 下（不依赖用户 `%TEMP%` 是否可写），断言不联网。
+fn selftest_wasm() -> i32 {
+    let root = data_root().join("selftests").join("wasm-host");
+    let _ = std::fs::remove_dir_all(&root);
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        eprintln!(
+            "[selftest-wasm] FAIL：创建临时目录 {} 失败: {error}",
+            root.display()
+        );
+        return 1;
+    }
+    let package = root.join("pkg");
+    let sidecar = root.join("sidecar");
+    let profile_dir = root.join("profile");
+    if let Err(error) = std::fs::create_dir_all(package.join("schemas")) {
+        eprintln!("[selftest-wasm] FAIL：创建包目录失败: {error}");
+        return 1;
+    }
+    let _ = std::fs::create_dir_all(&sidecar);
+
+    // 1) WAT fixture：'e'=echo 回显；'u'=ui.render 返回 data 段元素树；其它（trap）=死循环。
+    let wat = r#"
+(module
+  (memory (export "memory") 1)
+  (data (i32.const 1024) "{\"type\":\"Text\",\"props\":{\"text\":\"wasm\"}}")
+  (global $heap (mut i32) (i32.const 4096))
+  (func (export "dshr_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr))
+  (func (export "dshr_invoke") (param $ptr i32) (param $len i32) (result i64)
+    (local $tag i32)
+    (local.set $tag (i32.load8_u offset=9 (local.get $ptr)))
+    (if (i32.eq (local.get $tag) (i32.const 117))
+      (then (return (i64.or
+        (i64.shl (i64.extend_i32_u (i32.const 1024)) (i64.const 32))
+        (i64.const 39)))))
+    (if (i32.eq (local.get $tag) (i32.const 101))
+      (then (return (i64.or
+        (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32))
+        (i64.extend_i32_u (local.get $len))))))
+    (loop $spin (br $spin))
+    (i64.const -1))
+)
+"#;
+    let plugin_id = "selftest.wasm";
+    let manifest = r#"
+[plugin]
+id = "selftest.wasm"
+version = "0.1.0"
+api = "cordis-portable/v1"
+description = "wasm-component selftest fixture"
+
+[runtime]
+kind = "wasm-component"
+entry = "plugin.wasm"
+fuel = 2000000
+max_memory_mb = 32
+timeout_ms = 30000
+
+[[tools]]
+name = "echo"
+description = "echo the request JSON"
+input_schema = "schemas/echo.input.json"
+output_schema = "schemas/echo.output.json"
+
+[[tools]]
+name = "trap"
+description = "spin until the fuel watchdog kills the invocation"
+input_schema = "schemas/trap.input.json"
+output_schema = "schemas/trap.output.json"
+
+[[ui]]
+slot = "workspace.panel"
+id = "selftest.wasm.panel"
+label = "WASM Panel"
+view = "selftest.wasm.view"
+location = "right"
+"#;
+    let writes = [
+        (package.join("plugin.wasm"), wat.as_bytes().to_vec()),
+        (package.join("plugin.toml"), manifest.as_bytes().to_vec()),
+        (
+            package.join("package.json"),
+            json!({ "name": plugin_id, "version": "0.1.0" })
+                .to_string()
+                .into_bytes(),
+        ),
+    ];
+    for (path, bytes) in writes {
+        if let Err(error) = std::fs::write(&path, bytes) {
+            eprintln!("[selftest-wasm] FAIL：写 {} 失败: {error}", path.display());
+            return 1;
+        }
+    }
+    for name in ["echo", "trap"] {
+        for direction in ["input", "output"] {
+            let schema = json!({ "type": "object" });
+            if let Err(error) = std::fs::write(
+                package.join(format!("schemas/{name}.{direction}.json")),
+                schema.to_string(),
+            ) {
+                eprintln!("[selftest-wasm] FAIL：写 schema 失败: {error}");
+                return 1;
+            }
+        }
+    }
+
+    // 2) 信任安装（与产品安装路径一致）。
+    let Ok(digest) = package_digest(&package) else {
+        eprintln!("[selftest-wasm] FAIL：计算包摘要失败");
+        return 1;
+    };
+    let trust = json!({
+        "schema_version": 1,
+        "plugin_id": plugin_id,
+        "version": "0.1.0",
+        "package": { "digest_sha256": digest }
+    });
+    let _ = std::fs::write(package.join("dshr-trust.json"), trust.to_string());
+
+    let mut profile = match Profile::load(&profile_dir) {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!("[selftest-wasm] FAIL：加载 profile 失败: {error}");
+            return 1;
+        }
+    };
+    let policy = TrustPolicy {
+        allow_downgrade: false,
+        require_confirm_for_unsigned: true,
+        store: TrustStore::default(),
+        now_ms: None,
+    };
+    let install = match install_package_trusted(&sidecar, &package, &mut profile, &policy, |_| true)
+    {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!(
+                "[selftest-wasm] FAIL：安装失败（{}）: {error}",
+                error.code()
+            );
+            return 1;
+        }
+    };
+    let installed_ok = install.install.destination.join("plugin.toml").is_file();
+
+    // 3) 从 profile 装载（产品路径：loader 内部分发到 WASM 分支）。
+    let mut plugins = PluginHost::new(ApprovalPolicy::desktop());
+    let errors = load_enabled_external_plugins(&mut plugins, &profile, &sidecar);
+    if !errors.is_empty() {
+        for error in &errors {
+            eprintln!("[selftest-wasm] {error}");
+        }
+        println!("[selftest-wasm] FAIL（装载失败）");
+        return 1;
+    }
+    let loaded = plugins.is_loaded(plugin_id);
+    let echo_ok = plugins
+        .call("echo", &json!({ "text": "wasm" }))
+        .ok()
+        .and_then(|value| {
+            value
+                .get("arguments")
+                .and_then(|arguments| arguments.get("text"))
+                .and_then(|text| text.as_str())
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some("wasm");
+    let panel_ok = plugins
+        .panels()
+        .iter()
+        .any(|panel| panel.plugin_id == plugin_id && panel.panel.id == "selftest.wasm.panel")
+        && plugins
+            .panels()
+            .iter()
+            .any(|panel| panel.panel.view_name() == "selftest.wasm.view");
+    let render_ok = plugins
+        .render_panel(plugin_id, "selftest.wasm.view")
+        .map(|tree| tree["type"] == json!("Text"))
+        .unwrap_or(false);
+
+    // 4) trap：fuel 看门狗杀本次调用，宿主/插件存活（再 call echo 成功）。
+    let trap = plugins.call("trap", &json!({}));
+    let trap_isolated = trap
+        .as_ref()
+        .err()
+        .map(|error| {
+            let text = error.to_string();
+            text.contains("E_QUOTA") || text.contains("E_TIMEOUT")
+        })
+        .unwrap_or(false);
+    let survived = plugins
+        .call("echo", &json!({ "text": "alive" }))
+        .map(|value| value.to_string().contains("alive"))
+        .unwrap_or(false);
+    let unloaded = plugins.unload(plugin_id).is_ok() && !plugins.is_loaded(plugin_id);
+    let ok = installed_ok
+        && loaded
+        && echo_ok
+        && panel_ok
+        && render_ok
+        && trap_isolated
+        && survived
+        && unloaded;
+    println!(
+        "[selftest-wasm] installed_ok={installed_ok} loaded={loaded} echo_ok={echo_ok} panel_ok={panel_ok} render_ok={render_ok} trap_isolated={trap_isolated} survived={survived} unloaded={unloaded}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    if ok {
+        println!("[selftest-wasm] PASS");
+        0
+    } else {
+        println!("[selftest-wasm] FAIL");
         1
     }
 }
@@ -7370,9 +7615,18 @@ fn selftest_l2() -> i32 {
         );
         return 1;
     }
-    let root = std::env::temp_dir().join(format!("dshr-selftest-l2-{}", std::process::id()));
+    let root = data_root()
+        .join("selftests")
+        .join(format!("l2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::create_dir_all(&root);
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        // review P2-4：不再用用户 `%TEMP%`，失败要打印真实路径与原因。
+        eprintln!(
+            "[selftest-l2] FAIL phase B: 创建临时目录 {} 失败: {error}",
+            root.display()
+        );
+        return 1;
+    }
     let access = ChatSessionAccess::new(root.join("sessions"));
     let router = match build_l2_router_at(
         access,
@@ -7625,6 +7879,9 @@ fn main() {
     }
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-wasm") {
+        std::process::exit(selftest_wasm());
     }
     if std::env::args().any(|arg| arg == "--selftest-adc-panel") {
         std::process::exit(selftest_adc_panel());

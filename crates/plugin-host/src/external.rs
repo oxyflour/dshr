@@ -11,7 +11,15 @@
 //! 隔离（G3 退路）：子进程用 [`dshr_sidecar_guard::spawn_guarded`] 包进 Windows
 //! Job Object——内存上限来自 manifest `max_memory_mb`、CPU 时间由 `fuel` 折算（缺省 60 s）、
 //! 活跃进程数 4、宿主退出/句柄关闭即整 job 终止。宿主对每次调用有墙钟看门狗，
-//! 超时直接杀 job；输出超过 1 MiB 帧上限由 SDK 侧结算 `E_TOO_LARGE`，宿主双重防御。
+//! 超时直接杀 job。
+//!
+//! 读写边界（P1-3，不依赖子进程"守规矩"）：
+//! - stdout 读线程用 `take(MAX_FRAME_BYTES + 1)` 有界读帧，超大帧**分配前**截断并
+//!   上报 `E_TOO_LARGE`（随后杀 Job）；
+//! - stdout→主线程改**有界** channel（[`STDOUT_CHANNEL_CAPACITY`]），恶意洪泛不会把
+//!   帧堆进内存；
+//! - stdin 写入交给独立写线程，主线程带 deadline 等 ack（[`STDIN_WRITE_TIMEOUT_MS`]）：
+//!   子进程不读 stdin 时结算 `E_TIMEOUT` 而不是永久阻塞宿主。
 //!
 //! ## 与 WASM 主方案的替换缝隙
 //!
@@ -23,10 +31,10 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -67,6 +75,17 @@ const STDERR_TAIL_LIMIT: usize = 64;
 #[cfg(windows)]
 const EXECUTABLE_HINT: &str = ".exe";
 
+/// stdout 读线程 → 主线程的帧 channel 容量。
+///
+/// **有界**（P1-3）：宿主消费慢时读线程会阻塞在 `send`，而不是把恶意子进程的
+/// 无限输出堆进内存。
+pub const STDOUT_CHANNEL_CAPACITY: usize = 64;
+/// 写 child stdin 的看门狗上限。
+///
+/// 子进程不读 stdin 时 `write_all` 会永久阻塞；写线程 + ack 超时把这种阻塞变成
+/// 可结算的 `E_TIMEOUT`（随后宿主杀 Job，保证"宿主存活"）。
+pub const STDIN_WRITE_TIMEOUT_MS: u64 = 5_000;
+
 /// `ExternalPlugin::spawn` 的输入（manifest 由装载方解析，包目录是安装后的真实路径）。
 #[derive(Debug, Clone)]
 pub struct ExternalPluginSpec {
@@ -93,9 +112,21 @@ impl ExternalPluginSpec {
 }
 
 /// 子进程 stdout 的读线程消息。
+#[derive(Debug)]
 enum ChildMessage {
     Line(String),
+    /// 单帧超过 [`MAX_FRAME_BYTES`]（读线程在分配前用 `take` 截断，只上报大小）。
+    FrameTooLarge {
+        size: usize,
+    },
     Exited,
+}
+
+/// 一次 host→child 的写入任务（写线程执行 `write_all`，主线程带 deadline 等 ack）。
+#[derive(Debug)]
+struct WriteJob {
+    bytes: Vec<u8>,
+    ack: SyncSender<Result<(), String>>,
 }
 
 /// 一次 host→child 往返的错误。
@@ -164,7 +195,8 @@ pub struct ExternalPlugin {
     package_dir: PathBuf,
     ready: ReadyDecls,
     child: GuardedChild,
-    stdin: Option<ChildStdin>,
+    /// stdin 写入队列（写线程独占 `ChildStdin`；None = 已 kill/关闭）。
+    writer: Option<SyncSender<WriteJob>>,
     stdout_rx: Receiver<ChildMessage>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     request_counter: u64,
@@ -254,11 +286,20 @@ impl ExternalPlugin {
             .take()
             .ok_or_else(|| external_error("child stderr pipe is missing".to_owned()))?;
 
-        let (sender, stdout_rx) = mpsc::channel::<ChildMessage>();
+        // stdout：有界 channel（容量 STDOUT_CHANNEL_CAPACITY），读线程按帧上限截断。
+        let (sender, stdout_rx) = mpsc::sync_channel::<ChildMessage>(STDOUT_CHANNEL_CAPACITY);
         thread::Builder::new()
             .name(format!("cpp-process-stdout-{plugin_id}"))
             .spawn(move || read_stdout(stdout, sender))
             .map_err(|err| external_error(format!("cannot spawn stdout reader: {err}")))?;
+
+        // stdin：独立写线程独占管道，主线程只入队 + 等 ack（带 watchdog）。
+        let (writer, write_jobs) = mpsc::sync_channel::<WriteJob>(8);
+        thread::Builder::new()
+            .name(format!("cpp-process-stdin-{plugin_id}"))
+            .spawn(move || write_stdin_loop(stdin, write_jobs))
+            .map_err(|err| external_error(format!("cannot spawn stdin writer: {err}")))?;
+
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
         thread::Builder::new()
             .name(format!("cpp-process-stderr-{plugin_id}"))
@@ -277,7 +318,7 @@ impl ExternalPlugin {
             package_dir,
             ready: ReadyDecls::default(),
             child,
-            stdin: Some(stdin),
+            writer: Some(writer),
             stdout_rx,
             stderr_tail,
             request_counter: 0,
@@ -463,7 +504,16 @@ impl ExternalPlugin {
     }
 
     fn send(&mut self, envelope: &Envelope) -> Result<(), ExchangeError> {
-        let Some(stdin) = self.stdin.as_mut() else {
+        self.send_with_timeout(envelope, Duration::from_millis(STDIN_WRITE_TIMEOUT_MS))
+    }
+
+    /// 带 deadline 的发送：写线程负责 `write_all`，这里只等 ack（P1-3）。
+    fn send_with_timeout(
+        &mut self,
+        envelope: &Envelope,
+        timeout: Duration,
+    ) -> Result<(), ExchangeError> {
+        let Some(writer) = self.writer.as_ref() else {
             return Err(ExchangeError::Exited {
                 reason: "stdin is closed".to_owned(),
             });
@@ -474,12 +524,7 @@ impl ExternalPlugin {
                 code: err.code().to_owned(),
                 message: err.to_string(),
             })?;
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|err| ExchangeError::Io(err.to_string()))?;
-        stdin
-            .flush()
-            .map_err(|err| ExchangeError::Io(err.to_string()))
+        enqueue_write(writer, line.into_bytes(), timeout)
     }
 
     fn next_envelope(
@@ -494,9 +539,6 @@ impl ExternalPlugin {
             }
             match self.stdout_rx.recv_timeout(remaining) {
                 Ok(ChildMessage::Line(line)) => {
-                    if line.len() > MAX_FRAME_BYTES {
-                        return Err(ExchangeError::FrameTooLarge { size: line.len() });
-                    }
                     let envelope =
                         Envelope::parse(&line).map_err(|err| ExchangeError::Protocol {
                             code: err.code().to_owned(),
@@ -514,6 +556,9 @@ impl ExternalPlugin {
                         kind::TOOL_CHUNK => continue,
                         _ => return Ok(envelope),
                     }
+                }
+                Ok(ChildMessage::FrameTooLarge { size }) => {
+                    return Err(ExchangeError::FrameTooLarge { size })
                 }
                 Ok(ChildMessage::Exited) => {
                     return Err(ExchangeError::Exited {
@@ -587,7 +632,9 @@ impl ExternalPlugin {
         )
         .map(|envelope| envelope.with_request_id(request_id));
         if let Ok(cancel) = cancel {
-            let _ = self.send(&cancel);
+            // cancel 是 best-effort：子进程若已在阻塞/挂起，不能在结算路径上再等满
+            // 一个写 watchdog（否则超时会翻倍）；给很短的 ack 窗口即可。
+            let _ = self.send_with_timeout(&cancel, Duration::from_millis(100));
         }
     }
 
@@ -598,7 +645,9 @@ impl ExternalPlugin {
     }
 
     fn kill(&mut self) {
-        self.stdin.take();
+        // 关闭写队列：写线程退出并 drop stdin（子进程看到 EOF）；阻塞中的 write 会因
+        // 进程被杀而失败。随后杀 Job 并等待退出。
+        self.writer.take();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -774,16 +823,43 @@ impl Drop for ExternalPlugin {
     }
 }
 
-fn read_stdout(stdout: ChildStdout, sender: mpsc::Sender<ChildMessage>) {
-    let mut reader = BufReader::new(stdout);
+/// stdout 读线程：**有界**读帧（P1-3）。
+///
+/// 用 `take(MAX_FRAME_BYTES + 1)` 限制单帧分配：子进程输出一条永不换行的巨行时，
+/// 只读到上限 +1 就上报 [`ChildMessage::FrameTooLarge`]，不会被无界 `read_line` 撑爆。
+fn read_stdout(stdout: ChildStdout, sender: SyncSender<ChildMessage>) {
+    read_stdout_impl(BufReader::new(stdout), sender);
+}
+
+fn read_stdout_impl<R: BufRead>(mut reader: R, sender: SyncSender<ChildMessage>) {
+    let limit = MAX_FRAME_BYTES as u64 + 1;
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
+        let mut buf = Vec::new();
+        let read = {
+            let mut limited = (&mut reader).take(limit);
+            limited.read_until(b'\n', &mut buf)
+        };
+        match read {
             Ok(0) => {
                 let _ = sender.send(ChildMessage::Exited);
                 break;
             }
             Ok(_) => {
+                // 去掉行尾 `\n`/`\r` 后再比较上限：合法帧的换行符不计入帧大小。
+                let trimmed = buf
+                    .iter()
+                    .rev()
+                    .take_while(|byte| **byte == b'\n' || **byte == b'\r')
+                    .count();
+                let payload_len = buf.len() - trimmed;
+                if payload_len > MAX_FRAME_BYTES {
+                    let _ = sender.send(ChildMessage::FrameTooLarge { size: buf.len() });
+                    break;
+                }
+                if payload_len == 0 {
+                    continue;
+                }
+                let line = String::from_utf8_lossy(&buf[..payload_len]).into_owned();
                 if sender.send(ChildMessage::Line(line)).is_err() {
                     break;
                 }
@@ -793,6 +869,45 @@ fn read_stdout(stdout: ChildStdout, sender: mpsc::Sender<ChildMessage>) {
                 break;
             }
         }
+    }
+}
+
+/// stdin 写线程：独占 `ChildStdin`，逐条 `write_all` 并回 ack。
+///
+/// 子进程不读 stdin 时这里会阻塞在 `write_all`；主线程在 [`enqueue_write`] 里用
+/// deadline 等 ack，超时后结算 `E_TIMEOUT` 并杀 Job——宿主不会永久卡住（P1-3）。
+fn write_stdin_loop(mut stdin: ChildStdin, jobs: Receiver<WriteJob>) {
+    for job in jobs {
+        let result = stdin
+            .write_all(&job.bytes)
+            .and_then(|()| stdin.flush())
+            .map_err(|err| err.to_string());
+        // ack 失败说明等 ack 的一侧已超时/放弃：继续服务后续写入或退出。
+        let _ = job.ack.send(result);
+    }
+}
+
+/// 入队写请求并在 `timeout` 内等 ack；超时返回 `ExchangeError::Timeout`。
+fn enqueue_write(
+    writer: &SyncSender<WriteJob>,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<(), ExchangeError> {
+    let (ack, ack_rx) = mpsc::sync_channel(1);
+    writer
+        .send(WriteJob { bytes, ack })
+        .map_err(|_| ExchangeError::Exited {
+            reason: "stdin writer stopped".to_owned(),
+        })?;
+    match ack_rx.recv_timeout(timeout) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(reason)) => Err(ExchangeError::Io(reason)),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(ExchangeError::Timeout {
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        }),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(ExchangeError::Exited {
+            reason: "stdin writer stopped".to_owned(),
+        }),
     }
 }
 
@@ -895,4 +1010,99 @@ fn resolve_entry(package_dir: &Path, entry: &str) -> Result<PathBuf, String> {
 /// 这里把 manifest 字符串泄漏一次：每进程 O(1)，换来 trait 零改动。
 fn leak_plugin_str(value: &str) -> &'static str {
     Box::leak(value.to_owned().into_boxed_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // CPP-ISO-027：stdout 读线程 → 主线程的帧 channel 必须有界（防无界积压）。
+    #[test]
+    fn cpp_iso_027_stdout_channel_is_bounded() {
+        let (sender, _receiver) = mpsc::sync_channel::<ChildMessage>(STDOUT_CHANNEL_CAPACITY);
+        for _ in 0..STDOUT_CHANNEL_CAPACITY {
+            sender
+                .try_send(ChildMessage::Exited)
+                .expect("容量内应可入队");
+        }
+        match sender.try_send(ChildMessage::Exited) {
+            Err(mpsc::TrySendError::Full(_)) => {}
+            other => panic!("channel 必须有界失败，实际: {other:?}"),
+        }
+    }
+
+    // CPP-ISO-028：单帧超上限时读线程在分配前截断，只上报 FrameTooLarge。
+    #[test]
+    fn cpp_iso_028_oversized_single_line_is_capped_before_allocation() {
+        // 无换行的巨行：read_until 只能读到 MAX_FRAME_BYTES + 1。
+        let huge = vec![b'x'; MAX_FRAME_BYTES + 4096];
+        let (sender, receiver) = mpsc::sync_channel::<ChildMessage>(STDOUT_CHANNEL_CAPACITY);
+        read_stdout_impl(Cursor::new(huge.clone()), sender);
+        match receiver.try_recv() {
+            Ok(ChildMessage::FrameTooLarge { size }) => {
+                assert!(size > MAX_FRAME_BYTES, "size={size}");
+            }
+            other => panic!("期望 FrameTooLarge，实际: {other:?}"),
+        }
+        assert!(
+            receiver.try_recv().is_err(),
+            "超限后必须停止读取（不继续积压帧）"
+        );
+
+        // 带换行的超长行同样拒绝（换行不计入帧大小，但 payload 仍超限）。
+        let mut with_newline = huge;
+        with_newline.push(b'\n');
+        let (sender, receiver) = mpsc::sync_channel::<ChildMessage>(STDOUT_CHANNEL_CAPACITY);
+        read_stdout_impl(Cursor::new(with_newline), sender);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(ChildMessage::FrameTooLarge { .. })
+        ));
+    }
+
+    // CPP-ISO-029（单元层）：正常帧去行尾换行；空行跳过；EOF 上报 Exited。
+    #[test]
+    fn cpp_iso_029_valid_frames_are_trimmed_and_empty_lines_skipped() {
+        let data = b"{\"a\":1}\n{\"b\":2}\r\n\n".to_vec();
+        let (sender, receiver) = mpsc::sync_channel::<ChildMessage>(STDOUT_CHANNEL_CAPACITY);
+        read_stdout_impl(Cursor::new(data), sender);
+        assert!(matches!(receiver.try_recv(), Ok(ChildMessage::Line(line)) if line == "{\"a\":1}"));
+        assert!(matches!(receiver.try_recv(), Ok(ChildMessage::Line(line)) if line == "{\"b\":2}"));
+        assert!(matches!(receiver.try_recv(), Ok(ChildMessage::Exited)));
+    }
+
+    // CPP-ISO-030（单元层）：子进程不读 stdin 时，入队写请求在 deadline 内结算 E_TIMEOUT。
+    #[test]
+    fn cpp_iso_030_write_watchdog_times_out_when_child_stops_reading() {
+        let (writer, jobs) = mpsc::sync_channel::<WriteJob>(8);
+        // 接收方拿到 job 后**不 ack**（模拟 write_all 阻塞在管道上）。
+        let holder = thread::spawn(move || {
+            let job = jobs.recv().expect("job");
+            std::thread::sleep(Duration::from_millis(500));
+            drop(job);
+        });
+        let started = Instant::now();
+        let error = enqueue_write(&writer, b"payload".to_vec(), Duration::from_millis(80))
+            .expect_err("必须超时");
+        assert!(matches!(error, ExchangeError::Timeout { .. }), "{error:?}");
+        assert!(started.elapsed() >= Duration::from_millis(80));
+        drop(writer);
+        let _ = holder.join();
+    }
+
+    // CPP-ISO-031（单元层）：写线程正常 ack 时入队成功（写路径本身可用）。
+    #[test]
+    fn cpp_iso_031_write_ack_succeeds_for_healthy_child() {
+        let (writer, jobs) = mpsc::sync_channel::<WriteJob>(8);
+        let worker = thread::spawn(move || {
+            if let Ok(job) = jobs.recv() {
+                let _ = job.ack.send(Ok(()));
+            }
+        });
+        enqueue_write(&writer, b"payload".to_vec(), Duration::from_millis(1_000))
+            .expect("healthy child ack");
+        drop(writer);
+        let _ = worker.join();
+    }
 }

@@ -26,6 +26,8 @@ use crate::service::{HostService, ServiceCallContext, ServiceError};
 pub const WORKING_DIRECTORY_V1: &str = "working-directory/v1";
 /// `session-log/v1` 服务键。
 pub const SESSION_LOG_V1: &str = "session-log/v1";
+/// `session-projections/v1` 服务键（Sidecar 投影注册表的数据面）。
+pub const SESSION_PROJECTIONS_V1: &str = "session-projections/v1";
 /// 工作目录变更事件类型（官方 `dsh-working-directory` 同名事件）。
 pub const WORKING_DIRECTORY_CHANGED: &str = "working-directory/change";
 /// `events.read` 单页事件数上限（m3-l2-services §3.2）。
@@ -246,73 +248,6 @@ impl SessionLogService {
             table: session_log_table(),
         }
     }
-
-    fn describe(&mut self, args: &Value, ctx: &ServiceCallContext) -> Result<Value, ServiceError> {
-        parse_empty_args(args)?;
-        let session_id = require_session(ctx)?;
-        let header = self.access.header(session_id)?;
-        Ok(json!({
-            "header": {
-                "id": header.id,
-                "cwd": header.cwd,
-                "created_at": header.created_at,
-                "version": SESSION_HEADER_VERSION,
-                "parent": header.parent_session_id,
-                "delegation_depth": header.delegation_depth,
-            }
-        }))
-    }
-
-    fn read_events(
-        &mut self,
-        args: &Value,
-        ctx: &ServiceCallContext,
-    ) -> Result<Value, ServiceError> {
-        let args: EventsReadArgs = parse_args(args)?;
-        let session_id = require_session(ctx)?;
-        if args.max_events == 0 {
-            return Err(ServiceError::args(
-                "/args/max_events",
-                "max_events must be >= 1",
-            ));
-        }
-        if args.max_events > MAX_EVENTS_PER_PAGE {
-            return Err(ServiceError::new(
-                "E_TOO_LARGE",
-                format!(
-                    "max_events {} exceeds {MAX_EVENTS_PER_PAGE}",
-                    args.max_events
-                ),
-            ));
-        }
-        // 未知/已销毁会话 → E_SERVICE_UNAVAILABLE（来自 SessionAccess 的约定）。
-        self.access.header(session_id)?;
-        let page = self
-            .access
-            .read_events(session_id, args.from_seq, args.max_events as usize)?;
-        if page.events.len() as u64 > MAX_EVENTS_PER_PAGE {
-            return Err(ServiceError::new(
-                "E_TOO_LARGE",
-                "session access returned more events than the page limit",
-            ));
-        }
-        let reply = json!({
-            "events": page.events,
-            "next_seq": page.next_seq,
-            "eof": page.eof,
-        });
-        let bytes = serde_json::to_vec(&reply)
-            .map_err(|error| ServiceError::new("E_INTERNAL", format!("serialize page: {error}")))?
-            .len();
-        if bytes > MAX_PAGE_BYTES {
-            // m3-l2-services §3.2：单页超限整页失败，不返回半页。
-            return Err(ServiceError::new(
-                "E_TOO_LARGE",
-                format!("events page serialized size {bytes} exceeds {MAX_PAGE_BYTES} bytes"),
-            ));
-        }
-        Ok(reply)
-    }
 }
 
 impl HostService for SessionLogService {
@@ -327,14 +262,124 @@ impl HostService for SessionLogService {
         ctx: &ServiceCallContext,
     ) -> Result<Value, ServiceError> {
         match method {
-            "session.describe" => self.describe(args, ctx),
-            "events.read" => self.read_events(args, ctx),
+            "session.describe" => describe_payload(self.access.as_ref(), args, ctx),
+            "events.read" => read_events_payload(self.access.as_ref(), args, ctx),
             other => Err(ServiceError::new(
                 "E_SERVICE_METHOD",
                 format!("unknown session-log method `{other}`"),
             )),
         }
     }
+}
+
+/// `session-projections/v1`：Sidecar 的投影注册表（`ctx.sessionProjections`）使用的
+/// 数据面读服务。语义与 `session-log/v1` 一致（`session.describe` 给 `init` 的 header，
+/// `events.read` 给分页事件流），但 service_key 独立，便于白名单按投影需求单独授权。
+pub struct SessionProjectionsService {
+    access: Arc<dyn SessionAccess>,
+    table: HostServiceTable,
+}
+
+impl SessionProjectionsService {
+    pub fn new(access: Arc<dyn SessionAccess>) -> Self {
+        Self {
+            access,
+            table: session_projections_table(),
+        }
+    }
+}
+
+impl HostService for SessionProjectionsService {
+    fn table(&self) -> &HostServiceTable {
+        &self.table
+    }
+
+    fn dispatch(
+        &mut self,
+        method: &str,
+        args: &Value,
+        ctx: &ServiceCallContext,
+    ) -> Result<Value, ServiceError> {
+        match method {
+            "session.describe" => describe_payload(self.access.as_ref(), args, ctx),
+            "events.read" => read_events_payload(self.access.as_ref(), args, ctx),
+            other => Err(ServiceError::new(
+                "E_SERVICE_METHOD",
+                format!("unknown session-projections method `{other}`"),
+            )),
+        }
+    }
+}
+
+/// `session.describe` 的共享实现（session-log / session-projections 两个 service key 共用）。
+fn describe_payload(
+    access: &dyn SessionAccess,
+    args: &Value,
+    ctx: &ServiceCallContext,
+) -> Result<Value, ServiceError> {
+    parse_empty_args(args)?;
+    let session_id = require_session(ctx)?;
+    let header = access.header(session_id)?;
+    Ok(json!({
+        "header": {
+            "id": header.id,
+            "cwd": header.cwd,
+            "created_at": header.created_at,
+            "version": SESSION_HEADER_VERSION,
+            "parent": header.parent_session_id,
+            "delegation_depth": header.delegation_depth,
+        }
+    }))
+}
+
+/// `events.read` 的共享实现：分页 + 单页字节上限（m3-l2-services §3.2）。
+fn read_events_payload(
+    access: &dyn SessionAccess,
+    args: &Value,
+    ctx: &ServiceCallContext,
+) -> Result<Value, ServiceError> {
+    let args: EventsReadArgs = parse_args(args)?;
+    let session_id = require_session(ctx)?;
+    if args.max_events == 0 {
+        return Err(ServiceError::args(
+            "/args/max_events",
+            "max_events must be >= 1",
+        ));
+    }
+    if args.max_events > MAX_EVENTS_PER_PAGE {
+        return Err(ServiceError::new(
+            "E_TOO_LARGE",
+            format!(
+                "max_events {} exceeds {MAX_EVENTS_PER_PAGE}",
+                args.max_events
+            ),
+        ));
+    }
+    // 未知/已销毁会话 → E_SERVICE_UNAVAILABLE（来自 SessionAccess 的约定）。
+    access.header(session_id)?;
+    let page = access.read_events(session_id, args.from_seq, args.max_events as usize)?;
+    if page.events.len() as u64 > MAX_EVENTS_PER_PAGE {
+        return Err(ServiceError::new(
+            "E_TOO_LARGE",
+            "session access returned more events than the page limit",
+        ));
+    }
+    let reply = json!({
+        "events": page.events,
+        "next_seq": page.next_seq,
+        "eof": page.eof,
+    });
+    let bytes = serde_json::to_vec(&reply)
+        .map_err(|error| ServiceError::new("E_INTERNAL", format!("serialize page: {error}")))?
+        .len();
+    if bytes > MAX_PAGE_BYTES {
+        // m3-l2-services §3.2：单页超限整页失败，不返回半页。
+        return Err(ServiceError::new(
+            "E_TOO_LARGE",
+            format!("events page serialized size {bytes} exceeds {MAX_PAGE_BYTES} bytes"),
+        ));
+    }
+    Ok(reply)
 }
 
 #[derive(Debug, Deserialize)]
@@ -440,6 +485,43 @@ fn object_schema(properties: Value, required: Value) -> Value {
 
 fn cwd_result_schema() -> Value {
     object_schema(json!({ "cwd": { "type": "string" } }), json!(["cwd"]))
+}
+
+fn session_projections_table() -> HostServiceTable {
+    HostServiceTable::new(
+        SESSION_PROJECTIONS_V1,
+        vec![
+            method(
+                "session.describe",
+                HostServiceKind::Read,
+                object_schema(json!({}), json!([])),
+                object_schema(json!({ "header": { "type": "object" } }), json!(["header"])),
+                5_000,
+                true,
+            ),
+            method(
+                "events.read",
+                HostServiceKind::Read,
+                object_schema(
+                    json!({
+                        "from_seq": { "type": "integer", "minimum": 0 },
+                        "max_events": { "type": "integer", "minimum": 1 },
+                    }),
+                    json!(["from_seq", "max_events"]),
+                ),
+                object_schema(
+                    json!({
+                        "events": { "type": "array" },
+                        "next_seq": { "type": "integer", "minimum": 0 },
+                        "eof": { "type": "boolean" },
+                    }),
+                    json!(["events", "next_seq", "eof"]),
+                ),
+                10_000,
+                true,
+            ),
+        ],
+    )
 }
 
 fn working_directory_table() -> HostServiceTable {
@@ -1154,5 +1236,139 @@ mod tests {
             )
             .expect_err("unknown args field");
         assert_eq!(error.code, "E_SERVICE_ARGS");
+    }
+
+    // ---- session-projections/v1（Sidecar 投影注册表数据面）：RPC-L2-202..208 ----
+
+    fn projections_service(access: &Arc<FakeAccess>) -> SessionProjectionsService {
+        SessionProjectionsService::new(dyn_access(access))
+    }
+
+    /// RPC-L2-202：`session.describe` 给投影 `init(header)` 的 header 投影。
+    #[test]
+    fn rpc_l2_202_session_projections_describe_header() {
+        let access = seeded_access(1);
+        let mut service = projections_service(&access);
+        assert_eq!(service.table().service_key, SESSION_PROJECTIONS_V1);
+        assert!(service.table().validate().is_ok());
+        let reply = service
+            .dispatch("session.describe", &json!({}), &sl_ctx())
+            .expect("describe");
+        assert_eq!(reply["header"]["id"], SESSION);
+        assert_eq!(reply["header"]["cwd"], "C:\\ws");
+        assert_eq!(reply["header"]["version"], SESSION_HEADER_VERSION);
+        assert_eq!(reply["header"]["delegation_depth"], 0);
+    }
+
+    /// RPC-L2-203：`events.read` 第一页：seq 递增、next_seq=3、eof=false。
+    #[test]
+    fn rpc_l2_203_session_projections_events_first_page() {
+        let access = seeded_access(5);
+        let mut service = projections_service(&access);
+        let page = service
+            .dispatch(
+                "events.read",
+                &json!({ "from_seq": 1, "max_events": 2 }),
+                &sl_ctx(),
+            )
+            .expect("page 1");
+        let seqs: Vec<u64> = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(seqs, vec![1, 2]);
+        assert_eq!(page["next_seq"], 3);
+        assert_eq!(page["eof"], false);
+    }
+
+    /// RPC-L2-204：续页从 `next_seq` 继续、最后一页 eof=true。
+    #[test]
+    fn rpc_l2_204_session_projections_events_next_page() {
+        let access = seeded_access(2);
+        let mut service = projections_service(&access);
+        let page = service
+            .dispatch(
+                "events.read",
+                &json!({ "from_seq": 2, "max_events": 10 }),
+                &sl_ctx(),
+            )
+            .expect("page 2");
+        assert_eq!(page["events"].as_array().unwrap().len(), 2);
+        assert_eq!(page["next_seq"], 4);
+        assert_eq!(page["eof"], true);
+    }
+
+    /// RPC-L2-205：未知会话 → `E_SERVICE_UNAVAILABLE`。
+    #[test]
+    fn rpc_l2_205_session_projections_unknown_session() {
+        let access = FakeAccess::with_session(SESSION, None);
+        let mut service = projections_service(&access);
+        let mut context = sl_ctx();
+        context.session_id = Some("s-unknown".to_owned());
+        let error = service
+            .dispatch(
+                "events.read",
+                &json!({ "from_seq": 1, "max_events": 10 }),
+                &context,
+            )
+            .expect_err("unknown session");
+        assert_eq!(error.code, "E_SERVICE_UNAVAILABLE");
+    }
+
+    /// RPC-L2-206：`max_events > 500` → `E_TOO_LARGE`（分页边界）。
+    #[test]
+    fn rpc_l2_206_session_projections_page_count_limit() {
+        let access = seeded_access(1);
+        let mut service = projections_service(&access);
+        let error = service
+            .dispatch(
+                "events.read",
+                &json!({ "from_seq": 1, "max_events": 501 }),
+                &sl_ctx(),
+            )
+            .expect_err("page count limit");
+        assert_eq!(error.code, "E_TOO_LARGE");
+    }
+
+    /// RPC-L2-207：单页 > 512 KiB → `E_TOO_LARGE`（不返回半页）。
+    #[test]
+    fn rpc_l2_207_session_projections_page_byte_limit() {
+        let access = FakeAccess::with_session(SESSION, None);
+        access.push_event(
+            SESSION,
+            "message.user",
+            json!({ "text": "x".repeat(600_000) }),
+        );
+        let mut service = projections_service(&access);
+        let error = service
+            .dispatch(
+                "events.read",
+                &json!({ "from_seq": 1, "max_events": 10 }),
+                &sl_ctx(),
+            )
+            .expect_err("page bytes limit");
+        assert_eq!(error.code, "E_TOO_LARGE");
+    }
+
+    /// RPC-L2-208：投影方法都是会话级（requires_session）；缺 session_id 拒绝。
+    #[test]
+    fn rpc_l2_208_session_projections_requires_session() {
+        let access = seeded_access(0);
+        let mut service = projections_service(&access);
+        assert!(service
+            .table()
+            .methods
+            .iter()
+            .all(|method| method.requires_session));
+        let error = service
+            .dispatch("session.describe", &json!({}), &ctx(None))
+            .expect_err("missing session");
+        assert_eq!(error.code, "E_SERVICE_ARGS");
+        assert_eq!(
+            error.detail.as_ref().expect("detail")["path"],
+            "/session_id"
+        );
     }
 }
