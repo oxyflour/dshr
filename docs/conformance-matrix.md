@@ -7,8 +7,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-15T12:40:26.555Z |
-| git HEAD | 5d2335d575bc9f50c44747f9b1a38a6c170d60a3（dirty，9 个文件未提交） |
+| generated_at | 2026-11-15T12:49:21.836Z |
+| git HEAD | 44eaaacf1a471a6516ea9af362a9fb11c59205c3（clean） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -33,10 +33,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.27s | `node schema/check.mjs` | 71/71 cases passed |
-| links | pass | 0 | 0.28s | `node tools/check-links.mjs` | 336 link(s) checked, 0 broken, 65 file(s) scanned |
-| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 54.04s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
+| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 71/71 cases passed |
+| links | pass | 0 | 0.30s | `node tools/check-links.mjs` | 342 link(s) checked, 0 broken, 65 file(s) scanned |
+| node-test | pass | 0 | 0.38s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 54.60s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
@@ -62,7 +62,7 @@
 | SCHEMA-FIXTURE-018 | SCHEMA | envelope: invalid depth over limit | implemented | PASS | schema: [envelope] invalid: depth over limit | suite 通过（71/71 cases passed） |
 | SCHEMA-FIXTURE-019 | SCHEMA | envelope: invalid unknown kind | implemented | PASS | schema: [envelope] invalid: unknown kind | suite 通过（71/71 cases passed） |
 | SCHEMA-FIXTURE-020 | SCHEMA | envelope: invalid bad error code | implemented | PASS | schema: [envelope] invalid: bad error code | suite 通过（71/71 cases passed） |
-| DOC-LINK-001 | DOC | 全部 Markdown 相对链接可解析 | implemented | PASS | links: all | 链接检查通过（336 link(s) checked, 0 broken, 65 file(s) scanned） |
+| DOC-LINK-001 | DOC | 全部 Markdown 相对链接可解析 | implemented | PASS | links: all | 链接检查通过（342 link(s) checked, 0 broken, 65 file(s) scanned） |
 | CARGO-UNIT-001 | CARGO | Rust workspace 全部单测 | implemented | PASS | cargo: all | cargo workspace 通过（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)；6 个 #[ignore] 未执行，不计为通过（official_packages: 0 passed/6 ignored）；官方包证据见 manual RPC-L2-201/501..505 的 tools/official-l2-gate.ps1） |
 | CARGO-UNIT-002 | CARGO | dshr-plugin-host 单测 | implemented | PASS | cargo: dshr-plugin-host | 包 dshr-plugin-host 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |
 | CARGO-UNIT-003 | CARGO | dshr-plugin-api 单测 | implemented | PASS | cargo: dshr-plugin-api | 包 dshr-plugin-api 的测试二进制出现在 cargo 输出中（67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)） |

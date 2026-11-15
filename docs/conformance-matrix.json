@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "tools/conformance.mjs",
-  "generated_at": "2026-11-15T12:40:26.555Z",
+  "generated_at": "2026-11-15T12:49:21.836Z",
   "format": "full",
   "invocation": {
     "mode": "full",
@@ -29,11 +29,11 @@
     "repo_root": "C:\\Projects\\dshr"
   },
   "git": {
-    "head": "5d2335d575bc9f50c44747f9b1a38a6c170d60a3",
-    "head_short": "5d2335d",
+    "head": "44eaaacf1a471a6516ea9af362a9fb11c59205c3",
+    "head_short": "44eaaac",
     "branch": "master",
-    "dirty": true,
-    "dirty_files": 9
+    "dirty": false,
+    "dirty_files": 0
   },
   "registry": {
     "path": "docs/conformance.d/registry.json",
@@ -54,7 +54,7 @@
       "command": "node schema/check.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 267,
+      "duration_ms": 241,
       "timeout_ms": 120000,
       "summary": "71/71 cases passed",
       "output_tail": null
@@ -65,9 +65,9 @@
       "command": "node tools/check-links.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 280,
+      "duration_ms": 305,
       "timeout_ms": 120000,
-      "summary": "336 link(s) checked, 0 broken, 65 file(s) scanned",
+      "summary": "342 link(s) checked, 0 broken, 65 file(s) scanned",
       "output_tail": null
     },
     {
@@ -76,7 +76,7 @@
       "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 287,
+      "duration_ms": 382,
       "timeout_ms": 120000,
       "summary": "21/21 node tests passed",
       "output_tail": null
@@ -87,7 +87,7 @@
       "command": "tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 54037,
+      "duration_ms": 54597,
       "timeout_ms": 1200000,
       "summary": "67 suite(s), 837 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)",
       "output_tail": null
@@ -354,7 +354,7 @@
       "selector": "all",
       "result": "pass",
       "evidence": "links: all",
-      "message": "链接检查通过（336 link(s) checked, 0 broken, 65 file(s) scanned）",
+      "message": "链接检查通过（342 link(s) checked, 0 broken, 65 file(s) scanned）",
       "notes": "tools/check-links.mjs 扫描仓库全部 .md，0 broken 即通过。"
     },
     {
