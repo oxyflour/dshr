@@ -80,8 +80,9 @@ WASM 主机（wasmtime，core-module 四类隔离 + 接入宿主）；DSH L2（�
 `sessionProjections` + 官方包 manual gate）；M3 默认差异与工具并行（sidecar ≤10 批并发）；
 conformance 544 ID / `--full` 在 Lead 环境 exit 0（67 suites/837 passed/0 failed/6 ignored）。
 独立评审见 [`review-m3-implementation.md`](docs/review-m3-implementation.md) 与
-[`review-m3-implementation-2.md`](docs/review-m3-implementation-2.md)（P0/P1 已修复，等待最终确认）；
-未确认的项按 ADR-0012 列入 M4。
+[`review-m3-implementation-2.md`](docs/review-m3-implementation-2.md)：P0/P1 全部修复，二次复审
+**接受**（按 [ADR-0012](docs/decisions/0012-m3-gate-closure.md) 修正后的口径）；未确认的 P2/后续项
+列入 M4。
 
 **M1 完成（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
 

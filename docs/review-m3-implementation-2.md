@@ -267,3 +267,46 @@ target\debug\chat.exe --selftest-dsh
 **本文件是本 review 唯一写入产物。** 评审期间出现的 `tools/conformance.mjs`、
 `docs/conformance.d/registry.json`、`docs/conformance.md` 修改不是本 review 所为，未回退、
 未提交；如需以工作区 delta 为最终交付，请按 N2 修正后再提交。
+
+## 复审更新（ea020c8）
+
+**复核基线**：`ea020c8`。复核期间会话把 HEAD 推进到 `dd41569`（仅 `README.md` +9/−5，无代码变更；
+`git diff ea020c8 dd41569` 只含 README），复核证据按 `ea020c8` 代码树采集，`git status` 干净。
+
+**条件① external-process `read_stderr` 有界 —— 关闭。**
+- 代码：`crates/plugin-host/src/external.rs:73-79` 定义 `STDERR_TAIL_LINE_LIMIT=64`、
+  `MAX_STDERR_LINE_BYTES=4 KiB`、`STDERR_TAIL_BYTES_LIMIT=64 KiB`、`MAX_STDERR_DISCARD_BYTES=64 MiB`；
+  `read_stderr_impl`（932-972）用 `take(MAX+1)` 在分配前截断，超限走 `drain_stderr_until_newline`
+  （977-1006，`fill_buf`/`consume`）丢弃到换行、只计数不存储；`push_stderr_tail`（1009-1021）
+  行/字节双上限 FIFO。已无裸 `read_line`。
+- 实测（`cargo test --offline -p dshr-plugin-host`，经 `tools/build-env.cmd` 环境）：lib **74 passed**
+  + `external_process` **23 passed**，0 failed / 0 ignored，exit 0；`CPP-ISO-032` 16 MiB 无换行 stderr →
+  `retained_lines=1 retained_bytes=4143`（≤4 KiB + 截断标记），约 5.6s 内结算写超时并杀 Job；
+  `CPP-ISO-033` 5000 行 → `retained_lines=64 retained_bytes=640`；单测 034–037 同绿。
+
+**条件② conformance ignored 检测（原死代码）+ W8 delta 未提交 —— 关闭。**
+- `tools/conformance.mjs`：cargo suite 走 `combineOutput`（422-529，stdout/stderr 写同一文件保序）；
+  `parseCargoBinaryResults` 按 `Running …<bin>-<hash>.exe` 建 binary→counts（601-626），
+  `packageOwnsBinary` 用 `crates/<pkg>/tests/<bin>.rs` 反查归属（630-639），
+  `cargoPackageIgnoredState.tainted`（654-662）把 `0 passed && ignored>0` 判 FAIL（888-895、925-932）；
+  summary 显式列出 `未执行: official_packages(6 ignored)`（752-761）。
+- registry 已提交（`ea020c8`）：`RPC-L2-201/501..505` 均为 `status: manual`；compat-dsh-host group 的
+  `ids` 不含这 6 个 ID（无重复登记）。
+- `node tools/conformance.mjs --full`：**exit 0**；cargo **67 suite(s), 837 passed, 0 failed,
+  6 ignored**，summary 含 `未执行: official_packages(6 ignored)`；矩阵 **511/511 implemented 通过**，
+  0 failed / 0 skipped（pending=18, manual=15, blocked=0）。
+- `node tools/conformance.mjs --quick`：exit 0（schema 71/71、links 340/0、node 21/21；42/511，cargo 不计入）。
+- 默认 `cargo test --offline -p dshr-compat-dsh-host --test official_packages`：**`0 passed; 6 ignored`**
+  （6 个 ID 全部显式 ignored，不会静默 pass）。
+- `official-l2-gate.ps1`：有 fixture **6/6 PASS，exit 0**；临时移走
+  `.tmp/dsh-tools-all/dsh-tool-working-directory` 后 **exit 1**（明确报缺 fixture），已恢复原位、树干净。
+
+**残余 P2 仍按 M4 处理**（官方 execute `exec.agent`、Component/WIT、CI vendor/真实签名等 ADR 债务）。
+
+**结论：接受。** 两项残余 P1 均以代码 + 可复现实测关闭，未发现新的 P0/P1。
+
+P3 观察（不阻塞）：
+- 提交的 `docs/conformance-matrix.json` 元数据仍记 `head=5d2335d, dirty=true`（矩阵在 `ea020c8`
+  提交前由同一工作树生成）；数字与本轮 `--full` 完全一致（837/0/6），证据有效，但元数据可在下次落盘时刷新。
+- 本机 `%TEMP%` 对编译器子进程不可写（`cl` D8050），必须经 `tools/build-env.cmd`（已把 TMP/TEMP
+  指向 `.tmp`）跑 cargo；这是既有环境约束（见该脚本注释），非本次回归。

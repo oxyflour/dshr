@@ -1,6 +1,6 @@
 # M3 状态 — 插件平台 Preview
 
-> 更新：2026-11-15（W8：独立 review 的 P0 + 7 项 P1 修复；M3 等待二次复核）。
+> 更新：2026-11-15（W8 完成：独立 review P0/P1 全部修复，二次复审 + 独立复核 **接受**；M3 完成）。
 > 范围、gate 与砍单顺序见 [`decisions/0007-m3-scope.md`](decisions/0007-m3-scope.md)；
 > 计划基线见 [`PLAN.md`](PLAN.md) §8 M3 / §9.1；计划评审见 [`review-m3-plan.md`](review-m3-plan.md)；
 > gate 口径见 [`decisions/0012-m3-gate-closure.md`](decisions/0012-m3-gate-closure.md)；
@@ -115,8 +115,10 @@ W5 产品面板/官方包验收/默认差异**。G1、G2、G3 的库层/产品�
 | **复审残余 P1（W8 补充）** | stderr 巨行有界（分配前截断、tail 64 行/64 KiB、超限丢弃到换行）；conformance ignored 检测改 binary→counts（stdout/stderr 合并捕获，修死代码） | `CPP-ISO-032/033`（16 MiB 单行仅留 4143 B、5000 短行留 64 行；宿主存活）；`--full` 在 Lead 环境 exit 0、`implemented 511/511`；official_packages 在 summary 中显式列为 `6 ignored` 不再 pass |
 
 > **第二位独立 review**：[`review-m3-implementation-2.md`](review-m3-implementation-2.md) 结论
-> "有条件接受"（条件：stderr 有界、提交并修正 conformance ignored 检测）——两项均已在 W8 补充
-> 修复并全量复验；待 review #2 确认后 M3 完成。
+> "有条件接受"（条件：stderr 有界、提交并修正 conformance ignored 检测）；两项残余 P1 已在
+> `ea020c8` 修复，独立复核（追加在 review-2 报告）确认 **接受**，两项 closed。**M3 完成**
+> （按 [ADR-0012](decisions/0012-m3-gate-closure.md) 口径；P2 余项与 Component/WIT、SDK 发布、
+> 官方 execute 闭环等按 review 建议列入 M4）。
 
 ## 4. Conformance 现状
 
