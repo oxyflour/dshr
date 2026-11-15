@@ -832,9 +832,9 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 来源是：M2 正式后移的 9 项债务（M3 选做 20–39 日）、WASM 主机（10–18 日）、信任链（6–10 日）、
 ADC 渲染器（20–30 日）在 §9 均无预算行。对应累计：M3 240–370，M4 290–470（约 13–22 人月）。
 
-**对外口径待产品确认**。若必须维持原 240–390 上限，按 ADR-0007 §5 的砍单顺序执行
-（HTML Widget → 插件迁移 → Script UI 实做 → ADC 交互元素 → L2 减到 1 个），
-**不得砍 G1–G3 的判定项**。
+**对外口径已确认（2026-11-15，产品）**：不设硬上限，预算不作为砍单依据；保留 290–470 估算作
+参考，按范围推进。原 240–390 上限与 ADR-0007 §5 砍单顺序仅在需要压缩时启用，**不得砍 G1–G3
+的判定项**。
 
 **不含项（明确不计入）**：
 - DSH L5 全兼容、任意 React 组件到 GPUI 自动映射。
@@ -971,7 +971,7 @@ v0.1 的两周清单实际约 3–4 周工作量，且把最危险的问题排�
 | L2 具体 Service 清单 | 证据驱动：首批 `workingDirectory` + `sessionProjections`（配 `session-log`）+ `storage`；`settings`/`fs` 不进首批（[m3-l2-services.md](m3-l2-services.md)） | M3 |
 | MCP / ACP | MCP 最小闭环进 M3；ACP 完整 adapter 移 M4 | M3/M4 |
 | 插件信任链 | 哈希强制 + 可选签名 + 首装确认；CA/吊销/更新通道 M4 | M3/M4 |
-| Beta 总预算 | 290–470（M3 重估）；若维持 240–390 则按 ADR-0007 §5 砍单 | 待产品确认 |
+| Beta 总预算 | 290–470（M3 重估） | **已确认（2026-11-15 产品）：不设硬上限，预算不作为砍单依据**；保留 290–470 估算作参考 |
 | 复杂 CAD/EDA 3D Viewport | 单独 Renderer API；原生 GPU vs WebView 实测选择 | M4 |
 | 是否集成完整 DSH React Client | 作为独立 Legacy Workspace，不阻塞主线 | M5 之后 |
 | Linux Wayland 策略 | Native GPUI 优先；WebView 可能需要 X11/XWayland | M4 |
