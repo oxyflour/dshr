@@ -57,11 +57,11 @@
 5. 把 `onPress` 换成 `openExternal: "https://example.com"`，点击后出现确认条；
    点"取消"或按 `Esc` 不打开；点"打开"才调用系统浏览器。
 
-当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..019** 用 GPUI
+当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..020** 用 GPUI
 `TestAppContext` 在 headless 窗口里真实 `simulate_click`，覆盖 Button `copy`、Checkbox
 `onChange`、Switch `onChange`、Select chip 注入 value、Slider + 注入 value、Input/Textarea
-发 `__adc_edit`、Button `openExternal` 派发，以及 Button/Checkbox/Switch 点击聚焦后
-Space/Enter 再触发。真实窗口的剪贴板/确认条/IME 仍需人工复验。
+发 `__adc_edit`、Button `openExternal` 派发，以及 Button/Checkbox/Switch/Select chip
+点击聚焦后的键盘激活。真实窗口的剪贴板/确认条/IME 仍需人工复验。
 
 ## 9. 真实点击测试（headless）
 

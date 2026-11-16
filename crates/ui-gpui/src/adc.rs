@@ -965,6 +965,8 @@ fn render_select(
             let selected = option_value == value;
             let next = action_with_value(&action, &option_value);
             let handler = handler.clone();
+            let key_handler = handler.clone();
+            let key_next = next.clone();
             let aria = format!("选择 {option_label}");
             let mut chip = div()
                 .id(format!("{path}-option-{index}"))
@@ -975,6 +977,7 @@ fn render_select(
                 .py(px(3.0))
                 .rounded(theme.radii.sm)
                 .cursor_pointer()
+                .focusable()
                 .text_size(type_scale.small)
                 .line_height(type_scale.small_line)
                 .text_color(palette.color(if selected {
@@ -987,7 +990,12 @@ fn render_select(
                 } else {
                     palette.input_major
                 }))
-                .on_click(move |_, window, cx| handler(&next, window, cx));
+                .on_click(move |_, window, cx| handler(&next, window, cx))
+                .on_key_down(move |event, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        key_handler(&key_next, window, cx);
+                    }
+                });
             chip = chip.child(option_label);
             chips = chips.child(chip);
         }

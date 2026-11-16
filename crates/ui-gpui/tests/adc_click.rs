@@ -298,6 +298,35 @@ fn m4_adc_019_keyboard_activates_switch(cx: &mut TestAppContext) {
     assert_eq!(count.get(), 2, "Enter should activate switch");
 }
 
+/// M4-ADC-020：Select chip 点击聚焦后 Space 再次派发注入 value。
+#[gpui::test]
+fn m4_adc_020_keyboard_activates_select_chip(cx: &mut TestAppContext) {
+    let count = Rc::new(Cell::new(0usize));
+    let sink = count.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |_| sink.set(sink.get() + 1));
+    let tree = serde_json::json!({
+        "type": "Select",
+        "props": {
+            "value": "a",
+            "a11yLabel": "Mode",
+            "options": [
+                { "label": "A", "value": "a" },
+                { "label": "B", "value": "b" }
+            ],
+            "onChange": { "call": "pick", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$-option-1").expect("select chip bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(count.get(), 1);
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    assert_eq!(count.get(), 2, "Space should activate selected chip");
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
