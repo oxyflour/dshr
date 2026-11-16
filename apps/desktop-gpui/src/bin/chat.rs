@@ -621,6 +621,8 @@ fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
 struct AdcPanelView {
     plugin_id: String,
     title: String,
+    /// 面板声明的 view 名（`ui.action` 回传时用于定位插件状态）。
+    view: String,
     /// `render_panel` 成功时的元素树；失败为 `None`，错误在 `error`。
     tree: Option<serde_json::Value>,
     /// 渲染失败的可读错误（未知 view / 插件不实现 view / 进程错误）。
@@ -2011,6 +2013,7 @@ impl ChatState {
             let mut panel = AdcPanelView {
                 plugin_id: plugin_id.clone(),
                 title,
+                view: view.clone(),
                 tree: None,
                 error: None,
             };
@@ -3039,6 +3042,38 @@ impl ChatApp {
         cx.notify();
     }
 
+    /// 把插件面板的 `call`/`command` 动作派发给插件，然后刷新面板树（M4 W3）。
+    ///
+    /// 动作是 fire-and-forget；插件更新自身状态后，`refresh_adc_panels` 再发
+    /// `ui.render` 取新树。失败只进日志，不阻塞 UI 其它部分。
+    fn dispatch_adc_action(
+        &mut self,
+        plugin_id: &str,
+        view: &str,
+        action: &str,
+        payload: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let result = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let result = guard
+                .plugins
+                .dispatch_action(plugin_id, view, action, &payload);
+            if result.is_ok() {
+                guard.refresh_adc_panels();
+                self.adc_panels = guard.adc_panels.clone();
+            }
+            result
+        };
+        if let Err(error) = result {
+            eprintln!("[adc] action `{action}` on {plugin_id}/{view} 失败: {error}");
+        }
+        cx.notify();
+    }
+
     /// 启用/禁用插件：写 profile、更新 sidecar 环境、空闲时重启当前会话的 sidecar。
     fn toggle_plugin(&mut self, name: String, cx: &mut Context<Self>) {
         if !self.profile.can_edit() {
@@ -3080,27 +3115,6 @@ impl ChatApp {
             return None;
         }
         let p = t.palette;
-        // M4 W3：插件面板 Button 的 onPress 回到宿主。copy 直接写剪贴板；
-        // call/command 需要 host RPC，openExternal 需要确认弹窗——当前只记可读日志，
-        // 不假装已执行（避免"点了没反应"被误判为成功）。
-        let adc_action_handler: AdcActionHandler = std::rc::Rc::new(|action, app| match action {
-            AdcAction::Copy { text } => {
-                app.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                eprintln!("[adc] copy {} bytes", text.len());
-            }
-            AdcAction::OpenExternal { url } => {
-                eprintln!("[adc] openExternal 未确认，未打开: {url}");
-            }
-            AdcAction::Call { method, .. } => {
-                eprintln!("[adc] call 未接线（Host RPC 待 W3）: {method}");
-            }
-            AdcAction::Command { id } => {
-                eprintln!("[adc] command 未接线（Host RPC 待 W3）: {id}");
-            }
-            _ => {
-                eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
-            }
-        });
         let entries = self.profile.entries().to_vec();
         let editable = self.profile.can_edit();
         let enabled = entries.iter().filter(|entry| entry.enabled).count();
@@ -3269,8 +3283,39 @@ impl ChatApp {
                     );
                 match &panel.tree {
                     Some(tree) => {
-                        let (body, diagnostics) =
-                            adc_panel_body_with_handler(t, tree, adc_action_handler.clone());
+                        let weak = cx.entity().downgrade();
+                        let plugin_id = panel.plugin_id.clone();
+                        let view = panel.view.clone();
+                        let handler: AdcActionHandler =
+                            std::rc::Rc::new(move |action, app| match action {
+                                AdcAction::Copy { text } => {
+                                    app.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                    eprintln!("[adc] copy {} bytes", text.len());
+                                }
+                                AdcAction::Call { method, args } => {
+                                    let payload = json!({ "method": method, "args": args });
+                                    let _ = weak.update(app, |chat, cx| {
+                                        chat.dispatch_adc_action(
+                                            &plugin_id, &view, "call", payload, cx,
+                                        );
+                                    });
+                                }
+                                AdcAction::Command { id } => {
+                                    let payload = json!({ "id": id });
+                                    let _ = weak.update(app, |chat, cx| {
+                                        chat.dispatch_adc_action(
+                                            &plugin_id, &view, "command", payload, cx,
+                                        );
+                                    });
+                                }
+                                AdcAction::OpenExternal { url } => {
+                                    eprintln!("[adc] openExternal 未确认，未打开: {url}");
+                                }
+                                _ => {
+                                    eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
+                                }
+                            });
+                        let (body, diagnostics) = adc_panel_body_with_handler(t, tree, handler);
                         card = card.child(body);
                         if !diagnostics.is_empty() {
                             // 未知元素 Placeholder / 配额裁剪仍然可见，诊断只作提示。

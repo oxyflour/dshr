@@ -585,6 +585,23 @@ pub struct RenderPayload {
     pub state_seq: u64,
 }
 
+/// `ui.action`（host → child）：ADC 交互动作回传给插件。
+///
+/// `action` 是 ADC-v1 的动作类别（`call` / `command`），`payload` 是动作参数：
+/// - `call` → `{ "method": "...", "args": {...} }`
+/// - `command` → `{ "id": "..." }`
+///
+/// fire-and-forget：协议没有 `ui.action.result`；插件处理完由宿主再发 `ui.render`
+/// 取新树。错误只能写 stderr / 影响下一次 render，不得让宿主等待。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionPayload {
+    pub view: String,
+    pub action: String,
+    #[serde(default)]
+    pub payload: Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

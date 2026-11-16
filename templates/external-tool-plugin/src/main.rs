@@ -49,12 +49,24 @@ fn main() -> Result<(), dshr_plugin_sdk::SessionError> {
 
     let decls = ReadyDecls::new(vec![echo], vec![panel]);
 
-    // 3) 挂两个回调：
+    // 3) 挂三个回调：
     //    - views: 收到 ui.render(view, state_seq) 时返回 ADC-v1 元素树（JSON）；
+    //    - actions: 收到 ui.action(view, action, payload) 时处理 call/command（fire-and-forget）；
     //    - handler: 收到 tool.invoke 时执行工具，返回 ToolResult。
-    ChildSession::serve_with_views(
+    ChildSession::serve_with_views_and_actions(
         decls,
         |_view: &str, _state_seq: u64| -> Result<serde_json::Value, ToolError> { Ok(panel_tree()) },
+        |_view: &str, action: &str, payload: &serde_json::Value| -> Result<(), ToolError> {
+            match action {
+                "call" => {
+                    eprintln!("__PLUGIN_ID__: ui.action call payload={payload}");
+                    Ok(())
+                }
+                other => Err(ToolError::internal(format!(
+                    "template does not handle ui.action `{other}`"
+                ))),
+            }
+        },
         |call: &ToolCall, cancel: &CancelFlag| -> Result<ToolResult, ToolError> {
             if cancel.is_cancelled() {
                 return Err(ToolError::Cancelled);
@@ -107,6 +119,15 @@ fn panel_tree() -> serde_json::Value {
                     "label": "复制插件 ID",
                     "a11yLabel": "复制插件 ID __PLUGIN_ID__",
                     "onPress": { "copy": "__PLUGIN_ID__" }
+                }
+            },
+            {
+                "type": "Button",
+                "key": "refresh",
+                "props": {
+                    "label": "刷新",
+                    "a11yLabel": "刷新插件面板",
+                    "onPress": { "call": "refresh" }
                 }
             }
         ]

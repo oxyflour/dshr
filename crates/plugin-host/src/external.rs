@@ -44,9 +44,9 @@ use dshr_plugin_api::{
     HostVersion, Manifest, PanelContribution, Plugin, PluginContext, PluginError,
 };
 use dshr_plugin_sdk::{
-    kind, Envelope, HelloPayload, InvokePayload, PanelDecl, ReadyDecls, ReadyPayload,
-    RenderPayload, ShutdownPayload, ToolDecl, ToolResult, DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    kind, ActionPayload, Envelope, HelloPayload, InvokePayload, PanelDecl, ReadyDecls,
+    ReadyPayload, RenderPayload, ShutdownPayload, ToolDecl, ToolResult,
+    DEFAULT_SHUTDOWN_TIMEOUT_MS, MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 use dshr_sidecar_guard::{spawn_guarded, GuardLimits, GuardedChild};
 use dshr_tool_runtime::{ToolDefinition, ToolOrigin};
@@ -448,6 +448,34 @@ impl ExternalPlugin {
         }
     }
 
+    /// 把 ADC `ui.action` 发给子进程（fire-and-forget，无 `ui.action.result`）。
+    ///
+    /// 调用方随后应重新 `render_view` 取新树；发送失败按进程不可用处理。
+    pub fn send_action(
+        &mut self,
+        view: &str,
+        action: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), HostError> {
+        if self.failed || self.disposed {
+            return Err(self.host_error("plugin process is not alive".to_owned()));
+        }
+        let envelope = Envelope::with_payload(
+            kind::UI_ACTION,
+            ActionPayload {
+                view: view.to_owned(),
+                action: action.to_owned(),
+                payload: payload.clone(),
+            },
+        )
+        .map_err(|err| self.host_error(err.to_string()))?
+        .with_generation(self.generation);
+        self.send(&envelope).map_err(|error| {
+            self.mark_failed(&error.to_string());
+            self.host_error(error.to_string())
+        })
+    }
+
     // ---- 内部：握手 / 收发 / 生命周期 ----
 
     fn handshake(&mut self, host_version: &HostVersion) -> Result<ReadyDecls, HostError> {
@@ -783,6 +811,20 @@ impl Plugin for ExternalPlugin {
         ExternalPlugin::render_view(self, view).map_err(|error| {
             PluginError::Invalid(format!(
                 "external plugin `{}` view `{view}`: {error}",
+                self.plugin_id
+            ))
+        })
+    }
+
+    fn handle_action(
+        &mut self,
+        view: &str,
+        action: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), PluginError> {
+        ExternalPlugin::send_action(self, view, action, payload).map_err(|error| {
+            PluginError::Invalid(format!(
+                "external plugin `{}` action `{action}`: {error}",
                 self.plugin_id
             ))
         })

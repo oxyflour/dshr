@@ -41,7 +41,7 @@ PLAN §9.2 的 8 项追加候选（80–140 工程日）与 M4 基线的跨平�
 |---|---|---|---|---|
 | **W1** | **分发与信任生命周期** | `--uninstall-plugin`（目录 + profile + 审计原子化）；密钥吊销/过期/轮换与密钥审计；作者签名打包；SDK 离线渠道（manifest + 校验和） | `M4-UNINSTALL-*` / `M4-KEY-*` / `M4-SDK-001` / `M4-SIGN-001` | G2 |
 | **W2** | **键盘与无障碍** | 焦点顺序、控件 label、键盘全流程（新建→发送→审批→切面板→关闭）；a11y 回归测试 | `M4-A11Y-*` / `M4-KEYBOARD-001` | G3 |
-| **W3** | **ADC 交互与工具卡** | Button `onPress` 回 Host（copy 已接）；`call`/`command`/`openExternal`；Input/Select `onChange`；tool card `tool.result.extra`；窗口 draw 预算 | `M4-ADC-*` | G1/G4 |
+| **W3** | **ADC 交互与工具卡** | Button `onPress` 回 Host（copy + call/command）；`openExternal` 确认；Input/Select `onChange`；tool card `tool.result.extra`；窗口 draw 预算 | `M4-ADC-*` | G1/G4 |
 | **W4** | **并发与 Plugin trait 冻结** | native/MCP 工具并发；`Plugin::call` 取消/异步/泄漏收口；trait 冻结 ADR | `M4-CONC-*` | G2 |
 | **W5** | **WASM Component/WIT** | canonical ABI、工具/面板声明读取、与 core-module 路径共存/迁移 | `M4-WIT-*` | G2 |
 | **W6** | **官方 execute 闭环** | `exec.agent` 债务的 sidecar 侧适配；官方工具 execute 真实往返 | `M4-OFFICIAL-*` | G2 |

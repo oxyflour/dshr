@@ -11,7 +11,8 @@
     "manual 证据：official gate（RPC-L2-201/501..505）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 6 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100/M4-LIFECYCLE-001（需构建 chat 二进制，部分需 vendored sidecar）；M4 CLI：M4-UNINSTALL-100（--uninstall-plugin）、M4-KEY-100（--trust-key）、M4-SDK-001/M4-SIGN-001（tools/authoring-check.ps1 的 SDK 离线包与签名/轮换步骤）、M4-KEYBOARD-001（真实窗口无鼠标流程，见 docs/m4-keyboard.md）、M4-ADC-100（插件面板 Button copy 真实点击）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。",
     "提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）；quick 门禁仍用 `--quick`。cargo suite 会把 #[ignore] 计入 ignored、绝不当作 passed：包级 selector 遇 ignored>0 判 FAIL，all 通过时也在消息中标注 ignored 数。compact markdown 的 PASS 行只列 ID+结果，非 PASS（FAIL/SKIP/PENDING/MANUAL）保留完整 6 列；JSON tests.rows 为 [id, area, result]。",
     ".github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。",
-    "M4 W1（2026-11-16）：`M4-UNINSTALL-001..008`（crates/profile/src/uninstall.rs + lib.rs）与 `M4-KEY-001..010`（crates/profile/src/trust.rs）为 cargo implemented（selector=dshr-profile）；`M4-UNINSTALL-100`/`M4-KEY-100`/`M4-LIFECYCLE-001`/`M4-SDK-001`/`M4-SIGN-001` 是 chat/工具链产品路径 manual 证据。三平台 CI 与 macOS/Linux 行为仍未验证（[m4-status.md](m4-status.md) §3）。"
+    "M4 W1（2026-11-16）：`M4-UNINSTALL-001..008`（crates/profile/src/uninstall.rs + lib.rs）与 `M4-KEY-001..010`（crates/profile/src/trust.rs）为 cargo implemented（selector=dshr-profile）；`M4-UNINSTALL-100`/`M4-KEY-100`/`M4-LIFECYCLE-001`/`M4-SDK-001`/`M4-SIGN-001` 是 chat/工具链产品路径 manual 证据。三平台 CI 与 macOS/Linux 行为仍未验证（[m4-status.md](m4-status.md) §3）。",
+    "M4 W3（2026-11-16）：`M4-ADC-001`（ui-gpui handler 穿透）、`M4-ADC-002`（PluginHost 路由）、`M4-ADC-003`（external-process ui.action→render）为 cargo implemented；`CPP-PROC-033` 覆盖 SDK ActionHandler；`M4-ADC-100` 为真实点击 manual。openExternal/onChange/tool card 仍未接。"
   ],
   "suites": {
     "schema": {
@@ -137,7 +138,7 @@
     {"id":"M4-SDK-001","area":"M4","title":"tools/sdk-pack.mjs（离线 SDK manifest/校验和/篡改拒绝）","status":"manual","suite":null,"selector":null,"notes":"tools/authoring-check.ps1 的 0d 步：sdk-pack 生成 sdk-manifest.json + SHA256SUMS，--verify 通过；篡改 SDK 后 verify 非零；--force 重建后恢复；new-plugin --sdk 消费离线包构建。需 node + 已构建 chat.exe。"},
     {"id":"M4-SIGN-001","area":"M4","title":"作者签名安装 + 密钥轮换（plugin-pack/chat 产品路径）","status":"manual","suite":null,"selector":null,"notes":"tools/authoring-check.ps1 第 10 步：--generate-key → --trust-key add → plugin-pack --key/--key-id → chat --install-plugin 免 --yes-install → --trust-key rotate → 旧钥包 E_TRUST_KEY_REVOKED → 新钥重签安装；需构建 chat.exe。"},
     {"id":"M4-KEYBOARD-001","area":"M4","title":"键盘全流程（新建→输入→发送→审批→切面板→关闭）","status":"manual","suite":null,"selector":null,"notes":"真实窗口人工/UI 自动化：Ctrl/⌘+N 新建、Ctrl/⌘+K 聚焦输入、Enter 发送、Ctrl/⌘+Shift+A/D 审批、Ctrl/⌘+B/J 切侧栏/插件面板、Esc 关闭面板、Ctrl/⌘+W 关闭；chat --selftest 不驱动真实键盘事件，必须在 GUI 复验。"},
-    {"id":"M4-ADC-100","area":"M4","title":"插件面板 Button onPress → 宿主（copy）","status":"manual","suite":null,"selector":null,"notes":"真实窗口：装载带 Button{onPress:copy} 的插件面板，点击后剪贴板得到文本；call/command/openExternal 仍只记日志（W3 剩余）。需构建 chat.exe + external fixture。"},
+    {"id":"M4-ADC-100","area":"M4","title":"插件面板 Button onPress → 宿主（copy/call）","status":"manual","suite":null,"selector":null,"notes":"真实窗口：装载带 Button{onPress:copy} 的插件面板，点击后剪贴板得到文本；Button{onPress:call} 经 ui.action 到 fixture，下一次 render 的计数器 +1。需构建 chat.exe + external fixture；openExternal/onChange 仍未接。"},
     {"id":"RPC-L2-201","area":"RPC","title":"官方 dsh-tool-todo 在 v2 sidecar 下装载（official gate）","status":"manual","suite":null,"selector":null,"notes":"需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 中该测试 #[ignore]，输出 0 passed/6 ignored（不计为通过）。"},
     {"id":"RPC-L2-501","area":"RPC","title":"官方 working_directory 包装载绿（official gate）","status":"manual","suite":null,"selector":null,"notes":"需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/6 ignored（不计为通过）。"},
     {"id":"RPC-L2-502","area":"RPC","title":"官方工具 execute 被 exec.agent 阻塞（official gate）","status":"manual","suite":null,"selector":null,"notes":"同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。"},
@@ -816,7 +817,8 @@
         "CPP-PROC-029",
         "CPP-PROC-030",
         "CPP-PROC-031",
-        "CPP-PROC-032"
+        "CPP-PROC-032",
+        "CPP-PROC-033"
       ]
     },
     {
@@ -1007,6 +1009,22 @@
       ],
       "ids": [
         "M4-ADC-001"
+      ]
+    },
+    {
+      "name": "M4-ADC-HOST（plugin-host：ui.action 路由与 external 端到端）",
+      "area": "M4",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/src/lib.rs（M4-ADC-002 路由/未知插件）与 crates/plugin-host/tests/external_process.rs（M4-ADC-003 fixture ui.action→render）；cargo test -p dshr-plugin-host",
+      "source_dirs": [
+        "crates/plugin-host/src",
+        "crates/plugin-host/tests"
+      ],
+      "ids": [
+        "M4-ADC-002",
+        "M4-ADC-003"
       ]
     },
     {

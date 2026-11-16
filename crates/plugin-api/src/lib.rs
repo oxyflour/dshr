@@ -236,6 +236,21 @@ pub trait Plugin: Send {
         ))
     }
 
+    /// 处理 ADC `ui.action`（M4 W3）：`action` 为 `call` / `command`，`payload` 是其参数。
+    ///
+    /// fire-and-forget：宿主发完就返回；插件更新自身状态后由宿主再次 `render_view`。
+    /// 默认返回可读错误，保持 additive 契约（没有 UI 动作的插件不需要改代码）。
+    fn handle_action(
+        &mut self,
+        _view: &str,
+        action: &str,
+        _payload: &Value,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::Invalid(format!(
+            "plugin does not handle ADC action `{action}`"
+        )))
+    }
+
     /// 清理钩子：宿主已经保证注册被撤销，这里只处理插件自己的资源。
     fn unload(&mut self) {}
 }

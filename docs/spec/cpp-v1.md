@@ -282,7 +282,7 @@ trace_id/ts/payload/error`），`version` 固定 `"cpp-process/v1"`：
 | `tool.cancel` | host → child | `{reason}` | child MUST 5 s 内以 result（`E_CANCELLED`）或 aborted 结算 |
 | `ui.render` | host → child | `{view, state_seq}` | 声明过的 view 的元素树（ADC-v1 JSON） |
 | `ui.result` | child → host | `{tree}` 或 `{error}` | 宿主用 `parse_tree` 校验/降级后交给 ADC 渲染器 |
-| `ui.action` | host → child | `{view, action, payload}` | ADC 动作回传（`call`/`command`/`copy`；`openExternal` 由宿主处理） |
+| `ui.action` | host → child | `{view, action, payload}` | ADC 动作回传（`call`/`command`；`openExternal`/`copy` 由宿主处理）。**fire-and-forget，无 result envelope**；插件更新状态后由宿主再次 `ui.render` |
 | `process.shutdown` | host → child | `{timeout_ms}` | 优雅退出；超时 `TerminateJobObject` |
 | `process.bye` | child → host | `{}` | 退出确认（可选；进程退出即等价） |
 

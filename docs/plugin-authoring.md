@@ -19,7 +19,10 @@
 1. **Tool**：模型可调用的工具（名字/描述/JSON Schema/结果），会被注册进工具表。
 2. **Panel**：挂在 ADC-v1 slot 上的只读面板（例如 `workspace.panel`），元素树由 `ui.render` 提供。
 
-> **M3 Preview 边界**：`chat --install-plugin` 安装链路已可跑（[`../tools/authoring-check.ps1`](../tools/authoring-check.ps1) 实测）；external-process 的**装载/调用/卸载**已接进 chat 产品路径（启动时按 profile enabled 条目装载、`chat --selftest-external-plugin` 覆盖安装→装载→调用→卸载→重载），宿主库集成测试（`cargo test -p dshr-plugin-host`）覆盖超时/内存/崩溃隔离。**Panel 的产品渲染**（`ui.render` → GPUI）仍在后续轮次；工具调用链路可用。
+> **M4 W3 边界**：`chat --install-plugin` 安装链路已可跑；external-process 的**装载/调用/卸载**
+> 已接进 chat 产品路径；**Panel 的产品渲染**（`ui.render` → GPUI 右栏）已接，Button 的
+> `copy` 与 `call`/`command`（`ui.action`）已接线；`openExternal` 确认、`onChange`、
+> tool card extra 仍属后续。工具调用链路可用。
 
 ## 2. 5 分钟快速开始
 
@@ -215,12 +218,23 @@ let panel = PanelDecl::new(
 .with_location("right")             // left/right/bottom/center
 .with_order(100.0);                 // list slot 排序（越小越靠前）
 
-ChildSession::serve_with_views(
+ChildSession::serve_with_views_and_actions(
     ReadyDecls::new(Vec::new(), vec![panel]),
     |view: &str, _state_seq: u64| -> Result<serde_json::Value, ToolError> {
         match view {
             "demo.echo.panel.view" => Ok(panel_tree()),
             other => Err(ToolError::internal(format!("unknown view `{other}`"))),
+        }
+    },
+    // ui.action：call/command 的 payload 已由宿主解析；fire-and-forget，更新状态后
+    // 宿主会再次 ui.render。错误只写 stderr，不要让宿主等待。
+    |view: &str, action: &str, payload: &serde_json::Value| -> Result<(), ToolError> {
+        match (view, action) {
+            ("demo.echo.panel.view", "call") => {
+                eprintln!("demo.echo: action {payload}");
+                Ok(())
+            }
+            _ => Err(ToolError::internal(format!("unsupported ui.action `{action}`"))),
         }
     },
     |_call: &ToolCall, _cancel: &CancelFlag| -> Result<ToolResult, ToolError> {
@@ -242,11 +256,31 @@ fn panel_tree() -> serde_json::Value {
                     "a11yLabel": "复制插件 ID demo.echo",   // 交互元素运行时必须有
                     "onPress": { "copy": "demo.echo" }
                 }
+            },
+            {
+                "type": "Button",
+                "props": {
+                    "label": "刷新",
+                    "a11yLabel": "刷新面板",
+                    "onPress": { "call": "refresh" }   // → ui.action call；params 由宿主写入 payload
+                }
             }
         ]
     })
 }
 ```
+
+**动作回传**（M4 W3 起）：`Button` 的 `onPress` 由宿主渲染器捕获：
+
+| 动作 | 宿主行为 | 插件收到 |
+|---|---|---|
+| `copy` | 直接写系统剪贴板 | — |
+| `openExternal` | 需确认；未确认不打开 | — |
+| `call` | 发 `ui.action {view, action:"call", payload:{method,args}}` | `serve_with_views_and_actions` 的 action 闭包 |
+| `command` | 发 `ui.action {view, action:"command", payload:{id}}` | 同上 |
+
+`ui.action` **没有 result envelope**：宿主发完立刻重新 `ui.render`；插件应在 handler 里
+更新内部状态，让新树反映结果。`call` 的 `args` 必须来自元素树，不能由模型注入。
 
 要点：
 
@@ -431,6 +465,7 @@ host → process.shutdown → child → process.bye → exit
 - [ ] `<profile>/install-audit.jsonl` 有 `decision: "accepted"`；
 - [ ] 工具可被调用并返回符合 §7.3 的结果；
 - [ ] panel 的 `ui.render` 元素树通过 ADC-v1 schema，交互元素带 `a11yLabel`；
+- [ ] `serve_with_views_and_actions` 的 call 按钮触发 `ui.action`，下一次 `ui.render` 反映新状态；
 - [ ] 篡改包内容后重装被 `E_INTEGRITY_MISMATCH` 拒绝；
 - [ ] 降级安装被 `E_TRUST_DOWNGRADE` 拒绝；
 - [ ] 升级安装成功，审计新增 accepted；

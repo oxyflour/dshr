@@ -252,6 +252,26 @@ impl PluginHost {
         plugin.render_view(view).map_err(HostError::Plugin)
     }
 
+    /// 把 ADC `ui.action` 派发给指定插件（M4 W3）。
+    ///
+    /// fire-and-forget：调用方随后应重新 `render_panel` 取新树；未知插件返回 `NotFound`，
+    /// 插件不支持动作时返回可读 `PluginError`（不静默成功）。
+    pub fn dispatch_action(
+        &mut self,
+        plugin_id: &str,
+        view: &str,
+        action: &str,
+        payload: &Value,
+    ) -> Result<(), HostError> {
+        let plugin = self
+            .plugins
+            .get_mut(plugin_id)
+            .ok_or_else(|| HostError::NotFound(plugin_id.to_owned()))?;
+        plugin
+            .handle_action(view, action, payload)
+            .map_err(HostError::Plugin)
+    }
+
     /// 已通过策略审批后的调用：只做 schema 校验，不再问策略。
     pub fn call_approved(&mut self, tool: &str, arguments: &Value) -> Result<Value, HostError> {
         let definition = self.registry.authorize_approved(tool, arguments)?.clone();
@@ -640,6 +660,67 @@ mod tests {
             .unwrap_err();
         assert!(matches!(&error, HostError::NotFound(_)));
         assert!(error.to_string().contains("missing.plugin"), "{error}");
+    }
+
+    // M4-ADC-002（M4 W3）：ui.action 路由到指定插件，未知插件报 NotFound。
+    #[derive(Clone)]
+    struct ActionProbe {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(String, String, Value)>>>,
+    }
+
+    impl Plugin for ActionProbe {
+        fn id(&self) -> &'static str {
+            "builtin.action-probe"
+        }
+
+        fn apply(&mut self, _ctx: &mut PluginContext) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn call(&mut self, _tool: &str, _arguments: &Value) -> Result<Value, PluginError> {
+            Err(PluginError::Invalid("no tools".to_owned()))
+        }
+
+        fn handle_action(
+            &mut self,
+            view: &str,
+            action: &str,
+            payload: &Value,
+        ) -> Result<(), PluginError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((view.to_owned(), action.to_owned(), payload.clone()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn dispatch_action_routes_payload_and_unknown_plugin_is_not_found() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut host = PluginHost::new(AllowAll);
+        host.load(Box::new(ActionProbe {
+            seen: std::sync::Arc::clone(&seen),
+        }))
+        .unwrap();
+
+        host.dispatch_action(
+            "builtin.action-probe",
+            "fixture.panel",
+            "call",
+            &json!({ "method": "refresh", "args": { "n": 1 } }),
+        )
+        .unwrap();
+        let recorded = seen.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "fixture.panel");
+        assert_eq!(recorded[0].1, "call");
+        assert_eq!(recorded[0].2["method"], "refresh");
+
+        let error = host
+            .dispatch_action("missing.plugin", "v", "call", &Value::Null)
+            .unwrap_err();
+        assert!(matches!(&error, HostError::NotFound(_)), "{error:?}");
     }
 
     // ADC-ELEM-PANEL-HOST-003

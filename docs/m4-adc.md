@@ -14,15 +14,18 @@
   - `adc_view` / `adc_panel_body` 保持纯渲染，M3 的工具卡/自检路径不回归。
 - **chat 插件面板**：Button 动作回到宿主：
   - `copy` → 写系统剪贴板（真实可用）；
-  - `openExternal` → **不自动打开**，只记日志（需要确认 UI）；
-  - `call` / `command` → 记"未接线"日志，不伪装成功。
+  - `call` / `command` → `PluginHost::dispatch_action` → external-process `ui.action`
+    （fire-and-forget），随后 `refresh_adc_panels` 再发 `ui.render`；SDK 用
+    `serve_with_views_and_actions` 的 action 闭包接收；
+  - `openExternal` → **不自动打开**，只记日志（需要确认 UI）。
 - `M4-ADC-001`：带 handler 的嵌套 Button 树渲染、0 诊断；`cargo test -p dshr-ui-gpui`。
+- `M4-ADC-002`：`PluginHost::dispatch_action` 路由/未知插件；`cargo test -p dshr-plugin-host`。
+- `M4-ADC-003`：external fixture 收到 `ui.action` 后下一次 `ui.render` 看到计数器变化。
 
 ## 2. 未接线（W3 剩余）
 
 | 项 | 现状 | 下一步 |
 |---|---|---|
-| `call` / `command` | 只记日志 | 加 `Plugin`/Host RPC 动作通道（external-process `ui.action` + SDK + 超时/错误） |
 | `openExternal` | 只记日志 | 确认弹窗 + 仅 https；用户拒绝不可执行 |
 | Input/Textarea/Select/Checkbox/Switch/Slider 的 `onChange` | 仍只读 | 值变更去抖 150ms → Host，且需要状态快照/patch |
 | Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
@@ -35,6 +38,7 @@
    `Button{ "label": "复制", "a11yLabel": "复制", "onPress": { "copy": "demo" } }`；
 2. 启动 `chat.exe`，`Ctrl/⌘+J` 打开插件面板；
 3. 点击"复制"，剪贴板应为 `demo`；stderr 出现 `[adc] copy 4 bytes`；
-4. 把 `onPress` 换成 `call`，点击后 stderr 出现 `[adc] call 未接线`，**不得**显示成功或静默。
+4. 把 `onPress` 换成 `call`，点击后宿主发 `ui.action`；external fixture 的 action 计数器
+   增加，下一次 `ui.render` 的文本出现 `actions=1`；未知 action 只写 stderr，不影响界面。
 
 当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层，点击/剪贴板必须在真实窗口复验。

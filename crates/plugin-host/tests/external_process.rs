@@ -768,6 +768,51 @@ fn adc_elem_panel_host_004_render_panel_through_external_plugin() {
     host.unload("cpp.adc.fixture").unwrap();
 }
 
+// M4-ADC-003（M4 W3）：ui.action 真正到达 external-process，下一次 ui.render 看到状态变化。
+#[test]
+fn m4_adc_003_dispatch_action_reaches_plugin_and_updates_view() {
+    let root = TempDir::new("adc-action");
+    let plugin = spawn_fixture(root.path(), "cpp.adc.fixture", None);
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(plugin)).unwrap();
+
+    let before = host
+        .render_panel("cpp.adc.fixture", "fixture.adc")
+        .expect("render before action");
+    let text_before = before["children"][0]["props"]["value"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(text_before.contains("actions=0"), "{text_before}");
+
+    host.dispatch_action(
+        "cpp.adc.fixture",
+        "fixture.adc",
+        "call",
+        &json!({ "method": "refresh", "args": {} }),
+    )
+    .expect("ui.action dispatch");
+
+    let after = host
+        .render_panel("cpp.adc.fixture", "fixture.adc")
+        .expect("render after action");
+    let text_after = after["children"][0]["props"]["value"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        text_after.contains("actions=1"),
+        "plugin 应收到 ui.action 并更新状态: {text_after}"
+    );
+
+    // 未知插件仍然可读报错。
+    let error = host
+        .dispatch_action("missing.plugin", "fixture.adc", "call", &json!({}))
+        .unwrap_err();
+    assert!(matches!(&error, HostError::NotFound(_)), "{error:?}");
+
+    host.unload("cpp.adc.fixture").unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // P1-3：external-process 读写边界（巨大单行 / 子进程不读 stdin）
 // ---------------------------------------------------------------------------

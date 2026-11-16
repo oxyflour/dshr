@@ -4,6 +4,7 @@
 //! 覆盖正常调用、超时、超大输出、内存超限、崩溃五类 G3 故障注入。
 //! stdout 只走协议；诊断写 stderr。
 
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -109,7 +110,7 @@ fn handler(call: &ToolCall, cancel: &CancelFlag) -> Result<ToolResult, ToolError
     }
 }
 
-fn views(view: &str, state_seq: u64) -> Result<Value, ToolError> {
+fn render_view(view: &str, state_seq: u64, action_count: u64) -> Result<Value, ToolError> {
     match view {
         "fixture.one" => Ok(json!({
             "type": "Text",
@@ -127,11 +128,16 @@ fn views(view: &str, state_seq: u64) -> Result<Value, ToolError> {
             "type": "Card",
             "props": { "title": "Fixture ADC" },
             "children": [
-                { "type": "Text", "props": { "value": format!("external fixture seq={state_seq}") } },
+                { "type": "Text", "props": { "value": format!("external fixture seq={state_seq} actions={action_count}") } },
                 { "type": "Row", "props": { "gap": 8, "align": "center" }, "children": [
                     { "type": "Badge", "props": { "label": "external-process", "tone": "success" } },
                     { "type": "Text", "props": { "value": "ADC panel 已接通", "style": "caption" } }
                 ]},
+                { "type": "Button", "props": {
+                    "label": "刷新",
+                    "a11yLabel": "刷新 fixture 计数",
+                    "onPress": { "call": "refresh" }
+                }},
                 { "type": "Table", "props": {
                     "columns": [
                         { "key": "k", "title": "键" },
@@ -157,7 +163,26 @@ fn views(view: &str, state_seq: u64) -> Result<Value, ToolError> {
 }
 
 fn main() {
-    if let Err(error) = ChildSession::serve_with_views(declarations(), views, handler) {
+    let actions = Arc::new(Mutex::new(0u64));
+    let views_actions = Arc::clone(&actions);
+    let actions_in = Arc::clone(&actions);
+    let views = move |view: &str, state_seq: u64| {
+        let count = *views_actions.lock().unwrap();
+        render_view(view, state_seq, count)
+    };
+    let action_handler = move |_view: &str, action: &str, _payload: &Value| {
+        if action == "call" {
+            *actions_in.lock().unwrap() += 1;
+            Ok(())
+        } else {
+            Err(ToolError::internal(format!(
+                "fixture does not handle action `{action}`"
+            )))
+        }
+    };
+    if let Err(error) =
+        ChildSession::serve_with_views_and_actions(declarations(), views, action_handler, handler)
+    {
         eprintln!("plugin-fixture: session error: {error}");
         std::process::exit(1);
     }

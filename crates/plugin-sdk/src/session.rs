@@ -20,8 +20,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::protocol::{
-    error_code, kind, Envelope, HelloPayload, InvokePayload, ProtocolError, ReadyDecls,
-    ReadyPayload, RenderPayload, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    error_code, kind, ActionPayload, Envelope, HelloPayload, InvokePayload, ProtocolError,
+    ReadyDecls, ReadyPayload, RenderPayload, MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 use crate::{ToolResult, MAX_TOOL_TIMEOUT_MS};
 
@@ -159,6 +159,32 @@ impl ViewHandler for NoViews {
     }
 }
 
+/// ADC 交互动作处理器（`ui.action`，M4 W3）。
+///
+/// `action` 为 `call` / `command`，`payload` 为其参数；fire-and-forget，返回错误只写
+/// stderr，不影响协议 stdout。
+pub trait ActionHandler: Send + 'static {
+    fn action(&mut self, view: &str, action: &str, payload: &Value) -> Result<(), ToolError>;
+}
+
+impl<F> ActionHandler for F
+where
+    F: FnMut(&str, &str, &Value) -> Result<(), ToolError> + Send + 'static,
+{
+    fn action(&mut self, view: &str, action: &str, payload: &Value) -> Result<(), ToolError> {
+        self(view, action, payload)
+    }
+}
+
+/// 默认动作处理器：接受但忽略（保持 M3 作者的 `serve_with_views` 行为）。
+struct NoActions;
+
+impl ActionHandler for NoActions {
+    fn action(&mut self, _view: &str, _action: &str, _payload: &Value) -> Result<(), ToolError> {
+        Ok(())
+    }
+}
+
 /// 会话错误：I/O 或协议。
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -189,9 +215,19 @@ impl ChildSession {
         views: V,
         handler: H,
     ) -> Result<(), SessionError> {
+        Self::serve_with_views_and_actions(decls, views, NoActions, handler)
+    }
+
+    /// 同时注册 `ui.render` 与 `ui.action` 处理器（M4 W3 面板交互）。
+    pub fn serve_with_views_and_actions<H: ToolHandler, V: ViewHandler, A: ActionHandler>(
+        decls: ReadyDecls,
+        views: V,
+        actions: A,
+        handler: H,
+    ) -> Result<(), SessionError> {
         let reader = std::io::BufReader::new(std::io::stdin());
         let writer = std::io::stdout();
-        Self::serve_with_io_and_views(reader, writer, decls, views, handler)
+        Self::serve_with_io_views_actions(reader, writer, decls, views, actions, handler)
     }
 
     /// 可注入 I/O 的会话（集成/单元测试用）。
@@ -223,6 +259,25 @@ impl ChildSession {
         H: ToolHandler,
         V: ViewHandler,
     {
+        Self::serve_with_io_views_actions(reader, writer, decls, views, NoActions, handler)
+    }
+
+    /// 完整入口：可注入 I/O + views + actions。
+    pub fn serve_with_io_views_actions<R, W, H, V, A>(
+        reader: R,
+        writer: W,
+        decls: ReadyDecls,
+        views: V,
+        actions: A,
+        handler: H,
+    ) -> Result<(), SessionError>
+    where
+        R: BufRead + Send + 'static,
+        W: Write + Send + 'static,
+        H: ToolHandler,
+        V: ViewHandler,
+        A: ActionHandler,
+    {
         let (events, receiver) = mpsc::channel::<InputEvent>();
         thread::Builder::new()
             .name("cpp-process-stdin".to_owned())
@@ -232,6 +287,7 @@ impl ChildSession {
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
         let handler: Arc<Mutex<Box<dyn ToolHandler>>> = Arc::new(Mutex::new(Box::new(handler)));
         let views: Arc<Mutex<Box<dyn ViewHandler>>> = Arc::new(Mutex::new(Box::new(views)));
+        let actions: Arc<Mutex<Box<dyn ActionHandler>>> = Arc::new(Mutex::new(Box::new(actions)));
         let cancels: Arc<Mutex<HashMap<String, CancelFlag>>> = Arc::new(Mutex::new(HashMap::new()));
         let mut workers: Vec<JoinHandle<()>> = Vec::new();
         let mut hello_seen = false;
@@ -383,6 +439,27 @@ impl ChildSession {
                 }
                 kind::UI_RENDER => {
                     write_envelope(&writer, &render_result(&views, &envelope))?;
+                }
+                kind::UI_ACTION => {
+                    // fire-and-forget：没有 result envelope；错误只写 stderr。
+                    match serde_json::from_value::<ActionPayload>(envelope.payload.clone()) {
+                        Ok(payload) => {
+                            let mut guard = actions
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if let Err(error) =
+                                guard.action(&payload.view, &payload.action, &payload.payload)
+                            {
+                                eprintln!(
+                                    "[cpp-process] ui.action `{}` on `{}` failed: {error}",
+                                    payload.action, payload.view
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("[cpp-process] invalid ui.action payload: {error}");
+                        }
+                    }
                 }
                 kind::PROCESS_SHUTDOWN => {
                     write_envelope(&writer, &Envelope::new(kind::PROCESS_BYE))?;
@@ -985,5 +1062,66 @@ mod tests {
         let shutdown: crate::ShutdownPayload =
             serde_json::from_value(serde_json::json!({ "timeout_ms": 2500 })).unwrap();
         assert_eq!(shutdown.timeout_ms, 2500);
+    }
+
+    // CPP-PROC-033（M4 W3）：ui.action 触发 ActionHandler，且不写 result envelope。
+    #[test]
+    fn cpp_proc_033_ui_action_invokes_handler_fire_and_forget() {
+        let seen: Arc<Mutex<Vec<(String, String, serde_json::Value)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let seen_in = Arc::clone(&seen);
+
+        let mut input = hello_line();
+        input.push_str(
+            &Envelope::with_payload(
+                kind::UI_ACTION,
+                crate::ActionPayload {
+                    view: "fixture.one".to_owned(),
+                    action: "call".to_owned(),
+                    payload: serde_json::json!({
+                        "method": "refresh",
+                        "args": { "scope": "fixture" }
+                    }),
+                },
+            )
+            .unwrap()
+            .encode_line()
+            .unwrap(),
+        );
+        input.push_str(&Envelope::new(kind::PROCESS_SHUTDOWN).encode_line().unwrap());
+
+        let sink = SharedSink::default();
+        let writer = sink.clone();
+        let handle = thread::spawn(move || {
+            ChildSession::serve_with_io_views_actions(
+                Cursor::new(input),
+                writer,
+                fixture_decls(),
+                |_view: &str, _state_seq: u64| Ok(serde_json::json!({"type": "Text"})),
+                move |view: &str, action: &str, payload: &Value| {
+                    seen_in.lock().unwrap().push((
+                        view.to_owned(),
+                        action.to_owned(),
+                        payload.clone(),
+                    ));
+                    Ok(())
+                },
+                |_call: &ToolCall, _cancel: &CancelFlag| Ok(ToolResult::text("ok")),
+            )
+        });
+        handle.join().unwrap().unwrap();
+
+        let recorded = seen.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "fixture.one");
+        assert_eq!(recorded[0].1, "call");
+        assert_eq!(recorded[0].2["method"], "refresh");
+        let envelopes = parse_lines(&sink.lines());
+        assert!(
+            !envelopes
+                .iter()
+                .any(|envelope| envelope.kind == kind::UI_RESULT),
+            "ui.action 不是请求/响应，不应写 ui.result"
+        );
     }
 }
