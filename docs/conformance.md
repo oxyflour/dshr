@@ -183,7 +183,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 核心 crate + desktop-build；Linux 本机 build 通过，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` + `dshr-desktop-gpui` `cargo build` + ADC/recovery/crash 自检（[m4-linux.md](m4-linux.md)） |
-| `M4-CI-004` | manual | `package-desktop.ps1/sh`：Windows zip / Linux tar.gz 本机 exit 0（[m4-package.md](m4-package.md)） |
+| `M4-CI-004` | manual | `package-desktop.ps1/sh`：Windows zip / Linux tar.gz + 解压后 sidecar 自检 PASS（[m4-package.md](m4-package.md)） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |
 | `M4-DRAW-001` | manual | `frame-probe` 窗口 draw：RDP 下硬预算 PASS，相对基线受环境干扰未判回归（[m4-draw-budget.md](m4-draw-budget.md)） |

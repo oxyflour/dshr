@@ -29,10 +29,24 @@ Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本�
 两者都 exit 0。Linux 二进制来自 WSL 的 `cargo build`（见 [m4-linux.md](m4-linux.md)），
 并已通过 ADC/恢复/崩溃自检。
 
-## 3. 明确未做
+## 3. 包内 smoke test
+
+Windows 归档解压后，把 Node 显式指到仓库 vendored 运行时（归档本身不含 Node）：
+
+```powershell
+$env:DSHR_NODE = "C:\Projects\dshr\runtime\node\node.exe"
+cd dist/dshr-debug-windows-x64
+.\chat.exe --selftest-sidecar-recovery
+```
+
+实测 `live=true killed=true dead_call=true native=true replayed=3`，PASS。说明包的
+`chat.exe + sidecar/probe-*` 布局可运行；缺的是 Node runtime 与 dsh-official node_modules。
+
+## 4. 明确未做
 
 - 没有 macOS `.app`/签名/公证；Windows 没有 MSI/NSIS 或 Authenticode；Linux 没有 deb/AppImage。
-- 归档只含 `chat` 二进制，不含 Node/sidecar 运行时；完整可分发包仍需把 runtime 资产一起打包。
+- 归档只含 `chat` 二进制与 probe sidecar，不含 Node/sidecar runtime；需 `DSHR_NODE` 或 PATH
+  提供 Node，完整可分发包仍需把 runtime 资产一起打包。
 - 没有自动更新/差分/回滚。
 - CI 尚未实跑打包脚本；本机 Windows/Linux 已验证。
 

@@ -79,6 +79,8 @@ powershell -File tools\package-desktop.ps1 -Configuration debug
   → dist/dshr-debug-windows-x64.zip（21.7 MB，exit 0）
 bash tools/package-desktop.sh debug
   → dist/dshr-debug-linux-x86_64.tar.gz（152.7 MB，exit 0）
+dist/dshr-debug-windows-x64> chat.exe --selftest-sidecar-recovery（DSHR_NODE 指向 vendored node）
+  → PASS（live/killed/dead_call/native/replayed=3；包内 chat+sidecar/probe 布局可运行）
 
 node tools\official-provenance.mjs --check
   → PASS（3 个官方包，版本+SHA-256 匹配；official-l2-gate 测试前强制）
@@ -128,9 +130,9 @@ node tools\conformance.mjs --full --compact
   draw_p95=9.40ms < 31.25ms；同主机相对基线 avg_fps 19.2 < 22.42 未通过，属远程合成器
   干扰，不判回归，也不标"窗口 draw 稳定达标"。
 - **G1 Linux 构建/自检/打包已本机过**：WSL 构建+ADC/recovery/crash 自检通过；
-  `package-desktop.ps1`/`.sh` 生成 Windows zip（21.7 MB）与 Linux tar.gz（152.7 MB）。
-  但归档只含 `chat`，不含 Node/sidecar runtime；Actions 未实跑，macOS/Windows runner
-  未验证；G1 不标"完成"。
+  `package-desktop.ps1`/`.sh` 生成 Windows zip（21.7 MB）与 Linux tar.gz（152.7 MB）；
+  解压 Windows 包并设 `DSHR_NODE` 后 sidecar 自检 PASS。归档仍不含 Node runtime；
+  Actions 未实跑，macOS/Windows runner 未验证；G1 不标"完成"。
 - **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
   本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。
 - **G2 只到 headless/进程级 + 恢复横幅**：三个 selftest 覆盖损坏/备份/插件回滚、kill sidecar、
