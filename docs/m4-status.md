@@ -49,6 +49,9 @@ tools\build-env.cmd cargo test --offline -p dshr-profile
 target\debug\chat.exe --selftest-plugin-lifecycle
   → [selftest-lifecycle] PASS（exit 0）
 
+target\debug\chat.exe --selftest-recovery
+  → corrupt/backup/continue/plugin_rollback/healthy/healthy_call 全 true，PASS（exit 0）
+
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
   → [authoring-check] PASS（含卸载生命周期；exit 0）
 
@@ -78,6 +81,8 @@ node tools\conformance.mjs --full --compact
 - **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
   [m4-keyboard.md](m4-keyboard.md) §3 人工复验。本机 `SendKeys` 自动化尝试被 Windows 前台锁
   拦住（窗口能启动，`SetForegroundWindow` 失败，无 `[keyboard]` 行），不改判 G3。
+- **G2 只到 headless**：`--selftest-recovery` 覆盖损坏会话/备份/插件回滚，
+  但没有真实窗口内崩溃、sidecar 被杀、重启后继续操作的 UI 场景；G2 不标"完成"。
 - **SKIP-as-pass 已修（W8）**：`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs`
   在 node 缺失时 panic。实测把 `PATH` 限制为 `C:\Windows\System32;C:\Windows` 后两个测试二进制
   exit 101（此前是 SKIP + return 记 passed）；普通环境仍全绿（parallel 10、l2 10）。
@@ -88,7 +93,7 @@ node tools\conformance.mjs --full --compact
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证** | 无 macOS/Linux runner；DSH JS 插件跨平台未跑 |
-| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | 未开始 | 需故障注入与恢复断言 |
+| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless）**：`--selftest-recovery` PASS（损坏会话隔离+重建、`.bak` 恢复后可继续追加、失败插件回滚+健康插件调用） | 真实窗口内崩溃/重启恢复未覆盖；补 `M4-RECOVERY-001` 的证据与 UI 场景 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | 未开始 | 现有脚本是手动；需 W7 |
 
@@ -107,6 +112,6 @@ node tools/check-links.mjs
 node tools/conformance.mjs --quick
 tools\build-env.cmd cargo test --offline -p dshr-profile
 tools\build-env.cmd cargo test --offline -p dshr-desktop-gpui --bin chat
-tools\build-env.cmd cargo run --offline -p dshr-desktop-gpui --bin chat -- --selftest-plugin-lifecycle
+tools\build-env.cmd cargo run --offline -p dshr-desktop-gpui --bin chat -- --selftest-recovery
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
 ```

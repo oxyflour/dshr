@@ -80,7 +80,8 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插件面板 Button `onPress` 回到宿主，`copy` 写剪贴板，
 `call`/`command` 经 external-process `ui.action` 到插件后再 render；`openExternal`
 走确认条（取消/Esc 不打开）；工具结果 `meta.ui` 已接到 tool card 附加区；W8 修掉两处"node 缺失时 SKIP 记 pass"的集成测试，
-`onChange` 未做（[m4-adc.md](docs/m4-adc.md)）。
+`onChange` 未做（[m4-adc.md](docs/m4-adc.md)）。G2 已有 headless 恢复自检
+（`--selftest-recovery`：损坏会话/`.bak`/插件失败回滚），真实窗口崩溃恢复仍未验证。
 三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
 
 **M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见

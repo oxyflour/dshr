@@ -77,8 +77,8 @@ use dshr_session_store::{
 };
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
-    ApprovalBroker, ApprovalOutcome, ApprovalPolicy, PermissionMode, PolicyDecision, RegistryError,
-    ToolDefinition, ToolOrigin, ToolPolicy,
+    AllowAll, ApprovalBroker, ApprovalOutcome, ApprovalPolicy, PermissionMode, PolicyDecision,
+    RegistryError, ToolDefinition, ToolOrigin, ToolPolicy,
 };
 use dshr_ui_gpui::{
     adc_panel_body, adc_panel_body_with_handler, diff_view_from_text, markdown_view,
@@ -5790,6 +5790,137 @@ fn selftest_corrupt_session() -> i32 {
     }
 }
 
+/// 故意在注册后失败的插件：宿主必须原子回滚，且仍能装载后续健康插件。
+struct RecoveryFailingPlugin;
+
+impl Plugin for RecoveryFailingPlugin {
+    fn id(&self) -> &'static str {
+        "recovery.failing"
+    }
+
+    fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_tool(
+            ToolDefinition::new(
+                "recovery_fail_tool",
+                "should be rolled back",
+                ToolOrigin::Native {
+                    plugin_id: "recovery.failing".to_owned(),
+                },
+            )
+            .with_schema(json!({ "type": "object" })),
+        )?;
+        Err(PluginError::Invalid("injected apply failure".to_owned()))
+    }
+
+    fn call(
+        &mut self,
+        _tool: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
+        unreachable!("failing plugin is rolled back")
+    }
+}
+
+/// 失败插件之后装载的健康插件。
+struct RecoveryHealthyPlugin;
+
+impl Plugin for RecoveryHealthyPlugin {
+    fn id(&self) -> &'static str {
+        "recovery.healthy"
+    }
+
+    fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+        ctx.register_tool(
+            ToolDefinition::new(
+                "recovery_healthy_echo",
+                "healthy plugin tool",
+                ToolOrigin::Native {
+                    plugin_id: "recovery.healthy".to_owned(),
+                },
+            )
+            .with_schema(json!({ "type": "object" })),
+        )?;
+        Ok(())
+    }
+
+    fn call(
+        &mut self,
+        _tool: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
+        Ok(json!({ "ok": true }))
+    }
+}
+
+/// `--selftest-recovery`：G2 数据/插件失败恢复（无窗口）。
+///
+/// 1. 损坏会话：隔离原字节、生成干净 `session.created`、错误可见（复用
+///    `--selftest-corrupt-session`）；
+/// 2. 备份恢复：删掉主文件后 `.bak` 原子恢复，重放成功并可继续追加；
+/// 3. 插件失败：`apply` 注册后失败被回滚，随后健康插件可装载/调用。
+fn selftest_recovery() -> i32 {
+    let corrupt_ok = selftest_corrupt_session() == 0;
+
+    let root = PathBuf::from(".tmp/m4-recovery");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("s-recovery.jsonl");
+    let mut log = SessionLog::new("s-recovery");
+    let _ = log.append_created(now_ts(), &SessionCreated::root(String::from(".")));
+    let first_len = log.events().len();
+    let _ = save_atomic(&path, log.to_jsonl().as_bytes());
+    let _ = log.append(EventSpec::durable(
+        "message.user",
+        now_ts(),
+        json!({ "text": "before crash" }),
+    ));
+    let _ = save_atomic(&path, log.to_jsonl().as_bytes());
+
+    // 模拟 Windows 替换窗口：主文件缺失、`.bak` 是上一次成功版本。
+    std::fs::remove_file(&path).expect("remove main log");
+    let recovered = recover_backup(&path).unwrap_or(false);
+    let replayed = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| SessionLog::from_jsonl("s-recovery", &text).ok());
+    let backup_ok = recovered
+        && replayed
+            .as_ref()
+            .map(|log| log.events().len() == first_len)
+            .unwrap_or(false);
+    let continue_ok = replayed.map_or(false, |mut log| {
+        let _ = log.append(EventSpec::durable(
+            "message.user",
+            now_ts(),
+            json!({ "text": "after recovery" }),
+        ));
+        save_atomic(&path, log.to_jsonl().as_bytes()).is_ok()
+            && std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| SessionLog::from_jsonl("s-recovery", &text).ok())
+                .map(|log| log.events().len() == first_len + 1)
+                .unwrap_or(false)
+    });
+
+    let mut host = PluginHost::new(AllowAll);
+    let rollback_ok =
+        host.load(Box::new(RecoveryFailingPlugin)).is_err() && host.registry().is_empty();
+    let healthy_ok = host.load(Box::new(RecoveryHealthyPlugin)).is_ok();
+    let continue_plugin_ok = host.call("recovery_healthy_echo", &json!({})).is_ok();
+
+    let ok =
+        corrupt_ok && backup_ok && continue_ok && rollback_ok && healthy_ok && continue_plugin_ok;
+    println!(
+        "[selftest-recovery] corrupt={corrupt_ok} backup={backup_ok} continue={continue_ok} plugin_rollback={rollback_ok} healthy={healthy_ok} healthy_call={continue_plugin_ok}"
+    );
+    if ok {
+        println!("[selftest-recovery] PASS");
+        0
+    } else {
+        println!("[selftest-recovery] FAIL");
+        1
+    }
+}
+
 /// 取消语义自检（P1-2）：turn 开始前置位 cancel → 必须走 TurnCancelled + session.interrupted，
 /// 不出现“处理失败”，也不写空的 assistant 消息。
 fn selftest_cancel() -> i32 {
@@ -8646,6 +8777,9 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-corrupt-session") {
         std::process::exit(selftest_corrupt_session());
     }
+    if std::env::args().any(|arg| arg == "--selftest-recovery") {
+        std::process::exit(selftest_recovery());
+    }
     if std::env::args().any(|arg| arg == "--selftest-cancel") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_cancel());
@@ -9002,6 +9136,7 @@ mod tests {
             "--selftest-dsh-write",
             "--selftest-approval",
             "--selftest-corrupt-session",
+            "--selftest-recovery",
             "--selftest-cancel",
             "--live",
             "--live-chat",
