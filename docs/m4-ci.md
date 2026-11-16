@@ -5,7 +5,7 @@ G1 要求 Windows/macOS/Linux 管线 + 两类插件来源回归。当前拆成�
 | Workflow | Runner | 内容 | 状态 |
 |---|---|---|---|
 | [`conformance.yml`](../.github/workflows/conformance.yml) | `windows-latest` | schema/links/node-test/cargo 全量、矩阵 artifact、G4 perf gate | 本机等价命令通过；Actions **未实跑** |
-| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约（schema/links/quick）+ 核心 crate 测试 | **新增，Actions 未实跑** |
+| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约（schema/links/quick）+ 核心 crate 测试 + `desktop-build`（`dshr-desktop-gpui`） | **新增，Actions 未实跑** |
 
 ## 1. cross-platform.yml 覆盖什么
 
@@ -34,11 +34,11 @@ cargo test --offline \
 
 ## 2. 明确不覆盖什么
 
-- `dshr-desktop-gpui` / `dshr-ui-gpui` 仍只在 Windows 跑。GPUI 窗口依赖 X11/Wayland/字体等
-  系统库，macOS/Linux 的安装与签名管线还没做；不能拿 `core-rust` 绿冒充桌面三平台绿。
+- `desktop-build` 只做 `cargo build` 与二进制 artifact；没有 macOS 签名/公证、Linux 包格式
+  （deb/AppImage）或安装器测试。
 - Actions 尚未真实执行；本文件只记录 workflow 已落地、YAML 已本地解析（PyYAML），
-  不代表 CI 已绿。
-- macOS 签名/公证、Linux 包格式（deb/AppImage）尚未开始。
+  不代表 CI 已绿。Linux 的 `desktop-build` 等价命令已在 WSL 本机通过 `cargo build`
+  （见 [m4-linux.md](m4-linux.md)），macOS/Windows runner 未验证。
 
 ## 3. 本地等价命令
 

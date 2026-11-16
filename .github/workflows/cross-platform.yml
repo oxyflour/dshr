@@ -81,7 +81,7 @@ jobs:
       - name: Fetch dependencies
         run: cargo fetch
 
-      # 只测不依赖 GPUI/窗口系统的核心 crate；desktop-gpui/ui-gpui 仍只在 Windows 跑。
+      # 只测不依赖 GPUI/窗口系统的核心 crate；desktop-gpui/ui-gpui 由 desktop-build 编译。
       - name: Core Rust tests
         run: >
           cargo test --offline
@@ -105,3 +105,52 @@ jobs:
           -p dshr-sidecar-guard
           -p dshr-tool-runtime
           -p dshr-ui-contributions
+
+  desktop-build:
+    name: desktop build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Show toolchain
+        run: |
+          rustup show
+          cargo --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-desktop-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-cargo-
+
+      - name: Fetch dependencies
+        run: cargo fetch
+
+      # Linux 的 GPUI 后端依赖纯 Rust/dlopen；WSL 已验证 cargo build 成功。
+      - name: Build desktop chat
+        run: cargo build --offline -p dshr-desktop-gpui --bin chat
+
+      - name: Upload desktop binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            target/debug/chat
+            target/debug/chat.exe
+          if-no-files-found: error
+          retention-days: 14

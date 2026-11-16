@@ -22,7 +22,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + id 去 leak）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用；MCP、运行中抢占、异步 trait 冻结仍待 |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read/write execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 8/8 PASS；bash/pwsh 等 shell 工具仍未闭环 |
-| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + 官方包来源 lock + Linux 核心编译）** | `perf-gate`/`cross-platform.yml`/`official-provenance`；WSL Linux 核心 6 crate `cargo check` 通过；桌面 GPUI 三平台仍未覆盖 |
+| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix incl. desktop-build + 官方包来源）** | `perf-gate`/`cross-platform.yml`（contract/core/desktop-build）/`official-provenance`；WSL Linux 核心 + 桌面 `cargo build` 通过；Actions 未实跑、macOS 桌面未验证 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
 ## 3. W1 证据（2026-11-16）
@@ -68,9 +68,10 @@ python -c "import yaml; yaml.safe_load(open('.github/workflows/cross-platform.ym
   → YAML 解析 OK（contract 5 steps / core-rust 6 steps；Actions 未实跑）
 
 WSL Ubuntu 22.04 + Rust 1.99.1:
-  cargo check -p dshr-tool-runtime -p dshr-plugin-api -p dshr-session-store \
-    -p dshr-profile -p dshr-compat-dsh-protocol -p dshr-compat-dsh-host
-  → 通过（修复 sidecar-guard 非 Windows spawn 缺 mut；仅核心 crate）
+  cargo check -p dshr-tool-runtime ... -p dshr-compat-dsh-host
+  → 通过（修复 sidecar-guard 非 Windows spawn 缺 mut）
+  cargo build -p dshr-desktop-gpui --bin chat
+  → BUILD_EXIT=0（target/debug/chat，debug 682 MB；无额外系统开发包）
 
 node tools\official-provenance.mjs --check
   → PASS（3 个官方包，版本+SHA-256 匹配；official-l2-gate 测试前强制）
@@ -119,9 +120,10 @@ node tools\conformance.mjs --full --compact
 - **W3 窗口 draw 只硬预算通过**：`frame-probe` 在 RDP 32Hz 下 missed_ratio=0、
   draw_p95=9.40ms < 31.25ms；同主机相对基线 avg_fps 19.2 < 22.42 未通过，属远程合成器
   干扰，不判回归，也不标"窗口 draw 稳定达标"。
-- **G1 只到核心 crate**：Linux（WSL）对 6 个核心 crate `cargo check` 通过，修复
-  `sidecar-guard` 非 Windows spawn 的 `mut`；但 Actions 未实跑，桌面 GPUI 的 macOS/Linux
-  构建/打包也没有 job；G1 不标"完成"。
+- **G1 Linux 核心+桌面已本机过**：WSL 对 6 个核心 crate `cargo check` 与
+  `dshr-desktop-gpui` `cargo build` 都通过（修复 `sidecar-guard` 非 Windows spawn）；
+  `cross-platform.yml` 增加 `desktop-build` job。Actions 未实跑，macOS/Windows 桌面
+  runner 未验证，打包/签名仍未做；G1 不标"完成"。
 - **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
   本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。
 - **G2 只到 headless/进程级 + 恢复横幅**：三个 selftest 覆盖损坏/备份/插件回滚、kill sidecar、
@@ -136,7 +138,7 @@ node tools\conformance.mjs --full --compact
 
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
-| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 核心已本机编译）** | WSL Ubuntu 22.04 对核心 6 crate `cargo check` 通过（修复 sidecar-guard 非 Windows spawn）；Actions 未实跑；桌面 GPUI 的 macOS/Linux 构建/打包未做 |
+| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 核心+桌面已本机编译）** | WSL Ubuntu 22.04 核心 6 crate + `dshr-desktop-gpui` `cargo build` 通过；Actions 未实跑，macOS/Windows 桌面 runner 未验证 |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless + UI 提示）**：`--selftest-recovery` / `--selftest-sidecar-recovery` / `--selftest-crash-recovery` PASS；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后继续操作的端到端 UI 未覆盖 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **部分**：`tools/perf-gate.mjs` 阈值 50ms / 满配额 16.7ms / a11y 0，本机 PASS；CI workflow 已加 step 与 artifact | Actions 未实跑；三平台 runner 未加 |

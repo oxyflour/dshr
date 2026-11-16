@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "tools/conformance.mjs",
-  "generated_at": "2026-11-16T16:41:58.281Z",
+  "generated_at": "2026-11-16T16:57:20.400Z",
   "format": "compact",
   "invocation": {
     "mode": "full",
@@ -30,11 +30,11 @@
     "repo_root": "C:\\Projects\\dshr"
   },
   "git": {
-    "head": "8b3d682f459a22818febcc4e69e714ae7ee92beb",
-    "head_short": "8b3d682",
+    "head": "3dac6633eb26bd1694ff2beda20f64a87d839c7f",
+    "head_short": "3dac663",
     "branch": "master",
-    "dirty": false,
-    "dirty_files": 0
+    "dirty": true,
+    "dirty_files": 8
   },
   "registry": {
     "path": "docs/conformance.d/registry.json",
@@ -55,7 +55,7 @@
       "command": "node schema/check.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 231,
+      "duration_ms": 234,
       "timeout_ms": 120000,
       "summary": "76/76 cases passed",
       "output_tail": null
@@ -66,9 +66,9 @@
       "command": "node tools/check-links.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 257,
+      "duration_ms": 259,
       "timeout_ms": 120000,
-      "summary": "396 link(s) checked, 0 broken, 73 file(s) scanned",
+      "summary": "397 link(s) checked, 0 broken, 73 file(s) scanned",
       "output_tail": null
     },
     {
@@ -77,7 +77,7 @@
       "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 362,
+      "duration_ms": 366,
       "timeout_ms": 120000,
       "summary": "21/21 node tests passed",
       "output_tail": null
@@ -88,7 +88,7 @@
       "command": "tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 55361,
+      "duration_ms": 55296,
       "timeout_ms": 1200000,
       "summary": "67 suite(s), 870 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored)",
       "output_tail": null

@@ -37,7 +37,20 @@ pub(super) fn spawn(
 
 修复后上述 `cargo check` **通过**（仅 `cpu_limit_ticks` 在非 Windows 未使用的 warning）。
 
-## 4. 边界
+## 4. 桌面 GPUI 编译（同一 WSL）
+
+在同一个临时工作区里构建桌面二进制：
+
+```text
+cargo build -p dshr-desktop-gpui --bin chat
+```
+
+结果：**BUILD_EXIT=0**，产出 `/tmp/dshr-target-desktop/debug/chat`（约 682 MB 的 debug 带符号
+二进制）。WSL 没有额外安装 X11/Wayland/fontconfig 开发包；GPUI 的 Linux 后端依赖纯 Rust/dlopen，
+运行时才需要系统图形库。该二进制能启动到 `--selftest-adc-panel` 的 fixture 检查（缺
+`plugin-fixture` 时按预期报错）。
+
+## 5. 边界
 
 - 只验证**核心 crate 编译**，没有跑完整 Linux 测试（部分测试依赖 `.exe`/Windows 路径）。
 - **没有**编译 `dshr-ui-gpui` / `dshr-desktop-gpui`；GPUI 需要 X11/Wayland/字体/Vulkan 等
