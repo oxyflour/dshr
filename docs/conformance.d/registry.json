@@ -16,7 +16,8 @@
     "M4 W8（2026-11-16）：`M4-P2-001` 记录 SKIP-as-pass 修复——`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs` 在 node 缺失时 panic/exit 101（实测限 PATH 后），不再 eprintln SKIP+return 记 passed；普通环境仍全绿。",
     "M4 G2（2026-11-16）：`M4-RECOVERY-001` = `chat --selftest-recovery`，覆盖损坏会话隔离+重建、删除主文件后 `.bak` 恢复并继续追加、失败插件回滚+健康插件装载/调用；headless PASS，真实窗口崩溃恢复未覆盖。",
     "M4 W6（2026-11-16）：`RPC-L2-228` 覆盖 `session-log/v1 events.append`（projections 仍只读）；sidecar 最小 `exec.agent.session.append` → 该写通道。`official-l2-gate.ps1` 6/6 PASS：官方 `dsh-tool-todo` execute 写入 `todo/write`，官方 `working_directory` execute 真实返回 cwd，不再被 `exec.agent` 阻塞。其他官方工具仍需 shell/systemPrompt 等更多 agent 面。",
-    "M4 G4（2026-11-16）：`M4-PERF-001` = `node tools/perf-gate.mjs`（阈值 50ms / 满配额 16.7ms / a11y 0），CI conformance.yml 已加 step 与 perf-baseline artifact；本机 PASS（worst 10.799ms、max_quota 4.033ms），Actions 未实跑。"
+    "M4 G4（2026-11-16）：`M4-PERF-001` = `node tools/perf-gate.mjs`（阈值 50ms / 满配额 16.7ms / a11y 0），CI conformance.yml 已加 step 与 perf-baseline artifact；本机 PASS（worst 10.799ms、max_quota 4.033ms），Actions 未实跑。",
+    "M4 W4（2026-11-16）：`M4-TRAIT-001` 覆盖 `Plugin::id/version` 返回借用 `&str`，external/WASM 插件删除 `Box::leak`；native/MCP 并发与 `Plugin::call` 异步/取消仍未做。"
   ],
   "suites": {
     "schema": {
@@ -412,6 +413,20 @@
       "ids": [
         "ADC-ELEM-PANEL-API-001",
         "ADC-ELEM-PANEL-API-002"
+      ]
+    },
+    {
+      "name": "M4-TRAIT（plugin-api：动态插件 id 借用，不 leak）",
+      "area": "M4",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-api",
+      "notes": "crates/plugin-api/src/lib.rs 的 M4-TRAIT-001；Plugin::id/version 改为 &str；external/WASM 插件删除 Box::leak。cargo test -p dshr-plugin-api",
+      "source_dirs": [
+        "crates/plugin-api/src"
+      ],
+      "ids": [
+        "M4-TRAIT-001"
       ]
     },
     {

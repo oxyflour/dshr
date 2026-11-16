@@ -29,8 +29,6 @@ pub struct WasmPlugin {
     manifest: Manifest,
     package_dir: PathBuf,
     runtime: Option<WasmPluginRuntime>,
-    id_static: &'static str,
-    version_static: &'static str,
 }
 
 impl std::fmt::Debug for WasmPlugin {
@@ -73,14 +71,10 @@ impl WasmPlugin {
         let config = WasmEngineConfig::from_manifest(manifest)?;
         let runtime = WasmPluginRuntime::from_bytes(source, config)?
             .with_plugin_id(manifest.plugin.id.clone());
-        let id_static = leak_str(&manifest.plugin.id);
-        let version_static = leak_str(&manifest.plugin.version);
         Ok(Self {
             manifest: manifest.clone(),
             package_dir,
             runtime: Some(runtime),
-            id_static,
-            version_static,
         })
     }
 
@@ -120,12 +114,12 @@ impl WasmPlugin {
 }
 
 impl Plugin for WasmPlugin {
-    fn id(&self) -> &'static str {
-        self.id_static
+    fn id(&self) -> &str {
+        &self.manifest.plugin.id
     }
 
-    fn version(&self) -> &'static str {
-        self.version_static
+    fn version(&self) -> &str {
+        &self.manifest.plugin.version
     }
 
     fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
@@ -266,8 +260,4 @@ fn resolve_package_file(package_dir: &Path, relative: &str) -> Result<PathBuf, P
         )));
     }
     Ok(joined)
-}
-
-fn leak_str(value: &str) -> &'static str {
-    Box::leak(value.to_owned().into_boxed_str())
 }

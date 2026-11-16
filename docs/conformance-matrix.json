@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "tools/conformance.mjs",
-  "generated_at": "2026-11-16T15:19:47.607Z",
+  "generated_at": "2026-11-16T15:22:52.667Z",
   "format": "compact",
   "invocation": {
     "mode": "full",
@@ -30,17 +30,17 @@
     "repo_root": "C:\\Projects\\dshr"
   },
   "git": {
-    "head": "c6e2df2fb751ff09703ed8f333783ab094537b9f",
-    "head_short": "c6e2df2",
+    "head": "bf570cc63d4f48fd0f1e457b704cb298faa4a695",
+    "head_short": "bf570cc",
     "branch": "master",
-    "dirty": false,
-    "dirty_files": 0
+    "dirty": true,
+    "dirty_files": 9
   },
   "registry": {
     "path": "docs/conformance.d/registry.json",
     "schema_version": 1,
-    "groups": 35,
-    "tests": 581,
+    "groups": 36,
+    "tests": 582,
     "suites": [
       "schema",
       "links",
@@ -55,7 +55,7 @@
       "command": "node schema/check.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 213,
+      "duration_ms": 233,
       "timeout_ms": 120000,
       "summary": "76/76 cases passed",
       "output_tail": null
@@ -66,9 +66,9 @@
       "command": "node tools/check-links.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 241,
+      "duration_ms": 250,
       "timeout_ms": 120000,
-      "summary": "389 link(s) checked, 0 broken, 70 file(s) scanned",
+      "summary": "390 link(s) checked, 0 broken, 70 file(s) scanned",
       "output_tail": null
     },
     {
@@ -77,7 +77,7 @@
       "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 409,
+      "duration_ms": 298,
       "timeout_ms": 120000,
       "summary": "21/21 node tests passed",
       "output_tail": null
@@ -88,16 +88,16 @@
       "command": "tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 53178,
+      "duration_ms": 67701,
       "timeout_ms": 1200000,
-      "summary": "67 suite(s), 863 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)",
+      "summary": "67 suite(s), 864 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored)",
       "output_tail": null
     }
   ],
   "stats": {
-    "total": 581,
-    "implemented": 537,
-    "implemented_passed": 537,
+    "total": 582,
+    "implemented": 538,
+    "implemented_passed": 538,
     "implemented_failed": 0,
     "implemented_skipped": 0,
     "pending": 18,
@@ -120,6 +120,7 @@
     "M4 G2（2026-11-16）：`M4-RECOVERY-001` = `chat --selftest-recovery`，覆盖损坏会话隔离+重建、删除主文件后 `.bak` 恢复并继续追加、失败插件回滚+健康插件装载/调用；headless PASS，真实窗口崩溃恢复未覆盖。",
     "M4 W6（2026-11-16）：`RPC-L2-228` 覆盖 `session-log/v1 events.append`（projections 仍只读）；sidecar 最小 `exec.agent.session.append` → 该写通道。`official-l2-gate.ps1` 6/6 PASS：官方 `dsh-tool-todo` execute 写入 `todo/write`，官方 `working_directory` execute 真实返回 cwd，不再被 `exec.agent` 阻塞。其他官方工具仍需 shell/systemPrompt 等更多 agent 面。",
     "M4 G4（2026-11-16）：`M4-PERF-001` = `node tools/perf-gate.mjs`（阈值 50ms / 满配额 16.7ms / a11y 0），CI conformance.yml 已加 step 与 perf-baseline artifact；本机 PASS（worst 10.799ms、max_quota 4.033ms），Actions 未实跑。",
+    "M4 W4（2026-11-16）：`M4-TRAIT-001` 覆盖 `Plugin::id/version` 返回借用 `&str`，external/WASM 插件删除 `Box::leak`；native/MCP 并发与 `Plugin::call` 异步/取消仍未做。",
     "compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。",
     "quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。",
     "cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace --no-fail-fast）。",
@@ -684,6 +685,7 @@
       ["M4-RECOVERY-001","M4","manual"],
       ["M4-SDK-001","M4","manual"],
       ["M4-SIGN-001","M4","manual"],
+      ["M4-TRAIT-001","M4","pass"],
       ["M4-UNINSTALL-001","M4","pass"],
       ["M4-UNINSTALL-002","M4","pass"],
       ["M4-UNINSTALL-003","M4","pass"],

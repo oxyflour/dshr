@@ -215,8 +215,9 @@ impl PluginContext {
 ///
 /// `Send` 是硬约束：插件可能被宿主移到工作线程执行（UI 线程不允许被工具阻塞）。
 pub trait Plugin: Send {
-    fn id(&self) -> &'static str;
-    fn version(&self) -> &'static str {
+    /// 插件 id。返回借用字符串：外部进程/WASM 插件的 id 来自 manifest，不能被迫泄漏。
+    fn id(&self) -> &str;
+    fn version(&self) -> &str {
         "0.1.0"
     }
 
@@ -374,5 +375,32 @@ mod tests {
             .with_view("probe.view");
         assert_eq!(with_view.view.as_deref(), Some("probe.view"));
         assert_eq!(with_view.view_name(), "probe.view");
+    }
+
+    // M4-TRAIT-001：id/version 返回借用字符串，外部/WASM 插件的动态 id 不再被迫 leak。
+    #[test]
+    fn m4_trait_001_dynamic_plugin_id_is_borrowed() {
+        struct DynamicIdPlugin(String);
+        impl Plugin for DynamicIdPlugin {
+            fn id(&self) -> &str {
+                &self.0
+            }
+            fn version(&self) -> &str {
+                "9.9.9"
+            }
+            fn apply(&mut self, _ctx: &mut PluginContext) -> Result<(), PluginError> {
+                Ok(())
+            }
+            fn call(
+                &mut self,
+                _tool: &str,
+                _arguments: &serde_json::Value,
+            ) -> Result<serde_json::Value, PluginError> {
+                Ok(serde_json::Value::Null)
+            }
+        }
+        let plugin = DynamicIdPlugin("dynamic.plugin".to_owned());
+        assert_eq!(plugin.id(), "dynamic.plugin");
+        assert_eq!(plugin.version(), "9.9.9");
     }
 }

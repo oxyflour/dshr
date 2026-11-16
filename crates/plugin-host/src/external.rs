@@ -195,8 +195,6 @@ impl ExchangeError {
 pub struct ExternalPlugin {
     plugin_id: String,
     version: String,
-    id_static: &'static str,
-    version_static: &'static str,
     generation: u64,
     package_dir: PathBuf,
     ready: ReadyDecls,
@@ -318,8 +316,6 @@ impl ExternalPlugin {
         let mut plugin = Self {
             plugin_id: plugin_id.clone(),
             version: version.clone(),
-            id_static: leak_plugin_str(&plugin_id),
-            version_static: leak_plugin_str(&version),
             generation,
             package_dir,
             ready: ReadyDecls::default(),
@@ -695,12 +691,12 @@ impl ExternalPlugin {
 }
 
 impl Plugin for ExternalPlugin {
-    fn id(&self) -> &'static str {
-        self.id_static
+    fn id(&self) -> &str {
+        &self.plugin_id
     }
 
-    fn version(&self) -> &'static str {
-        self.version_static
+    fn version(&self) -> &str {
+        &self.version
     }
 
     fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
@@ -1142,10 +1138,6 @@ fn resolve_entry(package_dir: &Path, entry: &str) -> Result<PathBuf, String> {
 
 /// `Plugin::id/version` 返回 `&'static str`（trait 冻结的既有限制），
 /// 这里把 manifest 字符串泄漏一次：每进程 O(1)，换来 trait 零改动。
-fn leak_plugin_str(value: &str) -> &'static str {
-    Box::leak(value.to_owned().into_boxed_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

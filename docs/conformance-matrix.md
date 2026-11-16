@@ -8,21 +8,21 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T15:19:47.607Z |
-| git HEAD | c6e2df2fb751ff09703ed8f333783ab094537b9f（clean） |
+| generated_at | 2026-11-16T15:22:52.667Z |
+| git HEAD | bf570cc63d4f48fd0f1e457b704cb298faa4a695（dirty，9 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | full — `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，581 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，582 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 581 |
-| implemented | 537 |
-| implemented passed | 537 |
+| 总测试 ID | 582 |
+| implemented | 538 |
+| implemented passed | 538 |
 | implemented failed | 0 |
 | implemented skipped | 0 |
 | pending | 18 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.21s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.24s | `node tools/check-links.mjs` | 389 link(s) checked, 0 broken, 70 file(s) scanned |
-| node-test | pass | 0 | 0.41s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 53.18s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 863 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 390 link(s) checked, 0 broken, 70 file(s) scanned |
+| node-test | pass | 0 | 0.30s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 67.70s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 864 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
@@ -90,7 +90,7 @@
 | SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
-### PASS（逐 ID；共 537 条）
+### PASS（逐 ID；共 538 条）
 
 | ID | 结果 |
 |---|---|
@@ -623,6 +623,7 @@
 | M4-KEY-008 | PASS |
 | M4-KEY-009 | PASS |
 | M4-KEY-010 | PASS |
+| M4-TRAIT-001 | PASS |
 | M4-UNINSTALL-001 | PASS |
 | M4-UNINSTALL-002 | PASS |
 | M4-UNINSTALL-003 | PASS |
@@ -648,6 +649,7 @@
 - M4 G2（2026-11-16）：`M4-RECOVERY-001` = `chat --selftest-recovery`，覆盖损坏会话隔离+重建、删除主文件后 `.bak` 恢复并继续追加、失败插件回滚+健康插件装载/调用；headless PASS，真实窗口崩溃恢复未覆盖。
 - M4 W6（2026-11-16）：`RPC-L2-228` 覆盖 `session-log/v1 events.append`（projections 仍只读）；sidecar 最小 `exec.agent.session.append` → 该写通道。`official-l2-gate.ps1` 6/6 PASS：官方 `dsh-tool-todo` execute 写入 `todo/write`，官方 `working_directory` execute 真实返回 cwd，不再被 `exec.agent` 阻塞。其他官方工具仍需 shell/systemPrompt 等更多 agent 面。
 - M4 G4（2026-11-16）：`M4-PERF-001` = `node tools/perf-gate.mjs`（阈值 50ms / 满配额 16.7ms / a11y 0），CI conformance.yml 已加 step 与 perf-baseline artifact；本机 PASS（worst 10.799ms、max_quota 4.033ms），Actions 未实跑。
+- M4 W4（2026-11-16）：`M4-TRAIT-001` 覆盖 `Plugin::id/version` 返回借用 `&str`，external/WASM 插件删除 `Box::leak`；native/MCP 并发与 `Plugin::call` 异步/取消仍未做。
 - compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。
 - quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。
 - cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace --no-fail-fast）。

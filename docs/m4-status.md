@@ -19,7 +19,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W1 | 分发与信任生命周期 | **完成（离线渠道口径）** | `M4-UNINSTALL-001..008`、`M4-KEY-001..010`（cargo，dshr-profile 81 passed）；`M4-SDK-001`（SDK 离线包/校验/篡改拒绝）、`M4-SIGN-001`（签名安装/轮换）、`M4-LIFECYCLE-001`；registry/CA 证书体系归 W7 |
 | W2 | 键盘与无障碍 | **部分完成（待 G3 真机复验）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；见 [m4-keyboard.md](m4-keyboard.md)。G3 人工流程 `M4-KEYBOARD-001` 未跑 |
 | W3 | ADC 交互与工具卡 | **部分完成（onPress + openExternal + tool card extra + Checkbox/Switch onChange）** | `adc_panel_body_with_handler`；`copy` 剪贴板；`call`/`command` → `ui.action` → 再 render；`openExternal` 确认条；`tool.result.meta.ui` → `ToolCard.extra` → 工具卡 ADC 区；Checkbox/Switch onChange；`M4-ADC-001..005` cargo，`M4-ADC-100/101` 真机待跑；见 [m4-adc.md](m4-adc.md) |
-| W4 | native/MCP 并发 + trait 冻结 | 未开始 | `Plugin::call` 仍同步、`&'static str` leak |
+| W4 | native/MCP 并发 + trait 冻结 | **部分完成（动态插件 id 不再 leak）** | `Plugin::id/version` 改为 `&str`，external/WASM 删除 `Box::leak`；native/MCP 并发、异步/取消冻结仍待 |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 6/6 PASS；其余官方工具仍需 shell/systemPrompt 等 agent 面 |
 | W7 | 三平台 CI / 性能基线 | **部分完成（G4 性能门禁 + CI step）** | `tools/perf-gate.mjs` + conformance.yml step/artifact；三平台 matrix、Actions 实跑、官方包 vendor 校验仍待 |
@@ -68,7 +68,7 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 67 suites / 863 passed / 0 failed / 6 ignored；exit 0
+  → 67 suites / 864 passed / 0 failed / 6 ignored；exit 0
     （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 
@@ -87,6 +87,9 @@ node tools\conformance.mjs --full --compact
 - **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
   [m4-keyboard.md](m4-keyboard.md) §3 人工复验。本机 `SendKeys` 自动化尝试被 Windows 前台锁
   拦住（窗口能启动，`SetForegroundWindow` 失败，无 `[keyboard]` 行），不改判 G3。
+- **W4 只去掉 id/version leak**：`Plugin::id/version` 已改为借用 `&str`，外部/WASM 插件不再
+  `Box::leak`；但 `Plugin::call` 仍是同步接口，native/MCP 批内仍串行，trait 冻结（异步/取消）
+  未完成，W4 不标"完成"。
 - **W6 只覆盖 todo/working_directory**：最小 `exec.agent`（id + session.append）已让这两类官方
   工具的 execute 闭环；bash/pwsh/fs 等还读 `shell`/`shellEnv`/`systemPrompt`/`ctx.fiber` 等
   活对象，仍不能算"官方 execute 全部闭环"。
