@@ -793,7 +793,8 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 > SKIP 记 pass；G2 有 headless `--selftest-recovery`；W6 的 todo/working_directory execute 已闭环
 > （official gate 6/6）；G4 有 `tools/perf-gate.mjs` + CI step（本机 PASS，Actions 未实跑）；
 > W4 的 id/version leak 已收口，native 并发/trait 冻结未做；三平台 CI 已加 contract/core
-> matrix 文件，官方包来源/SHA-256 lock 已接 gate，但 Actions 未实跑、桌面 GPUI 未覆盖。
+> matrix 文件，官方包来源/SHA-256 lock 已接 gate；W3 窗口 draw 硬预算 PASS（RDP 相对基线未过），
+> 但 Actions 未实跑、桌面 GPUI 未覆盖。
 
 - [ ] Windows/macOS/Linux 编译与发布管线；签名和更新策略（差分、灰度、回滚）。
 - [ ] 多窗口、快捷键、IME、辅助功能、DPI、窗口恢复、主题一致性。
