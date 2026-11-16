@@ -2103,7 +2103,10 @@ fn render_placeholder(theme: &Theme, node: &ElementNode) -> AnyElement {
 /// `testId` 同时写到 `accessibility_id`（Windows UIA 的 `AutomationId`），这样截图/自动化
 /// 与解析期诊断能对上同一个钩子。
 fn interactive_base(element: Div, node: &ElementNode, path: &str, role: Role) -> Stateful<Div> {
-    let element = element.id(format!("adc-{path}")).role(role);
+    let element = element
+        .id(format!("adc-{path}"))
+        .debug_selector(|| format!("adc-{path}"))
+        .role(role);
     let element = match &node.a11y_label {
         Some(label) => element.aria_label(label.as_str()),
         None => element,

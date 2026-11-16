@@ -1056,16 +1056,18 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-ui-gpui",
-      "notes": "crates/ui-gpui/src/adc.rs 的 #[test]（M4-ADC-001：adc_panel_body_with_handler + 嵌套 Button 动作树）；cargo test -p dshr-ui-gpui",
+      "notes": "crates/ui-gpui/src/adc.rs 的 #[test]（M4-ADC-001：adc_panel_body_with_handler + 嵌套 Button 动作树）；M4-ADC-009 在 tests/adc_click.rs 用 TestAppContext 真实点击 Button 并断言 Copy 到达 handler；cargo test -p dshr-ui-gpui",
       "source_dirs": [
-        "crates/ui-gpui/src"
+        "crates/ui-gpui/src",
+        "crates/ui-gpui/tests"
       ],
       "ids": [
         "M4-ADC-001",
         "M4-ADC-005",
         "M4-ADC-006",
         "M4-ADC-007",
-        "M4-ADC-008"
+        "M4-ADC-008",
+        "M4-ADC-009"
       ]
     },
     {

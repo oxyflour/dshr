@@ -57,4 +57,13 @@
 5. 把 `onPress` 换成 `openExternal: "https://example.com"`，点击后出现确认条；
    点"取消"或按 `Esc` 不打开；点"打开"才调用系统浏览器。
 
-当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层，点击/剪贴板必须在真实窗口复验。
+当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009** 用 GPUI
+`TestAppContext` 在 headless 窗口里真实 `simulate_click` 点击 `adc-$`，断言 `Copy` 动作进入
+handler（`crates/ui-gpui/tests/adc_click.rs`）。真实窗口的剪贴板/确认条仍需人工复验。
+
+## 9. 真实点击测试（headless）
+
+- `interactive_base` 给交互元素加 `debug_selector("adc-<path>")`（仅测试 feature 记录 bounds）；
+- `adc_click.rs` 渲染 Button（`onPress: {"copy":"hello"}`），`add_window_view` →
+  `debug_bounds("adc-$")` → `simulate_click` → 断言 handler 收到 `Action::Copy`。
+- 覆盖"渲染树正确但点击没绑上"的回归；不替代真实窗口 IME/剪贴板手测。

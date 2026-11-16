@@ -18,7 +18,7 @@ pub use diff::{
     diff_view, diff_view_from_text, parse_diff, Diff, DiffFile, DiffHunk, DiffLine, DiffLineKind,
     MAX_RENDER_LINES,
 };
-pub use dshr_ui_contributions::Action;
+pub use dshr_ui_contributions::{parse_tree, Action, ElementNode};
 pub use markdown::{markdown_view, Block, Inline};
 pub use terminal::{
     parse_terminal, terminal_view, terminal_view_from_text, AnsiColor, TermLine, TermRun,
