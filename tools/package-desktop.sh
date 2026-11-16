@@ -26,6 +26,20 @@ STAGE="$ROOT/dist/dshr-$CONFIG-$OS-$ARCH"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp "$BIN" "$STAGE/chat"
+
+# 随包运行时：vendor node + probe sidecar（不含 dsh-official/node_modules）。
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
+if [[ -n "$NODE_BIN" && -x "$NODE_BIN" ]]; then
+  mkdir -p "$STAGE/runtime/node"
+  cp "$NODE_BIN" "$STAGE/runtime/node/node"
+  chmod +x "$STAGE/runtime/node/node"
+else
+  echo "[package-desktop] warning: no node binary; package will be Native-only" >&2
+fi
+mkdir -p "$STAGE/sidecar"
+for name in probe-sidecar.mjs probe-plugin.mjs; do
+  [[ -f "$ROOT/sidecar/$name" ]] && cp "$ROOT/sidecar/$name" "$STAGE/sidecar/$name"
+done
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dirty)"
 cat > "$STAGE/README.txt" <<EOF
 dshr $OS package
@@ -34,6 +48,7 @@ commit: $COMMIT
 built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 Run chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery.
+Includes runtime/node and probe sidecar; no dsh-official node_modules.
 No installer, code signing, or auto-update in this package.
 EOF
 

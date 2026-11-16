@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T17:12:52.940Z |
-| git HEAD | b2171decc029b4120bb7135ac72357fd2c05bba2（clean） |
+| generated_at | 2026-11-16T17:17:21.479Z |
+| git HEAD | 59b006980ba61415c722da64c2b2d6d85cef233e（dirty，9 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.25s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.27s | `node tools/check-links.mjs` | 399 link(s) checked, 0 broken, 74 file(s) scanned |
-| node-test | pass | 0 | 0.30s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 54.77s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 870 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.27s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 399 link(s) checked, 0 broken, 74 file(s) scanned |
+| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 55.42s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 870 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -67,7 +67,7 @@
 | M4-CI-001 | M4 | manual | MANUAL | — | `.github/workflows/cross-platform.yml`：contract（schema/links/quick）、core-rust（19 个核心 crate，含 external-process/WASM）、desktop-build（dshr-desktop-gpui + Linux/macOS ADC/recovery/crash 自检）在 windows/ubuntu/macos 三平台跑。YAML 已用 PyYAML 本地解析；Linux desktop-build 与自检本机通过；Actions 未实跑，G1 不标完成。 |
 | M4-CI-002 | M4 | manual | MANUAL | — | node tools/official-provenance.mjs --check：3 个官方包（working-directory/todo/storage-domain）版本 + package.json/lib/index.js SHA-256 对照 sidecar/dsh-official/official-packages.lock.json；official-l2-gate.ps1 在测试前强制校验。本机 PASS，gate 8/8。 |
 | M4-CI-003 | M4 | manual | MANUAL | — | WSL Ubuntu 22.04 + Rust 1.99.1：核心 6 crate cargo check 通过；dshr-desktop-gpui --bin chat cargo build 通过（BUILD_EXIT=0，debug 682 MB）；chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery 均 PASS。无需额外系统开发包。macOS/Windows 桌面 runner 未验证；见 docs/m4-linux.md。 |
-| M4-CI-004 | M4 | manual | MANUAL | — | tools/package-desktop.ps1（Windows）与 tools/package-desktop.sh（Linux/macOS）：cargo build chat + README + 归档；本机 Windows zip 21.7MB、Linux tar.gz 152.7MB，均 exit 0。解压后设 DSHR_NODE 指向 vendored node，chat.exe --selftest-sidecar-recovery PASS（包内 chat+sidecar/probe 布局可运行）。不含安装器/签名/自动更新/Node runtime；见 docs/m4-package.md。 |
+| M4-CI-004 | M4 | manual | MANUAL | — | tools/package-desktop.ps1（Windows）与 tools/package-desktop.sh（Linux/macOS）：cargo build chat + runtime/node + probe sidecar + README + 归档；本机 Windows zip 56.6MB、Linux tar.gz 195.0MB，均 exit 0。解压后不设 DSHR_NODE 直接 chat --selftest-sidecar-recovery PASS（Vendored node）。不含安装器/签名/自动更新/dsh-official node_modules；见 docs/m4-package.md。 |
 | M4-DRAW-001 | M4 | manual | MANUAL | — | tools/frame-probe.ps1 -Frames 120：RDP 32Hz 下 draw_p95=9.40ms <= 31.25ms、missed_ratio=0（HARD PASS）；相对基线 avg_fps=19.2 < 22.42，环境原因未通过，不判回归。见 docs/m4-draw-budget.md。 |
 | M4-KEY-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --trust-key：本机 trust-keys.json 管理与 trust-key-audit.jsonl；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
 | M4-KEYBOARD-001 | M4 | manual | MANUAL | — | 真实窗口人工/UI 自动化：Ctrl/⌘+N 新建、Ctrl/⌘+K 聚焦输入、Enter 发送、Ctrl/⌘+Shift+A/D 审批、Ctrl/⌘+B/J 切侧栏/插件面板、Esc 关闭面板、Ctrl/⌘+W 关闭；chat --selftest 不驱动真实键盘事件，必须在 GUI 复验。 |
