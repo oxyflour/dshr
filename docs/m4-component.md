@@ -46,6 +46,9 @@
 - 产品路径（[chat.rs](../apps/desktop-gpui/src/bin/chat.rs)）：`wasm-component`
   安装包读取 `runtime.entry`，按 wasm header 的 component 版本位（`0x0d 00 01 00`）
   选择 `CppComponentPlugin`；旧 core-module 包仍走 `WasmPlugin`，避免破坏 W5 前的包。
+- `M4-COMPONENT-018`：`chat --selftest-cpp-component` 把 guest 写成临时包，经
+  `load_cpp_component_plugin_from_manifest` 注册 `echo` 并 `call_approved` 返回 args，
+  本机 **PASS**（仍需真实窗口安装验收）。
 
 构建 guest：
 

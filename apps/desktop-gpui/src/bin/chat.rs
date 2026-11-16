@@ -7639,6 +7639,74 @@ fn selftest_external_plugin() -> i32 {
 /// `trap` 工具撞 fuel 看门狗 → 宿主存活（再 call echo）→ unload。
 ///
 /// 包建在 data root 下（不依赖用户 `%TEMP%` 是否可写），断言不联网。
+/// `--selftest-cpp-component`：把真实 wasm32-wasip2 guest 写进临时包，
+/// 经 manifest loader 注册 `echo` 并调用，验证产品侧 cpp-v1 装载路径。
+fn selftest_cpp_component() -> i32 {
+    const GUEST: &[u8] =
+        include_bytes!("../../../../crates/plugin-wasm/tests/fixtures/cpp-component-guest.wasm");
+    let root = data_root().join("selftests").join("cpp-component");
+    let _ = std::fs::remove_dir_all(&root);
+    if let Err(error) = std::fs::create_dir_all(&root) {
+        eprintln!(
+            "[selftest-cpp-component] FAIL：创建临时目录 {} 失败: {error}",
+            root.display()
+        );
+        return 1;
+    }
+    if let Err(error) = std::fs::write(root.join("plugin.wasm"), GUEST) {
+        eprintln!("[selftest-cpp-component] FAIL：写 guest 失败: {error}");
+        return 1;
+    }
+    let manifest_raw = serde_json::json!({
+        "plugin": {
+            "id": "selftest.component",
+            "version": "0.1.0",
+            "api": "cordis-portable/v1"
+        },
+        "runtime": {
+            "kind": "wasm-component",
+            "entry": "plugin.wasm",
+            "timeout_ms": 30000
+        },
+        "tools": []
+    })
+    .to_string();
+    let manifest = match Manifest::from_json_str(&manifest_raw) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            eprintln!("[selftest-cpp-component] FAIL：manifest: {error}");
+            return 1;
+        }
+    };
+    let mut plugins = PluginHost::new(AllowAll);
+    if let Err(error) = plugins.load_cpp_component_plugin_from_manifest(
+        &manifest,
+        &root,
+        &host_sdk_version(),
+    ) {
+        eprintln!("[selftest-cpp-component] FAIL：装载: {error}");
+        return 1;
+    }
+    if plugins.registry().get("echo").is_none() {
+        eprintln!("[selftest-cpp-component] FAIL：guest 未注册 echo");
+        return 1;
+    }
+    let value = match plugins.call_approved("echo", &serde_json::json!({ "text": "hello" })) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[selftest-cpp-component] FAIL：调用: {error}");
+            return 1;
+        }
+    };
+    if value["content"][0]["text"] != "{\"text\":\"hello\"}" {
+        eprintln!("[selftest-cpp-component] FAIL：结果: {value}");
+        return 1;
+    }
+    println!("[selftest-cpp-component] PASS registry=echo value={value}");
+    let _ = std::fs::remove_dir_all(&root);
+    0
+}
+
 fn selftest_wasm() -> i32 {
     let root = data_root().join("selftests").join("wasm-host");
     let _ = std::fs::remove_dir_all(&root);
@@ -9323,6 +9391,9 @@ fn main() {
     }
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-cpp-component") {
+        std::process::exit(selftest_cpp_component());
     }
     if std::env::args().any(|arg| arg == "--selftest-wasm") {
         std::process::exit(selftest_wasm());
