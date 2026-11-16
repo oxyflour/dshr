@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W4（2026-11-17）：注册表 **594 个测试 ID —— implemented 544、pending 18、manual 32、
+M4 W6（2026-11-17）：注册表 **595 个测试 ID —— implemented 544、pending 18、manual 33、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 502 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -134,8 +134,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 唯一失败是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
 （隔离重跑同样失败，属沙箱进程限制；普通终端/Lead 环境同一 workspace 为 **0 failed / 6 ignored**；
 [`m3-status.md`](m3-status.md) §4 已记录）。当前 `--full`（2026-11-16，W1/W2）为
-`67 suites / 864 passed / 0 failed / 6 ignored`，exit 0；6 ignored 仍是 official gate 的
-`RPC-L2-201/501..505`（manual gate，不计为通过）。
+`67 suites / 870 passed / 0 failed / 7 ignored`，exit 0；7 ignored 仍是 official gate 的
+`RPC-L2-201/501..506`（manual gate，不计为通过）。
 
 主要 groups：
 
@@ -183,6 +183,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 19 核心 crate；YAML 已解析，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` 通过（修复 spawn 缺 mut；[m4-linux.md](m4-linux.md)） |
+| `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 7/7） |
 | `M4-DRAW-001` | manual | `frame-probe` 窗口 draw：RDP 下硬预算 PASS，相对基线受环境干扰未判回归（[m4-draw-budget.md](m4-draw-budget.md)） |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
 | `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |
@@ -198,7 +199,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M3-PARALLEL-001..007,101..110` | implemented | `dshr-agent-core` batch 调度 + `dshr-compat-dsh-host` `tests/parallel_batch.rs`（sidecar 批 invoke/取消宽限/session_id 透传） |
 | `ADC-BIND-001` | pending | 绑定权限尚未实现（WASM 配额/隔离已由 CPP-WASM 覆盖） |
 | `SELF-CHAT-001..017` | pending | 现有 17 个 `chat --selftest*`，尚未纳入 harness |
-| `RPC-L2-201` / `RPC-L2-501..505` | manual（official gate） | `tools/official-l2-gate.ps1`：6/6 PASS（201/502 的官方 execute 已闭环；缺 fixture exit 1；默认 cargo 6 ignored/0 passed） |
+| `RPC-L2-201` / `RPC-L2-501..506` | manual（official gate） | `tools/official-l2-gate.ps1`：7/7 PASS（201/502/506 的官方 execute 已闭环；缺 fixture exit 1；默认 cargo 7 ignored/0 passed） |
 | `CPP-TRUST-019` / `CPP-ISO-022` / `RPC-L2-411` / `ADC-PANEL-001` / `M3-DEFAULT-070` / `M3-PARALLEL-201` / `CPP-WASM-100` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件/L2/ADC panel/defaults/工具并行/WASM）、authoring 门禁、外部作者实验需人工判定 |
 
 ## 7. 与 M3 exit gate 的对应

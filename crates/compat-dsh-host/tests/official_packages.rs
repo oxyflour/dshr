@@ -274,6 +274,18 @@ fn official_plugins(driver_url: &str, include_todo: bool) -> String {
             "name": "@deepseek-ai/dsh-tool-working-directory",
             "config": {},
         }),
+        // 官方 fs 工具：只开 read，验证未修改工具的 execute 走 sidecar 的 fs/systemPrompt seam。
+        json!({
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "inject": ["tools", "fs", "systemPrompt"],
+            "config": {
+                "read": true,
+                "readImage": false,
+                "write": false,
+                "edit": false,
+                "applyPatch": false
+            },
+        }),
     ];
     if include_todo {
         // 官方 dsh-tool-todo：inject ["tools","sessionProjections"]（P1-5 装载绿证据）。
@@ -563,6 +575,39 @@ fn rpc_l2_504_official_storage_domain_round_trip() {
         serde_json::from_slice(&std::fs::read(&medium).expect("read medium")).expect("medium json");
     assert_eq!(file["tables"]["items"]["b"]["n"], 2);
     assert_eq!(file["global"], json!({ "theme": "light" }));
+    fixture.cleanup();
+}
+
+/// RPC-L2-506（M4 W6）：未修改官方 `@deepseek-ai/dsh-tool-fs` 的 `read` execute 闭环。
+/// fs 工具不依赖 `exec.agent`，但依赖 sidecar 的 `fs`/`systemPrompt` seam；这里用只读配置
+/// 验证真实读取，不碰写审批。
+#[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
+fn rpc_l2_506_official_fs_read_execute() {
+    let mut fixture = spawn_official_sidecar("506", false)
+        .expect("spawn_official_sidecar panics on missing fixtures; expect only for Option");
+    let hello = fixture.workspace.join("hello.txt");
+    std::fs::write(&hello, "hello official fs\n").expect("write fixture file");
+    let envelope = invoke(
+        &mut fixture.host,
+        "read",
+        json!({ "file_path": hello.to_string_lossy() }),
+    );
+    assert!(
+        envelope.error.is_none(),
+        "官方 read execute 失败: {envelope:?}"
+    );
+    let payload = &envelope.payload;
+    assert_eq!(payload["is_error"], false, "{payload}");
+    let lines = payload["value"]["lines"]
+        .as_array()
+        .expect("read value.lines");
+    assert!(
+        lines.iter().any(|line| line["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("hello official fs"))),
+        "read 未返回文件内容: {payload}"
+    );
     fixture.cleanup();
 }
 
