@@ -144,6 +144,61 @@ fn m4_adc_013_real_click_slider_step_injects_value(cx: &mut TestAppContext) {
     }
 }
 
+/// M4-ADC-014：点击 Input 发 `__adc_edit`，带 path/value/multiline/on_change。
+#[gpui::test]
+fn m4_adc_014_real_click_input_emits_edit(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Input",
+            "props": {
+                "value": "hello",
+                "a11yLabel": "Name",
+                "onChange": { "call": "save", "args": {} }
+            }
+        }),
+        "adc-$",
+    )
+    .expect("input click should dispatch an edit action");
+    match action {
+        Action::Call { ref method, ref args } => {
+            assert_eq!(method, "__adc_edit");
+            assert_eq!(args["path"], "$");
+            assert_eq!(args["value"], "hello");
+            assert_eq!(args["multiline"], false);
+            assert_eq!(args["on_change"]["call"], "save");
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+}
+
+/// M4-ADC-015：点击 Textarea 发 `__adc_edit` 且 multiline=true。
+#[gpui::test]
+fn m4_adc_015_real_click_textarea_emits_multiline_edit(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Textarea",
+            "props": {
+                "value": "line1\nline2",
+                "rows": 3,
+                "a11yLabel": "Notes",
+                "onChange": { "call": "save", "args": {} }
+            }
+        }),
+        "adc-$",
+    )
+    .expect("textarea click should dispatch an edit action");
+    match action {
+        Action::Call { ref method, ref args } => {
+            assert_eq!(method, "__adc_edit");
+            assert_eq!(args["multiline"], true);
+            assert_eq!(args["value"], "line1\nline2");
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
