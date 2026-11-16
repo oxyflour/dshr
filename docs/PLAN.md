@@ -791,7 +791,8 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 > G3 待真机复验）；W3 开始（ADC Button onPress→宿主 copy/call/command，openExternal 确认条，
 > tool card extra 渲染；Checkbox/Switch onChange 已接，Input/Select 未接）；W8 修复 node 缺失时
 > SKIP 记 pass；G2 有 headless `--selftest-recovery`；W6 的 todo/working_directory execute 已闭环
-> （official gate 6/6）；三平台 CI、性能进 CI 尚未完成。
+> （official gate 6/6）；G4 有 `tools/perf-gate.mjs` + CI step（本机 PASS，Actions 未实跑）；
+> 三平台 CI 仍未加。
 
 - [ ] Windows/macOS/Linux 编译与发布管线；签名和更新策略（差分、灰度、回滚）。
 - [ ] 多窗口、快捷键、IME、辅助功能、DPI、窗口恢复、主题一致性。

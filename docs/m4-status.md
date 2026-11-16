@@ -22,7 +22,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W4 | native/MCP 并发 + trait 冻结 | 未开始 | `Plugin::call` 仍同步、`&'static str` leak |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 6/6 PASS；其余官方工具仍需 shell/systemPrompt 等 agent 面 |
-| W7 | 三平台 CI / 性能基线 | 未开始 | 本机 Windows only；Actions 未实跑 |
+| W7 | 三平台 CI / 性能基线 | **部分完成（G4 性能门禁 + CI step）** | `tools/perf-gate.mjs` + conformance.yml step/artifact；三平台 matrix、Actions 实跑、官方包 vendor 校验仍待 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
 ## 3. W1 证据（2026-11-16）
@@ -54,6 +54,9 @@ target\debug\chat.exe --selftest-recovery
 
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-l2-gate.ps1
   → PASS（6/6；RPC-L2-201 todo execute 写 todo/write，RPC-L2-502 working_directory execute 返回 cwd）
+
+node tools\perf-gate.mjs --json docs\perf-baseline.json
+  → PASS（worst_total_p95=10.799ms / limit 50ms；max_quota_total_p95=4.033ms / limit 16.7ms）
 
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
   → [authoring-check] PASS（含卸载生命周期；exit 0）
@@ -87,6 +90,8 @@ node tools\conformance.mjs --full --compact
 - **W6 只覆盖 todo/working_directory**：最小 `exec.agent`（id + session.append）已让这两类官方
   工具的 execute 闭环；bash/pwsh/fs 等还读 `shell`/`shellEnv`/`systemPrompt`/`ctx.fiber` 等
   活对象，仍不能算"官方 execute 全部闭环"。
+- **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
+  本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。
 - **G2 只到 headless**：`--selftest-recovery` 覆盖损坏会话/备份/插件回滚，
   但没有真实窗口内崩溃、sidecar 被杀、重启后继续操作的 UI 场景；G2 不标"完成"。
 - **SKIP-as-pass 已修（W8）**：`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs`
@@ -101,7 +106,7 @@ node tools\conformance.mjs --full --compact
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证** | 无 macOS/Linux runner；DSH JS 插件跨平台未跑 |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless）**：`--selftest-recovery` PASS（损坏会话隔离+重建、`.bak` 恢复后可继续追加、失败插件回滚+健康插件调用） | 真实窗口内崩溃/重启恢复未覆盖；补 `M4-RECOVERY-001` 的证据与 UI 场景 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
-| G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | 未开始 | 现有脚本是手动；需 W7 |
+| G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **部分**：`tools/perf-gate.mjs` 阈值 50ms / 满配额 16.7ms / a11y 0，本机 PASS；CI workflow 已加 step 与 artifact | Actions 未实跑；三平台 runner 未加 |
 
 ## 5. 下一步（按依赖排序）
 

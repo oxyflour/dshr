@@ -59,6 +59,11 @@ jobs:
       - name: Rust workspace tests
         run: cargo test --offline --workspace
 
+      # G4：性能基线由 CI 执行，不再只靠手动脚本；阈值见 docs/m4-perf.md。
+      - name: ADC performance baseline (G4)
+        if: always()
+        run: node tools/perf-gate.mjs --json artifacts/perf-baseline.json
+
       - name: Conformance quick matrix
         if: always()
         run: node tools/conformance.mjs --quick --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md
@@ -72,4 +77,13 @@ jobs:
             docs/conformance-matrix.json
             docs/conformance-matrix.md
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload performance baseline artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline
+          path: artifacts/perf-baseline.json
+          if-no-files-found: warn
           retention-days: 30

@@ -83,6 +83,7 @@ G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插
 `onChange` 未做（Checkbox/Switch 已接）（[m4-adc.md](docs/m4-adc.md)）。G2 已有 headless 恢复自检
 （`--selftest-recovery`：损坏会话/`.bak`/插件失败回滚），真实窗口崩溃恢复仍未验证。
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory 的 execute 在 official gate 6/6 通过。
+G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。
 三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
 
 **M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见
