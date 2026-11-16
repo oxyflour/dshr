@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "tools/conformance.mjs",
-  "generated_at": "2026-11-16T18:38:15.959Z",
+  "generated_at": "2026-11-16T18:40:40.822Z",
   "format": "compact",
   "invocation": {
     "mode": "full",
@@ -30,17 +30,17 @@
     "repo_root": "C:\\Projects\\dshr"
   },
   "git": {
-    "head": "c05341657d8597d016d71565fa6af952fa860c67",
-    "head_short": "c053416",
+    "head": "35ea37d3fb464172d2ba841b928f5b454095ba97",
+    "head_short": "35ea37d",
     "branch": "master",
-    "dirty": false,
-    "dirty_files": 0
+    "dirty": true,
+    "dirty_files": 9
   },
   "registry": {
     "path": "docs/conformance.d/registry.json",
     "schema_version": 1,
     "groups": 38,
-    "tests": 620,
+    "tests": 621,
     "suites": [
       "schema",
       "links",
@@ -55,7 +55,7 @@
       "command": "node schema/check.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 229,
+      "duration_ms": 227,
       "timeout_ms": 120000,
       "summary": "76/76 cases passed",
       "output_tail": null
@@ -66,7 +66,7 @@
       "command": "node tools/check-links.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 250,
+      "duration_ms": 249,
       "timeout_ms": 120000,
       "summary": "408 link(s) checked, 0 broken, 75 file(s) scanned",
       "output_tail": null
@@ -77,7 +77,7 @@
       "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 282,
+      "duration_ms": 270,
       "timeout_ms": 120000,
       "summary": "21/21 node tests passed",
       "output_tail": null
@@ -88,16 +88,16 @@
       "command": "tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 53012,
+      "duration_ms": 75270,
       "timeout_ms": 1200000,
-      "summary": "70 suite(s), 891 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored)",
+      "summary": "71 suite(s), 892 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored)",
       "output_tail": null
     }
   ],
   "stats": {
-    "total": 620,
-    "implemented": 565,
-    "implemented_passed": 565,
+    "total": 621,
+    "implemented": 566,
+    "implemented_passed": 566,
     "implemented_failed": 0,
     "implemented_skipped": 0,
     "pending": 18,
@@ -701,6 +701,7 @@
       ["M4-COMPONENT-004","M4","pass"],
       ["M4-COMPONENT-005","M4","pass"],
       ["M4-COMPONENT-006","M4","pass"],
+      ["M4-COMPONENT-007","M4","pass"],
       ["M4-CONC-001","M4","pass"],
       ["M4-CONC-002","M4","pass"],
       ["M4-CONC-003","M4","pass"],
