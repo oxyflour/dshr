@@ -871,9 +871,17 @@ fn render_input(
     if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
         let edit = edit_action(path, &raw_value, multiline, action);
         let handler = handler.clone();
+        let key_handler = handler.clone();
+        let key_edit = edit.clone();
         input = input
             .cursor_pointer()
-            .on_click(move |_, window, cx| handler(&edit, window, cx));
+            .focusable()
+            .on_click(move |_, window, cx| handler(&edit, window, cx))
+            .on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    key_handler(&key_edit, window, cx);
+                }
+            });
     }
     input.into_any_element()
 }
@@ -916,9 +924,17 @@ fn render_textarea(
     if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
         let edit = edit_action(path, &raw_value, true, action);
         let handler = handler.clone();
+        let key_handler = handler.clone();
+        let key_edit = edit.clone();
         textarea = textarea
             .cursor_pointer()
-            .on_click(move |_, window, cx| handler(&edit, window, cx));
+            .focusable()
+            .on_click(move |_, window, cx| handler(&edit, window, cx))
+            .on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    key_handler(&key_edit, window, cx);
+                }
+            });
     }
     textarea.into_any_element()
 }

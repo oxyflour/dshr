@@ -437,6 +437,64 @@ fn m4_adc_023_real_click_tabs_changes_key(cx: &mut TestAppContext) {
     }
 }
 
+/// M4-ADC-024：Input 点击聚焦后 Enter 再次发 `__adc_edit`。
+#[gpui::test]
+fn m4_adc_024_keyboard_opens_input_editor(cx: &mut TestAppContext) {
+    let last = Rc::new(Cell::new(None));
+    let sink = last.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |action| sink.set(Some(action.clone())));
+    let tree = serde_json::json!({
+        "type": "Input",
+        "props": {
+            "value": "hello",
+            "a11yLabel": "Name",
+            "onChange": { "call": "save", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$").expect("input bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    match last.take() {
+        Some(Action::Call { method, .. }) => assert_eq!(method, "__adc_edit"),
+        other => panic!("expected edit action, got {other:?}"),
+    }
+}
+
+/// M4-ADC-025：Textarea 点击聚焦后 Space 再次发 `__adc_edit`（multiline=true）。
+#[gpui::test]
+fn m4_adc_025_keyboard_opens_textarea_editor(cx: &mut TestAppContext) {
+    let last = Rc::new(Cell::new(None));
+    let sink = last.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |action| sink.set(Some(action.clone())));
+    let tree = serde_json::json!({
+        "type": "Textarea",
+        "props": {
+            "value": "line1",
+            "rows": 3,
+            "a11yLabel": "Notes",
+            "onChange": { "call": "save", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$").expect("textarea bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    match last.take() {
+        Some(Action::Call { method, args }) => {
+            assert_eq!(method, "__adc_edit");
+            assert_eq!(args["multiline"], true);
+        }
+        other => panic!("expected edit action, got {other:?}"),
+    }
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
