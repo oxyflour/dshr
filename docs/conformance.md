@@ -62,7 +62,7 @@ title 取测试函数名，notes 追加来源文件。这同时满足「ID 归�
 |---|---|---|
 | `implemented` | 已有可执行证据：必须声明 `suite` + `selector`，且 selector 在本次运行中命中；`groups` 里还必须能在 `source_dirs` 找到对应测试函数 | 是（未命中/失败 → FAIL） |
 | `pending` | 已定义断言但实现/契约未就绪（`ADC-BIND-001`、17 个 chat selftest） | 否 |
-| `manual` | 需人工/脚本实验判定（official gate `RPC-L2-201/501..506`、`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`ADC-PANEL-001`、`M3-DEFAULT-070`、`M3-PARALLEL-201`、`CPP-WASM-100`、`CPP-AUTHOR-001`） | 否 |
+| `manual` | 需人工/脚本实验判定（official gate `RPC-L2-201/501..507`、`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`ADC-PANEL-001`、`M3-DEFAULT-070`、`M3-PARALLEL-201`、`CPP-WASM-100`、`CPP-AUTHOR-001`） | 否 |
 | `blocked` | 被外部依赖阻塞（当前暂无条目；语义保留给前置未落地时） | 否 |
 
 `result` 取值：`PASS` / `FAIL` / `SKIP`（suite 本次未选中，例如 `--quick` 下 `suite=cargo` 的 ID）/
@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W6（2026-11-17）：注册表 **595 个测试 ID —— implemented 544、pending 18、manual 33、
+M4 W6（2026-11-17）：注册表 **596 个测试 ID —— implemented 544、pending 18、manual 34、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 502 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -134,8 +134,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 唯一失败是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
 （隔离重跑同样失败，属沙箱进程限制；普通终端/Lead 环境同一 workspace 为 **0 failed / 6 ignored**；
 [`m3-status.md`](m3-status.md) §4 已记录）。当前 `--full`（2026-11-16，W1/W2）为
-`67 suites / 870 passed / 0 failed / 7 ignored`，exit 0；7 ignored 仍是 official gate 的
-`RPC-L2-201/501..506`（manual gate，不计为通过）。
+`67 suites / 870 passed / 0 failed / 8 ignored`，exit 0；8 ignored 仍是 official gate 的
+`RPC-L2-201/501..507`（manual gate，不计为通过）。
 
 主要 groups：
 
@@ -183,7 +183,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 19 核心 crate；YAML 已解析，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` 通过（修复 spawn 缺 mut；[m4-linux.md](m4-linux.md)） |
-| `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 7/7） |
+| `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
+| `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |
 | `M4-DRAW-001` | manual | `frame-probe` 窗口 draw：RDP 下硬预算 PASS，相对基线受环境干扰未判回归（[m4-draw-budget.md](m4-draw-budget.md)） |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
 | `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |
@@ -199,7 +200,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M3-PARALLEL-001..007,101..110` | implemented | `dshr-agent-core` batch 调度 + `dshr-compat-dsh-host` `tests/parallel_batch.rs`（sidecar 批 invoke/取消宽限/session_id 透传） |
 | `ADC-BIND-001` | pending | 绑定权限尚未实现（WASM 配额/隔离已由 CPP-WASM 覆盖） |
 | `SELF-CHAT-001..017` | pending | 现有 17 个 `chat --selftest*`，尚未纳入 harness |
-| `RPC-L2-201` / `RPC-L2-501..506` | manual（official gate） | `tools/official-l2-gate.ps1`：7/7 PASS（201/502/506 的官方 execute 已闭环；缺 fixture exit 1；默认 cargo 7 ignored/0 passed） |
+| `RPC-L2-201` / `RPC-L2-501..507` | manual（official gate） | `tools/official-l2-gate.ps1`：8/8 PASS（201/502/506/507 的官方 execute 已闭环；缺 fixture exit 1；默认 cargo 8 ignored/0 passed） |
 | `CPP-TRUST-019` / `CPP-ISO-022` / `RPC-L2-411` / `ADC-PANEL-001` / `M3-DEFAULT-070` / `M3-PARALLEL-201` / `CPP-WASM-100` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件/L2/ADC panel/defaults/工具并行/WASM）、authoring 门禁、外部作者实验需人工判定 |
 
 ## 7. 与 M3 exit gate 的对应
@@ -227,8 +228,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
   `CPP-PANEL-002`/`CPP-WASM-033`（panel id 冲突）已 implemented；manual 证据
   `RPC-L2-411`（chat `--selftest-l2`）、`M3-PARALLEL-201`（chat `--selftest-parallel-tools`）、
   `CPP-WASM-100`（chat `--selftest-wasm`：安装→装载→调用→trap→卸载）以及 **official gate**
-  `RPC-L2-201/501..506`（`tools/official-l2-gate.ps1`；缺 `.tmp/dsh-tools-all` 时 exit 1，
-  默认 cargo 中 7 ignored/0 passed，不再算 implemented）。
+  `RPC-L2-201/501..507`（`tools/official-l2-gate.ps1`；缺 `.tmp/dsh-tools-all` 时 exit 1，
+  默认 cargo 中 8 ignored/0 passed，不再算 implemented）。
 
 gate 判定方式：`node tools/conformance.mjs --full` 全绿（implemented 无 FAIL）且对应 gate 的
 manual 证据落盘。
@@ -265,7 +266,7 @@ manual 证据落盘。
    `Running ...(<binary>-<hash>.exe)` + 紧随 `test result: ... passed; ... ignored` 块建立
    **binary→counts** 映射（stdout/stderr 合并同一文件以保顺序），integration test 二进制用
    `crates/<pkg>/tests/<binary>.rs` 反查包归属；`passed=0 && ignored>0` 的整文件忽略二进制会进入
-   suite summary（本机实测 `未执行: official_packages(7 ignored)`），该包若无其它已执行用例即 FAIL。
+   suite summary（本机实测 `未执行: official_packages(8 ignored)`），该包若无其它已执行用例即 FAIL。
    对应 ID 已全部改 manual（`tools/official-l2-gate.ps1`），矩阵显示 MANUAL 而非 PASS。
    限制：同一二进制内"部分执行 + 部分 ignored"目前只计数、不逐个归因到 ID。
 9. **源码同 ID 重复**：`cpp_proc_024..027` 在 plugin-sdk 的 `session.rs` 与 `tool_result.rs`

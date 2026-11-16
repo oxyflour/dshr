@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{
     EventPage, HostOptions, HostServiceRouter, ServiceError, SessionAccess, SessionEventView,
     SessionHeaderView, SessionLogService, SessionProjectionsService, SidecarHost, StorageKvService,
@@ -23,6 +24,7 @@ use dshr_compat_dsh_host::{
     WORKING_DIRECTORY_V1,
 };
 use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
+use dshr_tool_runtime::{ApprovalBroker, ApprovalOutcome};
 use serde_json::{json, Value};
 
 fn repo_root() -> PathBuf {
@@ -253,6 +255,8 @@ struct Fixture {
     storage: PathBuf,
     /// 测试侧保留的 session access，用来核对 `events.append` 落库。
     access: Arc<FakeAccess>,
+    /// 官方写工具的审批 broker（507 用）。
+    broker: Arc<ApprovalBroker>,
 }
 
 impl Fixture {
@@ -281,9 +285,9 @@ fn official_plugins(driver_url: &str, include_todo: bool) -> String {
             "config": {
                 "read": true,
                 "readImage": false,
-                "write": false,
-                "edit": false,
-                "applyPatch": false
+                "write": true,
+                "edit": true,
+                "applyPatch": true
             },
         }),
     ];
@@ -350,12 +354,17 @@ fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
             SESSION_PROJECTIONS_V1.to_owned(),
         ],
     );
+    let broker = ApprovalBroker::new();
+    let fs_write = Arc::new(
+        FsWriteService::open(&workspace, broker.clone()).expect("fs write service opens"),
+    );
     let options = HostOptions::default()
         .with_env(
             "DSHR_DSH_PLUGINS",
             official_plugins(&file_url(&driver), include_todo),
         )
         .with_registration_window(Duration::from_secs(8))
+        .with_fs_write(fs_write)
         .with_host_services(Arc::new(Mutex::new(router)));
     let script = sidecar_dir.join("sidecar-dsh.mjs");
     match SidecarHost::spawn_with(&script, &script, options) {
@@ -365,6 +374,7 @@ fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
             target,
             storage,
             access,
+            broker,
         }),
         Err(error) => {
             panic!("#[{label}] sidecar 启动失败（official-package gate 不静默跳过）: {error}");
@@ -607,6 +617,45 @@ fn rpc_l2_506_official_fs_read_execute() {
             .as_str()
             .is_some_and(|text| text.contains("hello official fs"))),
         "read 未返回文件内容: {payload}"
+    );
+    fixture.cleanup();
+}
+
+/// RPC-L2-507（M4 W6）：未修改官方 `dsh-tool-fs` 的 `write` execute，经 Rust
+/// `FsWriteService` 审批后落盘。
+#[test]
+#[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
+fn rpc_l2_507_official_fs_write_execute() {
+    let mut fixture = spawn_official_sidecar("507", false)
+        .expect("spawn_official_sidecar panics on missing fixtures; expect only for Option");
+    let broker = fixture.broker.clone();
+    let resolver = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let pending = broker.pending();
+            if !pending.is_empty() {
+                for item in pending {
+                    broker.resolve(&item.call_id, ApprovalOutcome::AllowOnce);
+                }
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+    let envelope = invoke(
+        &mut fixture.host,
+        "write",
+        json!({ "file_path": "written.txt", "content": "hello official write\n" }),
+    );
+    resolver.join().expect("approval resolver");
+    assert!(envelope.error.is_none(), "官方 write execute 失败: {envelope:?}");
+    assert_eq!(envelope.payload["is_error"], false, "{:?}", envelope.payload);
+    assert_eq!(
+        std::fs::read_to_string(fixture.workspace.join("written.txt")).expect("written file"),
+        "hello official write\n"
     );
     fixture.cleanup();
 }

@@ -21,7 +21,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W3 | ADC 交互与工具卡 | **部分完成（onPress + openExternal + tool card extra + 全部表单 onChange + draw 硬预算）** | `copy`/`call`/`command`；`openExternal` 确认条；`ToolCard.extra`；Checkbox/Switch/Select/Input/Textarea onChange；Slider −/+ 步进；`frame-probe` 硬预算 PASS；`M4-ADC-001..008` cargo，`100/101` 真机待跑；见 [m4-adc.md](m4-adc.md) |
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + id 去 leak）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用；MCP、运行中抢占、异步 trait 冻结仍待 |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
-| W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 7/7 PASS；其余官方写工具仍需 shell/systemPrompt 等 agent 面 |
+| W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read/write execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 8/8 PASS；bash/pwsh 等 shell 工具仍未闭环 |
 | W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + 官方包来源 lock + Linux 核心编译）** | `perf-gate`/`cross-platform.yml`/`official-provenance`；WSL Linux 核心 6 crate `cargo check` 通过；桌面 GPUI 三平台仍未覆盖 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
@@ -59,7 +59,7 @@ target\debug\chat.exe --selftest-crash-recovery
   → crashed/backup/before/after/notice 全 true，PASS（exit 0）
 
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-l2-gate.ps1
-  → PASS（7/7；RPC-L2-201 todo execute、502 working_directory execute、506 fs read execute）
+  → PASS（8/8；RPC-L2-201 todo execute、502 working_directory execute、506 fs read、507 fs write）
 
 node tools\perf-gate.mjs --json docs\perf-baseline.json
   → PASS（worst_total_p95=10.799ms / limit 50ms；max_quota_total_p95=4.033ms / limit 16.7ms）
@@ -88,7 +88,7 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 67 suites / 870 passed / 0 failed / 7 ignored；exit 0
+  → 67 suites / 870 passed / 0 failed / 8 ignored；exit 0
     （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 
@@ -110,8 +110,8 @@ node tools\conformance.mjs --full --compact
 - **W4 只去掉 id/version leak**：`Plugin::id/version` 已改为借用 `&str`，外部/WASM 插件不再
   `Box::leak`；但 `Plugin::call` 仍是同步接口，native/MCP 批内仍串行，trait 冻结（异步/取消）
   未完成，W4 不标"完成"。
-- **W6 覆盖 todo/working_directory/fs read**：最小 `exec.agent` 与 sidecar `fs`/`systemPrompt` seam
-  让三类官方工具 execute 闭环；bash/pwsh 等写工具还读 `shell`/`shellEnv`/`ctx.fiber` 等活对象，
+- **W6 覆盖 todo/working_directory/fs read+write**：最小 `exec.agent` 与 sidecar `fs`/`systemPrompt` seam
+  让这些官方工具 execute 闭环；bash/pwsh 等 shell 工具还读 `shell`/`shellEnv`/`ctx.fiber` 等活对象，
   仍不能算"官方 execute 全部闭环"。
 - **W4 只做跨插件并行 + 协作式取消**：`call_approved_batch_cancellable` 在每次调用前查
   取消位，已取消槽位返回 `cancelled`；正在执行的同步 `Plugin::call` 无法被抢占，MCP 未接线，
