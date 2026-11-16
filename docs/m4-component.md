@@ -30,6 +30,8 @@
 - `M4-COMPONENT-012`（[plugin-host/lib.rs](../crates/plugin-host/src/lib.rs)）：
   `PluginHost::load_component_plugin` 走原子 `apply` 注册 `component.run`，
   `call_approved` 返回 42，证明 probe component 能进入宿主注册表/调用路径。
+- `M4-COMPONENT-013`：`load_component_plugin_from_manifest` 读取 `runtime.kind=wasm-component`
+  的 `entry`（默认 `plugin.wasm`），只接受无 tools/ui 声明的 probe 包；测试装载后调用返回 42。
 
 命令：
 
@@ -37,13 +39,14 @@
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
 cargo test -p dshr-plugin-wasm --test component_plugin
-→ 12 passed
+→ 13 passed
 ```
 
 ## 2. 还没做
 
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的
-  工具声明/调用；`PluginHost::load_component_plugin` 是显式 API，manifest loader 不会自动识别。
+  工具声明/调用；`load_component_plugin_from_manifest` 只接受无 tools/ui 的 probe 包，
+  不是通用 manifest 自动识别。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
   fuel/epoch/内存/输出配额已有测试（fuel/epoch/内存/输出也进了 probe 加载器），并发仍未验证；
   当前 core-module 的配额路径不能直接假设适用。

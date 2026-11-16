@@ -727,8 +727,8 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
       三故障注入（超时/fuel/内存）。*（**W6/W8：wasmtime `=50.0.1` core-module ABI 已实现并接入
       宿主/产品链路**（`WasmPlugin` + loader + `--selftest-wasm`；`CPP-WASM-001..027` 含资源上限
       多 memory/大 table 负面测试）；M4 W5 已启用 `component-model` 并新增
-      `M4-COMPONENT-001..012`（canonical ABI + `cpp-v1.wit` + bindgen + fuel/epoch/memory + probe 加载器 + 宿主装载），
-      但正式 cpp-v1 工具 ABI/并发/自动装载仍未接** ——见
+      `M4-COMPONENT-001..013`（canonical ABI + `cpp-v1.wit` + bindgen + 配额 + probe 加载器/宿主/manifest），
+      但正式 cpp-v1 工具 ABI/并发/通用自动识别仍未接** ——见
       [ADR-0012](decisions/0012-m3-gate-closure.md)、[`wasm-host.md`](wasm-host.md)、
       [m4-component.md](m4-component.md)；external-process 退路保留）*
 - [ ] **DSH L2**：`sidecar-rpc` v2 host-service 代理 + 证据选出的 3 个 adapter + conformance。

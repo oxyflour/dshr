@@ -174,6 +174,42 @@ impl PluginHost {
         self.load(Box::new(plugin))
     }
 
+    /// 从 manifest 装载实验性 component probe 插件。
+    ///
+    /// 只接受 `runtime.kind=wasm-component` 且 `tools`/`ui` 为空的 probe 包；
+    /// 正式 cpp-v1 工具 ABI 仍待实现，因此这里主动拒绝带工具/UI 声明的包。
+    pub fn load_component_plugin_from_manifest(
+        &mut self,
+        manifest: &Manifest,
+        package_dir: impl AsRef<Path>,
+        host: &HostVersion,
+    ) -> Result<(), HostError> {
+        manifest.validate(host).map_err(HostError::Plugin)?;
+        if manifest.runtime.kind != RuntimeKind::WasmComponent {
+            return Err(HostError::Wasm {
+                plugin_id: manifest.plugin.id.clone(),
+                reason: "component probe requires runtime.kind=wasm-component".to_owned(),
+            });
+        }
+        if !manifest.tools.is_empty() || !manifest.ui.is_empty() {
+            return Err(HostError::Wasm {
+                plugin_id: manifest.plugin.id.clone(),
+                reason: "component probe manifest must not declare tools/ui".to_owned(),
+            });
+        }
+        let entry = manifest
+            .runtime
+            .entry
+            .as_deref()
+            .unwrap_or("plugin.wasm");
+        let path = package_dir.as_ref().join(entry);
+        let source = std::fs::read(&path).map_err(|error| HostError::Wasm {
+            plugin_id: manifest.plugin.id.clone(),
+            reason: format!("read {}: {error}", path.display()),
+        })?;
+        self.load_component_plugin(&manifest.plugin.id, &manifest.plugin.version, source)
+    }
+
     /// 从 typed manifest 装载（CPP-A 接入点）：
     /// 1. `Manifest::validate` 校验 api / `min_host_version` / 配额 / `inject` / tool / ui；
     /// 2. `manifest.plugin.id` 必须与插件实现声明的 id 一致（防止包与代码错配）；
@@ -599,6 +635,34 @@ mod tests {
             .call_approved("component.run", &json!({}))
             .expect("component call through host");
         assert_eq!(value["value"], 42);
+    }
+
+    #[test]
+    fn m4_component_013_component_probe_from_manifest() {
+        const RUN_WAT: &str = r#"
+        (component
+          (core module $m
+            (func (export "run") (result i32)
+              i32.const 42))
+          (core instance $i (instantiate $m))
+          (func (export "run") (result u32)
+            (canon lift (core func $i "run")))
+        )
+        "#;
+        let dir = temp_wasm_package("component-probe");
+        std::fs::write(dir.join("plugin.wasm"), RUN_WAT).expect("write component");
+        let mut manifest = wasm_manifest();
+        manifest.tools.clear();
+        manifest.ui.clear();
+        manifest.runtime.entry = Some("plugin.wasm".to_owned());
+        let mut host = PluginHost::new(AllowAll);
+        host.load_component_plugin_from_manifest(&manifest, &dir, &host_version())
+            .expect("load component probe");
+        let value = host
+            .call_approved("component.run", &json!({}))
+            .expect("component call");
+        assert_eq!(value["value"], 42);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
