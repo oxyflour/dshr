@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T16:33:24.856Z |
-| git HEAD | e229009c2f0aebdd250f099ddd73a6ee5aba91d9（clean） |
+| generated_at | 2026-11-16T16:36:23.907Z |
+| git HEAD | f91a60fe6d6391345d8cc1ff1d133b047b431a8d（dirty，2 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.27s | `node tools/check-links.mjs` | 396 link(s) checked, 0 broken, 73 file(s) scanned |
-| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 54.88s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 870 passed, 0 failed, 7 ignored；未执行: official_packages(7 ignored) |
+| schema | pass | 0 | 0.26s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 396 link(s) checked, 0 broken, 73 file(s) scanned |
+| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 54.68s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 870 passed, 0 failed, 7 ignored；未执行: official_packages(7 ignored) |
 
 ## 测试矩阵
 
@@ -51,9 +51,9 @@
 | CPP-ISO-022 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。 |
 | CPP-TRUST-019 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。 |
 | CPP-WASM-100 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-wasm：安装→装载→调用→trap→卸载（review P1-1）；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
-| RPC-L2-201 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。M4 W6：execute 经 exec.agent.session.append → session-log/v1 events.append 写入 todo/write；gate 6/6 PASS。缺 fixture 时 gate exit 1；默认 cargo 中 #[ignore]。 |
+| RPC-L2-201 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。M4 W6：execute 经 exec.agent.session.append → session-log/v1 events.append 写入 todo/write；gate 7/7 PASS。缺 fixture 时 gate exit 1；默认 cargo 中 #[ignore]。 |
 | RPC-L2-411 | RPC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。 |
-| RPC-L2-501 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/6 ignored（不计为通过）。 |
+| RPC-L2-501 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/7 ignored（不计为通过）。 |
 | RPC-L2-502 | RPC | manual | MANUAL | — | M4 W6：最小 exec.agent facade 后，未修改官方工具的 execute 真实返回 cwd，不再报 requires an agent Session；gate 7/7 PASS。command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。 |
 | RPC-L2-503 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
 | RPC-L2-504 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
@@ -64,7 +64,7 @@
 | M4-ADC-100 | M4 | manual | MANUAL | — | 真实窗口：装载带 Button{onPress:copy} 的插件面板，点击后剪贴板得到文本；Button{onPress:call} 经 ui.action 到 fixture，下一次 render 的计数器 +1。需构建 chat.exe + external fixture；openExternal/onChange 仍未接。 |
 | M4-ADC-101 | M4 | manual | MANUAL | — | 真实窗口：Button{onPress:openExternal:https://...} 点击后出现确认条；取消/Esc 不打开，打开才调用系统浏览器；非 https 在作者期/解析期即拒绝。需构建 chat.exe + external fixture。 |
 | M4-CI-001 | M4 | manual | MANUAL | — | `.github/workflows/cross-platform.yml`：contract（schema/links/quick）与 core-rust（19 个核心 crate，含 external-process/WASM）在 windows/ubuntu/macos 三平台跑。YAML 已用 PyYAML 本地解析；Actions 未实跑，桌面 GPUI 三平台仍未覆盖，G1 不标完成。 |
-| M4-CI-002 | M4 | manual | MANUAL | — | node tools/official-provenance.mjs --check：3 个官方包（working-directory/todo/storage-domain）版本 + package.json/lib/index.js SHA-256 对照 sidecar/dsh-official/official-packages.lock.json；official-l2-gate.ps1 在测试前强制校验。本机 PASS，gate 6/6。 |
+| M4-CI-002 | M4 | manual | MANUAL | — | node tools/official-provenance.mjs --check：3 个官方包（working-directory/todo/storage-domain）版本 + package.json/lib/index.js SHA-256 对照 sidecar/dsh-official/official-packages.lock.json；official-l2-gate.ps1 在测试前强制校验。本机 PASS，gate 7/7。 |
 | M4-CI-003 | M4 | manual | MANUAL | — | WSL Ubuntu 22.04 + Rust 1.99.1，核心 6 crate cargo check 通过；过程中修复 sidecar-guard 非 Windows spawn 缺 mut。仅核心 crate，不含 GPUI/桌面；见 docs/m4-linux.md。 |
 | M4-DRAW-001 | M4 | manual | MANUAL | — | tools/frame-probe.ps1 -Frames 120：RDP 32Hz 下 draw_p95=9.40ms <= 31.25ms、missed_ratio=0（HARD PASS）；相对基线 avg_fps=19.2 < 22.42，环境原因未通过，不判回归。见 docs/m4-draw-budget.md。 |
 | M4-KEY-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --trust-key：本机 trust-keys.json 管理与 trust-key-audit.jsonl；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
@@ -651,9 +651,9 @@
 - groups 批量条目的 source_dirs 由 harness 扫描：测试函数名内编码或 // ID / /// ID 注释匹配，找不到对应测试函数的 ID 会直接报错，防止把未实现/无测试的 ID 标成 implemented。
 - 本地 --full 实跑（2026-11-15，本机受限会话）：67 suites / 836 passed / 1 failed / 6 ignored；失败包仅 dshr-sidecar-guard（process::tests::drop_terminates_the_guarded_process，沙箱进程限制，隔离复跑同样失败，非代码）。普通终端/Lead 环境同 workspace 0 failed / 6 ignored。默认 `cargo test --workspace`（无 --no-fail-fast）在本机会先止于 sidecar-guard、到不了 official_packages；--no-fail-fast 输出里 official_packages 为 0 passed / 6 ignored。
 - P1-6 ignored 检测：cargo suite 按 `Running ...(<binary>-<hash>.exe)` + 紧随 `test result:` 建 binary→counts 映射（stdout/stderr 合并同一文件以保顺序）；integration test 二进制用 `crates/<pkg>/tests/<binary>.rs` 反查归属。`passed=0 && ignored>0` 的整文件忽略二进制会列入 suite summary（实测：`未执行: official_packages(6 ignored)`），该包若无其它已执行用例则判 FAIL；所有依赖 official fixture 的 ID 已改 manual，不会把 ignored 算 pass。
-- W8/P0 证据：CPP-WASM-021..027、CPP-ISO-018/019/026..031、M3-INSTALL-001..003、M3-DIGEST-001/002、CPP-PANEL-002、CPP-WASM-033、RPC-L2-202..208、L2JS-021..028、M3-PARALLEL-108..110 为 cargo/node-test implemented；CPP-PROC-024..027 由既有 plugin-sdk 组覆盖（源码 session.rs/tool_result.rs 有同 ID 重复，注册表按唯一 ID 登记）；RPC-L2-201/501..505 与 chat --selftest-wasm（CPP-WASM-100）为 manual。
+- W8/P0 证据：CPP-WASM-021..027、CPP-ISO-018/019/026..031、M3-INSTALL-001..003、M3-DIGEST-001/002、CPP-PANEL-002、CPP-WASM-033、RPC-L2-202..208、L2JS-021..028、M3-PARALLEL-108..110 为 cargo/node-test implemented；CPP-PROC-024..027 由既有 plugin-sdk 组覆盖（源码 session.rs/tool_result.rs 有同 ID 重复，注册表按唯一 ID 登记）；RPC-L2-201/501..506 与 chat --selftest-wasm（CPP-WASM-100）为 manual。
 - ID 兼容说明：MCP 源码两段式 MCP-001..017 / JS L2JS-001..028 按 spec/README §3 三段式登记为 MCP-CLIENT-001..017 / JS-L2SVC-001..028，title/notes 保留源码 ID。
-- manual 证据：official gate（RPC-L2-201/501..505）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 6 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100/M4-LIFECYCLE-001（需构建 chat 二进制，部分需 vendored sidecar）；M4 CLI：M4-UNINSTALL-100（--uninstall-plugin）、M4-KEY-100（--trust-key）、M4-SDK-001/M4-SIGN-001（tools/authoring-check.ps1 的 SDK 离线包与签名/轮换步骤）、M4-KEYBOARD-001（真实窗口无鼠标流程，见 docs/m4-keyboard.md）、M4-ADC-100（插件面板 Button copy/call 真实点击）、M4-ADC-101（openExternal 确认条）、M4-P2-001（node 缺失时测试失败而非 SKIP）、M4-RECOVERY-001/002/003（chat --selftest-recovery、--selftest-sidecar-recovery、--selftest-crash-recovery）、M4-PERF-001（node tools/perf-gate.mjs）、M4-CI-001（cross-platform.yml）、M4-CI-002（node tools/official-provenance.mjs --check）、M4-CI-003（WSL Linux 核心 crate cargo check）、M4-DRAW-001（tools/frame-probe.ps1）、RPC-L2-506（official fs read）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。
+- manual 证据：official gate（RPC-L2-201/501..506）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 7 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100/M4-LIFECYCLE-001（需构建 chat 二进制，部分需 vendored sidecar）；M4 CLI：M4-UNINSTALL-100（--uninstall-plugin）、M4-KEY-100（--trust-key）、M4-SDK-001/M4-SIGN-001（tools/authoring-check.ps1 的 SDK 离线包与签名/轮换步骤）、M4-KEYBOARD-001（真实窗口无鼠标流程，见 docs/m4-keyboard.md）、M4-ADC-100（插件面板 Button copy/call 真实点击）、M4-ADC-101（openExternal 确认条）、M4-P2-001（node 缺失时测试失败而非 SKIP）、M4-RECOVERY-001/002/003（chat --selftest-recovery、--selftest-sidecar-recovery、--selftest-crash-recovery）、M4-PERF-001（node tools/perf-gate.mjs）、M4-CI-001（cross-platform.yml）、M4-CI-002（node tools/official-provenance.mjs --check）、M4-CI-003（WSL Linux 核心 crate cargo check）、M4-DRAW-001（tools/frame-probe.ps1）、RPC-L2-506（official fs read）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。
 - 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）；quick 门禁仍用 `--quick`。cargo suite 会把 #[ignore] 计入 ignored、绝不当作 passed：包级 selector 遇 ignored>0 判 FAIL，all 通过时也在消息中标注 ignored 数。compact markdown 的 PASS 行只列 ID+结果，非 PASS（FAIL/SKIP/PENDING/MANUAL）保留完整 6 列；JSON tests.rows 为 [id, area, result]。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。
 - M4 W1（2026-11-16）：`M4-UNINSTALL-001..008`（crates/profile/src/uninstall.rs + lib.rs）与 `M4-KEY-001..010`（crates/profile/src/trust.rs）为 cargo implemented（selector=dshr-profile）；`M4-UNINSTALL-100`/`M4-KEY-100`/`M4-LIFECYCLE-001`/`M4-SDK-001`/`M4-SIGN-001` 是 chat/工具链产品路径 manual 证据。三平台 CI 与 macOS/Linux 行为仍未验证（[m4-status.md](m4-status.md) §3）。
@@ -664,7 +664,7 @@
 - M4 G4（2026-11-16）：`M4-PERF-001` = `node tools/perf-gate.mjs`（阈值 50ms / 满配额 16.7ms / a11y 0），CI conformance.yml 已加 step 与 perf-baseline artifact；本机 PASS（worst 10.799ms、max_quota 4.033ms），Actions 未实跑。
 - M4 W4（2026-11-16）：`M4-TRAIT-001` 覆盖 `Plugin::id/version` 返回借用 `&str`，external/WASM 插件删除 `Box::leak`；native/MCP 并发与 `Plugin::call` 异步/取消仍未做。
 - M4 W7/G1（2026-11-16）：新增 `.github/workflows/cross-platform.yml`（三平台 contract + 19 个核心 crate 测试，含 external-process/WASM）；YAML 已本地解析，Actions 未实跑；桌面 GPUI 仍 Windows-only，G1 不标完成。
-- M4 W7 官方包来源（2026-11-16）：`M4-CI-002` = `node tools/official-provenance.mjs --check`，校验 3 个官方包版本 + package.json/lib/index.js SHA-256；`official-l2-gate.ps1` 在测试前强制执行，gate 6/6 PASS。
+- M4 W7 官方包来源（2026-11-16）：`M4-CI-002` = `node tools/official-provenance.mjs --check`，校验 3 个官方包版本 + package.json/lib/index.js SHA-256；`official-l2-gate.ps1` 在测试前强制执行，gate 7/7 PASS。
 - M4 G1 Linux（2026-11-17）：`M4-CI-003` = WSL Ubuntu 22.04 + Rust 1.99.1 对核心 6 crate `cargo check` 通过；修复 `sidecar-guard` 非 Windows spawn 缺 `mut command`；仅核心 crate，不含 GPUI/桌面。
 - compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。
 - quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。
