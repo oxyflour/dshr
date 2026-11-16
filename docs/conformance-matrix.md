@@ -8,21 +8,21 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T15:03:07.775Z |
-| git HEAD | 0a77ce415145c239e10f1f8231adcdde4eb8e530（dirty，7 个文件未提交） |
+| generated_at | 2026-11-16T15:14:03.055Z |
+| git HEAD | e726c76e238205908ce3c3f7748efa055f55825f（dirty，13 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | full — `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，579 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，580 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 579 |
-| implemented | 536 |
-| implemented passed | 536 |
+| 总测试 ID | 580 |
+| implemented | 537 |
+| implemented passed | 537 |
 | implemented failed | 0 |
 | implemented skipped | 0 |
 | pending | 18 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.22s | `node schema/check.mjs` | 76/76 cases passed |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
 | links | pass | 0 | 0.24s | `node tools/check-links.mjs` | 385 link(s) checked, 0 broken, 69 file(s) scanned |
-| node-test | pass | 0 | 0.27s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 58.82s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 862 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
+| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 53.13s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 863 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
@@ -51,10 +51,10 @@
 | CPP-ISO-022 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。 |
 | CPP-TRUST-019 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。 |
 | CPP-WASM-100 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-wasm：安装→装载→调用→trap→卸载（review P1-1）；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
-| RPC-L2-201 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 中该测试 #[ignore]，输出 0 passed/6 ignored（不计为通过）。 |
+| RPC-L2-201 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。M4 W6：execute 经 exec.agent.session.append → session-log/v1 events.append 写入 todo/write；gate 6/6 PASS。缺 fixture 时 gate exit 1；默认 cargo 中 #[ignore]。 |
 | RPC-L2-411 | RPC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。 |
 | RPC-L2-501 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/6 ignored（不计为通过）。 |
-| RPC-L2-502 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
+| RPC-L2-502 | RPC | manual | MANUAL | — | M4 W6：最小 exec.agent facade 后，未修改官方工具的 execute 真实返回 cwd，不再报 requires an agent Session；gate 6/6 PASS。command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。 |
 | RPC-L2-503 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
 | RPC-L2-504 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
 | RPC-L2-505 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
@@ -89,7 +89,7 @@
 | SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
-### PASS（逐 ID；共 536 条）
+### PASS（逐 ID；共 537 条）
 
 | ID | 结果 |
 |---|---|
@@ -468,6 +468,7 @@
 | RPC-L2-225 | PASS |
 | RPC-L2-226 | PASS |
 | RPC-L2-227 | PASS |
+| RPC-L2-228 | PASS |
 | RPC-L2-301 | PASS |
 | RPC-L2-302 | PASS |
 | RPC-L2-303 | PASS |
@@ -644,6 +645,7 @@
 - M4 W3（2026-11-16）：`M4-ADC-001`（ui-gpui handler 穿透）、`M4-ADC-002`（PluginHost 路由）、`M4-ADC-003`（external-process ui.action→render）、`M4-ADC-004`（tool.result.meta.ui→ToolCard.extra）、`M4-ADC-005`（Checkbox/Switch onChange 渲染）为 cargo implemented；`CPP-PROC-033` 覆盖 SDK ActionHandler；`M4-ADC-100/101` 为真实点击/确认条 manual。Input/Select onChange 与 draw 预算仍未接。
 - M4 W8（2026-11-16）：`M4-P2-001` 记录 SKIP-as-pass 修复——`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs` 在 node 缺失时 panic/exit 101（实测限 PATH 后），不再 eprintln SKIP+return 记 passed；普通环境仍全绿。
 - M4 G2（2026-11-16）：`M4-RECOVERY-001` = `chat --selftest-recovery`，覆盖损坏会话隔离+重建、删除主文件后 `.bak` 恢复并继续追加、失败插件回滚+健康插件装载/调用；headless PASS，真实窗口崩溃恢复未覆盖。
+- M4 W6（2026-11-16）：`RPC-L2-228` 覆盖 `session-log/v1 events.append`（projections 仍只读）；sidecar 最小 `exec.agent.session.append` → 该写通道。`official-l2-gate.ps1` 6/6 PASS：官方 `dsh-tool-todo` execute 写入 `todo/write`，官方 `working_directory` execute 真实返回 cwd，不再被 `exec.agent` 阻塞。其他官方工具仍需 shell/systemPrompt 等更多 agent 面。
 - compact 矩阵：markdown 保留逐 ID 的 ID/领域/状态/结果/证据/消息；JSON 的 tests.rows 为 [id, area, result]（status/证据/消息见 markdown 与注册表，result=pending|manual 即对应 status）。
 - quick 模式不运行 cargo suite：implemented 且 suite=cargo 的 ID 显示 SKIP 属正常，需 --workspace 或 --full。
 - cargo suite 在 Windows 上经 tools/build-env.cmd 调用（cargo test --offline --workspace --no-fail-fast）。

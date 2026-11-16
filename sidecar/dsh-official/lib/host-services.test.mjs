@@ -295,6 +295,8 @@ test('L2JS-008 catalog describes the proxied host services', () => {
   assert.equal(parsed.size, 3)
   assert.equal(parsed.get(SERVICE_KEYS.storageKv).methods.has('unit.putRecord'), true)
   assert.equal(parsed.get(SERVICE_KEYS.sessionLog).methods.has('events.read'), true)
+  // M4 W6：官方 todo 的 exec.agent.session.append 需要写方法。
+  assert.equal(parsed.get(SERVICE_KEYS.sessionLog).methods.has('events.append'), true)
   assert.equal(parsed.get(SERVICE_KEYS.workingDirectory).methods.size, 3)
   assert.equal(parseHostServices(undefined).size, 0)
 })

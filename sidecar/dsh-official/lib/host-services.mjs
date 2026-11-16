@@ -46,6 +46,8 @@ export const HOST_SERVICE_CATALOG = Object.freeze([
     methods: [
       { name: 'session.describe', kind: 'read', timeout_ms: 5_000, idempotent: true },
       { name: 'events.read', kind: 'read', timeout_ms: 10_000, idempotent: true },
+      // M4 W6：官方工具 exec.agent.session.append 的写通道（仅 session-log/v1）。
+      { name: 'events.append', kind: 'write', timeout_ms: 10_000, idempotent: false },
     ],
   },
   {

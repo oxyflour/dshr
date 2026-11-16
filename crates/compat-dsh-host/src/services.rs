@@ -34,6 +34,10 @@ pub const WORKING_DIRECTORY_CHANGED: &str = "working-directory/change";
 pub const MAX_EVENTS_PER_PAGE: u64 = 500;
 /// `events.read` 单页序列化上限（512 KiB）。
 pub const MAX_PAGE_BYTES: usize = 512 * 1024;
+/// `events.append` 单条事件数据上限（64 KiB；官方 todo/write 等远小于此）。
+pub const MAX_APPEND_BYTES: usize = 64 * 1024;
+/// `events.append` 事件类型名上限。
+pub const MAX_EVENT_TYPE_CHARS: usize = 128;
 /// `session.describe` 返回的会话头 schema 版本（`session-log.md` §2）。
 pub const SESSION_HEADER_VERSION: u32 = 1;
 
@@ -264,6 +268,7 @@ impl HostService for SessionLogService {
         match method {
             "session.describe" => describe_payload(self.access.as_ref(), args, ctx),
             "events.read" => read_events_payload(self.access.as_ref(), args, ctx),
+            "events.append" => append_event_payload(self.access.as_ref(), args, ctx),
             other => Err(ServiceError::new(
                 "E_SERVICE_METHOD",
                 format!("unknown session-log method `{other}`"),
@@ -382,6 +387,48 @@ fn read_events_payload(
     Ok(reply)
 }
 
+/// `events.append`：官方工具 `exec.agent.session.append(type, data)` 的宿主端。
+///
+/// 只允许 `session-log/v1`；事件类型与数据大小先在本层拒绝，再交给
+/// [`SessionAccess::append_event`]（唯一提交者负责 seq 与落盘）。
+fn append_event_payload(
+    access: &dyn SessionAccess,
+    args: &Value,
+    ctx: &ServiceCallContext,
+) -> Result<Value, ServiceError> {
+    let args: EventsAppendArgs = parse_args(args)?;
+    let session_id = require_session(ctx)?;
+    let event_type = args.event_type.trim().to_owned();
+    if event_type.is_empty() || event_type.chars().count() > MAX_EVENT_TYPE_CHARS {
+        return Err(ServiceError::args(
+            "/args/event_type",
+            format!("event_type must be 1..={MAX_EVENT_TYPE_CHARS} characters"),
+        ));
+    }
+    if !event_type
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/'))
+    {
+        return Err(ServiceError::args(
+            "/args/event_type",
+            "event_type may only contain ASCII letters, digits, `.`, `_`, `-`, `/`",
+        ));
+    }
+    let bytes = serde_json::to_vec(&args.data)
+        .map_err(|error| ServiceError::new("E_INTERNAL", format!("serialize event data: {error}")))?
+        .len();
+    if bytes > MAX_APPEND_BYTES {
+        return Err(ServiceError::new(
+            "E_TOO_LARGE",
+            format!("event data {bytes} bytes exceeds {MAX_APPEND_BYTES}"),
+        ));
+    }
+    // 未知/已销毁会话 → E_SERVICE_UNAVAILABLE（来自 SessionAccess 的约定）。
+    access.header(session_id)?;
+    let seq = access.append_event(session_id, &event_type, args.data)?;
+    Ok(json!({ "seq": seq }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SetArgs {
@@ -393,6 +440,15 @@ struct SetArgs {
 struct EventsReadArgs {
     from_seq: u64,
     max_events: u64,
+}
+
+/// `events.append`：官方工具通过 `exec.agent.session.append(type, data)` 写入会话事件。
+/// 仅 `session-log/v1` 暴露写方法；`session-projections/v1` 保持只读。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventsAppendArgs {
+    event_type: String,
+    data: Value,
 }
 
 fn parse_args<T: for<'de> Deserialize<'de>>(args: &Value) -> Result<T, ServiceError> {
@@ -566,6 +622,23 @@ fn session_log_table() -> HostServiceTable {
     HostServiceTable::new(
         SESSION_LOG_V1,
         vec![
+            method(
+                "events.append",
+                HostServiceKind::Write,
+                object_schema(
+                    json!({
+                        "event_type": { "type": "string" },
+                        "data": {},
+                    }),
+                    json!(["event_type", "data"]),
+                ),
+                object_schema(
+                    json!({ "seq": { "type": "integer", "minimum": 1 } }),
+                    json!(["seq"]),
+                ),
+                10_000,
+                false,
+            ),
             method(
                 "session.describe",
                 HostServiceKind::Read,
@@ -1089,6 +1162,43 @@ mod tests {
         assert_eq!(reply["header"]["version"], SESSION_HEADER_VERSION);
         assert_eq!(reply["header"]["delegation_depth"], 0);
         assert!(reply["header"]["parent"].is_null());
+    }
+
+    /// RPC-L2-228（M4 W6）：`events.append` 写一条事件并返回 seq；projections 仍只读。
+    #[test]
+    fn rpc_l2_228_events_append_writes_and_projections_stay_read_only() {
+        let access = FakeAccess::with_session(SESSION, Some("C:\\ws"));
+        let mut service = SessionLogService::new(dyn_access(&access));
+        let reply = service
+            .dispatch(
+                "events.append",
+                &json!({ "event_type": "todo/write", "data": { "todos": [] } }),
+                &sl_ctx(),
+            )
+            .expect("append");
+        assert_eq!(reply["seq"], 1);
+        let events = access.events(SESSION);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "todo/write");
+
+        let invalid = service
+            .dispatch(
+                "events.append",
+                &json!({ "event_type": "bad type!", "data": {} }),
+                &sl_ctx(),
+            )
+            .unwrap_err();
+        assert_eq!(invalid.code, "E_SERVICE_ARGS");
+
+        let mut projections = SessionProjectionsService::new(dyn_access(&access));
+        let read_only = projections
+            .dispatch(
+                "events.append",
+                &json!({ "event_type": "todo/write", "data": {} }),
+                &sl_ctx(),
+            )
+            .unwrap_err();
+        assert_eq!(read_only.code, "E_SERVICE_METHOD");
     }
 
     /// RPC-L2-222：`events.read` 分页：seq 递增、next_seq/eof 正确。

@@ -21,7 +21,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W3 | ADC 交互与工具卡 | **部分完成（onPress + openExternal + tool card extra + Checkbox/Switch onChange）** | `adc_panel_body_with_handler`；`copy` 剪贴板；`call`/`command` → `ui.action` → 再 render；`openExternal` 确认条；`tool.result.meta.ui` → `ToolCard.extra` → 工具卡 ADC 区；Checkbox/Switch onChange；`M4-ADC-001..005` cargo，`M4-ADC-100/101` 真机待跑；见 [m4-adc.md](m4-adc.md) |
 | W4 | native/MCP 并发 + trait 冻结 | 未开始 | `Plugin::call` 仍同步、`&'static str` leak |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
-| W6 | 官方 execute 闭环 | 未开始 | `exec.agent` 债务 |
+| W6 | 官方 execute 闭环 | **部分完成（todo + working_directory execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 6/6 PASS；其余官方工具仍需 shell/systemPrompt 等 agent 面 |
 | W7 | 三平台 CI / 性能基线 | 未开始 | 本机 Windows only；Actions 未实跑 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
@@ -52,6 +52,9 @@ target\debug\chat.exe --selftest-plugin-lifecycle
 target\debug\chat.exe --selftest-recovery
   → corrupt/backup/continue/plugin_rollback/healthy/healthy_call 全 true，PASS（exit 0）
 
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-l2-gate.ps1
+  → PASS（6/6；RPC-L2-201 todo execute 写 todo/write，RPC-L2-502 working_directory execute 返回 cwd）
+
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
   → [authoring-check] PASS（含卸载生命周期；exit 0）
 
@@ -62,7 +65,7 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 67 suites / 862 passed / 0 failed / 6 ignored；exit 0
+  → 67 suites / 863 passed / 0 failed / 6 ignored；exit 0
     （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 
@@ -81,6 +84,9 @@ node tools\conformance.mjs --full --compact
 - **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
   [m4-keyboard.md](m4-keyboard.md) §3 人工复验。本机 `SendKeys` 自动化尝试被 Windows 前台锁
   拦住（窗口能启动，`SetForegroundWindow` 失败，无 `[keyboard]` 行），不改判 G3。
+- **W6 只覆盖 todo/working_directory**：最小 `exec.agent`（id + session.append）已让这两类官方
+  工具的 execute 闭环；bash/pwsh/fs 等还读 `shell`/`shellEnv`/`systemPrompt`/`ctx.fiber` 等
+  活对象，仍不能算"官方 execute 全部闭环"。
 - **G2 只到 headless**：`--selftest-recovery` 覆盖损坏会话/备份/插件回滚，
   但没有真实窗口内崩溃、sidecar 被杀、重启后继续操作的 UI 场景；G2 不标"完成"。
 - **SKIP-as-pass 已修（W8）**：`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs`

@@ -147,6 +147,16 @@ impl FakeAccess {
         );
         access
     }
+
+    /// 测试侧读取已落库事件（`events.append` 断言用）。
+    fn events(&self, session_id: &str) -> Vec<SessionEventView> {
+        self.sessions
+            .lock()
+            .expect("sessions")
+            .get(session_id)
+            .map(|session| session.events.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl SessionAccess for FakeAccess {
@@ -241,6 +251,8 @@ struct Fixture {
     workspace: PathBuf,
     target: PathBuf,
     storage: PathBuf,
+    /// 测试侧保留的 session access，用来核对 `events.append` 落库。
+    access: Arc<FakeAccess>,
 }
 
 impl Fixture {
@@ -315,7 +327,7 @@ fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
         .register(Box::new(SessionLogService::new(access.clone())))
         .expect("register session-log");
     router
-        .register(Box::new(SessionProjectionsService::new(access)))
+        .register(Box::new(SessionProjectionsService::new(access.clone())))
         .expect("register session-projections");
     router.register_plugin_inject(
         "dsh-official",
@@ -340,6 +352,7 @@ fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
             workspace,
             target,
             storage,
+            access,
         }),
         Err(error) => {
             panic!("#[{label}] sidecar 启动失败（official-package gate 不静默跳过）: {error}");
@@ -375,7 +388,7 @@ fn invoke(host: &mut SidecarHost, tool: &str, arguments: Value) -> Envelope {
 #[test]
 #[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
 fn rpc_l2_201_official_tool_todo_loads_green() {
-    let fixture = spawn_official_sidecar("201", true)
+    let mut fixture = spawn_official_sidecar("201", true)
         .expect("spawn_official_sidecar panics on missing fixtures; expect only for Option");
     assert_eq!(fixture.host.negotiated_protocol(), 2);
     assert!(fixture.host.host_services_active());
@@ -393,6 +406,29 @@ fn rpc_l2_201_official_tool_todo_loads_green() {
     assert!(
         load_errors.is_empty(),
         "官方 todo 包装载失败: {load_errors:?}"
+    );
+
+    // M4 W6：官方 todo 的 execute 现在经 exec.agent.session.append → session-log/v1
+    // events.append 写入宿主会话，不再被 exec.agent 债务阻塞。
+    let result = invoke(
+        &mut fixture.host,
+        "todo_write",
+        json!({ "todos": [
+            { "content": "write official todo", "status": "pending" },
+            { "content": "verify append", "status": "in_progress" }
+        ]}),
+    );
+    assert_eq!(
+        result.payload["is_error"], false,
+        "官方 todo_write 失败: {result:?}"
+    );
+    let events = fixture.access.events("s-probe");
+    assert!(
+        events.iter().any(|event| event.event_type == "todo/write"
+            && event.data["todos"]
+                .as_array()
+                .is_some_and(|todos| todos.len() == 2)),
+        "events.append 未落库 todo/write: {events:?}"
     );
     fixture.cleanup();
 }
@@ -426,11 +462,11 @@ fn rpc_l2_501_official_working_directory_tool_loads_green() {
     fixture.cleanup();
 }
 
-/// RPC-L2-502：官方工具的 `execute` 依赖 `exec.agent`（M3 明确不计入闭环）——
-/// 未提供 agent 时返回结构化错误，不是挂起/崩溃。
+/// RPC-L2-502（M4 W6）：官方 `working_directory` 的 `execute` 经最小 `exec.agent`
+/// facade 闭环——不再返回 "requires an agent Session"，而是真实执行并返回 cwd。
 #[test]
 #[ignore = "requires .tmp/dsh-tools-all + vendored sidecar; run tools/official-l2-gate.ps1"]
-fn rpc_l2_502_official_tool_execute_is_blocked_by_exec_agent() {
+fn rpc_l2_502_official_tool_execute_closes_with_agent_facade() {
     let Some(mut fixture) = spawn_official_sidecar("502", false) else {
         return;
     };
@@ -439,22 +475,21 @@ fn rpc_l2_502_official_tool_execute_is_blocked_by_exec_agent() {
         "working_directory",
         json!({ "cd": fixture.target.to_string_lossy() }),
     );
-    assert_eq!(
-        envelope.error.as_ref().map(|error| error.code.as_str()),
-        Some("E_TOOL"),
-        "结构化错误码应可判定: {envelope:?}"
+    assert!(
+        envelope.error.is_none(),
+        "官方 working_directory execute 应成功: {envelope:?}"
     );
     let payload = &envelope.payload;
-    assert_eq!(payload["is_error"], true, "官方工具不应成功: {payload}");
-    let text = payload["content"][0]["text"].as_str().unwrap_or_default();
-    assert!(
-        text.contains("requires an agent Session"),
-        "应命中 exec.agent 债务原文: {text}"
+    assert_eq!(payload["is_error"], false, "官方工具执行失败: {payload}");
+    assert_eq!(
+        payload["value"]["cwd"],
+        json!(norm(&fixture.target)),
+        "execute 应返回目标 cwd: {payload}"
     );
     assert_eq!(
         fixture.host.negotiated_protocol(),
         2,
-        "错误路径不能破坏 v2 会话"
+        "execute 成功后仍保持 v2 会话"
     );
     fixture.cleanup();
 }

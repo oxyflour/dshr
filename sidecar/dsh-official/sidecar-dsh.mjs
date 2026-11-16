@@ -40,6 +40,7 @@ import {
   createHostServicesRuntime,
   handleHostEventEmit,
   shouldEnableHostServices,
+  SERVICE_KEYS,
 } from './lib/host-services.mjs'
 import { createSessionProjectionsShim } from './lib/session-projections.mjs'
 
@@ -60,6 +61,8 @@ let hostServices = null
 let sessionProjections = null
 // 当前工具调用上下文（callId/sessionId/depth）：服务代理用它关联 tool.cancel 与 session_id。
 const callStore = new AsyncLocalStorage()
+// M4 W6：只有这些官方工具使用最小 `exec.agent` facade（session.append）。
+const AGENT_FACADE_TOOLS = new Set(['working_directory', 'todo_write'])
 // Cordis 根 Context：bootPlugins 后用于把服务事件桥接回插件总线。
 let cordisRoot = null
 
@@ -687,13 +690,58 @@ async function runTool(definition, msg) {
     // ToolRunContext 在官方实现里由执行器组装；这里给最小可用集合：
     // 没有 agent，因此官方工具不会走 workingDirectory / approval / escalation 分支；
     // 写操作的审批发生在 Rust（fs.write.request 的裁决层）。
-    const exec = { signal: controller.signal, callId: msg.call_id }
+    //
+    // M4 W6：给官方工具一个最小 `exec.agent.session.append(type, data)`（todo 等需要）。
+    // 写入走 session-log/v1 events.append；官方代码不 await 时，这里在 execute 结束后
+    // 统一 flush 并抛出首个错误，避免"写入丢失但工具显示成功"。
+    const pendingSessionWrites = []
+    let sessionWriteError = null
+    const appendSessionEvent = (type, data) => {
+      if (!hostServices) {
+        const error = new Error('session-log service is not negotiated (v2 host required)')
+        sessionWriteError ??= error
+        return Promise.reject(error)
+      }
+      const pending = hostServices.call({
+        serviceKey: SERVICE_KEYS.sessionLog,
+        method: 'events.append',
+        args: { event_type: String(type), data: data ?? null },
+        sessionId: msg.session_id,
+        callId: msg.call_id,
+        depth: Number.isInteger(msg.depth) ? msg.depth : 0,
+      })
+      pending.catch((error) => {
+        sessionWriteError ??= error
+      })
+      pendingSessionWrites.push(pending.catch(() => {}))
+      return pending
+    }
+    const exec = {
+      signal: controller.signal,
+      callId: msg.call_id,
+      // 只给明确支持最小 agent facade 的工具；fs 等工具在 agent 存在时会走
+      // `ctx.workingDirectory.ensure` 分支，但它们没有 inject workingDirectory，
+      // 这会让原本无 agent 的写路径回归。逐工具放开，避免"给了 agent 反而坏"。
+      ...(AGENT_FACADE_TOOLS.has(definition.name)
+        ? {
+            agent: {
+              id: msg.session_id,
+              session: {
+                id: msg.session_id,
+                append: appendSessionEvent,
+              },
+            },
+          }
+        : {}),
+    }
     const argumentsValue = msg.payload?.arguments ?? {}
     // AsyncLocalStorage：ctx.workingDirectory/ctx.storage 的代理在官方 execute 的
     // 任意 await 点都能拿到同一个 call_id/session_id（tool.cancel 据此取消服务调用）。
     const value = await callStore.run(callContext, () =>
       definition.execute(argumentsValue, exec),
     )
+    await Promise.all(pendingSessionWrites)
+    if (sessionWriteError) throw sessionWriteError
 
     let content
     try {

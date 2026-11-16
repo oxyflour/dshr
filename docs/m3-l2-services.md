@@ -266,9 +266,10 @@ session）、`E_SERVICE_TIMEOUT`、`E_SERVICE_DENIED`（白名单/未协商）�
 **实施状态（W8，review P1-5 后）**：Rust `SessionProjectionsService`（`session-projections/v1`：
 `session.describe`/`events.read`，7 个测试 `RPC-L2-202..208`）与 sidecar `session-projections.mjs`
 最小注册表 shim（register/release/init/apply/gap-backfill，8 个 node:test `L2JS-021..028`）已实现，
-`ctx.sessionProjections` 已注入。**201 仍只是"装载绿"**（未修改 `dsh-tool-todo`：inject 满足、
-`todo_write` 注册成功；execute 受 `exec.agent` 债务阻塞，明确 pending）。204/205/207 的"官方 todo
-端到端"仍 pending，用 shim/fixture 验证机制；官方包证据必须通过
+`ctx.sessionProjections` 已注入。**M3 时 201 只是"装载绿"**；M4 W6 已补
+`exec.agent.session.append`，官方 `todo_write` execute 在 official gate 实测写入 `todo/write`
+（`RPC-L2-201`），`working_directory` execute 也已闭环（`RPC-L2-502`）。其他官方工具的
+"端到端"仍 pending，用 shim/fixture 验证机制；官方包证据必须通过
 `tools/official-l2-gate.ps1`（缺 fixture 会失败），不得把默认 cargo 的 `#[ignore]` 当 pass。
 官方 `sessionProjections` 事件推送由宿主 `event.emit` 驱动，chat 侧还需把 session_id/事件流接上
 （见 [ADR-0012](decisions/0012-m3-gate-closure.md) 与 review P2）。
@@ -427,11 +428,17 @@ storage 的"官方包"指官方 `dsh-storage`+`dsh-storage-domain`（无官方�
 `dsh-tool-fs` 做了降级（`exec.agent === void 0 ? void 0 : await ctx.workingDirectory.ensure(...)`，
 L175）——也就是说**同一个服务在不同工具里可能是硬依赖或软依赖**。
 
-结论：即使 `workingDirectory`/`sessionProjections`/`storage` 全部到位，工具 `execute` 仍会因为
+结论（M3 时）：即使 `workingDirectory`/`sessionProjections`/`storage` 全部到位，工具 `execute` 仍会因为
 `exec.agent.session.append(...)`、`exec.agent.ctx.fiber.assertActive()` 等活对象调用而失败。
 这是**执行上下文（L1）的债务**，不属于服务契约；M3 若要做工具闭环，必须先补
 "`ToolRunContext` 的 agent/session facade"（新契约，建议在 `sidecar-rpc` 的 `tool.invoke` 桥里
 加 `session_append` 能力位，属另一项工作）。
+
+**M4 更新（2026-11-16，W6 部分关闭）**：已补最小 facade `exec.agent = { id, session: { id, append } }`，
+`append(type, data)` → `session-log/v1 events.append`（宿主校验类型/64 KiB 上限并落 Rust 会话日志）。
+`RPC-L2-201`（`dsh-tool-todo`）的 `todo_write` 与 `RPC-L2-502`（`working_directory`）的 execute
+已在 official gate 实测通过；`bash`/`pwsh`/`fs` 等还需要 `shell`/`shellEnv`/`systemPrompt`/`ctx.fiber`
+等更多 agent 面，仍属 W6 后续。
 
 ### 6.2 G3 的可判定定义（建议采纳）
 
