@@ -246,6 +246,58 @@ fn m4_adc_017_keyboard_activates_focused_button(cx: &mut TestAppContext) {
     assert_eq!(count.get(), 2, "Space should activate focused button");
 }
 
+/// M4-ADC-018：Checkbox 点击聚焦后 Space 再触发 onChange。
+#[gpui::test]
+fn m4_adc_018_keyboard_activates_checkbox(cx: &mut TestAppContext) {
+    let count = Rc::new(Cell::new(0usize));
+    let sink = count.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |_| sink.set(sink.get() + 1));
+    let tree = serde_json::json!({
+        "type": "Checkbox",
+        "props": {
+            "label": "Enable",
+            "checked": false,
+            "a11yLabel": "Enable",
+            "onChange": { "call": "toggle", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$").expect("checkbox bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(count.get(), 1);
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    assert_eq!(count.get(), 2, "Space should activate checkbox");
+}
+
+/// M4-ADC-019：Switch 点击聚焦后 Enter 再触发 onChange。
+#[gpui::test]
+fn m4_adc_019_keyboard_activates_switch(cx: &mut TestAppContext) {
+    let count = Rc::new(Cell::new(0usize));
+    let sink = count.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |_| sink.set(sink.get() + 1));
+    let tree = serde_json::json!({
+        "type": "Switch",
+        "props": {
+            "label": "Live",
+            "checked": true,
+            "a11yLabel": "Live",
+            "onChange": { "call": "set_live", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$").expect("switch bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(count.get(), 1);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(count.get(), 2, "Enter should activate switch");
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {

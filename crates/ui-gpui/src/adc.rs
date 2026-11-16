@@ -1138,9 +1138,17 @@ fn render_checkbox(
     }
     if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
         let handler = handler.clone();
+        let key_handler = handler.clone();
+        let key_action = action.clone();
         row = row
             .cursor_pointer()
-            .on_click(move |_, window, cx| handler(&action, window, cx));
+            .focusable()
+            .on_click(move |_, window, cx| handler(&action, window, cx))
+            .on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    key_handler(&key_action, window, cx);
+                }
+            });
     }
     row.into_any_element()
 }
@@ -1199,9 +1207,17 @@ fn render_switch(
     }
     if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
         let handler = handler.clone();
+        let key_handler = handler.clone();
+        let key_action = action.clone();
         row = row
             .cursor_pointer()
-            .on_click(move |_, window, cx| handler(&action, window, cx));
+            .focusable()
+            .on_click(move |_, window, cx| handler(&action, window, cx))
+            .on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    key_handler(&key_action, window, cx);
+                }
+            });
     }
     row.into_any_element()
 }
