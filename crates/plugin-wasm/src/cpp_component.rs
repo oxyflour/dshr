@@ -8,7 +8,7 @@ use dshr_plugin_api::{Plugin as PluginTrait, PluginContext, PluginError};
 use dshr_tool_runtime::{ToolDefinition, ToolOrigin};
 use serde_json::{json, Value};
 use wasmtime::component::{bindgen, Component, HasSelf, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 bindgen!({
@@ -20,13 +20,21 @@ bindgen!({
 pub struct CppHostState {
     table: ResourceTable,
     ctx: WasiCtx,
+    limits: StoreLimits,
 }
 
 impl Default for CppHostState {
     fn default() -> Self {
+        Self::with_limits(StoreLimitsBuilder::new().build())
+    }
+}
+
+impl CppHostState {
+    fn with_limits(limits: StoreLimits) -> Self {
         Self {
             table: ResourceTable::new(),
             ctx: WasiCtxBuilder::new().build(),
+            limits,
         }
     }
 }
@@ -100,11 +108,17 @@ pub struct CppComponentPlugin {
     version: String,
     engine: Engine,
     component: Component,
+    fuel: u64,
+    memory_bytes: usize,
+    epoch_deadline: Option<u64>,
 }
 
 impl CppComponentPlugin {
     pub fn new(id: impl Into<String>, version: impl Into<String>, source: &[u8]) -> Result<Self, PluginError> {
-        let engine = Engine::new(&Config::new()).map_err(|error| {
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        config.epoch_interruption(true);
+        let engine = Engine::new(&config).map_err(|error| {
             PluginError::Invalid(format!("component engine: {error}"))
         })?;
         let component = Component::new(&engine, source).map_err(|error| {
@@ -115,7 +129,28 @@ impl CppComponentPlugin {
             version: version.into(),
             engine,
             component,
+            fuel: u64::MAX,
+            memory_bytes: usize::MAX,
+            epoch_deadline: None,
         })
+    }
+
+    /// 单次 call 的 fuel 上限（默认不主动耗尽）。
+    pub fn with_fuel_limit(mut self, fuel: u64) -> Self {
+        self.fuel = fuel;
+        self
+    }
+
+    /// 单次 call 的线性内存上限。
+    pub fn with_memory_limit(mut self, memory_bytes: usize) -> Self {
+        self.memory_bytes = memory_bytes;
+        self
+    }
+
+    /// 单次 call 的 epoch deadline。
+    pub fn with_epoch_deadline(mut self, deadline: u64) -> Self {
+        self.epoch_deadline = Some(deadline);
+        self
     }
 
     fn instantiate(
@@ -130,7 +165,15 @@ impl CppComponentPlugin {
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|error| {
             PluginError::Invalid(format!("wasi imports: {error}"))
         })?;
-        let mut store = Store::new(&self.engine, CppHostState::default());
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(self.memory_bytes)
+            .build();
+        let mut store = Store::new(&self.engine, CppHostState::with_limits(limits));
+        store.limiter(|state| &mut state.limits);
+        store.set_fuel(self.fuel).map_err(|error| {
+            PluginError::Invalid(format!("component fuel: {error}"))
+        })?;
+        store.set_epoch_deadline(self.epoch_deadline.unwrap_or(u64::MAX));
         let instance = Plugin::instantiate(&mut store, &self.component, &linker)
             .map_err(|error| PluginError::Invalid(format!("component instantiate: {error}")))?;
         Ok((store, instance))

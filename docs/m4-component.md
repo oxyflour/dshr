@@ -54,6 +54,8 @@
   注册 `echo` 并调用返回 `installed`，本机 **PASS**。
 - `M4-COMPONENT-020`：两个独立 `CppComponentPlugin` 实例在两个线程并行调用 guest，
   验证宿主并行装载不同组件插件时的 Send/隔离；同一插件实例仍按 `&mut` 串行。
+- `M4-COMPONENT-021`：`CppComponentPlugin::with_fuel_limit(100_000)` 调 guest `spin`
+  触发 fuel trap；之后同一插件仍能调 `echo`，验证真实插件路径的配额。
 
 构建 guest：
 

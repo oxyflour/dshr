@@ -1113,7 +1113,7 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-wasm",
-      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 canonical ABI；#002 WIT；#004 fuel；#005 epoch；#006 memory。component_bindings.rs：#003 bindgen host imports；#014 guest list-tools（echo）；#015 guest invoke canonical ABI；#016 CppComponentPlugin 注册 echo 并调用真实 guest；#020 两个独立 CppComponentPlugin 并行 invoke。component_plugin.rs：#007 probe ComponentPlugin；#008 输出上限；#009 plugin fuel；#010 plugin memory；#011 plugin epoch。cargo test -p dshr-plugin-wasm",
+      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 canonical ABI；#002 WIT；#004 fuel；#005 epoch；#006 memory。component_bindings.rs：#003 bindgen host imports；#014 guest list-tools（echo）；#015 guest invoke canonical ABI；#016 CppComponentPlugin 注册 echo 并调用真实 guest；#020 两个独立 CppComponentPlugin 并行 invoke；#021 CppComponentPlugin fuel 上限 trap。component_plugin.rs：#007 probe ComponentPlugin；#008 输出上限；#009 plugin fuel；#010 plugin memory；#011 plugin epoch。cargo test -p dshr-plugin-wasm",
       "source_dirs": [
         "crates/plugin-wasm/tests"
       ],
@@ -1132,7 +1132,8 @@
         "M4-COMPONENT-014",
         "M4-COMPONENT-015",
         "M4-COMPONENT-016",
-        "M4-COMPONENT-020"
+        "M4-COMPONENT-020",
+        "M4-COMPONENT-021"
       ]
     },
     {

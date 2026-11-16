@@ -12,15 +12,26 @@ struct Component;
 
 impl exports::dshr::cpp_v1::tool_provider::Guest for Component {
     fn list_tools() -> Vec<dshr::cpp_v1::types::ToolDecl> {
-        vec![dshr::cpp_v1::types::ToolDecl {
-            name: "echo".to_owned(),
-            description: "echo the canonical JSON arguments".to_owned(),
-            input_schema: r#"{"type":"object"}"#.to_owned(),
-            output_schema: None,
-            timeout_ms: Some(1_000),
-            cancelable: Some(false),
-            presentation: Some("generic".to_owned()),
-        }]
+        vec![
+            dshr::cpp_v1::types::ToolDecl {
+                name: "echo".to_owned(),
+                description: "echo the canonical JSON arguments".to_owned(),
+                input_schema: r#"{"type":"object"}"#.to_owned(),
+                output_schema: None,
+                timeout_ms: Some(1_000),
+                cancelable: Some(false),
+                presentation: Some("generic".to_owned()),
+            },
+            dshr::cpp_v1::types::ToolDecl {
+                name: "spin".to_owned(),
+                description: "burn fuel until the host quota trips".to_owned(),
+                input_schema: r#"{"type":"object"}"#.to_owned(),
+                output_schema: None,
+                timeout_ms: Some(1_000),
+                cancelable: Some(false),
+                presentation: Some("generic".to_owned()),
+            },
+        ]
     }
 
     fn list_panels() -> Vec<dshr::cpp_v1::types::PanelDecl> {
@@ -28,6 +39,11 @@ impl exports::dshr::cpp_v1::tool_provider::Guest for Component {
     }
 
     fn invoke(tool: String, args: String) -> Result<dshr::cpp_v1::types::ToolResult, String> {
+        if tool == "spin" {
+            loop {
+                std::hint::spin_loop();
+            }
+        }
         if tool != "echo" {
             return Err(format!("unknown tool: {tool}"));
         }

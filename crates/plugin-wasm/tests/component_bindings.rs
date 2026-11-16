@@ -113,9 +113,10 @@ fn m4_component_014_guest_tool_provider_round_trip() {
         .dshr_cpp_v1_tool_provider()
         .call_list_tools(&mut store)
         .expect("list-tools call");
-    assert_eq!(tools.len(), 1, "guest should declare one tool");
+    assert_eq!(tools.len(), 2, "guest should declare echo and spin");
     assert_eq!(tools[0].name, "echo");
     assert_eq!(tools[0].timeout_ms, Some(1_000));
+    assert_eq!(tools[1].name, "spin");
 }
 
 /// M4-COMPONENT-015：真实 cpp-v1 guest 的 `invoke("echo", args)` 走 canonical ABI
@@ -151,7 +152,7 @@ fn m4_component_016_cpp_component_plugin_round_trip() {
     let mut ctx = PluginContext::new("guest.component");
     plugin.apply(&mut ctx).expect("apply registers guest tools");
     let (tools, _) = ctx.take_registrations();
-    assert_eq!(tools.len(), 1);
+    assert_eq!(tools.len(), 2);
     assert_eq!(tools[0].name, "echo");
     let result = plugin
         .call("echo", &json!({ "text": "hello" }))
@@ -184,6 +185,24 @@ fn m4_component_020_parallel_component_instances() {
             format!("{{\"index\":{index}}}")
         );
     }
+}
+
+/// M4-COMPONENT-021：CppComponentPlugin 的 fuel 上限让 guest `spin` 工具
+/// 在 canonical ABI 调用中 trap，之后 echo 仍可复用。
+#[test]
+fn m4_component_021_cpp_component_plugin_fuel_limit() {
+    let mut plugin = CppComponentPlugin::new("guest.limited", "0.1.0", GUEST)
+        .expect("cpp component plugin constructs")
+        .with_fuel_limit(100_000);
+    let error = plugin
+        .call("spin", &json!({}))
+        .expect_err("spin must exhaust fuel");
+    assert!(
+        error.to_string().contains("trap") || error.to_string().contains("fuel"),
+        "unexpected error: {error}"
+    );
+    let result = plugin.call("echo", &json!({ "ok": true })).expect("echo still works");
+    assert_eq!(result["content"][0]["text"], "{\"ok\":true}");
 }
 
 /// M4-COMPONENT-003：cpp-v1.wit 能生成 world `plugin` 的宿主绑定，
