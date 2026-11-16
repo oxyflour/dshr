@@ -12,13 +12,15 @@
 - `M4-COMPONENT-003`（[component_bindings.rs](../crates/plugin-wasm/tests/component_bindings.rs)）：
   `bindgen!` 从 WIT 生成 world `plugin` 的宿主 trait，实现 `host`/`types` 接口
   （含 `tool-call` resource），用 `HasSelf` 把 imports 接到 `Linker`。
+- `M4-COMPONENT-004`：component 导出死循环在 `consume_fuel(true)` + `set_fuel(10_000)`
+  下 call 返回 Err（fuel 配额 trap）。
 
 命令：
 
 ```text
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
-→ 3 passed
+→ 4 passed
 ```
 
 ## 2. 还没做
@@ -26,7 +28,7 @@ cargo test -p dshr-plugin-wasm --test component_bindings
 - 没有 `ComponentPlugin` 加载器实现 `Plugin` trait；component 还不能被
   `dshr-plugin-host` 安装/调用。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
-  fuel/epoch/内存/输出/并发配额未验证；当前 core-module 的配额路径
+  fuel 配额已有测试，epoch/内存/输出/并发仍未验证；当前 core-module 的配额路径
   不能直接假设适用。
 - 没有 component 模板、签名/安装/卸载链路、作者文档。
 

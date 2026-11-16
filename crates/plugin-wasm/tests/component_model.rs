@@ -7,7 +7,7 @@
 #![cfg(test)]
 
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Engine, Store};
+use wasmtime::{Config, Engine, Store};
 use wit_parser::{Resolve, WorldKey};
 
 const COMPONENT_WAT: &str = r#"
@@ -36,6 +36,37 @@ fn m4_component_001_canonical_abi_round_trip() {
         .expect("run export typed");
     let (value,) = run.call(&mut store, ()).expect("canonical call");
     assert_eq!(value, 42);
+}
+
+/// M4-COMPONENT-004：component 导出函数受 fuel 配额约束，死循环必须 trap。
+#[test]
+fn m4_component_004_component_fuel_limit_traps() {
+    const LOOP_WAT: &str = r#"
+    (component
+      (core module $m
+        (func (export "run") (result i32)
+          (loop $l (br $l))
+          i32.const 0))
+      (core instance $i (instantiate $m))
+      (func (export "run") (result u32)
+        (canon lift (core func $i "run")))
+    )
+    "#;
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    let engine = Engine::new(&config).expect("fuel engine");
+    let component = Component::new(&engine, LOOP_WAT).expect("component parses");
+    let linker = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    store.set_fuel(10_000).expect("set fuel");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("component instantiates");
+    let run = instance
+        .get_typed_func::<(), (u32,)>(&mut store, "run")
+        .expect("run export typed");
+    let result = run.call(&mut store, ());
+    assert!(result.is_err(), "infinite loop should exhaust component fuel");
 }
 
 /// M4-COMPONENT-002：`docs/spec/cpp-v1.wit` 可解析，world `plugin` 导入 host、

@@ -1091,14 +1091,15 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-wasm",
-      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 Component::new + canonical ABI 调用；#002 wit-parser 解析 docs/spec/cpp-v1.wit 并校验 world plugin 的 host/tool-provider。component_bindings.rs：#003 bindgen! 生成 world plugin 宿主绑定并把 host imports 接到 Linker（HasSelf）。cargo test -p dshr-plugin-wasm",
+      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 Component::new + canonical ABI 调用；#002 wit-parser 解析 docs/spec/cpp-v1.wit 并校验 world plugin 的 host/tool-provider；#004 component 死循环在 fuel 配额下 trap。component_bindings.rs：#003 bindgen! 生成 world plugin 宿主绑定并把 host imports 接到 Linker（HasSelf）。cargo test -p dshr-plugin-wasm",
       "source_dirs": [
         "crates/plugin-wasm/tests"
       ],
       "ids": [
         "M4-COMPONENT-001",
         "M4-COMPONENT-002",
-        "M4-COMPONENT-003"
+        "M4-COMPONENT-003",
+        "M4-COMPONENT-004"
       ]
     },
     {
