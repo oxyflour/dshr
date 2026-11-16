@@ -9,21 +9,24 @@
 - `M4-COMPONENT-002`：用 `wit-parser` 解析 [cpp-v1.wit](spec/cpp-v1.wit)，校验 world
   `plugin` 导入 `host`、导出 `tool-provider`。解析时发现并修复了 `host` 里类型
   `quota` 与函数 `quota` 重名 → 函数改为 `get-quota`。
+- `M4-COMPONENT-003`（[component_bindings.rs](../crates/plugin-wasm/tests/component_bindings.rs)）：
+  `bindgen!` 从 WIT 生成 world `plugin` 的宿主 trait，实现 `host`/`types` 接口
+  （含 `tool-call` resource），用 `HasSelf` 把 imports 接到 `Linker`。
 
 命令：
 
 ```text
 cargo test -p dshr-plugin-wasm --test component_model
-→ 2 passed
+cargo test -p dshr-plugin-wasm --test component_bindings
+→ 3 passed
 ```
 
 ## 2. 还没做
 
 - 没有 `ComponentPlugin` 加载器实现 `Plugin` trait；component 还不能被
   `dshr-plugin-host` 安装/调用。
-- 没有用 `wasmtime::component::bindgen!` 生成 `cpp-v1.wit` 的宿主/guest 绑定，
-  也没有把 host imports（log/get-quota/config/wait-cancelled）接上。
-- component 的 fuel/epoch/内存/输出/并发配额未验证；当前 core-module 的配额路径
+- host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
+  fuel/epoch/内存/输出/并发配额未验证；当前 core-module 的配额路径
   不能直接假设适用。
 - 没有 component 模板、签名/安装/卸载链路、作者文档。
 
