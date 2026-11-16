@@ -21,6 +21,7 @@
 - `M4-COMPONENT-007`：`ComponentPlugin`（`cpp-component-probe/v1`，仅 `run() -> u32`）
   实现 `Plugin`：`apply` 注册 `component.run`，`call` 实例化并返回 42。它是加载器骨架，
   不是最终 `cpp-v1.wit` ABI。
+- `M4-COMPONENT-008`：`with_max_output_bytes(1)` 时 `call` 返回 Err，验证 probe 输出配额。
 
 命令：
 
@@ -28,7 +29,7 @@
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
 cargo test -p dshr-plugin-wasm --test component_plugin
-→ 7 passed
+→ 8 passed
 ```
 
 ## 2. 还没做
@@ -36,7 +37,7 @@ cargo test -p dshr-plugin-wasm --test component_plugin
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的
   工具声明/调用；也没有被 `plugin-host` 的 manifest loader 自动识别。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
-  fuel/epoch/内存配额已有测试，输出/并发仍未验证；当前 core-module 的配额路径
+  fuel/epoch/内存/输出配额已有测试，并发仍未验证；当前 core-module 的配额路径
   不能直接假设适用。
 - 没有 component 模板、签名/安装/卸载链路、作者文档。
 

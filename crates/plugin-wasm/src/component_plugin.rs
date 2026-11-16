@@ -18,6 +18,8 @@ pub struct ComponentPlugin {
     version: String,
     engine: Engine,
     component: Component,
+    /// 序列化结果字节上限（probe ABI 的输出配额；默认 1 MiB）。
+    max_output_bytes: usize,
 }
 
 impl ComponentPlugin {
@@ -36,7 +38,14 @@ impl ComponentPlugin {
             version: version.into(),
             engine,
             component,
+            max_output_bytes: 1024 * 1024,
         })
+    }
+
+    /// 设置 probe 输出的字节上限（用于 W5 输出配额测试）。
+    pub fn with_max_output_bytes(mut self, max_output_bytes: usize) -> Self {
+        self.max_output_bytes = max_output_bytes;
+        self
     }
 
     fn invoke_run(&mut self) -> Result<u32, PluginError> {
@@ -88,6 +97,21 @@ impl Plugin for ComponentPlugin {
             });
         }
         let value = self.invoke_run()?;
-        Ok(json!({ "value": value }))
+        let result = json!({ "value": value });
+        let encoded = serde_json::to_vec(&result).map_err(|error| PluginError::ToolFailed {
+            tool: "component.run".to_owned(),
+            reason: format!("serialize result: {error}"),
+        })?;
+        if encoded.len() > self.max_output_bytes {
+            return Err(PluginError::ToolFailed {
+                tool: "component.run".to_owned(),
+                reason: format!(
+                    "output {} bytes exceeds limit {}",
+                    encoded.len(),
+                    self.max_output_bytes
+                ),
+            });
+        }
+        Ok(result)
     }
 }

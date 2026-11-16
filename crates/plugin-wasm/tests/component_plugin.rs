@@ -15,6 +15,21 @@ const RUN_WAT: &str = r#"
 )
 "#;
 
+/// M4-COMPONENT-008：probe 输出超过 max_output_bytes 时 call 失败（输出配额）。
+#[test]
+fn m4_component_008_component_output_limit() {
+    let mut plugin = ComponentPlugin::new("probe.component", "0.1.0", RUN_WAT)
+        .expect("component plugin constructs")
+        .with_max_output_bytes(1);
+    let error = plugin
+        .call("component.run", &json!({}))
+        .expect_err("tiny output limit must reject result");
+    let message = error.to_string();
+    assert!(
+        message.contains("exceeds limit"),
+        "unexpected error: {message}"
+    );
+}
 /// M4-COMPONENT-007：ComponentPlugin 注册 `component.run`，call 返回 42。
 #[test]
 fn m4_component_007_component_plugin_round_trip() {

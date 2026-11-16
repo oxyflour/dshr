@@ -1091,7 +1091,7 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-wasm",
-      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 Component::new + canonical ABI 调用；#002 wit-parser 解析 docs/spec/cpp-v1.wit 并校验 world plugin 的 host/tool-provider；#004 fuel trap；#005 epoch 中断；#006 memory 超限 trap。component_bindings.rs：#003 bindgen host imports 接 Linker。component_plugin.rs：#007 ComponentPlugin（probe ABI）apply/call 闭环。cargo test -p dshr-plugin-wasm",
+      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 Component::new + canonical ABI 调用；#002 wit-parser 解析 docs/spec/cpp-v1.wit 并校验 world plugin 的 host/tool-provider；#004 fuel trap；#005 epoch 中断；#006 memory 超限 trap。component_bindings.rs：#003 bindgen host imports 接 Linker。component_plugin.rs：#007 ComponentPlugin（probe ABI）apply/call 闭环；#008 输出字节上限。cargo test -p dshr-plugin-wasm",
       "source_dirs": [
         "crates/plugin-wasm/tests"
       ],
@@ -1102,7 +1102,8 @@
         "M4-COMPONENT-004",
         "M4-COMPONENT-005",
         "M4-COMPONENT-006",
-        "M4-COMPONENT-007"
+        "M4-COMPONENT-007",
+        "M4-COMPONENT-008"
       ]
     },
     {
