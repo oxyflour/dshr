@@ -23,7 +23,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
 | W6 | 官方 execute 闭环 | 未开始 | `exec.agent` 债务 |
 | W7 | 三平台 CI / 性能基线 | 未开始 | 本机 Windows only；Actions 未实跑 |
-| W8 | P2 余项 | 未开始 | review P2 表 |
+| W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
 ## 3. W1 证据（2026-11-16）
 
@@ -78,6 +78,10 @@ node tools\conformance.mjs --full --compact
 - **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
   [m4-keyboard.md](m4-keyboard.md) §3 人工复验。本机 `SendKeys` 自动化尝试被 Windows 前台锁
   拦住（窗口能启动，`SetForegroundWindow` 失败，无 `[keyboard]` 行），不改判 G3。
+- **SKIP-as-pass 已修（W8）**：`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs`
+  在 node 缺失时 panic。实测把 `PATH` 限制为 `C:\Windows\System32;C:\Windows` 后两个测试二进制
+  exit 101（此前是 SKIP + return 记 passed）；普通环境仍全绿（parallel 10、l2 10）。
+  `official_packages.rs` 的过期模块文档已改为 `#[ignore]` + 显式 gate。
 
 ## 4. Gate 对账
 

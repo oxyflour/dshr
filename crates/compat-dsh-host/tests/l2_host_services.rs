@@ -273,10 +273,10 @@ fn step_error(step: &Value) -> Option<&str> {
 /// `capabilities.list` 返回 3 张白名单表，且 router generation 已同步。
 #[test]
 fn rpc_l2_401_v2_handshake_and_capabilities_list() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_401: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("401-ws");
     let storage = temp_dir("401-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));
@@ -325,10 +325,10 @@ fn rpc_l2_401_v2_handshake_and_capabilities_list() {
 /// RPC-L2-402：不配置 router = M2 行为：协商 1、无 service.proxy、capabilities 回 E_VERSION。
 #[test]
 fn rpc_l2_402_without_router_stays_v1() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_402: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let mut host = spawn_host("capabilities", None, &[]);
     assert_eq!(host.negotiated_protocol(), 1);
     assert!(!host.host_services_active());
@@ -347,10 +347,10 @@ fn rpc_l2_402_without_router_stays_v1() {
 /// RPC-L2-403：宿主配置了 router、但 sidecar 只支持 v1 → 安全回退 v1（不启用服务）。
 #[test]
 fn rpc_l2_403_sidecar_v1_falls_back() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_403: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("403-ws");
     let storage = temp_dir("403-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));
@@ -372,10 +372,10 @@ fn rpc_l2_403_sidecar_v1_falls_back() {
 /// RPC-L2-404：`storage-kv/v1` 经真实 sidecar 往返：open → putRecord → loadAll。
 #[test]
 fn rpc_l2_404_storage_kv_round_trip_through_sidecar() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_404: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("404-ws");
     let storage = temp_dir("404-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));
@@ -405,10 +405,10 @@ fn rpc_l2_404_storage_kv_round_trip_through_sidecar() {
 /// set 会往 Session Log 追加 `working-directory/change`。
 #[test]
 fn rpc_l2_405_working_directory_round_trip_through_sidecar() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_405: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("405-ws");
     let target = temp_dir("405-target");
     let storage = temp_dir("405-storage");
@@ -448,10 +448,10 @@ fn rpc_l2_405_working_directory_round_trip_through_sidecar() {
 /// RPC-L2-406：未知 service_key → `E_SERVICE_UNAVAILABLE`（sidecar 收到结构化 error）。
 #[test]
 fn rpc_l2_406_unknown_service_key_is_reported_to_sidecar() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_406: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("406-ws");
     let storage = temp_dir("406-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));
@@ -468,10 +468,10 @@ fn rpc_l2_406_unknown_service_key_is_reported_to_sidecar() {
 /// RPC-L2-407：`host.service.cancel` 先到 → 请求以 `E_CANCELLED` 结算且后续调用可用。
 #[test]
 fn rpc_l2_407_cancel_prevents_dispatch() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_407: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("407-ws");
     let storage = temp_dir("407-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));
@@ -496,10 +496,10 @@ fn rpc_l2_407_cancel_prevents_dispatch() {
 /// RPC-L2-408：迟到的 `host.service.result` 被忽略，不阻塞后续 capabilities 请求。
 #[test]
 fn rpc_l2_408_late_result_is_ignored() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_408: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("408-ws");
     let storage = temp_dir("408-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));
@@ -525,10 +525,10 @@ fn rpc_l2_408_late_result_is_ignored() {
 /// RPC-L2-409：generation 变化 → 在途/新请求 `E_SERVICE_UNAVAILABLE`；恢复 generation 后可用。
 #[test]
 fn rpc_l2_409_generation_change_settles_unavailable_then_recovers() {
-    if !node_available() {
-        eprintln!("SKIP rpc_l2_409: node not found");
-        return;
-    }
+    assert!(
+        node_available(),
+        "node is required for this integration test (no silent SKIP)"
+    );
     let workspace = temp_dir("409-ws");
     let storage = temp_dir("409-storage");
     let access = FakeAccess::with_session("s-probe", &norm(&workspace));

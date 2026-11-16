@@ -46,7 +46,7 @@ PLAN §9.2 的 8 项追加候选（80–140 工程日）与 M4 基线的跨平�
 | **W5** | **WASM Component/WIT** | canonical ABI、工具/面板声明读取、与 core-module 路径共存/迁移 | `M4-WIT-*` | G2 |
 | **W6** | **官方 execute 闭环** | `exec.agent` 债务的 sidecar 侧适配；官方工具 execute 真实往返 | `M4-OFFICIAL-*` | G2 |
 | **W7** | **三平台 CI 与性能基线** | Windows/macOS/Linux matrix；官方包 vendor/来源校验；性能基线进 CI | `M4-CI-*` / `M4-PERF-*` | G1/G4 |
-| **W8** | **P2 余项** | 矩阵元数据、事件顺序文档、`session_id` 接线、flaky 治理 | `M4-P2-*` | — |
+| **W8** | **P2 余项** | 矩阵元数据、事件顺序文档、`session_id` 接线、flaky 治理、SKIP-as-pass 清理 | `M4-P2-*` | — |
 
 **W1 完成口径**（2026-11-16）：uninstall、密钥生命周期、作者签名打包/安装、SDK 离线
 发布包与消费链路已交付；**registry、CA/证书链、自动更新与吊销分发不在 W1**，归入 W7。

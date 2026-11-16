@@ -8,7 +8,8 @@
 //! - 测试专用 driver（`sidecar/dsh-official/lib/official-l2-driver.mjs`）：按官方签名调用
 //!   `workingDirectory` 与 `storageDomain`，把证据作为 tool.result 返回。
 //!
-//! 缺 node / vendored node_modules / `.tmp/dsh-tools-all` 时 SKIP（打印原因），不失败。
+//! 缺 node / vendored node_modules / `.tmp/dsh-tools-all` 时：默认 `#[ignore]`（cargo 记
+//! `0 passed; 6 ignored`），由 `tools/official-l2-gate.ps1` 显式判定；**绝不静默 SKIP 当 pass**。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

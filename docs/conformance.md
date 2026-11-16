@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W3（2026-11-16）：注册表 **576 个测试 ID —— implemented 535、pending 18、manual 23、
+M4 W8（2026-11-16）：注册表 **577 个测试 ID —— implemented 535、pending 18、manual 24、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 493 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -167,6 +167,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-004` | implemented | `dshr-conversation-model`：`tool.result.meta.ui` → `ToolCard.extra` |
 | `M4-ADC-100` | manual | 插件面板 Button `onPress` click → 剪贴板/`ui.action`（[m4-adc.md](m4-adc.md) §3） |
 | `M4-ADC-101` | manual | ADC `openExternal` 确认条：取消/Esc/打开（[m4-adc.md](m4-adc.md) §3） |
+| `M4-P2-001` | manual | node 缺失时 parallel/l2 测试 exit 101，不再 SKIP 记 pass（[m4-status.md](m4-status.md) §4） |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
 | `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |
 | `CPP-WASM-001..027` | implemented（cargo；首次编译 wasmtime 1–3 分钟） | `dshr-plugin-wasm`（wasmtime 主机：fuel/epoch/内存/输出/并发配额 + 多 memory/大 table/alloc=0/WasmPlugin 适配；见 `wasm-host.md`） |

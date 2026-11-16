@@ -34,18 +34,15 @@ fn node_available() -> bool {
 }
 
 fn spawn_probe() -> Option<SidecarHost> {
-    if !node_available() {
-        eprintln!("SKIP: node not found in PATH");
-        return None;
-    }
+    assert!(
+        node_available(),
+        "node is required for parallel_batch integration tests (no silent SKIP)"
+    );
     let (script, plugin) = sidecar_paths();
     let options = HostOptions::default().with_registration_window(Duration::from_millis(1500));
     match SidecarHost::spawn_with(script, plugin, options) {
         Ok(host) => Some(host),
-        Err(error) => {
-            eprintln!("SKIP: probe sidecar 启动失败: {error}");
-            None
-        }
+        Err(error) => panic!("probe sidecar 启动失败（不能静默 SKIP）: {error}"),
     }
 }
 
@@ -65,9 +62,7 @@ fn value_of(outcome: &dshr_compat_dsh_host::InvokeOutcome) -> &Value {
 /// M3-PARALLEL-101：一批 3 个 probe_echo：结果按原顺序关联，chunk 不串线。
 #[test]
 fn m3_parallel_101_batch_correlates_results_and_chunks() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     let calls = vec![
         echo_call("call-b1", 0),
         echo_call("call-b2", 1),
@@ -94,9 +89,7 @@ fn m3_parallel_101_batch_correlates_results_and_chunks() {
 /// M3-PARALLEL-102：3 个 2s 的 probe_slow 并发墙钟接近单个耗时（串行应 ≈6s）。
 #[test]
 fn m3_parallel_102_batch_runs_concurrently() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     // 单个基线：probe_slow = 10 × 200ms。
     let baseline_started = Instant::now();
     let baseline = host
@@ -137,9 +130,7 @@ fn m3_parallel_102_batch_runs_concurrently() {
 /// M3-PARALLEL-103：per-call timeout 只影响慢调用，快调用成功且 host 仍可用。
 #[test]
 fn m3_parallel_103_per_call_timeout_isolated() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     let calls = vec![
         BatchInvokeCall::new(
             "call-fast",
@@ -180,9 +171,7 @@ fn m3_parallel_103_per_call_timeout_isolated() {
 /// M3-PARALLEL-104：超时后的迟到结果被丢弃，不干扰后续调用。
 #[test]
 fn m3_parallel_104_late_result_is_dropped() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     let calls = vec![BatchInvokeCall::new(
         "call-late",
         "probe_slow",
@@ -207,9 +196,7 @@ fn m3_parallel_104_late_result_is_dropped() {
 /// M3-PARALLEL-105：取消置位 → 对在途调用发 tool.cancel，批快速返回 aborted 终态。
 #[test]
 fn m3_parallel_105_cancel_aborts_in_flight_calls() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     let cancel = Arc::new(AtomicBool::new(false));
     let setter = Arc::clone(&cancel);
     let canceller = thread::spawn(move || {
@@ -250,9 +237,7 @@ fn m3_parallel_105_cancel_aborts_in_flight_calls() {
 /// M3-PARALLEL-106：`max_parallel=1` 时按波次串行，结果仍按原顺序。
 #[test]
 fn m3_parallel_106_max_parallel_one_preserves_order() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     let calls: Vec<BatchInvokeCall> = (0..3)
         .map(|index| echo_call(&format!("call-o{index}"), index))
         .collect();
@@ -270,9 +255,7 @@ fn m3_parallel_106_max_parallel_one_preserves_order() {
 /// M3-PARALLEL-107：空批返回空 vec（不碰 sidecar）。
 #[test]
 fn m3_parallel_107_empty_batch_is_noop() {
-    let Some(mut host) = spawn_probe() else {
-        return;
-    };
+    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
     let results = host.invoke_batch(&[], 10, None);
     assert!(results.is_empty());
     // 空批后 host 仍可用。
@@ -294,18 +277,15 @@ fn batch_fixture_paths() -> (PathBuf, PathBuf) {
 }
 
 fn spawn_batch_fixture() -> Option<SidecarHost> {
-    if !node_available() {
-        eprintln!("SKIP: node not found in PATH");
-        return None;
-    }
+    assert!(
+        node_available(),
+        "node is required for parallel_batch integration tests (no silent SKIP)"
+    );
     let (script, plugin) = batch_fixture_paths();
     let options = HostOptions::default().with_registration_window(Duration::from_millis(1500));
     match SidecarHost::spawn_with(script, plugin, options) {
         Ok(host) => Some(host),
-        Err(error) => {
-            eprintln!("SKIP: batch fixture 启动失败: {error}");
-            None
-        }
+        Err(error) => panic!("batch fixture 启动失败（不能静默 SKIP）: {error}"),
     }
 }
 
@@ -313,9 +293,7 @@ fn spawn_batch_fixture() -> Option<SidecarHost> {
 /// 不能等到 per-call timeout（120s）。
 #[test]
 fn m3_parallel_108_cancel_grace_with_ignoring_sidecar() {
-    let Some(mut host) = spawn_batch_fixture() else {
-        return;
-    };
+    let mut host = spawn_batch_fixture().expect("batch fixture (no silent skip)");
     let cancel = Arc::new(AtomicBool::new(false));
     let setter = Arc::clone(&cancel);
     let canceller = thread::spawn(move || {
@@ -357,9 +335,7 @@ fn m3_parallel_108_cancel_grace_with_ignoring_sidecar() {
 /// M3-PARALLEL-109：批内 `session_id` 透传到 `tool.invoke` 信封（L2 会话方法的前提）。
 #[test]
 fn m3_parallel_109_batch_passes_session_id() {
-    let Some(mut host) = spawn_batch_fixture() else {
-        return;
-    };
+    let mut host = spawn_batch_fixture().expect("batch fixture (no silent skip)");
     let calls = vec![
         BatchInvokeCall::new("call-s1", "batch_fast", json!({}), Duration::from_secs(5))
             .with_session("s-l2-test"),
@@ -380,9 +356,7 @@ fn m3_parallel_109_batch_passes_session_id() {
 /// M3-PARALLEL-110：单调用 `invoke_in_session` 同样透传 session_id；`None` 保持旧占位。
 #[test]
 fn m3_parallel_110_single_invoke_passes_session_id() {
-    let Some(mut host) = spawn_batch_fixture() else {
-        return;
-    };
+    let mut host = spawn_batch_fixture().expect("batch fixture (no silent skip)");
     let outcome = host
         .invoke_in_session(
             "call-single",
