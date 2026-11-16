@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "tool": "tools/conformance.mjs",
-  "generated_at": "2026-11-16T20:17:36.967Z",
+  "generated_at": "2026-11-16T20:18:43.314Z",
   "format": "compact",
   "invocation": {
     "mode": "full",
@@ -30,11 +30,11 @@
     "repo_root": "C:\\Projects\\dshr"
   },
   "git": {
-    "head": "5ca930b4d90c0f02fce4171a1ad8797082077ff3",
-    "head_short": "5ca930b",
+    "head": "c13e9a3545a58777362d8fa2c59d3d2f3b1d0a56",
+    "head_short": "c13e9a3",
     "branch": "master",
-    "dirty": true,
-    "dirty_files": 6
+    "dirty": false,
+    "dirty_files": 0
   },
   "registry": {
     "path": "docs/conformance.d/registry.json",
@@ -55,7 +55,7 @@
       "command": "node schema/check.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 228,
+      "duration_ms": 233,
       "timeout_ms": 120000,
       "summary": "76/76 cases passed",
       "output_tail": null
@@ -66,7 +66,7 @@
       "command": "node tools/check-links.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 257,
+      "duration_ms": 265,
       "timeout_ms": 120000,
       "summary": "416 link(s) checked, 0 broken, 78 file(s) scanned",
       "output_tail": null
@@ -77,7 +77,7 @@
       "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 318,
+      "duration_ms": 279,
       "timeout_ms": 120000,
       "summary": "21/21 node tests passed",
       "output_tail": null
@@ -88,7 +88,7 @@
       "command": "tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast",
       "status": "pass",
       "exit_code": 0,
-      "duration_ms": 59324,
+      "duration_ms": 54345,
       "timeout_ms": 1200000,
       "summary": "71 suite(s), 904 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored)",
       "output_tail": null
