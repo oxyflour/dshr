@@ -30,7 +30,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 `
 - `UnknownError` 是未受信任根导致的预期状态，**不是**可发布签名；
 - 脚本仍验证了 PE Authenticode 写入与签名者一致。
 
-## 3. 未做
+## 3. CI 接线
+
+[`cross-platform.yml`](../.github/workflows/cross-platform.yml) 的 `desktop-build` job：
+
+- `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` → 解码 pfx → `sign-windows.ps1 -PfxPath`，
+  只在该 secret 存在时执行；
+- `MACOS_SIGN_IDENTITY` → `tools/sign-macos.sh target/debug/chat <identity>`，
+  只在该 secret 存在时执行，`codesign --options runtime --timestamp`。
+
+没有 secret 时步骤跳过，包仍是 unsigned；CI 从未实跑，不能当作已签名发布。
+
+## 4. 未做
 
 - 没有真实证书/时间戳/CI secrets，G1 的“签名安装包”仍未完成。
 - macOS codesign/notarization、Linux 包签名未做。

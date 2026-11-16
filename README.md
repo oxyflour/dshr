@@ -95,7 +95,8 @@ W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），�
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate + desktop-build），但 Actions 未实跑、macOS/Windows 桌面 runner 未验证。
 WSL Linux 上核心 6 crate、`dshr-desktop-gpui` 构建与 ADC/recovery/crash 自检均已通过；
 macOS target 上 `dshr-ui-gpui` 在 x86_64/aarch64 均类型检查 PASS，桌面二进制因本机无 macOS SDK 在 C 依赖处未过。
-Windows Authenticode 管线已用一次性自签证书验证（`status=UnknownError`，见 [m4-signing.md](docs/m4-signing.md)），真实证书/时间戳仍未接。
+Windows Authenticode 管线已用一次性自签证书验证（`status=UnknownError`，见 [m4-signing.md](docs/m4-signing.md)），
+CI 已有可选 PFX/codesign 步骤；真实证书/时间戳/notarization 仍未接。
 `package-desktop.ps1/sh` 已生成自带 `runtime/node`、probe 与 `dsh-official`（含 node_modules）的
 Windows zip（59.7MB）与 Linux tar.gz（197.1MB）；`verify-package.ps1/sh` 校验 sha256、解压并跑
 sidecar/official 自检，双平台 PASS，仍不含签名/安装器。

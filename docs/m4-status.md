@@ -151,7 +151,7 @@ node tools\conformance.mjs --full --compact
 
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
-| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 构建/自检/打包 + macOS 双架构 UI check 已过）** | WSL 构建+自检+zip/tar 通过；包内新增 cpp-v1 component 与 5 项自检（Win/Linux PASS）；Authenticode 管线自签验证（UnknownError）；macOS UI check PASS，桌面 C 依赖需 macOS SDK；Actions 未实跑 |
+| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 构建/自检/打包 + macOS 双架构 UI check 已过）** | WSL 构建+自检+zip/tar 通过；包内 cpp-v1 component + 5 项自检 PASS；Authenticode 管线自签验证；CI 加可选 PFX/codesign 步骤（secrets 未配、未实跑）；macOS UI check PASS，桌面 C 依赖需 SDK |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless + UI 提示）**：`--selftest-recovery` / `--selftest-sidecar-recovery` / `--selftest-crash-recovery` PASS；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后继续操作的端到端 UI 未覆盖 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **部分**：`tools/perf-gate.mjs` 阈值 50ms / 满配额 16.7ms / a11y 0，本机 PASS；CI workflow 已加 step 与 artifact | Actions 未实跑；三平台 runner 未加 |

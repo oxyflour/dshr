@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
     [string]$Thumbprint = "",
+    [string]$PfxPath = "",
     [switch]$SelfSignedTest
 )
 
@@ -18,7 +19,15 @@ if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
 
 $certificate = $null
 $ephemeral = $false
-if ($Thumbprint) {
+$imported = $false
+if ($PfxPath) {
+    $password = $env:WINDOWS_CERT_PASSWORD
+    if (-not $password) { throw "WINDOWS_CERT_PASSWORD is required with -PfxPath" }
+    $secure = ConvertTo-SecureString $password -AsPlainText -Force
+    $certificate = Import-PfxCertificate -FilePath $PfxPath `
+        -CertStoreLocation Cert:\CurrentUser\My -Password $secure
+    $imported = $true
+} elseif ($Thumbprint) {
     $certificate = Get-ChildItem Cert:\CurrentUser\My |
         Where-Object { $_.Thumbprint -eq $Thumbprint } |
         Select-Object -First 1
@@ -49,6 +58,6 @@ $check = Get-AuthenticodeSignature -LiteralPath $resolved
 if ($check.SignerCertificate.Subject -ne $signature.SignerCertificate.Subject) {
     throw "signer mismatch after signing"
 }
-if ($ephemeral) {
+if ($ephemeral -or $imported) {
     Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
 }

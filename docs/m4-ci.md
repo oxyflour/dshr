@@ -37,10 +37,14 @@ cargo test --offline \
 ## 2. 明确不覆盖什么
 
 - `desktop-build` 做 `cargo build`、Linux/macOS 无窗口自检、zip/tar 打包、`.sha256` 与
-  `verify-package` 解压自检；没有 macOS 签名/公证、Linux deb/AppImage 或安装器测试。
+  `verify-package` 解压自检（含 cpp-v1 component 的 5 项自检）；Windows Authenticode 与
+  macOS `codesign` 有**可选**步骤，只有配置 secrets 才执行，当前本机无证书/未实跑。
 - Actions 尚未真实执行；本文件只记录 workflow 已落地、YAML 已本地解析（PyYAML），
   不代表 CI 已绿。Linux 的 `desktop-build` 等价命令已在 WSL 本机通过 `cargo build`
   （见 [m4-linux.md](m4-linux.md)），macOS/Windows runner 未验证。
+- 签名 secrets：`WINDOWS_CERT_PFX_BASE64`/`WINDOWS_CERT_PASSWORD`（Windows），
+  `MACOS_SIGN_IDENTITY`（macOS，codesign 身份）；没有 secrets 时签名步骤跳过，
+  不会把 unsigned 误当 signed。macOS 公证（notarization）仍未实现。
 
 ## 3. 本地等价命令
 

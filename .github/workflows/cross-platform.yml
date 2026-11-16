@@ -110,6 +110,10 @@ jobs:
     name: desktop build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +157,18 @@ jobs:
           target/debug/chat --selftest-adc-panel
           target/debug/chat --selftest-recovery
           target/debug/chat --selftest-crash-recovery
+
+      - name: Sign Windows binary (optional)
+        if: runner.os == 'Windows' && env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 -Path target/debug/chat.exe -PfxPath $pfx
+
+      - name: Sign macOS binary (optional)
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
+        run: bash tools/sign-macos.sh target/debug/chat "$MACOS_SIGN_IDENTITY"
 
       - name: Package desktop (Windows)
         if: runner.os == 'Windows'
