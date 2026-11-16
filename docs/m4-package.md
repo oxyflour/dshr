@@ -23,12 +23,12 @@ Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本�
 
 | 平台 | 产物 | 大小 | SHA-256 |
 |---|---|---|---|
-| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 62,718,633 B | `d7679f59…5dd4` |
-| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 213,616,441 B | `9019b78a…422e` |
+| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 62,721,650 B | `fda23b34…efba` |
+| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 213,631,438 B | `aab3d873…13a4` |
 
 归档内含 `runtime/node`、`sidecar/probe-*.mjs`、完整 `sidecar/dsh-official`（含
 node_modules）与 `components/cpp-component`（`plugin.toml` + `package.json` + 真实
-wasm32-wasip2 `plugin.wasm`，75,432 B）；Windows 二进制来自本机 `cargo build`，
+wasm32-wasip2 `plugin.wasm`，77,217 B）；Windows 二进制来自本机 `cargo build`，
 Linux 二进制来自 WSL（见 [m4-linux.md](m4-linux.md)），两者都 exit 0。校验文件与归档同目录。
 
 ## 3. 包内 smoke test
