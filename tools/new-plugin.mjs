@@ -3,16 +3,15 @@
 //
 // Usage:
 //   node tools/new-plugin.mjs --out <dir> [--id vendor.name] [--name "Display Name"]
-//                             [--version 0.1.0] [--repo <repo-root>]
+//                             [--version 0.1.0] [--repo <repo-root>] [--sdk <sdk-dir>]
 //
 // - Validates the plugin id (same rule as schema/cpp-v1/manifest.schema.json) and version.
 // - Refuses to write into an existing non-empty directory.
 // - Inside this repository, only `.tmp/` targets are allowed (keeps the repo clean).
 // - Replaces `__PLUGIN_ID__`, `__PLUGIN_NAME__`, `__PLUGIN_VERSION__`,
 //   `__CRATE_NAME__`, `__BIN_NAME__`, `__TOOL_NAME__` placeholders in the copied template.
-// - Copies `crates/plugin-sdk` into `<out>/sdk/` (self-contained, see P1-4) and appends
-//   `[workspace]` to the copied SDK manifest; the generated Cargo.toml only references
-//   the relative path `sdk` and **never the dshr repository path**.
+// - Copies the SDK into `<out>/sdk/` (self-contained, see P1-4) and checks it has no
+//   workspace inheritance; `--sdk` consumes the offline package from tools/sdk-pack.mjs.
 // - Prints the exact build / pack / install commands for the generated project.
 //
 // Zero npm dependencies.
@@ -38,15 +37,17 @@ function usage(exitCode = 0) {
   const out = exitCode === 0 ? console.log : console.error
   out(`用法:
   node tools/new-plugin.mjs --out <dir> [--id vendor.name] [--name "Display Name"]
-                            [--version 0.1.0]
+                            [--version 0.1.0] [--sdk <sdk-dir>]
 
 示例:
   node tools/new-plugin.mjs --out .tmp/authoring/sample --id example.echo --name "Echo Panel"
+  node tools/new-plugin.mjs --out .tmp/sample --id example.echo --sdk .tmp/sdk-dist/dshr-plugin-sdk-0.1.0
 
 --out     生成目录（必须是空目录或不存在；仓库内只允许 .tmp/ 下）
 --id      插件 ID / 包名，形如 vendor.name（默认 example.echo）
 --name    人类可读名称（默认由 id 推导，如 "Example Echo"）
 --version SemVer（默认 0.1.0）
+--sdk     离线 SDK 目录（默认 crates/plugin-sdk；可用 tools/sdk-pack.mjs 生成）
 
 生成物内含自包含 SDK（<out>/sdk/），Cargo.toml 只用相对路径 "sdk"，不引用 dshr 仓库。
 `)
@@ -203,10 +204,15 @@ function copyTree(source, destination) {
   }
 }
 
-const sdkSource = join(repoRoot, 'crates', 'plugin-sdk')
+const sdkSource = resolve(args.sdk ?? join(repoRoot, 'crates', 'plugin-sdk'))
 if (!existsSync(join(sdkSource, 'Cargo.toml'))) fail(`SDK 不存在: ${sdkSource}`)
+const sdkTree = resolve(sdkSource)
+const sdkManifestText = readFileSync(join(sdkTree, 'Cargo.toml'), 'utf8')
+if (!/^\s*name\s*=\s*"dshr-plugin-sdk"/m.test(sdkManifestText)) {
+  fail(`--sdk 不是 dshr-plugin-sdk（Cargo.toml 包名不匹配）: ${sdkTree}`)
+}
 const sdkOut = join(outDir, 'sdk')
-copyTree(sdkSource, sdkOut)
+copyTree(sdkTree, sdkOut)
 
 // SDK 的 Cargo.toml 必须自包含：不能有 `*.workspace = true`（拷到仓库外无 workspace 可继承）。
 // 不额外写 `[workspace]`：作为样例 workspace 的 path 依赖时它就是成员；单独拷出时

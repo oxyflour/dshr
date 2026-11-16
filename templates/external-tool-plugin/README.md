@@ -42,6 +42,17 @@ node <dshr>\tools\plugin-pack.mjs --plugin . --out ..\pkg-__CRATE_NAME__
 # 3) 查看审计：<profile>/install-audit.jsonl
 ```
 
+可选签名（已验证签名安装免 `--yes-install`）：
+
+```powershell
+node <dshr>\tools\plugin-pack.mjs --generate-key ..\author-keys --key-id <key_id>
+<dshr>\target\debug\chat.exe --trust-key add <key_id> <public_key_hex>
+node <dshr>\tools\plugin-pack.mjs --plugin . --out ..\pkg-signed --key ..\author-keys\private.pem --key-id <key_id>
+<dshr>\target\debug\chat.exe --install-plugin ..\pkg-signed
+```
+
+私钥不要进包/提交。密钥吊销、时间窗与轮换见 `docs/plugin-authoring.md` §6。
+
 本地开发可跳过信任链：直接把**包目录**（含 `dshr-trust.json`）交给宿主/测试加载；
 正式安装仍建议走 `chat --install-plugin`。
 

@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W1（2026-11-16）：注册表 **565 个测试 ID —— implemented 529、pending 18、manual 18、
+M4 W1（2026-11-16）：注册表 **567 个测试 ID —— implemented 529、pending 18、manual 20、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 487 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -157,6 +157,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-UNINSTALL-001..008` | implemented | `dshr-profile`（原子卸载/目录恢复/profile/审计；CLI `--uninstall-plugin` 为 manual `M4-UNINSTALL-100`） |
 | `M4-KEY-001..010` | implemented | `dshr-profile`（密钥吊销/时间窗/轮换/密钥库持久化/密钥审计；CLI `--trust-key` 为 manual `M4-KEY-100`） |
 | `M4-LIFECYCLE-001` | manual | `chat --selftest-plugin-lifecycle`（安装→卸载→轮换→新钥安装） |
+| `M4-SDK-001` | manual | `tools/authoring-check.ps1` 0d：`sdk-pack` 生成/校验/篡改拒绝/离线消费 |
+| `M4-SIGN-001` | manual | `tools/authoring-check.ps1` 10：签名安装、密钥轮换、旧钥拒绝、新钥重签 |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
 | `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |
 | `CPP-WASM-001..027` | implemented（cargo；首次编译 wasmtime 1–3 分钟） | `dshr-plugin-wasm`（wasmtime 主机：fuel/epoch/内存/输出/并发配额 + 多 memory/大 table/alloc=0/WasmPlugin 适配；见 `wasm-host.md`） |

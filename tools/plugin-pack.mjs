@@ -3,6 +3,8 @@
 //
 // Usage:
 //   node tools/plugin-pack.mjs --plugin <dir> --out <pkgdir> [--note <text>] [--force]
+//   node tools/plugin-pack.mjs --plugin <dir> --out <pkgdir> --key <private.pem> --key-id <id>
+//   node tools/plugin-pack.mjs --generate-key <dir> --key-id <id>
 //   node tools/plugin-pack.mjs --verify <dir> [--digest <hex>]
 //
 // What it does:
@@ -17,7 +19,8 @@
 //        - relative paths use `/`, sorted by UTF-8 bytes
 //        - per file: path_bytes, 0x00, decimal size bytes, 0x00, file bytes
 //        - SHA-256, lowercase hex
-//   4. Write an unsigned `dshr-trust.json` (schema_version/plugin_id/version/package.digest_sha256).
+//   4. Write `dshr-trust.json`; with `--key/--key-id`, add an ed25519 signature over
+//      `dshr-trust/v1\n<plugin_id>\n<version>\n<digest>` (docs/spec/plugin-trust.md §4).
 //
 // The digest is byte-compatible with Rust `dshr_profile::package_digest`; the strongest
 // cross-check is a successful `chat --install-plugin` (host recomputes the digest and
@@ -26,8 +29,9 @@
 //
 // Zero npm dependencies (node:crypto / node:fs only).
 
-import { createHash } from 'node:crypto'
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto'
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -46,6 +50,7 @@ const TRUST_FILE = 'dshr-trust.json'
 // 本机安装元数据：只在**包根**排除，嵌套同名文件参与摘要（与 Rust `package_digest` 一致）。
 const INSTALL_META_FILE = '.dshr-install.json'
 const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9._-]{1,63}$/
+const KEY_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 const VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$/
 const SKIPPED_DIRS = new Set(['.git', 'node_modules'])
 
@@ -53,17 +58,24 @@ function usage(exitCode = 0) {
   const out = exitCode === 0 ? console.log : console.error
   out(`用法:
   node tools/plugin-pack.mjs --plugin <dir> --out <pkgdir> [--note <text>] [--force]
+  node tools/plugin-pack.mjs --plugin <dir> --out <pkgdir> --key <private.pem> --key-id <id>
+  node tools/plugin-pack.mjs --generate-key <dir> --key-id <id>
   node tools/plugin-pack.mjs --verify <dir> [--digest <hex>]
 
 示例:
   node tools/plugin-pack.mjs --plugin .tmp/authoring/sample --out .tmp/authoring/pkg
+  node tools/plugin-pack.mjs --generate-key .tmp/keys --key-id author-2026
+  node tools/plugin-pack.mjs --plugin .tmp/authoring/sample --out .tmp/authoring/pkg-signed --key .tmp/keys/private.pem --key-id author-2026
   node tools/plugin-pack.mjs --verify .tmp/authoring/pkg
 
---plugin  插件项目目录（含 package.json + plugin.toml + 已复制到 bin/ 的可执行文件）
---out     打包输出目录（会先复制内容，再写入 dshr-trust.json；已存在非空目录需 --force）
---note    只打印在摘要输出里，不写进 dshr-trust.json（trust schema 拒绝未知字段）
---verify  只计算并打印目录摘要，用于和 Rust package_digest / 安装输出对照
---digest  配合 --verify：命中返回 0，不命中返回 1
+--plugin        插件项目目录（含 package.json + plugin.toml + 已复制到 bin/ 的可执行文件）
+--out           打包输出目录（会先复制内容，再写入 dshr-trust.json；已存在非空目录需 --force）
+--note          只打印在摘要输出里，不写进 dshr-trust.json（trust schema 拒绝未知字段）
+--key           ed25519 私钥（PKCS#8 PEM）；与 --key-id 同时给出才签名
+--key-id        信任密钥库里的 key_id（^[A-Za-z0-9._-]{1,64}$）
+--generate-key  生成 ed25519 密钥对到目录：private.pem / public.hex / trust-key.json
+--verify        只计算并打印目录摘要，用于和 Rust package_digest / 安装输出对照
+--digest        配合 --verify：命中返回 0，不命中返回 1
 `)
   process.exit(exitCode)
 }
@@ -202,6 +214,68 @@ function packageDigest(root) {
   return { digest: hash.digest('hex'), files: files.length, bytes }
 }
 
+function publicKeyHex(privateKey) {
+  const spki = createPublicKey(privateKey).export({ type: 'spki', format: 'der' })
+  // Ed25519 SPKI 的最后一个 32 字节就是 RFC 8032 公钥。
+  return Buffer.from(spki).subarray(-32).toString('hex')
+}
+
+function loadPrivateKey(path) {
+  let pem
+  try {
+    pem = readFileSync(path, 'utf8')
+  } catch (err) {
+    fail(`读取私钥失败（${path}）: ${err.message}`)
+  }
+  let key
+  try {
+    key = createPrivateKey({ key: pem, format: 'pem' })
+  } catch (err) {
+    fail(`私钥不是合法 PEM（PKCS#8）: ${err.message}`)
+  }
+  if (key.asymmetricKeyType !== 'ed25519') {
+    fail(`私钥类型必须是 ed25519，实际: ${key.asymmetricKeyType}`)
+  }
+  return key
+}
+
+function signatureMessage(pluginId, version, digest) {
+  return `dshr-trust/v1\n${pluginId}\n${version}\n${digest}`
+}
+
+function runGenerateKey(args) {
+  const target = args['generate-key']
+  if (!target) usage(1)
+  if (!args['key-id'] || !KEY_ID_RE.test(args['key-id'])) {
+    fail('--generate-key 需要同时给出合法的 --key-id（^[A-Za-z0-9._-]{1,64}$）')
+  }
+  const dir = resolve(target)
+  mkdirSync(dir, { recursive: true })
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519')
+  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' })
+  const pubHex = Buffer.from(publicKey.export({ type: 'spki', format: 'der' }))
+    .subarray(-32)
+    .toString('hex')
+  const privatePath = join(dir, 'private.pem')
+  writeFileSync(privatePath, pem, 'utf8')
+  if (process.platform !== 'win32') chmodSync(privatePath, 0o600)
+  writeFileSync(join(dir, 'public.hex'), `${pubHex}\n`, 'utf8')
+  const trustKey = {
+    key_id: args['key-id'],
+    public_key_hex: pubHex,
+    note: 'generated by tools/plugin-pack.mjs --generate-key',
+  }
+  writeFileSync(join(dir, 'trust-key.json'), `${JSON.stringify(trustKey, null, 2)}\n`, 'utf8')
+
+  console.log(`[key] dir=${dir}`)
+  console.log(`[key] key_id=${args['key-id']}`)
+  console.log(`[key] public_key_hex=${pubHex}`)
+  console.log(`[key] private=${privatePath}（不要提交/分发）`)
+  console.log('[key] 注册到本机信任库:')
+  console.log(`  chat --trust-key add ${args['key-id']} ${pubHex}`)
+  return 0
+}
+
 function assertSafeRelativePath(entry, label) {
   const normalized = entry.replace(/\\/g, '/')
   if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
@@ -331,6 +405,31 @@ function runPack(args) {
     version: info.plugin.version,
     package: { digest_sha256: report.digest },
   }
+  let signature = null
+  let signerPublic = null
+  if (args.key !== undefined || args['key-id'] !== undefined) {
+    if (args.key === undefined || args['key-id'] === undefined) {
+      fail('--key 与 --key-id 必须同时给出（只给一个会得到不可验证的包）')
+    }
+    if (!KEY_ID_RE.test(args['key-id'])) {
+      fail(`--key-id 非法: ${JSON.stringify(args['key-id'])}（规则: ^[A-Za-z0-9._-]{1,64}$）`)
+    }
+    const privateKey = loadPrivateKey(resolve(args.key))
+    const message = signatureMessage(info.plugin.id, info.plugin.version, report.digest)
+    let signatureBytes
+    try {
+      signatureBytes = sign(null, Buffer.from(message, 'utf8'), privateKey)
+    } catch (err) {
+      fail(`签名失败: ${err.message}`)
+    }
+    signature = {
+      scheme: 'ed25519',
+      key_id: args['key-id'],
+      value_hex: signatureBytes.toString('hex'),
+    }
+    signerPublic = publicKeyHex(privateKey)
+    trust.signature = signature
+  }
   writeFileSync(join(outDir, TRUST_FILE), `${JSON.stringify(trust, null, 2)}\n`, 'utf8')
 
   console.log(`[pack] plugin=${info.plugin.id} version=${info.plugin.version} kind=${info.runtime.kind}`)
@@ -338,8 +437,18 @@ function runPack(args) {
   console.log(`[pack] files=${report.files} bytes=${report.bytes}`)
   console.log(`[pack] digest_sha256=${report.digest}`)
   console.log(`[pack] trust=${join(outDir, TRUST_FILE)}`)
+  if (signature) {
+    console.log(`[pack] signature=ed25519 key_id=${signature.key_id}`)
+    console.log(`[pack] public_key_hex=${signerPublic}`)
+  }
   if (args.note) console.log(`[pack] note=${args.note}`)
-  console.log(`[pack] 安装: target\\debug\\chat.exe --install-plugin "${outDir}" --yes-install`)
+  if (signature) {
+    console.log('[pack] 本机信任库:')
+    console.log(`  chat --trust-key add ${signature.key_id} ${signerPublic}`)
+    console.log(`[pack] 安装（已验证签名，无需 --yes-install）: chat --install-plugin "${outDir}"`)
+  } else {
+    console.log(`[pack] 安装: target\\debug\\chat.exe --install-plugin "${outDir}" --yes-install`)
+  }
   console.log(`[pack] 校验: node tools/plugin-pack.mjs --verify "${outDir}" --digest ${report.digest}`)
   console.log('[pack] 自校验: 用 chat --install-plugin 安装成功即证明 JS 摘要 == Rust package_digest')
 }
@@ -364,7 +473,9 @@ function runVerify(args) {
 }
 
 const args = parseArgs(process.argv.slice(2))
-if (args.verify) {
+if (args['generate-key']) {
+  process.exit(runGenerateKey(args))
+} else if (args.verify) {
   process.exit(runVerify(args))
 } else {
   runPack(args)

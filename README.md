@@ -71,10 +71,12 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 
 **M4 进行中（跨平台 Beta）。** 范围、8 个工作包与四条 gate 口径见
 [`docs/decisions/0013-m4-scope.md`](docs/decisions/0013-m4-scope.md)，证据与未验证项见
-[`docs/m4-status.md`](docs/m4-status.md)。W1 第一部分已交付：`--uninstall-plugin`（目录/profile/
-审计原子化）、信任密钥吊销/时间窗/轮换与 `trust-key-audit.jsonl`、`schema/cpp-v1/trust-keys.schema.json`
-（`M4-UNINSTALL-001..008` / `M4-KEY-001..010`；`--selftest-plugin-lifecycle` PASS）。
-三平台 CI、键盘全流程、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
+[`docs/m4-status.md`](docs/m4-status.md)。W1（分发与信任生命周期）按离线渠道口径完成：
+`--uninstall-plugin`（目录/profile/审计原子化）、信任密钥吊销/时间窗/轮换与
+`trust-key-audit.jsonl`、作者 ed25519 签名打包/安装、`tools/sdk-pack.mjs` 离线 SDK
+（manifest + SHA256SUMS）；`M4-UNINSTALL-001..008` / `M4-KEY-001..010` /
+`M4-SDK-001` / `M4-SIGN-001`。三平台 CI、键盘全流程、性能进 CI 仍未完成，
+**不得**对外称 Beta 达标。
 
 **M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见
 [`docs/decisions/0007-m3-scope.md`](docs/decisions/0007-m3-scope.md) 与收尾口径

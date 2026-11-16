@@ -271,13 +271,31 @@ Copy-Item "$env:CARGO_TARGET_DIR\release\my-plugin.exe" "bin\my-plugin.exe"
 可以整体拷到任意目录离线构建。SDK 正式发布到 registry 后改成 `dshr-plugin-sdk = "0.1"`。
 不要依赖宿主进程内的任何 Rust 类型——跨进程只有 JSON。
 
+### 6.1b 离线 SDK 渠道（M4 W1）
+
+没有 registry 时用可校验的离线包分发 SDK：
+
+```powershell
+node tools/sdk-pack.mjs --out dist/sdk            # 生成 dist/sdk/sdk-manifest.json + SHA256SUMS + dshr-plugin-sdk-0.1.0/
+node tools/sdk-pack.mjs --verify dist/sdk         # 逐文件哈希校验；篡改即非零退出
+node tools/new-plugin.mjs --out .tmp/my-plugin --sdk dist/sdk/dshr-plugin-sdk-0.1.0
+```
+
+- `sdk-manifest.json` 记录 `name/version/package_dir/files[{path,size,sha256}]`；
+  `SHA256SUMS` 是 `sha256sum` 兼容的校验和列表。
+- 生成器仍把 SDK 拷到 `<plugin>/sdk/`，作者的 `Cargo.toml` 只有 `path = "sdk"`，
+  所以离线包可以整体拷到无仓库、无网络的环境。
+- `--verify` 严格比对清单（缺文件/多文件/哈希或大小不符都失败）；分发前先跑一遍。
+- registry、CA/证书体系与自动更新仍属 M4 W7，不在本渠道范围内。
+
 ### 6.2 打包与 `dshr-trust.json`
 
 ```powershell
-node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录>
+node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录>            # 未签名
+node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录> --key <private.pem> --key-id <key_id>  # ed25519 签名
 ```
 
-打包器会：校验 `package.json`/`plugin.toml` 一致性与 `entry` 存在 → 复制内容（跳过 `dshr-trust.json`、`.git/`、`node_modules/`、点开头目录）→ 按规范算法计算摘要 → 写未签名的 `dshr-trust.json`。
+打包器会：校验 `package.json`/`plugin.toml` 一致性与 `entry` 存在 → 复制内容（跳过 `dshr-trust.json`、`.git/`、`node_modules/`、点开头目录）→ 按规范算法计算摘要 → 写 `dshr-trust.json`；带 `--key/--key-id` 时追加 `signature`。
 
 摘要算法（[`spec/plugin-trust.md`](spec/plugin-trust.md) §3，**逐字节可复现**）：
 
@@ -307,11 +325,22 @@ node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录>
 
 **可选签名**（M4 W1 起支持密钥吊销/时间窗/轮换）：
 
+```powershell
+# 1) 生成作者密钥对（private.pem / public.hex / trust-key.json）
+node tools/plugin-pack.mjs --generate-key .tmp/author-keys --key-id author-2026
+
+# 2) 把公钥登记到本机信任库（宿主的 trust-keys.json）
+target\debug\chat.exe --trust-key add author-2026 <public_key_hex>
+
+# 3) 打包时签名；公钥会打印出来，与 trust-key.json 核对
+node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录> --key .tmp/author-keys/private.pem --key-id author-2026
+```
+
 ```text
 签名输入 = "dshr-trust/v1\n<plugin_id>\n<version>\n<digest_sha256_hex>"
 ```
 
-ed25519 签名的 `value_hex`（128 位小写 hex）与 `key_id` 写进 `signature` 字段；宿主用**本地** `<profile>/trust-keys.json` 验签（`{ schema_version: 1, keys: [{ key_id, public_key_hex }] }`）。签名有效即可免首装确认；签名缺失/无效/未知密钥的处理见规范 §4。
+ed25519 签名的 `value_hex`（128 位小写 hex）与 `key_id` 写进 `signature` 字段；宿主用**本地** `<profile>/trust-keys.json` 验签。签名有效即可免首装确认；签名缺失/无效/未知密钥/吊销/过期/未生效的处理见规范 §4。**私钥永远不要进包、不要提交**（`.gitignore` 也应排除 `*.pem`）。
 
 ### 6.3 安装、升级、卸载
 
@@ -363,7 +392,9 @@ target\debug\chat.exe --trust-key rotate <old_key_id> <new_key_id> <public_key_h
 
 ```powershell
 node tools/plugin-pack.mjs --verify <包目录> --digest <hex>   # 摘要可复现
-target\debug\chat.exe --install-plugin <包目录> --yes-install  # 安装链路
+node tools/sdk-pack.mjs --out dist/sdk && node tools/sdk-pack.mjs --verify dist/sdk  # SDK 离线包
+target\debug\chat.exe --install-plugin <包目录> --yes-install  # 未签名安装链路
+target\debug\chat.exe --install-plugin <签名包目录>            # 已验证签名免确认
 target\debug\chat.exe --uninstall-plugin <包名>                # 卸载 + 审计
 target\debug\chat.exe --selftest-plugin-lifecycle              # 安装→卸载→密钥轮换产品路径
 ```
@@ -390,10 +421,12 @@ host → process.shutdown → child → process.bye → exit
 发布前逐条勾选（也用于 G2 验收）：
 
 - [ ] 只按本文 + `docs/spec/cpp-v1.md` §12 + `docs/spec/adc-v1.md` §6 实现，没有读 `crates/` 源码；
-- [ ] `node tools/new-plugin.mjs` 能生成可构建项目；
+- [ ] `node tools/new-plugin.mjs` 能生成可构建项目；用 `--sdk` 指向 `tools/sdk-pack.mjs` 的离线包也能构建；
+- [ ] `node tools/sdk-pack.mjs --verify <sdk-dist>` 通过，篡改 SDK 后非零退出；
 - [ ] `cargo build --release` 通过，`bin/<name>.exe` 存在；
 - [ ] `plugin.toml` 与 `package.json` 的 id/version 一致；
 - [ ] `node tools/plugin-pack.mjs` 成功并打印 64 位摘要；
+- [ ] `--generate-key` + `--key/--key-id` 产出 `signature`，`chat --install-plugin` 免 `--yes-install` 安装且元数据 `signature.status=verified`；
 - [ ] `chat --install-plugin <pkg> --yes-install` 成功，`<sidecar>/node_modules/<name>` 与 `<profile>/plugins.json` 有包；
 - [ ] `<profile>/install-audit.jsonl` 有 `decision: "accepted"`；
 - [ ] 工具可被调用并返回符合 §7.3 的结果；
@@ -409,5 +442,5 @@ host → process.shutdown → child → process.bye → exit
 - 协议：[`spec/cpp-v1.md`](spec/cpp-v1.md) §3（manifest）、§7（Tool）、§12（external-process）
 - 元素与 slot：[`spec/adc-v1.md`](spec/adc-v1.md) §5/§6；[`../schema/adc-v1/slots.v1.json`](../schema/adc-v1/slots.v1.json)、[`../schema/adc-v1/element.schema.json`](../schema/adc-v1/element.schema.json)
 - 信任与安装：[`spec/plugin-trust.md`](spec/plugin-trust.md)
-- 模板：[`../templates/external-tool-plugin/`](../templates/external-tool-plugin/)；生成器：[`../tools/new-plugin.mjs`](../tools/new-plugin.mjs)；打包器：[`../tools/plugin-pack.mjs`](../tools/plugin-pack.mjs)
+- 模板：[`../templates/external-tool-plugin/`](../templates/external-tool-plugin/)；生成器：[`../tools/new-plugin.mjs`](../tools/new-plugin.mjs)；打包器：[`../tools/plugin-pack.mjs`](../tools/plugin-pack.mjs)；离线 SDK：[`../tools/sdk-pack.mjs`](../tools/sdk-pack.mjs)
 - 错误码：`E_PROTOCOL`/`E_VERSION`/`E_SCHEMA`/`E_TIMEOUT`/`E_CANCELLED`/`E_QUOTA`/`E_INTERNAL`（协议层）；`E_TRUST_*`（安装层）

@@ -39,7 +39,7 @@ PLAN §9.2 的 8 项追加候选（80–140 工程日）与 M4 基线的跨平�
 
 | # | 工作包 | 交付物 | 主要测试 ID | 对应 gate |
 |---|---|---|---|---|
-| **W1** | **分发与信任生命周期** | `--uninstall-plugin`（目录 + profile + 审计原子化）；密钥吊销/过期/轮换与密钥审计；真实签名安装文档化 | `M4-UNINSTALL-*` / `M4-KEY-*` | G2 |
+| **W1** | **分发与信任生命周期** | `--uninstall-plugin`（目录 + profile + 审计原子化）；密钥吊销/过期/轮换与密钥审计；作者签名打包；SDK 离线渠道（manifest + 校验和） | `M4-UNINSTALL-*` / `M4-KEY-*` / `M4-SDK-001` / `M4-SIGN-001` | G2 |
 | **W2** | **键盘与无障碍** | 焦点顺序、控件 label、键盘全流程（新建→发送→审批→切面板→关闭）；a11y 回归测试 | `M4-A11Y-*` | G3 |
 | **W3** | **ADC 交互与工具卡** | Button/Input/Select 等事件回到 Host；tool card 内 ADC `tool.result.extra`；窗口 draw 预算 | `M4-ADC-*` | G1/G4 |
 | **W4** | **并发与 Plugin trait 冻结** | native/MCP 工具并发；`Plugin::call` 取消/异步/泄漏收口；trait 冻结 ADR | `M4-CONC-*` | G2 |
@@ -48,8 +48,8 @@ PLAN §9.2 的 8 项追加候选（80–140 工程日）与 M4 基线的跨平�
 | **W7** | **三平台 CI 与性能基线** | Windows/macOS/Linux matrix；官方包 vendor/来源校验；性能基线进 CI | `M4-CI-*` / `M4-PERF-*` | G1/G4 |
 | **W8** | **P2 余项** | 矩阵元数据、事件顺序文档、`session_id` 接线、flaky 治理 | `M4-P2-*` | — |
 
-**W1 本轮范围**：只做 uninstall 与密钥生命周期；SDK 正式发布（registry/离线渠道）与
-证书体系仍留在 W7/W1 后续，不在本轮宣称 G2 恢复"外部作者可发布"。
+**W1 完成口径**（2026-11-16）：uninstall、密钥生命周期、作者签名打包/安装、SDK 离线
+发布包与消费链路已交付；**registry、CA/证书链、自动更新与吊销分发不在 W1**，归入 W7。
 
 ### 2. 四条 gate 的口径（沿用 PLAN §8 M4，不改判定）
 
