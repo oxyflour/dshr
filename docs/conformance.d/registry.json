@@ -12,7 +12,7 @@
     "提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）；quick 门禁仍用 `--quick`。cargo suite 会把 #[ignore] 计入 ignored、绝不当作 passed：包级 selector 遇 ignored>0 判 FAIL，all 通过时也在消息中标注 ignored 数。compact markdown 的 PASS 行只列 ID+结果，非 PASS（FAIL/SKIP/PENDING/MANUAL）保留完整 6 列；JSON tests.rows 为 [id, area, result]。",
     ".github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。",
     "M4 W1（2026-11-16）：`M4-UNINSTALL-001..008`（crates/profile/src/uninstall.rs + lib.rs）与 `M4-KEY-001..010`（crates/profile/src/trust.rs）为 cargo implemented（selector=dshr-profile）；`M4-UNINSTALL-100`/`M4-KEY-100`/`M4-LIFECYCLE-001`/`M4-SDK-001`/`M4-SIGN-001` 是 chat/工具链产品路径 manual 证据。三平台 CI 与 macOS/Linux 行为仍未验证（[m4-status.md](m4-status.md) §3）。",
-    "M4 W3（2026-11-16）：`M4-ADC-001`（ui-gpui handler 穿透）、`M4-ADC-002`（PluginHost 路由）、`M4-ADC-003`（external-process ui.action→render）为 cargo implemented；`CPP-PROC-033` 覆盖 SDK ActionHandler；`M4-ADC-100` 为真实点击 manual。openExternal/onChange/tool card 仍未接。"
+    "M4 W3（2026-11-16）：`M4-ADC-001`（ui-gpui handler 穿透）、`M4-ADC-002`（PluginHost 路由）、`M4-ADC-003`（external-process ui.action→render）、`M4-ADC-004`（tool.result.meta.ui→ToolCard.extra）为 cargo implemented；`CPP-PROC-033` 覆盖 SDK ActionHandler；`M4-ADC-100/101` 为真实点击/确认条 manual。onChange/draw 预算仍未接。"
   ],
   "suites": {
     "schema": {
@@ -1010,6 +1010,20 @@
       ],
       "ids": [
         "M4-ADC-001"
+      ]
+    },
+    {
+      "name": "M4-ADC-EXTRA（conversation-model：tool.result.meta.ui 附加区）",
+      "area": "M4",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-conversation-model",
+      "notes": "crates/conversation-model/src/lib.rs 的 M4-ADC-004：tool.result.meta.ui 保留到 ToolCard.extra；cargo test -p dshr-conversation-model",
+      "source_dirs": [
+        "crates/conversation-model/src"
+      ],
+      "ids": [
+        "M4-ADC-004"
       ]
     },
     {

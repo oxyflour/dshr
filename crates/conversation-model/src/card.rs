@@ -43,6 +43,8 @@ pub struct ToolCard {
     pub preview: Vec<String>,
     /// 原生视图用的完整文本（已按 `MAX_BODY_CHARS` 截断）；预览之外的补充。
     pub body: String,
+    /// 工具卡附加 ADC 区域（`tool.result.meta.ui`；M4 W3）。None = 没有附加区。
+    pub extra: Option<Value>,
 }
 
 impl ToolCard {
@@ -84,6 +86,17 @@ pub fn card_for(
     value: &Value,
     content: &Value,
 ) -> ToolCard {
+    card_for_with_extra(tool, presentation, value, content, None)
+}
+
+/// 与 [`card_for`] 相同，但保留 `tool.result.meta.ui` 的 ADC 附加区域。
+pub fn card_for_with_extra(
+    tool: &str,
+    presentation: Presentation,
+    value: &Value,
+    content: &Value,
+    extra: Option<&Value>,
+) -> ToolCard {
     let typed = match presentation {
         Presentation::Terminal => terminal(value),
         Presentation::Diff => diff(value),
@@ -92,7 +105,11 @@ pub fn card_for(
         Presentation::Web => web(value),
         Presentation::Generic => None,
     };
-    typed.unwrap_or_else(|| generic(tool, value, content))
+    let mut card = typed.unwrap_or_else(|| generic(tool, value, content));
+    if let Some(extra) = extra {
+        card.extra = Some(extra.clone());
+    }
+    card
 }
 
 /// 失败 / 中止的卡片：标题区分终态，正文是原因或错误内容。
@@ -103,6 +120,7 @@ pub fn error_card(title: &str, detail: &str) -> ToolCard {
         detail: clip(detail, MAX_LINE_CHARS),
         preview: preview_lines(detail, MAX_PREVIEW_LINES),
         body: clip_body(detail),
+        extra: None,
     }
 }
 
@@ -121,6 +139,7 @@ fn generic(tool: &str, value: &Value, content: &Value) -> ToolCard {
         },
         // 通用卡片没有专用视图；body 留空避免每张卡片都复制一份 JSON。
         body: String::new(),
+        extra: None,
     }
 }
 
@@ -174,6 +193,7 @@ fn terminal(value: &Value) -> Option<ToolCard> {
         preview,
         // 终端视图需要 stdout + stderr 的完整输出（有界），供 ANSI 渲染。
         body: clip_body(&body),
+        extra: None,
     })
 }
 
@@ -219,6 +239,7 @@ fn diff(value: &Value) -> Option<ToolCard> {
         preview,
         // 差异视图需要完整 patch（有界），行号/hunk 由 UI 侧解析。
         body: clip_body(text.unwrap_or("")),
+        extra: None,
     })
 }
 
@@ -247,6 +268,7 @@ fn search(value: &Value) -> Option<ToolCard> {
             .map(match_line)
             .collect(),
         body: String::new(),
+        extra: None,
     })
 }
 
@@ -295,6 +317,7 @@ fn read(value: &Value) -> Option<ToolCard> {
         detail: format!("{} 行", text.lines().count()),
         preview: preview_lines(&text, MAX_PREVIEW_LINES),
         body: clip_body(&text),
+        extra: None,
     })
 }
 
@@ -314,6 +337,7 @@ fn web(value: &Value) -> Option<ToolCard> {
         detail: url.to_owned(),
         preview: preview_lines(snippet, 3),
         body: clip_body(snippet),
+        extra: None,
     })
 }
 

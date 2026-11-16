@@ -4177,6 +4177,14 @@ impl ChatApp {
                             el.child(view)
                         },
                     )
+                    // M4 W3：工具结果 `meta.ui` 的受限 ADC 附加区（tool card extra）。
+                    .when_some(
+                        card.as_ref().and_then(|card| card.extra.as_ref()),
+                        |el, extra| {
+                            let (body, _diagnostics) = adc_panel_body(t, extra);
+                            el.child(body)
+                        },
+                    )
                     .into_any_element()
             }
             Row::Meta(text) => div()

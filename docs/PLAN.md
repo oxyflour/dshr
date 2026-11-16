@@ -788,8 +788,8 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 > **状态：进行中（2026-11-16 启动）。** 工作包与 gate 口径见
 > [ADR-0013](decisions/0013-m4-scope.md)，证据与未验证项见 [m4-status.md](m4-status.md)。
 > W1 完成（uninstall/密钥生命周期/作者签名安装/SDK 离线渠道）；W2 部分完成（快捷键与 a11y 基线，
-> G3 待真机复验）；W3 开始（ADC Button onPress→宿主 copy/call/command，openExternal 确认条；
-> onChange/tool card 未接）；三平台 CI、性能进 CI 尚未完成。
+> G3 待真机复验）；W3 开始（ADC Button onPress→宿主 copy/call/command，openExternal 确认条，
+> tool card extra 渲染；onChange 未接）；三平台 CI、性能进 CI 尚未完成。
 
 - [ ] Windows/macOS/Linux 编译与发布管线；签名和更新策略（差分、灰度、回滚）。
 - [ ] 多窗口、快捷键、IME、辅助功能、DPI、窗口恢复、主题一致性。

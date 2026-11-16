@@ -125,16 +125,16 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W3（2026-11-16）：注册表 **575 个测试 ID —— implemented 534、pending 18、manual 23、
+M4 W3（2026-11-16）：注册表 **576 个测试 ID —— implemented 535、pending 18、manual 23、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
-492 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
+493 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
 
 上一轮 `--full` 实跑（2026-11-15，M3 收尾）：`67 suites / 836 passed / 1 failed / 6 ignored`；
 唯一失败是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
 （隔离重跑同样失败，属沙箱进程限制；普通终端/Lead 环境同一 workspace 为 **0 failed / 6 ignored**；
 [`m3-status.md`](m3-status.md) §4 已记录）。当前 `--full`（2026-11-16，W1/W2）为
-`67 suites / 860 passed / 0 failed / 6 ignored`，exit 0；6 ignored 仍是 official gate 的
+`67 suites / 861 passed / 0 failed / 6 ignored`，exit 0；6 ignored 仍是 official gate 的
 `RPC-L2-201/501..505`（manual gate，不计为通过）。
 
 主要 groups：
@@ -164,6 +164,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-001` | implemented | `dshr-ui-gpui`：带 handler 的嵌套 Button 渲染（adc_panel_body_with_handler） |
 | `M4-ADC-002` | implemented | `dshr-plugin-host`：`dispatch_action` 路由/未知插件 |
 | `M4-ADC-003` | implemented | `dshr-plugin-host` external E2E：`ui.action` → 下一次 `ui.render` 状态变化 |
+| `M4-ADC-004` | implemented | `dshr-conversation-model`：`tool.result.meta.ui` → `ToolCard.extra` |
 | `M4-ADC-100` | manual | 插件面板 Button `onPress` click → 剪贴板/`ui.action`（[m4-adc.md](m4-adc.md) §3） |
 | `M4-ADC-101` | manual | ADC `openExternal` 确认条：取消/Esc/打开（[m4-adc.md](m4-adc.md) §3） |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |

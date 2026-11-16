@@ -69,7 +69,7 @@
 |---|---|---|
 | `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`), `registration_id?`, `presentation?` |
 | `tool.chunk` | ephemeral | `call_id`, `seq`, `text` |
-| `tool.result` | durable | `call_id`, `is_error`, `content[]`, `value`, `meta?`, `metadata` |
+| `tool.result` | durable | `call_id`, `is_error`, `content[]`, `value`, `meta?`, `metadata`；`meta.ui` 可带受限 ADC 附加区（M4 W3，仅展示，不参与模型输入） |
 | `tool.aborted` | durable | `call_id`, `reason`(`crash`/`cancel`/`timeout`/`unload`) |
 | `tool.late_result` | durable | `call_id`, `discarded: true`（诊断用） |
 | `tool.result.pruned` | durable | `call_id`, `原始大小`, `spill_ref`（见 §5） |

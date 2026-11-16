@@ -18,7 +18,7 @@ use serde_json::Value;
 
 mod card;
 
-pub use card::{card_for, content_text, error_card, CardKind, ToolCard};
+pub use card::{card_for, card_for_with_extra, content_text, error_card, CardKind, ToolCard};
 
 /// 演示用会话：包含 native 工具、sidecar 工具、崩溃中止、压缩区间与一个未来事件。
 pub const DEMO_SESSION: &str = include_str!("demo_session.jsonl");
@@ -131,6 +131,12 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                 tool.state = ToolState::Settled { is_error };
 
                 let content = event.payload.get("content").cloned().unwrap_or(Value::Null);
+                // M4 W3：工具结果可用 `meta.ui` 提供一块受限 ADC 附加区（tool card extra）。
+                let extra = event
+                    .payload
+                    .get("meta")
+                    .and_then(|meta| meta.get("ui"))
+                    .cloned();
                 tool.card = Some(if is_error {
                     error_card("失败", &content_text(&content))
                 } else {
@@ -139,7 +145,13 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                         .get("value")
                         .cloned()
                         .unwrap_or_else(|| fallback_value(&content));
-                    card_for(&tool.tool, card_presentation(tool), &value, &content)
+                    card_for_with_extra(
+                        &tool.tool,
+                        card_presentation(tool),
+                        &value,
+                        &content,
+                        extra.as_ref(),
+                    )
                 });
             }
             "tool.aborted" => {
@@ -380,6 +392,37 @@ mod tests {
         let card = tools[0].card.as_ref().expect("card exists");
         assert_eq!(card.kind, CardKind::Generic);
         assert!(card.detail.contains("hi"), "detail={}", card.detail);
+    }
+
+    // M4-ADC-004：tool.result.meta.ui 保留为卡片附加 ADC 区域（tool card extra）。
+    #[test]
+    fn tool_result_meta_ui_is_preserved_as_card_extra() {
+        let log = log_with(&[
+            (
+                "tool.call",
+                serde_json::json!({
+                    "call_id": "c1", "tool": "probe_echo",
+                    "origin": "sidecar", "presentation": "generic"
+                }),
+            ),
+            (
+                "tool.result",
+                serde_json::json!({
+                    "call_id": "c1", "is_error": false,
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "value": { "echo": "ok" },
+                    "meta": { "ui": {
+                        "type": "Text",
+                        "props": { "value": "extra ADC" }
+                    }}
+                }),
+            ),
+        ]);
+        let tools = tool_items(&build_from_log(&log));
+        let card = tools[0].card.as_ref().expect("card");
+        let extra = card.extra.as_ref().expect("meta.ui 应保留在卡片上");
+        assert_eq!(extra["type"], serde_json::json!("Text"));
+        assert_eq!(extra["props"]["value"], serde_json::json!("extra ADC"));
     }
 
     #[test]
