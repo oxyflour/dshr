@@ -17,7 +17,7 @@
 pub mod external;
 pub mod fiber;
 
-pub use dshr_plugin_wasm::{ComponentPlugin, WasmEngineConfig, WasmPlugin};
+pub use dshr_plugin_wasm::{ComponentPlugin, CppComponentPlugin, WasmEngineConfig, WasmPlugin};
 pub use external::{ExternalPlugin, ExternalPluginSpec};
 
 use std::path::Path;
@@ -208,6 +208,41 @@ impl PluginHost {
             reason: format!("read {}: {error}", path.display()),
         })?;
         self.load_component_plugin(&manifest.plugin.id, &manifest.plugin.version, source)
+    }
+
+    /// 装载真实 cpp-v1 Component 插件（guest 必须实现 `cpp-v1.wit` 的 `plugin` world）。
+    pub fn load_cpp_component_plugin(
+        &mut self,
+        id: &str,
+        version: &str,
+        source: &[u8],
+    ) -> Result<(), HostError> {
+        let plugin = CppComponentPlugin::new(id, version, source).map_err(HostError::Plugin)?;
+        self.load(Box::new(plugin))
+    }
+
+    /// 从 manifest 装载真实 cpp-v1 Component 插件；工具/UI 由 guest 的
+    /// `list-tools`/`list-panels` 声明，manifest 的 tools/ui 不参与注册。
+    pub fn load_cpp_component_plugin_from_manifest(
+        &mut self,
+        manifest: &Manifest,
+        package_dir: impl AsRef<Path>,
+        host: &HostVersion,
+    ) -> Result<(), HostError> {
+        manifest.validate(host).map_err(HostError::Plugin)?;
+        if manifest.runtime.kind != RuntimeKind::WasmComponent {
+            return Err(HostError::Wasm {
+                plugin_id: manifest.plugin.id.clone(),
+                reason: "cpp component requires runtime.kind=wasm-component".to_owned(),
+            });
+        }
+        let entry = manifest.runtime.entry.as_deref().unwrap_or("plugin.wasm");
+        let path = package_dir.as_ref().join(entry);
+        let source = std::fs::read(&path).map_err(|error| HostError::Wasm {
+            plugin_id: manifest.plugin.id.clone(),
+            reason: format!("read {}: {error}", path.display()),
+        })?;
+        self.load_cpp_component_plugin(&manifest.plugin.id, &manifest.plugin.version, &source)
     }
 
     /// 从 typed manifest 装载（CPP-A 接入点）：
@@ -662,6 +697,28 @@ mod tests {
             .call_approved("component.run", &json!({}))
             .expect("component call");
         assert_eq!(value["value"], 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn m4_component_017_cpp_component_from_manifest() {
+        const GUEST: &[u8] =
+            include_bytes!("../../plugin-wasm/tests/fixtures/cpp-component-guest.wasm");
+        let dir = temp_wasm_package("cpp-component");
+        std::fs::write(dir.join("plugin.wasm"), GUEST).expect("write guest");
+        let mut manifest = wasm_manifest();
+        manifest.tools.clear();
+        manifest.ui.clear();
+        manifest.runtime.entry = Some("plugin.wasm".to_owned());
+        let mut host = PluginHost::new(AllowAll);
+        host.load_cpp_component_plugin_from_manifest(&manifest, &dir, &host_version())
+            .expect("load cpp component");
+        assert!(host.is_loaded("cpp.wasm.host"));
+        assert!(host.registry().get("echo").is_some());
+        let value = host
+            .call_approved("echo", &json!({ "text": "hello" }))
+            .expect("call echo");
+        assert_eq!(value["content"][0]["text"], "{\"text\":\"hello\"}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

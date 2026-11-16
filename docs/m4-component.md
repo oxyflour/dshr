@@ -40,6 +40,9 @@
 - `M4-COMPONENT-016`：[cpp_component.rs](../crates/plugin-wasm/src/cpp_component.rs) 的
   `CppComponentPlugin` 实例化真实 guest，`apply` 从 `list-tools` 注册 `echo`，
   `call` 走 `invoke` 并把 `tool-result` 映射回 JSON。
+- `M4-COMPONENT-017`（[plugin-host/lib.rs](../crates/plugin-host/src/lib.rs)）：
+  `load_cpp_component_plugin_from_manifest` 读取 wasm-component 的 `plugin.wasm`，
+  经真实 guest 注册 `echo`，`call_approved("echo", ...)` 返回 guest 的 args。
 
 构建 guest：
 
@@ -55,7 +58,7 @@ cargo build --release --target wasm32-wasip2
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
 cargo test -p dshr-plugin-wasm --test component_plugin
-→ 16 passed
+→ 17 passed
 ```
 
 ## 2. 还没做
@@ -63,8 +66,9 @@ cargo test -p dshr-plugin-wasm --test component_plugin
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的
   工具声明/调用；`load_component_plugin_from_manifest` 只接受无 tools/ui 的 probe 包，
   不是通用 manifest 自动识别。
-- 真实 guest 已能声明 `echo` 并实现 `invoke`，`CppComponentPlugin` 已能注册/调用它；
-  但 manifest 自动装载仍走 probe 路径，`CppComponentPlugin` 还没有 `PluginHost` loader。
+- 真实 guest 已能声明 `echo` / `invoke`，`CppComponentPlugin` 与
+  `load_cpp_component_plugin_from_manifest` 已把它接入宿主；剩余是组件插件的
+  并发/更多配额、签名安装链路与作者文档。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
   fuel/epoch/内存/输出配额已有测试（fuel/epoch/内存/输出也进了 probe 加载器），并发仍未验证；
   当前 core-module 的配额路径不能直接假设适用。
