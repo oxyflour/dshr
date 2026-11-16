@@ -1495,6 +1495,8 @@ impl ToolExecutor for ChatExecutor<'_> {
         let mut outcomes: Vec<Option<ToolOutcome>> = (0..calls.len()).map(|_| None).collect();
         let mut sidecar_indices: Vec<usize> = Vec::new();
         let mut sidecar_calls: Vec<dshr_compat_dsh_host::BatchInvokeCall> = Vec::new();
+        let mut native_indices: Vec<usize> = Vec::new();
+        let mut native_calls: Vec<(String, serde_json::Value)> = Vec::new();
 
         for (index, call) in calls.iter().enumerate() {
             // 子会话派发会阻塞跑一整轮，必须保持串行（且不改事件顺序）。
@@ -1523,8 +1525,13 @@ impl ToolExecutor for ChatExecutor<'_> {
                         outcomes[index] = Some(ToolOutcome::failure("sidecar unavailable"));
                     }
                 }
-                _ => {
-                    outcomes[index] = Some(self.dispatch_non_sidecar(call, &definition));
+                ToolOrigin::Native { .. } => {
+                    // M4 W4：native 调用先收集；批末尾按插件并行（不同插件才会重叠）。
+                    native_indices.push(index);
+                    native_calls.push((call.tool.clone(), call.arguments.clone()));
+                }
+                ToolOrigin::Mcp { .. } => {
+                    outcomes[index] = Some(ToolOutcome::failure("mcp not wired"));
                 }
             }
         }
@@ -1555,6 +1562,23 @@ impl ToolExecutor for ChatExecutor<'_> {
                     Some(Ok(outcome)) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
                     Some(Err(error)) => ToolOutcome::failure(error.to_string()),
                     None => ToolOutcome::failure("batch outcome missing"),
+                };
+                outcomes[*index] = Some(outcome);
+            }
+        }
+
+        if !native_calls.is_empty() {
+            let results = self
+                .plugins
+                .call_approved_batch(&native_calls, max_parallel.max(1));
+            for (slot, index) in native_indices.iter().enumerate() {
+                let outcome = match results.get(slot) {
+                    Some(Ok(value)) => ToolOutcome::success(
+                        json!([{ "type": "json", "value": value.clone() }]),
+                        value.clone(),
+                    ),
+                    Some(Err(error)) => ToolOutcome::failure(error.clone()),
+                    None => ToolOutcome::failure("native batch outcome missing"),
                 };
                 outcomes[*index] = Some(outcome);
             }

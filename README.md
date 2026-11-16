@@ -85,7 +85,8 @@ G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory 的 execute 在 official gate 6/6 通过。
 G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。
 G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 已覆盖 kill sidecar 后会话继续写。
-W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并发/异步 trait 冻结仍未做。
+W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并实现 native 跨插件批并行；
+同插件/MCP 并发与异步 trait 冻结仍未做。
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate），但 Actions 未实跑、桌面 GPUI 未覆盖。
 官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。
 W3 窗口 draw 在 RDP 下硬预算 PASS（p95 9.40ms / 31.25ms），相对基线受远程环境干扰未通过。

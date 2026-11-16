@@ -290,6 +290,98 @@ impl PluginHost {
         }
     }
 
+    /// M4 W4：按插件分组并行调用 native 工具；同一插件的多个调用保持串行。
+    ///
+    /// 返回顺序与 `calls` 一致。插件在 worker 线程内临时移出 map，完成后放回；
+    /// 某个插件 panic 时该组结果保持错误，不拖垮其它组（插件本身不再放回）。
+    /// 这里假定调用方已完成审批（与 [`PluginHost::call_approved`] 同一契约）。
+    pub fn call_approved_batch(
+        &mut self,
+        calls: &[(String, Value)],
+        max_parallel: usize,
+    ) -> Vec<Result<Value, String>> {
+        let mut results: Vec<Result<Value, String>> = (0..calls.len())
+            .map(|_| Err("batch result missing".to_owned()))
+            .collect();
+        let mut groups: BTreeMap<String, Vec<(usize, String, Value)>> = BTreeMap::new();
+
+        for (index, (tool, arguments)) in calls.iter().enumerate() {
+            let definition = match self.registry.authorize_approved(tool, arguments) {
+                Ok(definition) => definition.clone(),
+                Err(error) => {
+                    results[index] = Err(error.to_string());
+                    continue;
+                }
+            };
+            match definition.origin {
+                ToolOrigin::Native { plugin_id } => {
+                    groups.entry(plugin_id).or_default().push((
+                        index,
+                        tool.clone(),
+                        arguments.clone(),
+                    ));
+                }
+                other => {
+                    results[index] = Err(format!(
+                        "tool `{tool}` has non-native origin `{}`",
+                        other.kind()
+                    ));
+                }
+            }
+        }
+
+        let parallelism = max_parallel.max(1);
+        while !groups.is_empty() {
+            let ids: Vec<String> = groups.keys().take(parallelism).cloned().collect();
+            let mut jobs = Vec::with_capacity(ids.len());
+            for id in ids {
+                let Some(plugin) = self.plugins.remove(&id) else {
+                    let pending = groups.remove(&id).unwrap_or_default();
+                    for (index, _, _) in pending {
+                        results[index] = Err(format!("plugin `{id}` is not loaded"));
+                    }
+                    continue;
+                };
+                let pending = groups.remove(&id).unwrap_or_default();
+                jobs.push((id, plugin, pending));
+            }
+
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = jobs
+                    .into_iter()
+                    .map(|(id, mut plugin, pending)| {
+                        scope.spawn(move || {
+                            let mut out = Vec::with_capacity(pending.len());
+                            for (index, tool, arguments) in pending {
+                                out.push((
+                                    index,
+                                    plugin
+                                        .call(&tool, &arguments)
+                                        .map_err(|error| error.to_string()),
+                                ));
+                            }
+                            (id, plugin, out)
+                        })
+                    })
+                    .collect();
+                for handle in handles {
+                    match handle.join() {
+                        Ok((id, plugin, out)) => {
+                            self.plugins.insert(id, plugin);
+                            for (index, result) in out {
+                                results[index] = result;
+                            }
+                        }
+                        Err(_) => {
+                            // 插件 panic：该组结果保持错误；插件不重新注册，避免半死状态。
+                        }
+                    }
+                }
+            });
+        }
+        results
+    }
+
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
     }
@@ -963,5 +1055,61 @@ mod tests {
         assert!(!host.is_loaded("cpp.wasm.host"));
         assert!(host.registry().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // M4-CONC-001：不同 native 插件的批调用并行；同一插件仍串行（由分组保证）。
+    #[test]
+    fn m4_conc_001_native_batch_parallelizes_distinct_plugins() {
+        struct SlowPlugin {
+            id: &'static str,
+            tool: &'static str,
+        }
+        impl Plugin for SlowPlugin {
+            fn id(&self) -> &str {
+                self.id
+            }
+            fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+                ctx.register_tool(ToolDefinition::new(
+                    self.tool,
+                    "slow probe",
+                    ToolOrigin::Native {
+                        plugin_id: self.id.to_owned(),
+                    },
+                ))?;
+                Ok(())
+            }
+            fn call(&mut self, _tool: &str, arguments: &Value) -> Result<Value, PluginError> {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(arguments.clone())
+            }
+        }
+
+        let mut host = PluginHost::new(AllowAll);
+        host.load(Box::new(SlowPlugin {
+            id: "slow.a",
+            tool: "slow_a",
+        }))
+        .expect("load slow.a");
+        host.load(Box::new(SlowPlugin {
+            id: "slow.b",
+            tool: "slow_b",
+        }))
+        .expect("load slow.b");
+
+        let started = std::time::Instant::now();
+        let results = host.call_approved_batch(
+            &[
+                ("slow_a".to_owned(), json!({ "n": 1 })),
+                ("slow_b".to_owned(), json!({ "n": 2 })),
+            ],
+            2,
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(550),
+            "distinct plugins should overlap (serial is ~600ms): {elapsed:?}"
+        );
     }
 }

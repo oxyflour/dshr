@@ -422,6 +422,20 @@
       ]
     },
     {
+      "name": "M4-CONC（plugin-host：native 跨插件批并行）",
+      "area": "M4",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/src/lib.rs 的 M4-CONC-001；call_approved_batch 按插件分组、不同插件并行、同插件串行；cargo test -p dshr-plugin-host",
+      "source_dirs": [
+        "crates/plugin-host/src"
+      ],
+      "ids": [
+        "M4-CONC-001"
+      ]
+    },
+    {
       "name": "M4-TRAIT（plugin-api：动态插件 id 借用，不 leak）",
       "area": "M4",
       "status": "implemented",

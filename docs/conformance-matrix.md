@@ -8,21 +8,21 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T15:57:15.984Z |
-| git HEAD | 5a10aad137f379e1c108eb301c8e2d4f9e1c726b（clean） |
+| generated_at | 2026-11-16T16:00:36.085Z |
+| git HEAD | 0241cbdd071101b6066f50a0be097fec9164702e（dirty，7 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | full — `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，587 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，588 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 587 |
-| implemented | 539 |
-| implemented passed | 539 |
+| 总测试 ID | 588 |
+| implemented | 540 |
+| implemented passed | 540 |
 | implemented failed | 0 |
 | implemented skipped | 0 |
 | pending | 18 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 396 link(s) checked, 0 broken, 72 file(s) scanned |
-| node-test | pass | 0 | 0.44s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 54.95s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 865 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 396 link(s) checked, 0 broken, 72 file(s) scanned |
+| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 62.29s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 866 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
@@ -94,7 +94,7 @@
 | SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
-### PASS（逐 ID；共 539 条）
+### PASS（逐 ID；共 540 条）
 
 | ID | 结果 |
 |---|---|
@@ -618,6 +618,7 @@
 | M4-ADC-004 | PASS |
 | M4-ADC-005 | PASS |
 | M4-ADC-006 | PASS |
+| M4-CONC-001 | PASS |
 | M4-KEY-001 | PASS |
 | M4-KEY-002 | PASS |
 | M4-KEY-003 | PASS |
