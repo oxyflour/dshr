@@ -7418,9 +7418,31 @@ fn load_enabled_external_plugins(
             }
             RuntimeKind::WasmComponent => {
                 let plugin_id = manifest.plugin.id.clone();
-                match plugins.load_wasm_plugin(&manifest, &package_dir, &host_sdk_version()) {
-                    Ok(()) => eprintln!("[plugin] wasm-component 已装载: {plugin_id}"),
-                    Err(err) => errors.push(format!("插件 {plugin_id} WASM 装载失败: {err}")),
+                let entry = manifest
+                    .runtime
+                    .entry
+                    .as_deref()
+                    .unwrap_or("plugin.wasm");
+                let entry_path = package_dir.join(entry);
+                // component binary: \0asm + version 0x0d 0x00 0x01 0x00
+                let is_component = std::fs::read(&entry_path)
+                    .map(|bytes| bytes.len() >= 8 && bytes[4..8] == [0x0d, 0x00, 0x01, 0x00])
+                    .unwrap_or(false);
+                let loaded = if is_component {
+                    plugins
+                        .load_cpp_component_plugin_from_manifest(
+                            &manifest,
+                            &package_dir,
+                            &host_sdk_version(),
+                        )
+                        .map(|()| eprintln!("[plugin] cpp component 已装载: {plugin_id}"))
+                } else {
+                    plugins
+                        .load_wasm_plugin(&manifest, &package_dir, &host_sdk_version())
+                        .map(|()| eprintln!("[plugin] wasm-component 已装载: {plugin_id}"))
+                };
+                if let Err(err) = loaded {
+                    errors.push(format!("插件 {plugin_id} WASM 装载失败: {err}"));
                 }
             }
             // 安装包里出现 native-kind 的 plugin.toml 属于包装错位：必须报错，

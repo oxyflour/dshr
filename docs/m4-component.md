@@ -43,6 +43,9 @@
 - `M4-COMPONENT-017`（[plugin-host/lib.rs](../crates/plugin-host/src/lib.rs)）：
   `load_cpp_component_plugin_from_manifest` 读取 wasm-component 的 `plugin.wasm`，
   经真实 guest 注册 `echo`，`call_approved("echo", ...)` 返回 guest 的 args。
+- 产品路径（[chat.rs](../apps/desktop-gpui/src/bin/chat.rs)）：`wasm-component`
+  安装包读取 `runtime.entry`，按 wasm header 的 component 版本位（`0x0d 00 01 00`）
+  选择 `CppComponentPlugin`；旧 core-module 包仍走 `WasmPlugin`，避免破坏 W5 前的包。
 
 构建 guest：
 
@@ -71,8 +74,8 @@ cargo test -p dshr-plugin-wasm --test component_plugin
   工具声明/调用；`load_component_plugin_from_manifest` 只接受无 tools/ui 的 probe 包，
   不是通用 manifest 自动识别。
 - 真实 guest 已能声明 `echo` / `invoke`，`CppComponentPlugin` 与
-  `load_cpp_component_plugin_from_manifest` 已把它接入宿主；剩余是组件插件的
-  并发/更多配额、签名安装链路与作者文档。
+  `load_cpp_component_plugin_from_manifest` 已把它接入宿主，chat 安装路径也按 component
+  header 分流；剩余是组件并发/更多配额、签名安装链路与真实窗口安装验收。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
   fuel/epoch/内存/输出配额已有测试（fuel/epoch/内存/输出也进了 probe 加载器），并发仍未验证；
   当前 core-module 的配额路径不能直接假设适用。
