@@ -17,7 +17,7 @@
 pub mod external;
 pub mod fiber;
 
-pub use dshr_plugin_wasm::{WasmEngineConfig, WasmPlugin};
+pub use dshr_plugin_wasm::{ComponentPlugin, WasmEngineConfig, WasmPlugin};
 pub use external::{ExternalPlugin, ExternalPluginSpec};
 
 use std::path::Path;
@@ -157,6 +157,20 @@ impl PluginHost {
                     reason: error.to_string(),
                 }
             })?;
+        self.load(Box::new(plugin))
+    }
+
+    /// 装载实验性 component probe 插件（`cpp-component-probe/v1`，仅 `run() -> u32`）。
+    ///
+    /// 这条 API 把 [`ComponentPlugin`] 接入宿主原子 `apply`/注册表路径；正式 cpp-v1
+    /// 工具 ABI 仍未实现，宿主不会自动从 manifest 识别 component。
+    pub fn load_component_plugin(
+        &mut self,
+        id: &str,
+        version: &str,
+        source: impl AsRef<[u8]>,
+    ) -> Result<(), HostError> {
+        let plugin = ComponentPlugin::new(id, version, source).map_err(HostError::Plugin)?;
         self.load(Box::new(plugin))
     }
 
@@ -562,6 +576,29 @@ mod tests {
         assert_eq!(host.panels().len(), 1);
         assert_eq!(host.panels()[0].panel.slot, "workspace.panel");
         assert!(host.is_loaded("builtin.probe"));
+    }
+
+    #[test]
+    fn m4_component_012_component_plugin_loads_through_host() {
+        const RUN_WAT: &str = r#"
+        (component
+          (core module $m
+            (func (export "run") (result i32)
+              i32.const 42))
+          (core instance $i (instantiate $m))
+          (func (export "run") (result u32)
+            (canon lift (core func $i "run")))
+        )
+        "#;
+        let mut host = PluginHost::new(AllowAll);
+        host.load_component_plugin("probe.component", "0.1.0", RUN_WAT)
+            .expect("component plugin loads");
+        assert!(host.is_loaded("probe.component"));
+        assert!(host.registry().get("component.run").is_some());
+        let value = host
+            .call_approved("component.run", &json!({}))
+            .expect("component call through host");
+        assert_eq!(value["value"], 42);
     }
 
     #[test]

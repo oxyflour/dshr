@@ -27,6 +27,9 @@
 - `M4-COMPONENT-010`：`with_memory_limit(64 KiB)` 的 grow component call 返回 Err。
 - `M4-COMPONENT-011`：`with_epoch_deadline(1)` + 后台 `increment_epoch()`，死循环
   component call 返回 Err，验证 epoch 也进入 probe 加载器。
+- `M4-COMPONENT-012`（[plugin-host/lib.rs](../crates/plugin-host/src/lib.rs)）：
+  `PluginHost::load_component_plugin` 走原子 `apply` 注册 `component.run`，
+  `call_approved` 返回 42，证明 probe component 能进入宿主注册表/调用路径。
 
 命令：
 
@@ -34,13 +37,13 @@
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
 cargo test -p dshr-plugin-wasm --test component_plugin
-→ 11 passed
+→ 12 passed
 ```
 
 ## 2. 还没做
 
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的
-  工具声明/调用；也没有被 `plugin-host` 的 manifest loader 自动识别。
+  工具声明/调用；`PluginHost::load_component_plugin` 是显式 API，manifest loader 不会自动识别。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
   fuel/epoch/内存/输出配额已有测试（fuel/epoch/内存/输出也进了 probe 加载器），并发仍未验证；
   当前 core-module 的配额路径不能直接假设适用。

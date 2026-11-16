@@ -1089,6 +1089,20 @@
       ]
     },
     {
+      "name": "M4-COMPONENT-HOST（plugin-host：probe component 装载）",
+      "area": "M4",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-host",
+      "notes": "crates/plugin-host/src/lib.rs 的 m4_component_012_component_plugin_loads_through_host：load_component_plugin → apply 注册 component.run → call 返回 42。",
+      "source_dirs": [
+        "crates/plugin-host/src"
+      ],
+      "ids": [
+        "M4-COMPONENT-012"
+      ]
+    },
+    {
       "name": "M4-COMPONENT（plugin-wasm Component Model/WIT）",
       "area": "M4",
       "status": "implemented",
