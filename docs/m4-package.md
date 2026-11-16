@@ -59,7 +59,17 @@ cd dist/dshr-debug-linux-x86_64
 两项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
 host_services=3`。即两个包对 probe 与官方 sidecar 都已自带运行时，不依赖外部 Node。
 
-## 4. 明确未做
+## 4. 包校验脚本
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Archive dist/dshr-debug-windows-x64.zip
+bash tools/verify-package.sh dist/dshr-debug-linux-x86_64.tar.gz
+```
+
+脚本会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery` 与
+`--selftest-official`，最后清理。Windows/Linux 本机均 **PASS**。
+
+## 5. 明确未做
 
 - 没有 macOS `.app`/签名/公证；Windows 没有 MSI/NSIS 或 Authenticode；Linux 没有 deb/AppImage。
 - 归档含 `chat`、`runtime/node`、probe sidecar 与 `dsh-official`（含 node_modules）；

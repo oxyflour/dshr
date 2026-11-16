@@ -93,7 +93,8 @@ W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），�
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate + desktop-build），但 Actions 未实跑、macOS/Windows 桌面 runner 未验证。
 WSL Linux 上核心 6 crate、`dshr-desktop-gpui` 构建与 ADC/recovery/crash 自检均已通过；
 `package-desktop.ps1/sh` 已生成自带 `runtime/node`、probe 与 `dsh-official`（含 node_modules）的
-Windows zip（59.7MB）与 Linux tar.gz（197.1MB）；解压后 sidecar/official 自检均 PASS，仍不含签名/安装器。
+Windows zip（59.7MB）与 Linux tar.gz（197.1MB）；`verify-package.ps1/sh` 校验 sha256、解压并跑
+sidecar/official 自检，双平台 PASS，仍不含签名/安装器。
 官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。
 W3 窗口 draw 在 RDP 下硬预算 PASS（p95 9.40ms / 31.25ms），相对基线受远程环境干扰未通过。
 三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。

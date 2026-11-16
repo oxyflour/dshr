@@ -6,6 +6,8 @@ G1 要求 Windows/macOS/Linux 管线 + 两类插件来源回归。当前拆成�
 |---|---|---|---|
 | [`conformance.yml`](../.github/workflows/conformance.yml) | `windows-latest` | schema/links/node-test/cargo 全量、矩阵 artifact、G4 perf gate | 本机等价命令通过；Actions **未实跑** |
 | [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + 自检 + zip/tar + `.sha256`） | **新增，Actions 未实跑** |
+| [package-desktop.ps1](../tools/package-desktop.ps1) / [.sh](../tools/package-desktop.sh) | 本机 Windows/Linux | 打包 zip/tar + `.sha256`；产物含 runtime/node、probe、dsh-official | 本机 PASS |
+| [verify-package.ps1](../tools/verify-package.ps1) / [.sh](../tools/verify-package.sh) | 本机 Windows/Linux | 校验 sha256 + 解压 + sidecar/official 自检 | 本机 PASS |
 
 ## 1. cross-platform.yml 覆盖什么
 
