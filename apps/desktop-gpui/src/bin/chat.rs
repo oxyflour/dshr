@@ -1569,9 +1569,11 @@ impl ToolExecutor for ChatExecutor<'_> {
         }
 
         if !native_calls.is_empty() {
-            let results = self
-                .plugins
-                .call_approved_batch(&native_calls, max_parallel.max(1));
+            let results = self.plugins.call_approved_batch_cancellable(
+                &native_calls,
+                max_parallel.max(1),
+                Some(self.cancel.as_ref()),
+            );
             for (slot, index) in native_indices.iter().enumerate() {
                 let outcome = match results.get(slot) {
                     Some(Ok(value)) => ToolOutcome::success(

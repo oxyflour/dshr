@@ -430,13 +430,14 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-host",
-      "notes": "crates/plugin-host/src/lib.rs 的 M4-CONC-001/002；call_approved_batch 按插件分组、不同插件并行、同插件串行；cargo test -p dshr-plugin-host",
+      "notes": "crates/plugin-host/src/lib.rs 的 M4-CONC-001/002/003；call_approved_batch(_cancellable) 按插件分组、不同插件并行、同插件串行、调用前检查取消位；cargo test -p dshr-plugin-host",
       "source_dirs": [
         "crates/plugin-host/src"
       ],
       "ids": [
         "M4-CONC-001",
-        "M4-CONC-002"
+        "M4-CONC-002",
+        "M4-CONC-003"
       ]
     },
     {

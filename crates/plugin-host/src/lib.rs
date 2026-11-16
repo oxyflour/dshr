@@ -300,12 +300,35 @@ impl PluginHost {
         calls: &[(String, Value)],
         max_parallel: usize,
     ) -> Vec<Result<Value, String>> {
+        self.call_approved_batch_cancellable(calls, max_parallel, None)
+    }
+
+    /// 与 [`PluginHost::call_approved_batch`] 相同，但每调用前检查取消位；已取消的槽位
+    /// 返回 `cancelled`，不会启动后续插件调用。正在执行的同步 `Plugin::call` 无法被
+    /// 抢占，这是协作式取消的边界。
+    pub fn call_approved_batch_cancellable(
+        &mut self,
+        calls: &[(String, Value)],
+        max_parallel: usize,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Vec<Result<Value, String>> {
+        use std::sync::atomic::Ordering;
+
+        let cancelled = || {
+            cancel
+                .map(|flag| flag.load(Ordering::Relaxed))
+                .unwrap_or(false)
+        };
         let mut results: Vec<Result<Value, String>> = (0..calls.len())
             .map(|_| Err("batch result missing".to_owned()))
             .collect();
         let mut groups: BTreeMap<String, Vec<(usize, String, Value)>> = BTreeMap::new();
 
         for (index, (tool, arguments)) in calls.iter().enumerate() {
+            if cancelled() {
+                results[index] = Err("cancelled".to_owned());
+                continue;
+            }
             let definition = match self.registry.authorize_approved(tool, arguments) {
                 Ok(definition) => definition.clone(),
                 Err(error) => {
@@ -353,6 +376,10 @@ impl PluginHost {
                         scope.spawn(move || {
                             let mut out = Vec::with_capacity(pending.len());
                             for (index, tool, arguments) in pending {
+                                if cancelled() {
+                                    out.push((index, Err("cancelled".to_owned())));
+                                    continue;
+                                }
                                 out.push((
                                     index,
                                     plugin
@@ -1154,6 +1181,29 @@ mod tests {
         assert!(
             elapsed >= std::time::Duration::from_millis(500),
             "same-plugin calls must not overlap: {elapsed:?}"
+        );
+    }
+
+    // M4-CONC-003：批调用尊重预先置位的取消位，不启动工具。
+    #[test]
+    fn m4_conc_003_batch_respects_cancellation() {
+        use std::sync::atomic::AtomicBool;
+        let mut host = PluginHost::new(AllowAll);
+        let cancel = AtomicBool::new(true);
+        let results = host.call_approved_batch_cancellable(
+            &[
+                ("probe_native".to_owned(), json!({ "text": "x" })),
+                ("probe_native".to_owned(), json!({ "text": "y" })),
+            ],
+            2,
+            Some(&cancel),
+        );
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|result| matches!(result, Err(message) if message == "cancelled")),
+            "{results:?}"
         );
     }
 }

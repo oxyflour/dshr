@@ -86,8 +86,8 @@ W6 已补最小 `exec.agent` facade，官方 todo/working_directory 的 execute 
 G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。
 G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 覆盖 kill sidecar，`--selftest-crash-recovery`
 覆盖真实子进程 abort 后从 `.bak` 继续追加。
-W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并实现 native 跨插件批并行；
-同插件/MCP 并发与异步 trait 冻结仍未做。
+W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并实现 native 跨插件批并行
+与调用前协作式取消；运行中抢占/MCP 与异步 trait 冻结仍未做。
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate），但 Actions 未实跑、桌面 GPUI 未覆盖。
 WSL Linux 上核心 6 crate 已真实 `cargo check` 通过（修复 `sidecar-guard` 非 Windows spawn）。
 官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。

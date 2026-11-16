@@ -793,7 +793,7 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 > SKIP 记 pass；G2 有 headless `--selftest-recovery` / `--selftest-sidecar-recovery` /
 > `--selftest-crash-recovery`；W6 的 todo/working_directory execute 已闭环
 > （official gate 6/6）；G4 有 `tools/perf-gate.mjs` + CI step（本机 PASS，Actions 未实跑）；
-> W4 的 id/version leak 已收口、native 跨插件批并行已接；同插件/MCP 并发与 trait 冻结未做；三平台 CI 已加 contract/core
+> W4 的 id/version leak 已收口、native 跨插件批并行/协作式取消已接；运行中抢占/MCP 与 trait 冻结未做；三平台 CI 已加 contract/core
 > matrix 文件，官方包来源/SHA-256 lock 已接 gate，WSL Linux 核心编译已通过；W3 窗口 draw 硬预算 PASS（RDP 相对基线未过），
 > 但 Actions 未实跑、桌面 GPUI 未覆盖。
 
