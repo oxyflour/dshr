@@ -507,8 +507,8 @@ fn render_node(
         ElementKind::Input => render_input(theme, node, path),
         ElementKind::Textarea => render_textarea(theme, node, path),
         ElementKind::Select => render_select(theme, node, path),
-        ElementKind::Checkbox => render_checkbox(theme, node, path),
-        ElementKind::Switch => render_switch(theme, node, path),
+        ElementKind::Checkbox => render_checkbox(theme, node, path, handler),
+        ElementKind::Switch => render_switch(theme, node, path, handler),
         ElementKind::Slider => render_slider(theme, node, path),
         ElementKind::List => render_list(theme, node, path),
         ElementKind::Table => render_table(theme, node, path),
@@ -929,7 +929,12 @@ fn render_select(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn render_checkbox(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_checkbox(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let checked = node.bool_prop("checked").unwrap_or(false);
@@ -976,10 +981,21 @@ fn render_checkbox(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement 
                 .child(label.to_owned()),
         );
     }
+    if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
+        let handler = handler.clone();
+        row = row
+            .cursor_pointer()
+            .on_click(move |_, _, cx| handler(&action, cx));
+    }
     row.into_any_element()
 }
 
-fn render_switch(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_switch(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let checked = node.bool_prop("checked").unwrap_or(false);
@@ -1025,6 +1041,12 @@ fn render_switch(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
                 .text_color(palette.color(palette.label_primary))
                 .child(label.to_owned()),
         );
+    }
+    if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
+        let handler = handler.clone();
+        row = row
+            .cursor_pointer()
+            .on_click(move |_, _, cx| handler(&action, cx));
     }
     row.into_any_element()
 }
@@ -2671,6 +2693,42 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "合法动作树不应有诊断: {diagnostics:?}"
+        );
+        drop(body);
+    }
+
+    // M4-ADC-005：Checkbox/Switch 的 onChange 也能穿透 handler 渲染（点击由真机复验）。
+    #[test]
+    fn panel_with_action_handler_accepts_toggle_controls() {
+        let tree = serde_json::json!({
+            "type": "Stack",
+            "props": { "gap": 8 },
+            "children": [
+                {
+                    "type": "Checkbox",
+                    "props": {
+                        "checked": true,
+                        "label": "启用",
+                        "a11yLabel": "启用",
+                        "onChange": { "call": "toggle", "args": { "on": true } }
+                    }
+                },
+                {
+                    "type": "Switch",
+                    "props": {
+                        "checked": false,
+                        "label": "开关",
+                        "a11yLabel": "开关",
+                        "onChange": { "command": "toggle-switch" }
+                    }
+                }
+            ]
+        });
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _| {});
+        let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
+        assert!(
+            diagnostics.is_empty(),
+            "合法 onChange 树不应有诊断: {diagnostics:?}"
         );
         drop(body);
     }

@@ -22,7 +22,10 @@
 - `M4-ADC-003`：external fixture 收到 `ui.action` 后下一次 `ui.render` 看到计数器变化。
 - **tool card extra**（M4 W3）：`tool.result.meta.ui` 会保留到 `ToolCard.extra`，chat 的工具卡
   用 `adc_panel_body` 渲染为受限 ADC 附加区；`M4-ADC-004`（conversation-model）通过。
+- **Checkbox / Switch `onChange`**（M4 W3）：点击整行回传 `onChange` 动作（`call`/`command`），
+  与 Button 共用 `AdcActionHandler`；插件更新状态后宿主再 render。
 - `M4-ADC-001`：带 handler 的嵌套 Button 树渲染、0 诊断；`cargo test -p dshr-ui-gpui`。
+- `M4-ADC-005`：Checkbox/Switch onChange 树渲染、0 诊断。
 - `M4-ADC-002`：`PluginHost::dispatch_action` 路由/未知插件；`cargo test -p dshr-plugin-host`。
 
 ## 2. 未接线（W3 剩余）
@@ -30,7 +33,7 @@
 | 项 | 现状 | 下一步 |
 |---|---|---|
 | `openExternal` 的实机确认 | 确认条已实现，未真机点过 | `M4-ADC-101` 人工复验 |
-| Input/Textarea/Select/Checkbox/Switch/Slider 的 `onChange` | 仍只读 | 值变更去抖 150ms → Host，且需要状态快照/patch |
+| Input/Textarea/Select/Slider 的 `onChange` | 仍只读（Checkbox/Switch 已接） | 值变更去抖 150ms → Host，且需要状态快照/patch；Slider 需要拖拽/键盘 |
 | Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
 | tool card extra 的真实数据 | 模型/渲染已接，尚无真实工具写 `meta.ui` | 给一个官方/样例工具写 `meta.ui` 做端到端 |
 | 窗口 draw 预算 / a11y 焦点 | 未做 | 与 W2 焦点环、W7 性能基线合并 |
