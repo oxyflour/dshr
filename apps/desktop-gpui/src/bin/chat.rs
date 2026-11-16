@@ -1888,7 +1888,13 @@ impl ChatState {
         // 先尝试恢复，避免把可恢复的历史当成“新会话”重写。
         if !path.exists() {
             match recover_backup(&path) {
-                Ok(true) => eprintln!("[chat] 已从备份恢复会话日志 {}", path.display()),
+                Ok(true) => {
+                    eprintln!("[chat] 已从备份恢复会话日志 {}", path.display());
+                    boot_errors.push(format!(
+                        "已恢复：会话从备份恢复（{}），可继续使用",
+                        path.display()
+                    ));
+                }
                 Ok(false) => {}
                 Err(err) => boot_errors.push(format!("会话备份恢复失败：{err}")),
             }
@@ -4912,6 +4918,20 @@ impl ChatApp {
             .cloned()
             .collect::<Vec<_>>()
             .join("\n");
+        let recovered_only = self
+            .plugin_errors
+            .iter()
+            .all(|message| message.starts_with("已恢复："));
+        let tone = if recovered_only {
+            p.color(p.state_success)
+        } else {
+            p.color(p.state_error)
+        };
+        let title = if recovered_only {
+            "恢复提示"
+        } else {
+            "启动/加载错误"
+        };
         div()
             .w_full()
             .flex()
@@ -4920,14 +4940,14 @@ impl ChatApp {
             .px(px(12.0))
             .py(px(8.0))
             .border_b_1()
-            .border_color(p.color(p.state_error))
+            .border_color(tone)
             .bg(p.color(p.bg_layer_1))
             .child(
                 div()
                     .text_size(t.type_scale.small)
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(p.color(p.state_error))
-                    .child("启动/加载错误"),
+                    .text_color(tone)
+                    .child(title),
             )
             .child(
                 div()
@@ -6209,10 +6229,14 @@ fn selftest_crash_recovery() -> i32 {
         })
         .unwrap_or(false);
     let ok = crashed && backup_exists && before_ok && after_ok;
+    let notice_ok = state
+        .plugin_errors
+        .iter()
+        .any(|message| message.starts_with("已恢复："));
     println!(
-        "[selftest-crash-recovery] crashed={crashed} backup={backup_exists} before={before_ok} after={after_ok}"
+        "[selftest-crash-recovery] crashed={crashed} backup={backup_exists} before={before_ok} after={after_ok} notice={notice_ok}"
     );
-    if ok {
+    if ok && notice_ok {
         println!("[selftest-crash-recovery] PASS");
         0
     } else {

@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T16:17:46.673Z |
-| git HEAD | 4a4de18210a34d492e33aef469dcc724ea31d101（clean） |
+| generated_at | 2026-11-16T16:19:50.922Z |
+| git HEAD | f47ca7506945799d2eafb0188f728324f06b9349（dirty，4 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.54s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 395 link(s) checked, 0 broken, 72 file(s) scanned |
-| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 53.80s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 869 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
+| schema | pass | 0 | 0.26s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 395 link(s) checked, 0 broken, 72 file(s) scanned |
+| node-test | pass | 0 | 0.37s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 61.89s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 869 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
@@ -72,7 +72,7 @@
 | M4-PERF-001 | M4 | manual | MANUAL | — | node tools/perf-gate.mjs --json docs/perf-baseline.json：10 树 worst_total_p95≤50ms、满配额树 total_p95≤16.7ms、a11y 缺失=0；CI conformance.yml 已加 step 并上传 perf-baseline artifact，但 Actions 尚未实跑。本机 PASS。 |
 | M4-RECOVERY-001 | M4 | manual | MANUAL | — | chat --selftest-recovery：损坏会话隔离+干净重建、删主文件后 .bak 恢复并可继续追加、失败插件注册回滚+健康插件装载/调用。headless PASS；真实窗口崩溃恢复未覆盖。 |
 | M4-RECOVERY-002 | M4 | manual | MANUAL | — | chat --selftest-sidecar-recovery：先 probe_echo 成功，再 kill sidecar；已死调用返回错误、会话仍可追加/保存、probe_native 仍注册。headless PASS；真实窗口内 sidecar 崩溃/重启未覆盖。 |
-| M4-RECOVERY-003 | M4 | manual | MANUAL | — | chat --selftest-crash-recovery：子进程 save_atomic 两次后删主文件并 abort；父进程恢复 .bak、校验 before crash、追加 after crash 并保存。PASS（crashed=true backup=true before=true after=true）。 |
+| M4-RECOVERY-003 | M4 | manual | MANUAL | — | chat --selftest-crash-recovery：子进程 save_atomic 两次后删主文件并 abort；父进程恢复 .bak、校验 before crash、追加 after crash 并保存；恢复后 plugin_errors 含“已恢复”横幅。PASS（crashed/backup/before/after/notice 全 true）。 |
 | M4-SDK-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 的 0d 步：sdk-pack 生成 sdk-manifest.json + SHA256SUMS，--verify 通过；篡改 SDK 后 verify 非零；--force 重建后恢复；new-plugin --sdk 消费离线包构建。需 node + 已构建 chat.exe。 |
 | M4-SIGN-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 第 10 步：--generate-key → --trust-key add → plugin-pack --key/--key-id → chat --install-plugin 免 --yes-install → --trust-key rotate → 旧钥包 E_TRUST_KEY_REVOKED → 新钥重签安装；需构建 chat.exe。 |
 | M4-UNINSTALL-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --uninstall-plugin：目录原子移除 + profile 条目 + install-audit 的 action=uninstall；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
