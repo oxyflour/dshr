@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **627 个测试 ID —— implemented 572、pending 18、manual 37、
+M4 G1（2026-11-17）：注册表 **628 个测试 ID —— implemented 572、pending 18、manual 38、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 530 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -187,6 +187,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-009..025` | implemented | GPUI TestAppContext 真实点击/键盘/Slider 拖拽/Tabs 切换/Input/Textarea 编辑入口（`crates/ui-gpui/tests/adc_click.rs`） |
 | `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe + dsh-official 的 zip/tar + `.sha256`，解压后 sidecar/official 自检 PASS（[m4-package.md](m4-package.md)） |
 | `M4-CI-005` | manual | `verify-package.ps1/sh`：校验 sha256 + 解压 + sidecar/official 自检，Windows/Linux 均 PASS |
+| `M4-CI-006` | manual | macOS target 交叉检查：`dshr-ui-gpui` PASS；桌面在 C 依赖/SDK 处失败（[m4-macos.md](m4-macos.md)） |
 | `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |

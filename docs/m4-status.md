@@ -22,7 +22,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + id 去 leak）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用；MCP、运行中抢占、异步 trait 冻结仍待 |
 | W5 | WASM Component/WIT | **部分完成（ABI/WIT/配额 + probe 加载器）** | wasmtime `component-model`；001 canonical ABI；002 WIT；003 bindgen host traits→Linker；004 fuel；005 epoch；006 memory；007 `ComponentPlugin` probe apply/call；008 输出上限；009 plugin fuel；010 plugin memory；011 plugin epoch；cpp-v1 工具 ABI/并发/宿主安装仍未接 |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read/write execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 8/8 PASS；bash/pwsh 等 shell 工具仍未闭环 |
-| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + Linux 构建/打包）** | `perf-gate`/`cross-platform.yml`（contract/core/desktop-build+自检）/`official-provenance`/`package-desktop.*`；WSL Linux 核心+桌面+自检+zip/tar 通过；Actions 未实跑、macOS/Windows 桌面 runner 未验证 |
+| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + Linux 构建/打包 + macOS UI 交叉检查）** | `perf-gate`/`cross-platform.yml`（contract/core/desktop-build+自检）/`official-provenance`/`package-desktop.*`；WSL Linux 核心+桌面+自检+zip/tar 通过；macOS target `dshr-ui-gpui` check PASS、桌面因无 SDK 在 C 依赖处失败；Actions 未实跑 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
 ## 3. W1 证据（2026-11-16）
@@ -151,7 +151,7 @@ node tools\conformance.mjs --full --compact
 
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
-| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 构建/自检/打包已本机过）** | WSL 构建+三项自检+zip/tar 打包通过；Actions 未实跑，macOS/Windows runner 未验证 |
+| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 构建/自检/打包 + macOS UI check 已过）** | WSL 构建+三项自检+zip/tar 通过；macOS target 的 `dshr-ui-gpui` check PASS，桌面 C 依赖需 macOS SDK；Actions 未实跑 |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless + UI 提示）**：`--selftest-recovery` / `--selftest-sidecar-recovery` / `--selftest-crash-recovery` PASS；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后继续操作的端到端 UI 未覆盖 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **部分**：`tools/perf-gate.mjs` 阈值 50ms / 满配额 16.7ms / a11y 0，本机 PASS；CI workflow 已加 step 与 artifact | Actions 未实跑；三平台 runner 未加 |

@@ -19,8 +19,8 @@
 use std::collections::HashSet;
 
 use gpui::{
-    div, prelude::*, px, AlignContent, AlignItems, AnyElement, Div, Entity, Font, Pixels, Render,
-    Rgba, Role, SharedString, Stateful, TextAlign, Toggled,
+    div, prelude::*, px, AlignContent, AlignItems, AnyElement, Div, Font, Pixels, Render, Rgba,
+    Role, SharedString, Stateful, TextAlign, Toggled,
 };
 
 use dshr_ui_contributions::{
