@@ -1311,6 +1311,7 @@ dependencies = [
  "dshr-session-store",
  "dshr-sidecar-guard",
  "dshr-tool-runtime",
+ "dshr-ui-contributions",
  "dshr-ui-gpui",
  "gpui",
  "gpui_platform",

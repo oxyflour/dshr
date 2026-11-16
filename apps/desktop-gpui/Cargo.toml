@@ -49,6 +49,9 @@ path = "../../crates/agent-context"
 [dependencies.dshr-ui-gpui]
 path = "../../crates/ui-gpui"
 
+[dependencies.dshr-ui-contributions]
+path = "../../crates/ui-contributions"
+
 [dependencies.dshr-llm-deepseek]
 path = "../../crates/llm-deepseek"
 

@@ -371,7 +371,7 @@ pub const CHART_HEIGHT: f32 = 96.0;
 /// 交互元素的回调：M4 W3 起 Button 的 `onPress` 会带着已校验的 [`Action`] 回到宿主。
 ///
 /// `App` 参数用于宿主动作（如写剪贴板）；插件 `call`/`command` 由 Host 在后续轮次接线。
-pub type AdcActionHandler = std::rc::Rc<dyn Fn(&Action, &mut gpui::App)>;
+pub type AdcActionHandler = std::rc::Rc<dyn Fn(&Action, &mut gpui::Window, &mut gpui::App)>;
 
 /// 把 ADC-v1 元素节点渲染成 GPUI 元素。
 ///
@@ -504,8 +504,8 @@ fn render_node(
         ElementKind::Code => render_code(theme, node, path),
         ElementKind::Badge => render_badge(theme, node),
         ElementKind::Button => render_button(theme, node, path, handler),
-        ElementKind::Input => render_input(theme, node, path),
-        ElementKind::Textarea => render_textarea(theme, node, path),
+        ElementKind::Input => render_input(theme, node, path, handler),
+        ElementKind::Textarea => render_textarea(theme, node, path, handler),
         ElementKind::Select => render_select(theme, node, path, handler),
         ElementKind::Checkbox => render_checkbox(theme, node, path, handler),
         ElementKind::Switch => render_switch(theme, node, path, handler),
@@ -812,16 +812,22 @@ fn render_button(
         let handler = handler.clone();
         button = button
             .cursor_pointer()
-            .on_click(move |_, _, cx| handler(&action, cx));
+            .on_click(move |_, window, cx| handler(&action, window, cx));
     }
     button.into_any_element()
 }
 
-fn render_input(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_input(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let multiline = node.bool_prop("multiline").unwrap_or(false);
-    let value = truncate_text(node.str_prop("value").unwrap_or_default());
+    let raw_value = node.str_prop("value").unwrap_or_default().to_owned();
+    let value = truncate_text(&raw_value);
     let placeholder = node.str_prop("placeholder");
     let role = if multiline {
         Role::MultilineTextInput
@@ -854,16 +860,29 @@ fn render_input(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
             .text_color(palette.color(palette.label_primary))
             .child(value.to_owned());
     }
+    if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
+        let edit = edit_action(path, &raw_value, multiline, action);
+        let handler = handler.clone();
+        input = input
+            .cursor_pointer()
+            .on_click(move |_, window, cx| handler(&edit, window, cx));
+    }
     input.into_any_element()
 }
 
-fn render_textarea(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_textarea(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let rows = node.i64_prop("rows").unwrap_or(3).clamp(1, 100);
-    let value = truncate_text(node.str_prop("value").unwrap_or_default());
+    let raw_value = node.str_prop("value").unwrap_or_default().to_owned();
+    let value = truncate_text(&raw_value);
     let min_height = type_scale.secondary_line.as_f32() * rows as f32 + 10.0;
-    interactive_base(div(), node, path, Role::MultilineTextInput)
+    let mut textarea = interactive_base(div(), node, path, Role::MultilineTextInput)
         .flex_none()
         .w_full()
         .min_w(px(0.0))
@@ -885,8 +904,15 @@ fn render_textarea(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement 
             "（空）".to_owned()
         } else {
             value.to_owned()
-        })
-        .into_any_element()
+        });
+    if let (Some(action), Some(handler)) = (node.action("onChange"), handler) {
+        let edit = edit_action(path, &raw_value, true, action);
+        let handler = handler.clone();
+        textarea = textarea
+            .cursor_pointer()
+            .on_click(move |_, window, cx| handler(&edit, window, cx));
+    }
+    textarea.into_any_element()
 }
 
 fn render_select(
@@ -952,7 +978,7 @@ fn render_select(
                 } else {
                     palette.input_major
                 }))
-                .on_click(move |_, _, cx| handler(&next, cx));
+                .on_click(move |_, window, cx| handler(&next, window, cx));
             chip = chip.child(option_label);
             chips = chips.child(chip);
         }
@@ -1017,6 +1043,33 @@ fn action_with_value(action: &Action, value: &str) -> Action {
     }
 }
 
+/// Input/Textarea 的编辑请求：走同一个 action handler 的保留方法 `__adc_edit`。
+/// 宿主据此打开真实 `TextInput`，提交时再把值注入 `on_change` 并派发。
+fn edit_action(path: &str, value: &str, multiline: bool, on_change: Action) -> Action {
+    let mut args = serde_json::json!({
+        "path": path,
+        "value": value,
+        "multiline": multiline,
+    });
+    args["on_change"] = action_to_json(&on_change);
+    Action::Call {
+        method: "__adc_edit".to_owned(),
+        args,
+    }
+}
+
+fn action_to_json(action: &Action) -> serde_json::Value {
+    match action {
+        Action::Call { method, args } => {
+            serde_json::json!({ "call": method, "args": args })
+        }
+        Action::Command { id } => serde_json::json!({ "command": id }),
+        Action::OpenExternal { url } => serde_json::json!({ "openExternal": url }),
+        Action::Copy { text } => serde_json::json!({ "copy": text }),
+        _ => serde_json::Value::Null,
+    }
+}
+
 fn render_checkbox(
     theme: &Theme,
     node: &ElementNode,
@@ -1073,7 +1126,7 @@ fn render_checkbox(
         let handler = handler.clone();
         row = row
             .cursor_pointer()
-            .on_click(move |_, _, cx| handler(&action, cx));
+            .on_click(move |_, window, cx| handler(&action, window, cx));
     }
     row.into_any_element()
 }
@@ -1134,7 +1187,7 @@ fn render_switch(
         let handler = handler.clone();
         row = row
             .cursor_pointer()
-            .on_click(move |_, _, cx| handler(&action, cx));
+            .on_click(move |_, window, cx| handler(&action, window, cx));
     }
     row.into_any_element()
 }
@@ -2776,7 +2829,7 @@ mod tests {
                 }]
             }]
         });
-        let handler: AdcActionHandler = std::rc::Rc::new(|_, _| {});
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _, _| {});
         let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
         assert!(
             diagnostics.is_empty(),
@@ -2812,7 +2865,7 @@ mod tests {
                 }
             ]
         });
-        let handler: AdcActionHandler = std::rc::Rc::new(|_, _| {});
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _, _| {});
         let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
         assert!(
             diagnostics.is_empty(),
@@ -2836,7 +2889,7 @@ mod tests {
                 "onChange": { "call": "pick", "args": { "source": "ui" } }
             }
         });
-        let handler: AdcActionHandler = std::rc::Rc::new(|_, _| {});
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _, _| {});
         let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
         assert!(
             diagnostics.is_empty(),
@@ -2855,6 +2908,27 @@ mod tests {
                 assert_eq!(args["source"], "ui");
             }
             other => panic!("expected call, got {other:?}"),
+        }
+    }
+
+    // M4-ADC-007：Input/Textarea 的编辑请求携带 path/value/on_change，宿主可还原动作。
+    #[test]
+    fn input_edit_action_carries_path_value_and_on_change() {
+        let on_change = Action::Call {
+            method: "save".to_owned(),
+            args: serde_json::json!({ "id": "x" }),
+        };
+        let edit = edit_action("/root/children[0]", "hello", false, on_change);
+        match edit {
+            Action::Call { method, args } => {
+                assert_eq!(method, "__adc_edit");
+                assert_eq!(args["path"], "/root/children[0]");
+                assert_eq!(args["value"], "hello");
+                assert_eq!(args["multiline"], false);
+                assert_eq!(args["on_change"]["call"], "save");
+                assert_eq!(args["on_change"]["args"]["id"], "x");
+            }
+            other => panic!("expected edit call, got {other:?}"),
         }
     }
 }

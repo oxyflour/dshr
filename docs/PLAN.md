@@ -789,7 +789,7 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 > [ADR-0013](decisions/0013-m4-scope.md)，证据与未验证项见 [m4-status.md](m4-status.md)。
 > W1 完成（uninstall/密钥生命周期/作者签名安装/SDK 离线渠道）；W2 部分完成（快捷键与 a11y 基线，
 > G3 待真机复验）；W3 开始（ADC Button onPress→宿主 copy/call/command，openExternal 确认条，
-> tool card extra 渲染；Checkbox/Switch/Select onChange 已接，Input/Textarea 未接）；W8 修复 node 缺失时
+> tool card extra 渲染；Checkbox/Switch/Select/Input/Textarea onChange 已接，Slider 未接）；W8 修复 node 缺失时
 > SKIP 记 pass；G2 有 headless `--selftest-recovery`；W6 的 todo/working_directory execute 已闭环
 > （official gate 6/6）；G4 有 `tools/perf-gate.mjs` + CI step（本机 PASS，Actions 未实跑）；
 > W4 的 id/version leak 已收口、native 跨插件批并行已接；同插件/MCP 并发与 trait 冻结未做；三平台 CI 已加 contract/core

@@ -9,7 +9,8 @@
   `openExternal` / `copy` 四类，校验 method/args、https、copy ≤ 64 KiB；非法动作降级并诊断。
 - **Button `onPress` 回调**（M4 W3）：
   - `dshr-ui-gpui` 新增 `adc_view_with_handler` / `adc_panel_body_with_handler`；
-  - `handler` 只接收已校验的 `Action`，Button 未 `disabled` 且声明 `onPress` 时才注册点击；
+  - `handler` 只接收已校验的 `Action` + `Window`（Input/Textarea 编辑需要真实 `TextInput`），
+    Button 未 `disabled` 且声明 `onPress` 时才注册点击；
   - 递归渲染（Stack/Row/Grid/Card/Tabs/Accordion）会把 handler 传到嵌套 Button；
   - `adc_view` / `adc_panel_body` 保持纯渲染，M3 的工具卡/自检路径不回归。
 - **chat 插件面板**：Button 动作回到宿主：
@@ -27,7 +28,10 @@
 - `M4-ADC-001`：带 handler 的嵌套 Button 树渲染、0 诊断；`cargo test -p dshr-ui-gpui`。
 - **Select `onChange`**（M4 W3）：有 handler 且动作为 `call` 时展开为选项 chip，点击把
   `args.value` 设为该选项后回传；无 handler 时保持只读盒。
+- **Input/Textarea `onChange`**（M4 W3）：点击发保留动作 `__adc_edit`（带 `path/value/on_change`），
+  宿主打开真实 `TextInput` 模态；保存时把值注入 `on_change.args.value` 再派发。
 - `M4-ADC-006`：Select onChange 树渲染 + `action_with_value` 注入断言。
+- `M4-ADC-007`：Input/Textarea `__adc_edit` 携带 path/value/on_change。
 - `M4-ADC-002`：`PluginHost::dispatch_action` 路由/未知插件；`cargo test -p dshr-plugin-host`。
 
 ## 2. 未接线（W3 剩余）
@@ -35,7 +39,7 @@
 | 项 | 现状 | 下一步 |
 |---|---|---|
 | `openExternal` 的实机确认 | 确认条已实现，未真机点过 | `M4-ADC-101` 人工复验 |
-| Input/Textarea/Slider 的 `onChange` | 仍只读（Checkbox/Switch/Select 已接） | Input/Textarea 需要实体；Slider 需要拖拽/键盘 |
+| Slider 的 `onChange` | 仍只读 | 需要拖拽/键盘与元素 bounds |
 | Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
 | tool card extra 的真实数据 | 模型/渲染已接，尚无真实工具写 `meta.ui` | 给一个官方/样例工具写 `meta.ui` 做端到端 |
 | 窗口 draw 预算 / a11y 焦点 | 未做 | 与 W2 焦点环、W7 性能基线合并 |
