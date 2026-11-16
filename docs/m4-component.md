@@ -61,6 +61,10 @@ cargo test -p dshr-plugin-wasm --test component_plugin
 → 17 passed
 ```
 
+作者路径见 [m4-component-authoring.md](m4-component-authoring.md)：
+`tools/new-component-plugin.mjs` 从 `templates/wasm-component-plugin` 生成项目，
+`wasm32-wasip2` release 构建已实测 74 KB。
+
 ## 2. 还没做
 
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的

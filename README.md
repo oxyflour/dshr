@@ -84,7 +84,7 @@ G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插
 （`--selftest-recovery`：损坏会话/`.bak`/插件失败回滚），真实窗口崩溃恢复仍未验证。
 W5 已启用 wasmtime `component-model`，并用 `M4-COMPONENT-001..017` 验证 canonical ABI、
 `cpp-v1.wit`、bindgen、配额、probe、真实 guest 与 `CppComponentPlugin`/manifest loader；
-组件并发/安装链路仍未接。
+作者模板/生成器已能构建 74KB component；组件并发/真实安装验收仍未接。
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory/fs read+write 的 execute 在 official gate 8/8 通过。
 G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。
 G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 覆盖 kill sidecar，`--selftest-crash-recovery`

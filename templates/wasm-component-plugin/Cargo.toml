@@ -1,0 +1,12 @@
+[package]
+name = "__CRATE_NAME__"
+version = "__VERSION__"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.44"
+
+[workspace]

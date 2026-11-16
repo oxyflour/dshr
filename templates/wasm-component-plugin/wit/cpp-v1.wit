@@ -1,0 +1,90 @@
+//! CPP-v1 WASM Component 世界定义（草案，M3）。
+//!
+//! 状态：草案/Review。Wasmtime 主机因本机离线暂未接入（见 docs/decisions/0010-isolation-runtime-quota.md）；
+//! 本文件先固定接口形状，运行时可用后由 `wit-bindgen` 校验并冻结。
+//!
+//! 约定：
+//! - 参数/结果跨边界一律是 canonical JSON 字符串（与 cpp-v1 §7.2 一致），WIT 只描述信封，
+//!   不把宿主 Rust 类型暴露给插件；
+//! - 配额通过 `host.get-quota()` 只读暴露，插件不能修改；
+//! - 结果形状对齐 cpp-v1 §7.3（content/value/meta/is_error）。
+
+package dshr:cpp-v1@0.1.0;
+
+/// 插件声明的工具（对齐 cpp-v1 §7.1 与 manifest `[[tools]]`）。
+interface types {
+    record tool-decl {
+        name: string,
+        description: string,
+        /// 内联 JSON Schema（≤8 KiB），宿主二次校验。
+        input-schema: string,
+        /// 可选内联 JSON Schema。
+        output-schema: option<string>,
+        timeout-ms: option<u64>,
+        cancelable: option<bool>,
+        /// generic/terminal/diff/search/read/web；未知值退回 generic。
+        presentation: option<string>,
+    }
+
+    variant content-part {
+        text(string),
+        json(string),
+        image(string),
+    }
+
+    record tool-result {
+        content: list<content-part>,
+        value: option<string>,
+        meta: option<string>,
+        is-error: bool,
+    }
+
+    record panel-decl {
+        slot: string,
+        id: string,
+        label: string,
+        view: string,
+        location: option<string>,
+        order: option<u32>,
+    }
+
+    record quota {
+        fuel: u64,
+        memory-mb: u32,
+        timeout-ms: u64,
+        max-output-bytes: u64,
+        max-concurrency: u32,
+    }
+
+    resource tool-call {
+        arguments: func() -> string;
+        request-id: func() -> string;
+        is-cancelled: func() -> bool;
+    }
+}
+
+/// 宿主导入：日志、配额、配置。不提供任意文件/网络句柄（能力由 Tool Policy 决定）。
+interface host {
+    use types.{quota};
+    log: func(level: string, message: string);
+    get-quota: func() -> quota;
+    /// 插件配置（manifest `config.schema` 校验后的 JSON）。
+    config: func() -> string;
+    /// 取消等待：返回 true 表示已取消。
+    wait-cancelled: func(deadline-ms: u64) -> bool;
+}
+
+/// 插件导出：工具集合与调用。宿主按 `tool-decl` 注册后再 invoke。
+interface tool-provider {
+    use types.{tool-decl, tool-result, panel-decl, tool-call};
+    list-tools: func() -> list<tool-decl>;
+    list-panels: func() -> list<panel-decl>;
+    invoke: func(tool: string, args: string) -> result<tool-result, string>;
+}
+
+/// 一个 WASM 插件组件：导入宿主、导出工具与面板。ADC `ui.render` 在 M3 只用声明式元素树，
+/// 通过 `tool-provider` 之外的 host 回调（`ui.render`）在后续版本补，先不冻结。
+world plugin {
+    import host;
+    export tool-provider;
+}
