@@ -33,8 +33,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::profiler::{set_trace_enabled, FrameEvent, FrameTimingCollector};
 use gpui::{
-    div, point, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font, FontWeight,
-    Rgba, ScrollHandle, TextOverflow, Window, WindowBounds, WindowOptions,
+    actions, div, point, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font,
+    FontWeight, KeyBinding, Rgba, Role, ScrollHandle, TextOverflow, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
@@ -85,6 +86,80 @@ use dshr_ui_gpui::{
 };
 
 const SESSION_ID: &str = "s-chat";
+
+// M4 W2：键盘优先的操作。键位在 `chat_key_bindings()` 注册，语义在 ChatApp 的
+// `shortcut_*` 方法里；不使用鼠标也能覆盖"新建→输入→发送→审批→面板→关闭"。
+actions!(
+    dshr_chat,
+    [
+        NewSessionShortcut,
+        FocusComposerShortcut,
+        ToggleSidebarShortcut,
+        TogglePluginsShortcut,
+        ApproveFirstShortcut,
+        DenyFirstShortcut,
+        EscapeShortcut,
+        QuitShortcut,
+    ]
+);
+
+/// 应用里展示/自检用的快捷键说明（键位字符串与 `chat_key_bindings()` 保持一致）。
+const CHAT_SHORTCUTS: [(&str, &str); 8] = [
+    ("cmd-n", "新建会话"),
+    ("cmd-k", "聚焦输入框"),
+    ("cmd-b", "展开/收起侧栏"),
+    ("cmd-j", "打开/关闭插件面板"),
+    ("cmd-shift-a", "允许第一个待审批工具"),
+    ("cmd-shift-d", "拒绝第一个待审批工具"),
+    ("escape", "关闭面板/取消重命名/回到输入框"),
+    ("cmd-w", "关闭应用"),
+];
+
+fn chat_key_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("cmd-n", NewSessionShortcut, None),
+        KeyBinding::new("cmd-k", FocusComposerShortcut, None),
+        KeyBinding::new("cmd-b", ToggleSidebarShortcut, None),
+        KeyBinding::new("cmd-j", TogglePluginsShortcut, None),
+        KeyBinding::new("cmd-shift-a", ApproveFirstShortcut, None),
+        KeyBinding::new("cmd-shift-d", DenyFirstShortcut, None),
+        KeyBinding::new("escape", EscapeShortcut, None),
+        KeyBinding::new("cmd-w", QuitShortcut, None),
+    ]
+}
+
+/// 把 keymap 语法（`cmd-shift-a`）转成 UI 文案（`Ctrl+Shift+A`）。
+fn format_shortcut(key: &str, primary: &str) -> String {
+    key.split('-')
+        .map(|part| match part {
+            "cmd" => primary.to_owned(),
+            "ctrl" => String::from("Ctrl"),
+            "shift" => String::from("Shift"),
+            "alt" => String::from("Alt"),
+            "escape" => String::from("Esc"),
+            other if other.chars().count() == 1 => other.to_uppercase(),
+            other => other.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// 输入框下方的一行快捷键提示（与 `CHAT_SHORTCUTS` 同源，避免文档漂移）。
+fn chat_shortcut_hint() -> String {
+    let primary = if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    };
+    let label = |index: usize| format_shortcut(CHAT_SHORTCUTS[index].0, primary);
+    format!(
+        "{} 新建 · {} 插件 · {}/{} 审批",
+        label(0),
+        label(3),
+        label(4),
+        label(5)
+    )
+}
 
 /// 非空环境变量 → 路径。空字符串按"未设置"处理（Windows 上 `set VAR=` 是常见写法）。
 fn non_empty_env_path(key: &str) -> Option<PathBuf> {
@@ -2721,6 +2796,104 @@ impl ChatApp {
         cx.notify();
     }
 
+    /// 打开/关闭右侧插件面板；打开时补一次 ADC 面板快照。
+    fn toggle_plugins_panel(&mut self, cx: &mut Context<Self>) {
+        self.plugins_open = !self.plugins_open;
+        if self.plugins_open {
+            // 与点击入口一致：用 try_lock，工作线程持锁时不阻塞 UI 渲染。
+            if let Ok(guard) = self.state.try_lock() {
+                self.adc_panels = guard.adc_panels.clone();
+            }
+        }
+        cx.notify();
+    }
+
+    /// 键盘审批：处理当前第一个待确认调用；没有 pending 时返回 false。
+    fn resolve_first_approval(&mut self, outcome: ApprovalOutcome, cx: &mut Context<Self>) -> bool {
+        let Some(first) = self.approvals.pending().first().cloned() else {
+            return false;
+        };
+        self.approvals.resolve(&first.call_id, outcome);
+        self.pending_approvals = self.approvals.pending().len();
+        cx.notify();
+        true
+    }
+
+    // ------------------------------------------------------------------
+    // 键盘动作（M4 W2）：处理函数只做状态变更，键位映射见 `chat_key_bindings()`。
+    // ------------------------------------------------------------------
+
+    fn shortcut_new_session(
+        &mut self,
+        _: &NewSessionShortcut,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_session(window, cx);
+    }
+
+    fn shortcut_focus_composer(
+        &mut self,
+        _: &FocusComposerShortcut,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_composer(window, cx);
+    }
+
+    fn shortcut_toggle_sidebar(
+        &mut self,
+        _: &ToggleSidebarShortcut,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_sidebar(cx);
+    }
+
+    fn shortcut_toggle_plugins(
+        &mut self,
+        _: &TogglePluginsShortcut,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_plugins_panel(cx);
+    }
+
+    fn shortcut_approve_first(
+        &mut self,
+        _: &ApproveFirstShortcut,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resolve_first_approval(ApprovalOutcome::AllowOnce, cx);
+    }
+
+    fn shortcut_deny_first(
+        &mut self,
+        _: &DenyFirstShortcut,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resolve_first_approval(ApprovalOutcome::Deny, cx);
+    }
+
+    fn shortcut_escape(&mut self, _: &EscapeShortcut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plugins_open {
+            self.plugins_open = false;
+            cx.notify();
+        } else if self.renaming.is_some() {
+            self.cancel_rename(cx);
+        } else if self.pending_delete.take().is_some() {
+            cx.notify();
+        } else {
+            self.focus_composer(window, cx);
+        }
+    }
+
+    fn shortcut_quit(&mut self, _: &QuitShortcut, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.quit();
+    }
+
     fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -3125,6 +3298,8 @@ impl ChatApp {
                         .child(
                             div()
                                 .id("plugins-close")
+                                .role(Role::Button)
+                                .aria_label("关闭插件面板")
                                 .px(px(6.0))
                                 .rounded(t.radii.sm)
                                 .cursor_pointer()
@@ -3433,6 +3608,8 @@ impl ChatApp {
                 // 新建对话：DSH 侧栏顶部的主按钮。
                 div()
                     .id("new-session")
+                    .role(Role::Button)
+                    .aria_label("新建对话")
                     .mx(px(4.0))
                     .mb(px(10.0))
                     .h(px(38.0))
@@ -3486,6 +3663,8 @@ impl ChatApp {
                     .child(
                         div()
                             .id("theme-toggle-sidebar")
+                            .role(Role::Button)
+                            .aria_label(format!("切换到{}主题", self.theme_kind.toggled().label()))
                             .px(px(12.0))
                             .py(px(6.0))
                             .rounded(t.radii.sm)
@@ -3500,6 +3679,12 @@ impl ChatApp {
                     .child(
                         div()
                             .id("plugins-toggle")
+                            .role(Role::Button)
+                            .aria_label(if self.plugins_open {
+                                "关闭插件面板"
+                            } else {
+                                "打开插件面板"
+                            })
                             .px(px(12.0))
                             .py(px(6.0))
                             .rounded(t.radii.sm)
@@ -3556,6 +3741,12 @@ impl ChatApp {
                     .child(
                         div()
                             .id("sidebar-toggle")
+                            .role(Role::Button)
+                            .aria_label(if collapsed {
+                                "展开侧栏"
+                            } else {
+                                "收起侧栏"
+                            })
                             .w(px(28.0))
                             .h(px(28.0))
                             .flex()
@@ -3627,6 +3818,8 @@ impl ChatApp {
                     .child(
                         div()
                             .id("theme-toggle-header")
+                            .role(Role::Button)
+                            .aria_label(format!("切换到{}主题", self.theme_kind.toggled().label()))
                             .px(px(10.0))
                             .py(px(4.0))
                             .rounded(t.radii.sm)
@@ -4026,6 +4219,8 @@ impl ChatApp {
                                 .child(
                                     div()
                                         .id("approval-deny")
+                                        .role(Role::Button)
+                                        .aria_label("拒绝这次工具调用")
                                         .px(px(12.0))
                                         .py(px(5.0))
                                         .rounded(t.radii.sm)
@@ -4046,6 +4241,8 @@ impl ChatApp {
                                 .child(
                                     div()
                                         .id("approval-allow")
+                                        .role(Role::Button)
+                                        .aria_label("允许一次工具调用")
                                         .px(px(12.0))
                                         .py(px(5.0))
                                         .rounded(t.radii.sm)
@@ -4139,6 +4336,12 @@ impl ChatApp {
                             .child(
                                 div()
                                     .id("send-button")
+                                    .role(Role::Button)
+                                    .aria_label(if self.busy {
+                                        "停止生成"
+                                    } else {
+                                        "发送消息"
+                                    })
                                     .w(px(34.0))
                                     .h(px(34.0))
                                     .flex()
@@ -4161,7 +4364,8 @@ impl ChatApp {
                     .mt(px(6.0))
                     .text_size(t.type_scale.small)
                     .text_color(p.color(p.label_caption))
-                    .child("回车发送 · 生成中可停止 · 输入法组合输入可用"),
+                    .child("回车发送 · 生成中可停止 · 输入法组合输入可用")
+                    .child(chat_shortcut_hint()),
             )
             .into_any_element()
     }
@@ -4422,7 +4626,16 @@ impl Render for ChatApp {
                 .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
                 .child(self.composer(&theme, cx)),
         );
-        shell.when_some(self.plugins_panel(&theme, cx), |el, panel| el.child(panel))
+        shell
+            .on_action(cx.listener(Self::shortcut_new_session))
+            .on_action(cx.listener(Self::shortcut_focus_composer))
+            .on_action(cx.listener(Self::shortcut_toggle_sidebar))
+            .on_action(cx.listener(Self::shortcut_toggle_plugins))
+            .on_action(cx.listener(Self::shortcut_approve_first))
+            .on_action(cx.listener(Self::shortcut_deny_first))
+            .on_action(cx.listener(Self::shortcut_escape))
+            .on_action(cx.listener(Self::shortcut_quit))
+            .when_some(self.plugins_panel(&theme, cx), |el, panel| el.child(panel))
     }
 }
 
@@ -8458,6 +8671,8 @@ fn main() {
     };
 
     application().run(move |cx: &mut App| {
+        // M4 W2：全局键盘动作（cmd 在 Windows 映射 Ctrl，在 macOS 映射 Cmd）。
+        cx.bind_keys(chat_key_bindings());
         // 文本输入组件的按键绑定（含回车提交）。
         dshr_ui_gpui::init(cx);
         // 先用一个保守尺寸开窗，拿到真实 scale / display 后再调整。
@@ -8600,6 +8815,36 @@ mod tests {
                 "{flag} 应识别为 CLI 用法"
             );
         }
+    }
+
+    // M4-A11Y-001：快捷键表与绑定数量一致、覆盖 G3 主流程键位、提示文案含平台主修饰键。
+    #[test]
+    fn keyboard_shortcut_table_is_unique_and_covers_primary_flow() {
+        use std::collections::HashSet;
+
+        let keys: HashSet<&str> = CHAT_SHORTCUTS.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys.len(), CHAT_SHORTCUTS.len(), "快捷键不能重复");
+        for required in [
+            "cmd-n",
+            "cmd-k",
+            "cmd-b",
+            "cmd-j",
+            "cmd-shift-a",
+            "cmd-shift-d",
+            "escape",
+            "cmd-w",
+        ] {
+            assert!(keys.contains(required), "缺少快捷键 {required}");
+        }
+        assert_eq!(
+            chat_key_bindings().len(),
+            CHAT_SHORTCUTS.len(),
+            "绑定数量必须与说明表一致"
+        );
+        let hint = chat_shortcut_hint();
+        assert!(hint.contains("Ctrl") || hint.contains("Cmd"), "{hint}");
+        assert_eq!(format_shortcut("cmd-shift-a", "Ctrl"), "Ctrl+Shift+A");
+        assert_eq!(format_shortcut("escape", "Ctrl"), "Esc");
     }
 
     #[test]

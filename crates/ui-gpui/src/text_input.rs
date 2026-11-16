@@ -15,7 +15,7 @@ use gpui::{
     actions, div, fill, hsla, point, prelude::*, px, relative, rgba, size, App, Bounds,
     ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Role, ShapedLine,
     SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -712,6 +712,9 @@ impl Render for TextInput {
         div()
             .flex()
             .w_full()
+            .id(format!("text-input-{}", self.placeholder))
+            .role(Role::TextInput)
+            .aria_label(self.placeholder.clone())
             .key_context("TextInput")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)

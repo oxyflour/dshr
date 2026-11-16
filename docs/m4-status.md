@@ -1,6 +1,6 @@
 # M4 状态 — 跨平台 Beta
 
-> 更新：2026-11-16（W1 完成：离线渠道口径；uninstall/密钥生命周期/签名安装/SDK 离线包）。
+> 更新：2026-11-16（W1 完成；W2 键盘/a11y 基线实现，G3 待真机复验）。
 > 范围与顺序见 [ADR-0013](decisions/0013-m4-scope.md)；PLAN 基线见 [`PLAN.md`](PLAN.md) §8 M4 / §9.2；
 > M3 收尾口径见 [ADR-0012](decisions/0012-m3-gate-closure.md)。
 > 本文是**活文档**：只写已实测的证据，未跑/未接 runner 的项显式标"未验证"。
@@ -17,7 +17,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | # | 工作包 | 状态 | 证据 / 缺口 |
 |---|---|---|---|
 | W1 | 分发与信任生命周期 | **完成（离线渠道口径）** | `M4-UNINSTALL-001..008`、`M4-KEY-001..010`（cargo，dshr-profile 81 passed）；`M4-SDK-001`（SDK 离线包/校验/篡改拒绝）、`M4-SIGN-001`（签名安装/轮换）、`M4-LIFECYCLE-001`；registry/CA 证书体系归 W7 |
-| W2 | 键盘与无障碍 | 未开始 | 需盘点现有快捷键/焦点实现 |
+| W2 | 键盘与无障碍 | **部分完成（待 G3 真机复验）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；见 [m4-keyboard.md](m4-keyboard.md)。G3 人工流程 `M4-KEYBOARD-001` 未跑 |
 | W3 | ADC 交互与工具卡 | 未开始 | M3 只到 `AnyElement` 面板，事件未回 Host |
 | W4 | native/MCP 并发 + trait 冻结 | 未开始 | `Plugin::call` 仍同步、`&'static str` leak |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
@@ -59,7 +59,7 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 67 suites / 855 passed / 0 failed / 6 ignored；exit 0
+  → 67 suites / 856 passed / 0 failed / 6 ignored；exit 0
     （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 
@@ -73,6 +73,10 @@ node tools\conformance.mjs --full --compact
 - SDK 只有**离线渠道**（目录 + manifest + SHA256SUMS），没有 registry/npm；证书体系、
   自动更新与吊销分发（CA/CRL）仍属 W7。
 - 私钥只存在于作者本机；`--generate-key` 生成的 `private.pem` 不得进包/提交。
+- **flaky 观察**：2026-11-16 的一次 `--full` 中 `dshr-ui-gpui` 出现 1 个失败（并行负载下
+  ADC 构造预算），隔离子跑与随后 `--full` 均 0 failed；归入 W8 flaky 治理，不作为通过证据。
+- **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
+  [m4-keyboard.md](m4-keyboard.md) §3 人工复验。
 
 ## 4. Gate 对账
 
@@ -80,12 +84,12 @@ node tools\conformance.mjs --full --compact
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证** | 无 macOS/Linux runner；DSH JS 插件跨平台未跑 |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | 未开始 | 需故障注入与恢复断言 |
-| G3 键盘全流程 | 无鼠标完成主流程 | 未开始 | 需焦点/快捷键审计与自动断言 |
+| G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | 未开始 | 现有脚本是手动；需 W7 |
 
 ## 5. 下一步（按依赖排序）
 
-1. **W2**：盘点键盘路径，先做"新建→发送→审批→切面板→关闭"的自动断言与焦点顺序。
+1. **W2 收尾**：真实窗口按 [m4-keyboard.md](m4-keyboard.md) §3 复验 G3；补 `Esc` 停止生成、Tab 焦点环与 UIA 实机检查。
 2. **W3**：ADC 交互事件回到 Host；tool card `tool.result.extra`。
 3. **W7**：三平台 CI matrix、官方包 vendor 来源校验、性能基线进 CI（G1/G4 的前置）。
 
@@ -96,6 +100,7 @@ node schema/check.mjs
 node tools/check-links.mjs
 node tools/conformance.mjs --quick
 tools\build-env.cmd cargo test --offline -p dshr-profile
+tools\build-env.cmd cargo test --offline -p dshr-desktop-gpui --bin chat
 tools\build-env.cmd cargo run --offline -p dshr-desktop-gpui --bin chat -- --selftest-plugin-lifecycle
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
 ```

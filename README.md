@@ -75,8 +75,9 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 `--uninstall-plugin`（目录/profile/审计原子化）、信任密钥吊销/时间窗/轮换与
 `trust-key-audit.jsonl`、作者 ed25519 签名打包/安装、`tools/sdk-pack.mjs` 离线 SDK
 （manifest + SHA256SUMS）；`M4-UNINSTALL-001..008` / `M4-KEY-001..010` /
-`M4-SDK-001` / `M4-SIGN-001`。三平台 CI、键盘全流程、性能进 CI 仍未完成，
-**不得**对外称 Beta 达标。
+`M4-SDK-001` / `M4-SIGN-001`。W2 部分完成：全局快捷键（新建/聚焦/侧栏/插件/审批/关闭）、
+按钮 role/aria_label 与 TextInput a11y 元数据已实现（[m4-keyboard.md](docs/m4-keyboard.md)），
+G3 真实窗口无鼠标流程待人工复验。三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
 
 **M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见
 [`docs/decisions/0007-m3-scope.md`](docs/decisions/0007-m3-scope.md) 与收尾口径
