@@ -52,6 +52,8 @@
 - `M4-COMPONENT-019`：`chat --selftest-cpp-install` 写 `plugin.toml`/`package.json`/`plugin.wasm`，
   走真实 `install_package` → `Profile::load` → `load_enabled_external_plugins`，
   注册 `echo` 并调用返回 `installed`，本机 **PASS**。
+- `M4-COMPONENT-020`：两个独立 `CppComponentPlugin` 实例在两个线程并行调用 guest，
+  验证宿主并行装载不同组件插件时的 Send/隔离；同一插件实例仍按 `&mut` 串行。
 
 构建 guest：
 
@@ -64,10 +66,8 @@ cargo build --release --target wasm32-wasip2
 命令：
 
 ```text
-cargo test -p dshr-plugin-wasm --test component_model
-cargo test -p dshr-plugin-wasm --test component_bindings
-cargo test -p dshr-plugin-wasm --test component_plugin
-→ 17 passed
+cargo test -p dshr-plugin-wasm
+→ PASS（component_model / component_bindings / component_plugin）
 ```
 
 作者路径见 [m4-component-authoring.md](m4-component-authoring.md)：

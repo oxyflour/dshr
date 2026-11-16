@@ -161,6 +161,31 @@ fn m4_component_016_cpp_component_plugin_round_trip() {
     assert_eq!(result["is_error"], false);
 }
 
+/// M4-COMPONENT-020：两个独立 CppComponentPlugin 实例可并行调用 guest，
+/// 对应宿主对不同插件并行 call 的模型。
+#[test]
+fn m4_component_020_parallel_component_instances() {
+    let handles: Vec<_> = (0..2)
+        .map(|index| {
+            std::thread::spawn(move || {
+                let mut plugin =
+                    CppComponentPlugin::new(format!("guest.{index}"), "0.1.0", GUEST)
+                        .expect("cpp component plugin constructs");
+                plugin
+                    .call("echo", &json!({ "index": index }))
+                    .expect("guest invoke")
+            })
+        })
+        .collect();
+    for (index, handle) in handles.into_iter().enumerate() {
+        let result = handle.join().expect("thread joins");
+        assert_eq!(
+            result["content"][0]["text"],
+            format!("{{\"index\":{index}}}")
+        );
+    }
+}
+
 /// M4-COMPONENT-003：cpp-v1.wit 能生成 world `plugin` 的宿主绑定，
 /// 并把 `host` imports 接到 Linker。
 #[test]
