@@ -178,6 +178,7 @@ pub fn spawn_guarded_with(
 }
 
 /// Duration → Job Object 的 100ns tick；0 或不足 1 tick 视为参数错误。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn cpu_limit_ticks(limit: Duration) -> Result<i64, GuardError> {
     let ticks = limit.as_nanos() / 100;
     if ticks == 0 {
@@ -310,7 +311,7 @@ mod imp {
     use crate::GuardError;
 
     pub(super) fn spawn(
-        command: Command,
+        mut command: Command,
         _limits: &GuardLimits,
     ) -> Result<GuardedChild, GuardError> {
         let child = command.spawn()?;

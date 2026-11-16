@@ -89,6 +89,7 @@ G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 覆盖 kill s
 W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并实现 native 跨插件批并行；
 同插件/MCP 并发与异步 trait 冻结仍未做。
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate），但 Actions 未实跑、桌面 GPUI 未覆盖。
+WSL Linux 上核心 6 crate 已真实 `cargo check` 通过（修复 `sidecar-guard` 非 Windows spawn）。
 官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。
 W3 窗口 draw 在 RDP 下硬预算 PASS（p95 9.40ms / 31.25ms），相对基线受远程环境干扰未通过。
 三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
