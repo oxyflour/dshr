@@ -1,0 +1,10 @@
+[plugin]
+id = "__ID__"
+version = "__VERSION__"
+api = "cordis-portable/v1"
+description = "__NAME__"
+
+[runtime]
+kind = "wasm-component"
+entry = "plugin.wasm"
+timeout_ms = 30000

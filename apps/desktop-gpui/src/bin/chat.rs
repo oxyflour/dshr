@@ -7707,6 +7707,87 @@ fn selftest_cpp_component() -> i32 {
     0
 }
 
+/// `--selftest-cpp-install`：走真实 `install_package` 复制到 sidecar 目录，
+/// 再从 profile 装载 cpp-v1 component，验证安装 → profile → loader 链路。
+fn selftest_cpp_install() -> i32 {
+    const GUEST: &[u8] =
+        include_bytes!("../../../../crates/plugin-wasm/tests/fixtures/cpp-component-guest.wasm");
+    let root = data_root().join("selftests").join("cpp-install");
+    let _ = std::fs::remove_dir_all(&root);
+    if let Err(error) = std::fs::create_dir_all(root.join("pkg")) {
+        eprintln!("[selftest-cpp-install] FAIL：创建目录: {error}");
+        return 1;
+    }
+    let package = root.join("pkg");
+    if let Err(error) = std::fs::write(package.join("plugin.wasm"), GUEST) {
+        eprintln!("[selftest-cpp-install] FAIL：写 guest: {error}");
+        return 1;
+    }
+    let manifest_raw = r#"
+[plugin]
+id = "selftest.installed"
+version = "0.1.0"
+api = "cordis-portable/v1"
+description = "cpp component selftest"
+
+[runtime]
+kind = "wasm-component"
+entry = "plugin.wasm"
+timeout_ms = 30000
+"#;
+    if let Err(error) = std::fs::write(package.join("plugin.toml"), manifest_raw) {
+        eprintln!("[selftest-cpp-install] FAIL：写 plugin.toml: {error}");
+        return 1;
+    }
+    let package_json = serde_json::json!({
+        "name": "selftest.installed",
+        "version": "0.1.0",
+        "private": true
+    })
+    .to_string();
+    if let Err(error) = std::fs::write(package.join("package.json"), package_json) {
+        eprintln!("[selftest-cpp-install] FAIL：写 package.json: {error}");
+        return 1;
+    }
+    let profile_dir = root.join("profile");
+    let sidecar_dir = root.join("sidecar");
+    if let Err(error) = std::fs::create_dir_all(&sidecar_dir) {
+        eprintln!("[selftest-cpp-install] FAIL：创建 sidecar: {error}");
+        return 1;
+    }
+    let mut profile = match Profile::load(&profile_dir) {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!("[selftest-cpp-install] FAIL：profile: {error}");
+            return 1;
+        }
+    };
+    if let Err(error) = install_package(&sidecar_dir, &package, &mut profile) {
+        eprintln!("[selftest-cpp-install] FAIL：安装: {error}");
+        return 1;
+    }
+    let mut plugins = PluginHost::new(AllowAll);
+    let errors = load_enabled_external_plugins(&mut plugins, &profile, &sidecar_dir);
+    if !errors.is_empty() {
+        eprintln!("[selftest-cpp-install] FAIL：装载: {errors:?}");
+        return 1;
+    }
+    let value = match plugins.call_approved("echo", &serde_json::json!({ "text": "installed" })) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("[selftest-cpp-install] FAIL：调用: {error}");
+            return 1;
+        }
+    };
+    if value["content"][0]["text"] != "{\"text\":\"installed\"}" {
+        eprintln!("[selftest-cpp-install] FAIL：结果: {value}");
+        return 1;
+    }
+    println!("[selftest-cpp-install] PASS value={value}");
+    let _ = std::fs::remove_dir_all(&root);
+    0
+}
+
 fn selftest_wasm() -> i32 {
     let root = data_root().join("selftests").join("wasm-host");
     let _ = std::fs::remove_dir_all(&root);
@@ -9391,6 +9472,9 @@ fn main() {
     }
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-cpp-install") {
+        std::process::exit(selftest_cpp_install());
     }
     if std::env::args().any(|arg| arg == "--selftest-cpp-component") {
         std::process::exit(selftest_cpp_component());

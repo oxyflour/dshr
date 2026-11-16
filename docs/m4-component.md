@@ -49,6 +49,9 @@
 - `M4-COMPONENT-018`：`chat --selftest-cpp-component` 把 guest 写成临时包，经
   `load_cpp_component_plugin_from_manifest` 注册 `echo` 并 `call_approved` 返回 args，
   本机 **PASS**（仍需真实窗口安装验收）。
+- `M4-COMPONENT-019`：`chat --selftest-cpp-install` 写 `plugin.toml`/`package.json`/`plugin.wasm`，
+  走真实 `install_package` → `Profile::load` → `load_enabled_external_plugins`，
+  注册 `echo` 并调用返回 `installed`，本机 **PASS**。
 
 构建 guest：
 
