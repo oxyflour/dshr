@@ -2656,6 +2656,8 @@ struct ChatApp {
     profile: Profile,
     /// 右侧插件面板是否打开。
     plugins_open: bool,
+    /// 等待用户确认的 `openExternal` URL（M4 W3；确认前不打开）。
+    pending_external: Option<String>,
     /// 长会话只渲染最近 N 条（点"载入更早"每次 +200），避免每帧构造上万元素。
     visible_limit: usize,
     /// 帧探针（DSHR_FRAME_PROBE）：滚动时测量真实帧耗时与呈现间隔。
@@ -2819,6 +2821,108 @@ impl ChatApp {
         cx.notify();
     }
 
+    /// ADC `openExternal` 必须先确认（M4 W3）；确认前只保存 URL，不打开。
+    fn request_open_external(&mut self, url: String, cx: &mut Context<Self>) {
+        self.pending_external = Some(url);
+        cx.notify();
+    }
+
+    fn external_confirm_bar(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let url = self.pending_external.as_ref()?;
+        let p = t.palette;
+        let mut display: String = url.chars().take(160).collect();
+        if url.chars().count() > 160 {
+            display.push('…');
+        }
+        let cancel = cx.listener(|this, _, _window, cx| {
+            this.pending_external = None;
+            cx.notify();
+        });
+        let open = cx.listener(|this, _, _window, cx| {
+            if let Some(url) = this.pending_external.take() {
+                cx.open_url(&url);
+            }
+            cx.notify();
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .px(px(16.0))
+                .pb(px(6.0))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(t.layout.composer_max_width)
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .rounded(t.radii.md)
+                        .border_1()
+                        .border_color(p.color(p.state_warn))
+                        .bg(p.color(p.bg_layer_1))
+                        .shadow_sm()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(t.type_scale.secondary)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(p.color(p.label_primary))
+                                        .child("打开外部链接？"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(t.type_scale.small)
+                                        .text_color(p.color(p.label_caption))
+                                        .text_overflow(TextOverflow::Truncate("…".into()))
+                                        .child(display),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("external-deny")
+                                .role(Role::Button)
+                                .aria_label("取消打开外部链接")
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(t.radii.sm)
+                                .border_1()
+                                .border_color(p.color(p.border_l2))
+                                .bg(p.color(p.button_elevated))
+                                .cursor_pointer()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_primary))
+                                .child("取消")
+                                .on_click(cancel),
+                        )
+                        .child(
+                            div()
+                                .id("external-open")
+                                .role(Role::Button)
+                                .aria_label("确认打开外部链接")
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(t.radii.sm)
+                                .bg(p.color(p.button_info))
+                                .cursor_pointer()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.bg_base))
+                                .child("打开")
+                                .on_click(open),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// 键盘审批：处理当前第一个待确认调用；没有 pending 时返回 false。
     fn resolve_first_approval(&mut self, outcome: ApprovalOutcome, cx: &mut Context<Self>) -> bool {
         let Some(first) = self.approvals.pending().first().cloned() else {
@@ -2896,7 +3000,9 @@ impl ChatApp {
 
     fn shortcut_escape(&mut self, _: &EscapeShortcut, window: &mut Window, cx: &mut Context<Self>) {
         trace_shortcut("escape");
-        if self.plugins_open {
+        if self.pending_external.take().is_some() {
+            cx.notify();
+        } else if self.plugins_open {
             self.plugins_open = false;
             cx.notify();
         } else if self.renaming.is_some() {
@@ -3309,7 +3415,10 @@ impl ChatApp {
                                     });
                                 }
                                 AdcAction::OpenExternal { url } => {
-                                    eprintln!("[adc] openExternal 未确认，未打开: {url}");
+                                    let url = url.clone();
+                                    let _ = weak.update(app, |chat, cx| {
+                                        chat.request_open_external(url, cx);
+                                    });
                                 }
                                 _ => {
                                     eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
@@ -4707,6 +4816,9 @@ impl Render for ChatApp {
                 })
                 .child(self.transcript(&theme, window, cx))
                 .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
+                .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
+                    el.child(bar)
+                })
                 .child(self.composer(&theme, cx)),
         );
         shell
@@ -8815,6 +8927,7 @@ fn main() {
                     pending_approvals: 0,
                     profile,
                     plugins_open: false,
+                    pending_external: None,
                     visible_limit,
                     frame_probe,
                     session_depths,

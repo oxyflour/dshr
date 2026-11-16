@@ -14,10 +14,11 @@
   - `adc_view` / `adc_panel_body` 保持纯渲染，M3 的工具卡/自检路径不回归。
 - **chat 插件面板**：Button 动作回到宿主：
   - `copy` → 写系统剪贴板（真实可用）；
+  - `openExternal` → 弹确认条（显示 URL，取消/打开）；确认前不调用系统浏览器，
+    `Esc` 或"取消"关闭确认条；
   - `call` / `command` → `PluginHost::dispatch_action` → external-process `ui.action`
     （fire-and-forget），随后 `refresh_adc_panels` 再发 `ui.render`；SDK 用
     `serve_with_views_and_actions` 的 action 闭包接收；
-  - `openExternal` → **不自动打开**，只记日志（需要确认 UI）。
 - `M4-ADC-001`：带 handler 的嵌套 Button 树渲染、0 诊断；`cargo test -p dshr-ui-gpui`。
 - `M4-ADC-002`：`PluginHost::dispatch_action` 路由/未知插件；`cargo test -p dshr-plugin-host`。
 - `M4-ADC-003`：external fixture 收到 `ui.action` 后下一次 `ui.render` 看到计数器变化。
@@ -26,7 +27,7 @@
 
 | 项 | 现状 | 下一步 |
 |---|---|---|
-| `openExternal` | 只记日志 | 确认弹窗 + 仅 https；用户拒绝不可执行 |
+| `openExternal` 的实机确认 | 确认条已实现，未真机点过 | `M4-ADC-101` 人工复验 |
 | Input/Textarea/Select/Checkbox/Switch/Slider 的 `onChange` | 仍只读 | 值变更去抖 150ms → Host，且需要状态快照/patch |
 | Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
 | tool card `tool.result.extra` | 未渲染 | 工具卡内受限 ADC 区域，只允许元素集 |
@@ -40,5 +41,7 @@
 3. 点击"复制"，剪贴板应为 `demo`；stderr 出现 `[adc] copy 4 bytes`；
 4. 把 `onPress` 换成 `call`，点击后宿主发 `ui.action`；external fixture 的 action 计数器
    增加，下一次 `ui.render` 的文本出现 `actions=1`；未知 action 只写 stderr，不影响界面。
+5. 把 `onPress` 换成 `openExternal: "https://example.com"`，点击后出现确认条；
+   点"取消"或按 `Esc` 不打开；点"打开"才调用系统浏览器。
 
 当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层，点击/剪贴板必须在真实窗口复验。
