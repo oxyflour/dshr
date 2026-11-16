@@ -327,6 +327,39 @@ fn m4_adc_020_keyboard_activates_select_chip(cx: &mut TestAppContext) {
     assert_eq!(count.get(), 2, "Space should activate selected chip");
 }
 
+/// M4-ADC-021：Slider 点击聚焦后 Right 键步进，value 注入 args。
+#[gpui::test]
+fn m4_adc_021_keyboard_steps_slider(cx: &mut TestAppContext) {
+    let last = Rc::new(Cell::new(None));
+    let sink = last.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |action| sink.set(Some(action.clone())));
+    let tree = serde_json::json!({
+        "type": "Slider",
+        "props": {
+            "value": 5.0,
+            "min": 0.0,
+            "max": 10.0,
+            "step": 1.0,
+            "a11yLabel": "Level",
+            "onChange": { "call": "set_level", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$").expect("slider bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("right");
+    cx.run_until_parked();
+    match last.take() {
+        Some(Action::Call { method, args }) => {
+            assert_eq!(method, "set_level");
+            assert_eq!(args["value"], 6.0, "right step not injected: {args}");
+        }
+        other => panic!("expected slider step action, got {other:?}"),
+    }
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {

@@ -1283,7 +1283,17 @@ fn render_slider(
         let inc = action_with_json(&action, serde_json::json!(upper));
         let dec_handler = handler.clone();
         let inc_handler = handler.clone();
+        let key_dec_handler = handler.clone();
+        let key_inc_handler = handler.clone();
+        let key_dec = dec.clone();
+        let key_inc = inc.clone();
         slider = slider
+            .focusable()
+            .on_key_down(move |event, window, cx| match event.keystroke.key.as_str() {
+                "left" | "down" => key_dec_handler(&key_dec, window, cx),
+                "right" | "up" => key_inc_handler(&key_inc, window, cx),
+                _ => {}
+            })
             .child(
                 div()
                     .id(format!("{path}-dec"))
