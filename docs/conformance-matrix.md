@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T18:46:56.140Z |
-| git HEAD | 3d8db00d626ccfbbe0b397917a286656016e54a4（dirty，6 个文件未提交） |
+| generated_at | 2026-11-16T18:47:59.471Z |
+| git HEAD | 29b31410dc20ef74d29570b4703fa8316da1f197（clean） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
 | links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 408 link(s) checked, 0 broken, 75 file(s) scanned |
-| node-test | pass | 0 | 0.35s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 64.65s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 895 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 53.59s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 895 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
