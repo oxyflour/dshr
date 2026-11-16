@@ -69,6 +69,45 @@ fn m4_component_004_component_fuel_limit_traps() {
     assert!(result.is_err(), "infinite loop should exhaust component fuel");
 }
 
+/// M4-COMPONENT-005：component 死循环受 epoch 中断约束，外部 increment_epoch 后 trap。
+#[test]
+fn m4_component_005_component_epoch_interrupts() {
+    const LOOP_WAT: &str = r#"
+    (component
+      (core module $m
+        (func (export "run") (result i32)
+          (loop $l (br $l))
+          i32.const 0))
+      (core instance $i (instantiate $m))
+      (func (export "run") (result u32)
+        (canon lift (core func $i "run")))
+    )
+    "#;
+    let mut config = Config::new();
+    config.epoch_interruption(true);
+    let engine = Engine::new(&config).expect("epoch engine");
+    let component = Component::new(&engine, LOOP_WAT).expect("component parses");
+    let linker = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    store.set_epoch_deadline(1);
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("component instantiates");
+    let run = instance
+        .get_typed_func::<(), (u32,)>(&mut store, "run")
+        .expect("run export typed");
+    let ticker = {
+        let engine = engine.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            engine.increment_epoch();
+        })
+    };
+    let result = run.call(&mut store, ());
+    ticker.join().expect("ticker");
+    assert!(result.is_err(), "infinite loop should be epoch-interrupted");
+}
+
 /// M4-COMPONENT-002：`docs/spec/cpp-v1.wit` 可解析，world `plugin` 导入 host、
 /// 导出 tool-provider（W5 契约冻结前的语法/形状校验）。
 #[test]
