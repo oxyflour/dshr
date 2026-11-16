@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **641 个测试 ID —— implemented 581、pending 18、manual 42、
+M4 G1（2026-11-17）：注册表 **642 个测试 ID —— implemented 581、pending 18、manual 43、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 539 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -192,6 +192,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-COMPONENT-018` | manual | `chat --selftest-cpp-component`：临时包装载真实 guest，注册/调用 `echo` PASS |
 | `M4-COMPONENT-019` | manual | `chat --selftest-cpp-install`：真实 `install_package`→profile→loader→`echo` PASS |
 | `M4-COMPONENT-023` | manual | `chat --selftest-cpp-cli-install`：信任安装 CLI→profile→loader→`echo` PASS |
+| `M4-CI-007` | manual | `sign-windows.ps1 -SelfSignedTest`：Authenticode 写入/签名者一致；status=UnknownError（未受信任根） |
 | `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |
