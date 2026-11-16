@@ -91,6 +91,22 @@ fn m4_component_010_component_plugin_memory_limit() {
     );
 }
 
+/// M4-COMPONENT-011：ComponentPlugin 的 epoch deadline 中断死循环 call。
+#[test]
+fn m4_component_011_component_plugin_epoch_limit() {
+    let mut plugin = ComponentPlugin::new("probe.loop", "0.1.0", LOOP_WAT)
+        .expect("component plugin constructs")
+        .with_epoch_deadline(1);
+    let error = plugin
+        .call("component.run", &json!({}))
+        .expect_err("infinite loop must be epoch-interrupted");
+    let message = error.to_string();
+    assert!(
+        message.contains("component trap") || message.contains("epoch"),
+        "unexpected error: {message}"
+    );
+}
+
 /// M4-COMPONENT-007：ComponentPlugin 注册 `component.run`，call 返回 42。
 #[test]
 fn m4_component_007_component_plugin_round_trip() {

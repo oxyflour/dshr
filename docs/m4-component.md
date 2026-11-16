@@ -25,6 +25,8 @@
 - `M4-COMPONENT-009`：`with_fuel_limit(1_000)` 的死循环 component call 返回 Err，
   验证配额已进入 `ComponentPlugin` 而不是只在裸 wasmtime 测试里。
 - `M4-COMPONENT-010`：`with_memory_limit(64 KiB)` 的 grow component call 返回 Err。
+- `M4-COMPONENT-011`：`with_epoch_deadline(1)` + 后台 `increment_epoch()`，死循环
+  component call 返回 Err，验证 epoch 也进入 probe 加载器。
 
 命令：
 
@@ -32,7 +34,7 @@
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
 cargo test -p dshr-plugin-wasm --test component_plugin
-→ 10 passed
+→ 11 passed
 ```
 
 ## 2. 还没做
@@ -40,7 +42,7 @@ cargo test -p dshr-plugin-wasm --test component_plugin
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的
   工具声明/调用；也没有被 `plugin-host` 的 manifest loader 自动识别。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
-  fuel/epoch/内存/输出配额已有测试（fuel/内存/输出也进了 probe 加载器），并发仍未验证；
+  fuel/epoch/内存/输出配额已有测试（fuel/epoch/内存/输出也进了 probe 加载器），并发仍未验证；
   当前 core-module 的配额路径不能直接假设适用。
 - 没有 component 模板、签名/安装/卸载链路、作者文档。
 

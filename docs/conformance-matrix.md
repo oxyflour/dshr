@@ -8,21 +8,21 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T18:54:44.314Z |
-| git HEAD | 6d879a3aae22091c66d3c1c0165099824a6ec7a4（clean） |
+| generated_at | 2026-11-16T18:57:07.642Z |
+| git HEAD | 008c85a863cbb49a298a527247ea3e9535362a9b（dirty，8 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | full — `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，626 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，627 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 626 |
-| implemented | 571 |
-| implemented passed | 571 |
+| 总测试 ID | 627 |
+| implemented | 572 |
+| implemented passed | 572 |
 | implemented failed | 0 |
 | implemented skipped | 0 |
 | pending | 18 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.22s | `node schema/check.mjs` | 76/76 cases passed |
+| schema | pass | 0 | 0.27s | `node schema/check.mjs` | 76/76 cases passed |
 | links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 408 link(s) checked, 0 broken, 75 file(s) scanned |
 | node-test | pass | 0 | 0.38s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 53.55s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 897 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| cargo | pass | 0 | 69.47s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 898 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -101,7 +101,7 @@
 | SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
-### PASS（逐 ID；共 571 条）
+### PASS（逐 ID；共 572 条）
 
 | ID | 结果 |
 |---|---|
@@ -654,6 +654,7 @@
 | M4-COMPONENT-008 | PASS |
 | M4-COMPONENT-009 | PASS |
 | M4-COMPONENT-010 | PASS |
+| M4-COMPONENT-011 | PASS |
 | M4-CONC-001 | PASS |
 | M4-CONC-002 | PASS |
 | M4-CONC-003 | PASS |

@@ -125,16 +125,16 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **626 个测试 ID —— implemented 571、pending 18、manual 37、
+M4 G1（2026-11-17）：注册表 **627 个测试 ID —— implemented 572、pending 18、manual 37、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
-529 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
+530 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
 
 上一轮 `--full` 实跑（2026-11-15，M3 收尾）：`67 suites / 836 passed / 1 failed / 6 ignored`；
 唯一失败是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
 （隔离重跑同样失败，属沙箱进程限制；普通终端/Lead 环境同一 workspace 为 **0 failed / 6 ignored**；
 [`m3-status.md`](m3-status.md) §4 已记录）。当前 `--full`（2026-11-16，W1/W2）为
-`71 suites / 897 passed / 0 failed / 8 ignored`，exit 0；8 ignored 仍是 official gate 的
+`71 suites / 898 passed / 0 failed / 8 ignored`，exit 0；8 ignored 仍是 official gate 的
 `RPC-L2-201/501..507`（manual gate，不计为通过）。
 
 主要 groups：
@@ -183,7 +183,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 核心 crate + desktop-build；Linux 本机 build 通过，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` + `dshr-desktop-gpui` `cargo build` + ADC/recovery/crash 自检（[m4-linux.md](m4-linux.md)） |
-| `M4-COMPONENT-001..010` | implemented | Component ABI/WIT/bindgen + fuel/epoch/memory trap + probe 加载器 + 输出/fuel/memory 上限（[m4-component.md](m4-component.md)） |
+| `M4-COMPONENT-001..011` | implemented | Component ABI/WIT/bindgen + fuel/epoch/memory trap + probe 加载器 + 输出/fuel/memory/epoch 上限（[m4-component.md](m4-component.md)） |
 | `M4-ADC-009..025` | implemented | GPUI TestAppContext 真实点击/键盘/Slider 拖拽/Tabs 切换/Input/Textarea 编辑入口（`crates/ui-gpui/tests/adc_click.rs`） |
 | `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe + dsh-official 的 zip/tar + `.sha256`，解压后 sidecar/official 自检 PASS（[m4-package.md](m4-package.md)） |
 | `M4-CI-005` | manual | `verify-package.ps1/sh`：校验 sha256 + 解压 + sidecar/official 自检，Windows/Linux 均 PASS |

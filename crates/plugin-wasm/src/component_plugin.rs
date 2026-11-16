@@ -22,6 +22,8 @@ pub struct ComponentPlugin {
     fuel: u64,
     /// 单次 call 的线性内存上限（默认 usize::MAX）。
     memory_bytes: usize,
+    /// 单次 call 的 epoch deadline（None 表示不主动中断）。
+    epoch_deadline: Option<u64>,
     /// 序列化结果字节上限（probe ABI 的输出配额；默认 1 MiB）。
     max_output_bytes: usize,
 }
@@ -35,6 +37,7 @@ impl ComponentPlugin {
     ) -> Result<Self, PluginError> {
         let mut config = Config::new();
         config.consume_fuel(true);
+        config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|error| {
             PluginError::Invalid(format!("component engine: {error}"))
         })?;
@@ -48,6 +51,7 @@ impl ComponentPlugin {
             component,
             fuel: u64::MAX,
             memory_bytes: usize::MAX,
+            epoch_deadline: None,
             max_output_bytes: 1024 * 1024,
         })
     }
@@ -55,6 +59,12 @@ impl ComponentPlugin {
     /// 设置单次 call 的线性内存上限（用于 W5 memory 配额）。
     pub fn with_memory_limit(mut self, memory_bytes: usize) -> Self {
         self.memory_bytes = memory_bytes;
+        self
+    }
+
+    /// 设置单次 call 的 epoch deadline（用于 W5 epoch 配额）。
+    pub fn with_epoch_deadline(mut self, deadline: u64) -> Self {
+        self.epoch_deadline = Some(deadline);
         self
     }
 
@@ -80,18 +90,28 @@ impl ComponentPlugin {
         store
             .set_fuel(self.fuel)
             .map_err(|error| PluginError::Invalid(format!("component fuel: {error}")))?;
+        store.set_epoch_deadline(self.epoch_deadline.unwrap_or(u64::MAX));
         let instance = linker
             .instantiate(&mut store, &self.component)
             .map_err(|error| PluginError::Invalid(format!("component instantiate: {error}")))?;
         let run = instance
             .get_typed_func::<(), (u32,)>(&mut store, "run")
             .map_err(|error| PluginError::Invalid(format!("component run export: {error}")))?;
-        let (value,) = run
-            .call(&mut store, ())
-            .map_err(|error| PluginError::ToolFailed {
-                tool: "component.run".to_owned(),
-                reason: format!("component trap: {error}"),
-            })?;
+        let ticker = self.epoch_deadline.map(|_| {
+            let engine = self.engine.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                engine.increment_epoch();
+            })
+        });
+        let call_result = run.call(&mut store, ());
+        if let Some(ticker) = ticker {
+            let _ = ticker.join();
+        }
+        let (value,) = call_result.map_err(|error| PluginError::ToolFailed {
+            tool: "component.run".to_owned(),
+            reason: format!("component trap: {error}"),
+        })?;
         Ok(value)
     }
 }
