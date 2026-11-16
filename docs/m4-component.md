@@ -16,13 +16,15 @@
   下 call 返回 Err（fuel 配额 trap）。
 - `M4-COMPONENT-005`：`epoch_interruption(true)` + `set_epoch_deadline(1)`，后台
   `increment_epoch()` 后死循环 call 返回 Err（epoch 中断）。
+- `M4-COMPONENT-006`：`StoreLimitsBuilder::memory_size(64 KiB)`，component 尝试
+  `memory.grow` 到超限后 `unreachable`，call 返回 Err（内存上限）。
 
 命令：
 
 ```text
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
-→ 5 passed
+→ 6 passed
 ```
 
 ## 2. 还没做
@@ -30,7 +32,7 @@ cargo test -p dshr-plugin-wasm --test component_bindings
 - 没有 `ComponentPlugin` 加载器实现 `Plugin` trait；component 还不能被
   `dshr-plugin-host` 安装/调用。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
-  fuel/epoch 配额已有测试，内存/输出/并发仍未验证；当前 core-module 的配额路径
+  fuel/epoch/内存配额已有测试，输出/并发仍未验证；当前 core-module 的配额路径
   不能直接假设适用。
 - 没有 component 模板、签名/安装/卸载链路、作者文档。
 

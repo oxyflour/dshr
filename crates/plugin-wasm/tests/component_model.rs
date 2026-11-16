@@ -108,6 +108,43 @@ fn m4_component_005_component_epoch_interrupts() {
     assert!(result.is_err(), "infinite loop should be epoch-interrupted");
 }
 
+/// M4-COMPONENT-006：component 核心线性内存增长受 StoreLimits 约束，超限即 trap。
+#[test]
+fn m4_component_006_component_memory_limit_traps() {
+    const GROW_WAT: &str = r#"
+    (component
+      (core module $m
+        (memory (export "memory") 1)
+        (func (export "run") (result i32)
+          i32.const 100
+          memory.grow
+          i32.const -1
+          i32.eq
+          (if (then unreachable))
+          i32.const 42))
+      (core instance $i (instantiate $m))
+      (func (export "run") (result u32)
+        (canon lift (core func $i "run")))
+    )
+    "#;
+    let engine = Engine::default();
+    let component = Component::new(&engine, GROW_WAT).expect("component parses");
+    let linker = Linker::new(&engine);
+    let limits = wasmtime::StoreLimitsBuilder::new()
+        .memory_size(64 * 1024)
+        .build();
+    let mut store = Store::new(&engine, limits);
+    store.limiter(|limits| limits);
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("component instantiates");
+    let run = instance
+        .get_typed_func::<(), (u32,)>(&mut store, "run")
+        .expect("run export typed");
+    let result = run.call(&mut store, ());
+    assert!(result.is_err(), "memory.grow over StoreLimits should trap");
+}
+
 /// M4-COMPONENT-002：`docs/spec/cpp-v1.wit` 可解析，world `plugin` 导入 host、
 /// 导出 tool-provider（W5 契约冻结前的语法/形状校验）。
 #[test]
