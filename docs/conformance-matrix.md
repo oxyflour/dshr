@@ -8,25 +8,25 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T20:37:49.195Z |
-| git HEAD | 465d2eae35e8cd366423b078e633f1087dc70b3d（clean） |
+| generated_at | 2026-11-16T20:44:37.402Z |
+| git HEAD | bf086a9fd469d70ab4492d5e7878ad4a456958af（dirty，10 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | full — `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，640 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，641 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 640 |
+| 总测试 ID | 641 |
 | implemented | 581 |
 | implemented passed | 581 |
 | implemented failed | 0 |
 | implemented skipped | 0 |
 | pending | 18 |
-| manual | 41 |
+| manual | 42 |
 | blocked | 0 |
 | **failed（导致退出码 1）** | **0** |
 
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.28s | `node tools/check-links.mjs` | 416 link(s) checked, 0 broken, 78 file(s) scanned |
-| node-test | pass | 0 | 0.39s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 57.14s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 416 link(s) checked, 0 broken, 78 file(s) scanned |
+| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 62.77s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -72,6 +72,7 @@
 | M4-CI-006 | M4 | manual | MANUAL | — | Linux + rustup targets x86_64-apple-darwin/aarch64-apple-darwin：cargo check -p dshr-ui-gpui --target ... 两个 target 均 PASS（约 34s，无链接）；desktop-gpui 在 zstd-sys/ring 的 C/汇编步骤失败（无 macOS clang/SDK），不是 Rust 代码错误。见 docs/m4-macos.md。 |
 | M4-COMPONENT-018 | M4 | manual | MANUAL | — | chat --selftest-cpp-component：把 cpp-component-guest.wasm 写临时包，经 load_cpp_component_plugin_from_manifest 注册 echo、call_approved 返回 args。本机 PASS；仍需真实窗口安装验收。 |
 | M4-COMPONENT-019 | M4 | manual | MANUAL | — | chat --selftest-cpp-install：临时包写 plugin.toml/package.json/plugin.wasm，走 install_package 复制到 sidecar、Profile::load、load_enabled_external_plugins，注册 echo 并 call 返回 installed。本机 PASS；覆盖真实安装 CLI 的复制/profile/装载链路（非 GUI 点击）。 |
+| M4-COMPONENT-023 | M4 | manual | MANUAL | — | chat --selftest-cpp-cli-install：走 install_plugin_with_options（TrustStore/预览/--yes-install/profile 写入/审计），再从 profile 装载 cpp component 并调用 echo。本机 PASS，signature=missing。仍非 GUI 点击。 |
 | M4-COMPONENT-AUTHOR-001 | M4 | manual | MANUAL | — | tools/new-component-plugin.mjs + templates/wasm-component-plugin：生成 demo.echo，wasm32-wasip2 release 74KB，cargo build exit 0；WIT 随项目复制。仅作者路径，未在真实 chat 安装/调用、无签名。见 docs/m4-component-authoring.md。 |
 | M4-DRAW-001 | M4 | manual | MANUAL | — | tools/frame-probe.ps1 -Frames 120：RDP 32Hz 下 draw_p95=9.40ms <= 31.25ms、missed_ratio=0（HARD PASS）；相对基线 avg_fps=19.2 < 22.42，环境原因未通过，不判回归。见 docs/m4-draw-budget.md。 |
 | M4-KEY-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --trust-key：本机 trust-keys.json 管理与 trust-key-audit.jsonl；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |

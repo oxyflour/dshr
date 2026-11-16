@@ -21,4 +21,5 @@ export DSHR_HOME="$TMP/.home"
 ./chat --selftest-official
 ./chat --selftest-cpp-component
 ./chat --selftest-cpp-install
+./chat --selftest-cpp-cli-install
 echo "[verify-package] PASS $ARCHIVE"

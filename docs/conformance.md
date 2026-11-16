@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **640 个测试 ID —— implemented 581、pending 18、manual 41、
+M4 G1（2026-11-17）：注册表 **641 个测试 ID —— implemented 581、pending 18、manual 42、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 539 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -183,7 +183,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 核心 crate + desktop-build；Linux 本机 build 通过，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` + `dshr-desktop-gpui` `cargo build` + ADC/recovery/crash 自检（[m4-linux.md](m4-linux.md)） |
-| `M4-COMPONENT-001..022` | implemented | Component ABI/WIT + 配额 + probe + 真实 guest + CppComponentPlugin + manifest/install + 并行/共享调用/真实 fuel（[m4-component.md](m4-component.md)） |
+| `M4-COMPONENT-001..023` | implemented | Component ABI/WIT + 配额 + probe + 真实 guest + CppComponentPlugin + manifest/install/CLI/并行/共享/真实 fuel（[m4-component.md](m4-component.md)） |
 | `M4-ADC-009..025` | implemented | GPUI TestAppContext 真实点击/键盘/Slider 拖拽/Tabs 切换/Input/Textarea 编辑入口（`crates/ui-gpui/tests/adc_click.rs`） |
 | `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe + dsh-official 的 zip/tar + `.sha256`，解压后 sidecar/official 自检 PASS（[m4-package.md](m4-package.md)） |
 | `M4-CI-005` | manual | `verify-package.ps1/sh`：校验 sha256 + 解压 + sidecar/official 自检，Windows/Linux 均 PASS |
@@ -191,6 +191,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-COMPONENT-AUTHOR-001` | manual | 组件模板/生成器：`demo.echo` wasm32-wasip2 release 74KB 构建通过（[m4-component-authoring.md](m4-component-authoring.md)） |
 | `M4-COMPONENT-018` | manual | `chat --selftest-cpp-component`：临时包装载真实 guest，注册/调用 `echo` PASS |
 | `M4-COMPONENT-019` | manual | `chat --selftest-cpp-install`：真实 `install_package`→profile→loader→`echo` PASS |
+| `M4-COMPONENT-023` | manual | `chat --selftest-cpp-cli-install`：信任安装 CLI→profile→loader→`echo` PASS |
 | `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |

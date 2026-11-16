@@ -23,8 +23,8 @@ Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本�
 
 | 平台 | 产物 | 大小 | SHA-256 |
 |---|---|---|---|
-| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 62,721,650 B | `fda23b34…efba` |
-| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 213,631,438 B | `aab3d873…13a4` |
+| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 62,724,028 B | `345140f8…60fe` |
+| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 213,630,798 B | `f897422d…10a2` |
 
 归档内含 `runtime/node`、`sidecar/probe-*.mjs`、完整 `sidecar/dsh-official`（含
 node_modules）与 `components/cpp-component`（`plugin.toml` + `package.json` + 真实
@@ -52,10 +52,12 @@ cd dist/dshr-debug-windows-x64
 ```powershell
 .\chat.exe --selftest-cpp-component
 .\chat.exe --selftest-cpp-install
+.\chat.exe --selftest-cpp-cli-install
 ```
 
-实测两条都 PASS：`registry=echo`，并返回 guest 的 args；`--selftest-cpp-install` 走
-`install_package` → profile → loader。
+实测三条都 PASS：`registry=echo`，并返回 guest 的 args；`--selftest-cpp-install` 走
+`install_package` → profile → loader；`--selftest-cpp-cli-install` 走信任安装 CLI
+（`signature=missing`）→ profile → loader。
 
 Linux 归档解压后同样直接运行：
 
@@ -65,10 +67,11 @@ cd dist/dshr-debug-linux-x86_64
 ./chat --selftest-official
 ./chat --selftest-cpp-component
 ./chat --selftest-cpp-install
+./chat --selftest-cpp-cli-install
 ```
 
-四项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
-host_services=3`；组件自检注册 `echo` 并返回 args。即两个包对 probe、官方 sidecar
+五项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
+host_services=3`；组件自检注册 `echo` 并返回 args，CLI 安装自检 `signature=missing`。即两个包对 probe、官方 sidecar
 与 cpp-v1 component 都已自带运行时，不依赖外部 Node。
 
 ## 4. 包校验脚本
@@ -79,8 +82,8 @@ bash tools/verify-package.sh dist/dshr-debug-linux-x86_64.tar.gz
 ```
 
 脚本会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery`、
-`--selftest-official`、`--selftest-cpp-component` 与 `--selftest-cpp-install`，最后清理。
-Windows/Linux 本机均 **PASS**。
+`--selftest-official`、`--selftest-cpp-component`、`--selftest-cpp-install` 与
+`--selftest-cpp-cli-install`，最后清理。Windows/Linux 本机均 **PASS**。
 
 ## 5. 明确未做
 

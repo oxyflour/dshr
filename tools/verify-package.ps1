@@ -29,6 +29,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "cpp component selftest failed: $LASTEXITCODE" }
         & .\chat.exe --selftest-cpp-install
         if ($LASTEXITCODE -ne 0) { throw "cpp install selftest failed: $LASTEXITCODE" }
+        & .\chat.exe --selftest-cpp-cli-install
+        if ($LASTEXITCODE -ne 0) { throw "cpp cli install selftest failed: $LASTEXITCODE" }
     } finally {
         Pop-Location
     }

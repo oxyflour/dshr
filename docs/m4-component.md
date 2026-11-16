@@ -52,6 +52,9 @@
 - `M4-COMPONENT-019`：`chat --selftest-cpp-install` 写 `plugin.toml`/`package.json`/`plugin.wasm`，
   走真实 `install_package` → `Profile::load` → `load_enabled_external_plugins`，
   注册 `echo` 并调用返回 `installed`，本机 **PASS**。
+- `M4-COMPONENT-023`：`chat --selftest-cpp-cli-install` 走真实 `install_plugin_with_options`
+  （`TrustStore`/预览/`--yes-install`/profile 写入/审计），再从 profile 装载并调用 `echo`；
+  本机 **PASS**（`signature=missing`，仍未做签名包）。
 - `M4-COMPONENT-020`：两个独立 `CppComponentPlugin` 实例在两个线程并行调用 guest，
   验证宿主并行装载不同组件插件时的 Send/隔离；同一插件实例仍按 `&mut` 串行。
 - `M4-COMPONENT-021`：`CppComponentPlugin::with_fuel_limit(100_000)` 调 guest `spin`
