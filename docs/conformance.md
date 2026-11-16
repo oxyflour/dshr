@@ -62,7 +62,7 @@ title 取测试函数名，notes 追加来源文件。这同时满足「ID 归�
 |---|---|---|
 | `implemented` | 已有可执行证据：必须声明 `suite` + `selector`，且 selector 在本次运行中命中；`groups` 里还必须能在 `source_dirs` 找到对应测试函数 | 是（未命中/失败 → FAIL） |
 | `pending` | 已定义断言但实现/契约未就绪（`ADC-BIND-001`、17 个 chat selftest） | 否 |
-| `manual` | 需人工/脚本实验判定（official gate `RPC-L2-201/501..505`、`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`ADC-PANEL-001`、`M3-DEFAULT-070`、`M3-PARALLEL-201`、`CPP-WASM-100`、`CPP-AUTHOR-001`） | 否 |
+| `manual` | 需人工/脚本实验判定（official gate `RPC-L2-201/501..506`、`GATE-G2-001`、`CPP-TRUST-019`、`CPP-ISO-022`、`RPC-L2-411`、`ADC-PANEL-001`、`M3-DEFAULT-070`、`M3-PARALLEL-201`、`CPP-WASM-100`、`CPP-AUTHOR-001`） | 否 |
 | `blocked` | 被外部依赖阻塞（当前暂无条目；语义保留给前置未落地时） | 否 |
 
 `result` 取值：`PASS` / `FAIL` / `SKIP`（suite 本次未选中，例如 `--quick` 下 `suite=cargo` 的 ID）/
@@ -227,8 +227,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
   `CPP-PANEL-002`/`CPP-WASM-033`（panel id 冲突）已 implemented；manual 证据
   `RPC-L2-411`（chat `--selftest-l2`）、`M3-PARALLEL-201`（chat `--selftest-parallel-tools`）、
   `CPP-WASM-100`（chat `--selftest-wasm`：安装→装载→调用→trap→卸载）以及 **official gate**
-  `RPC-L2-201/501..505`（`tools/official-l2-gate.ps1`；缺 `.tmp/dsh-tools-all` 时 exit 1，
-  默认 cargo 中 6 ignored/0 passed，不再算 implemented）。
+  `RPC-L2-201/501..506`（`tools/official-l2-gate.ps1`；缺 `.tmp/dsh-tools-all` 时 exit 1，
+  默认 cargo 中 7 ignored/0 passed，不再算 implemented）。
 
 gate 判定方式：`node tools/conformance.mjs --full` 全绿（implemented 无 FAIL）且对应 gate 的
 manual 证据落盘。
@@ -265,7 +265,7 @@ manual 证据落盘。
    `Running ...(<binary>-<hash>.exe)` + 紧随 `test result: ... passed; ... ignored` 块建立
    **binary→counts** 映射（stdout/stderr 合并同一文件以保顺序），integration test 二进制用
    `crates/<pkg>/tests/<binary>.rs` 反查包归属；`passed=0 && ignored>0` 的整文件忽略二进制会进入
-   suite summary（本机实测 `未执行: official_packages(6 ignored)`），该包若无其它已执行用例即 FAIL。
+   suite summary（本机实测 `未执行: official_packages(7 ignored)`），该包若无其它已执行用例即 FAIL。
    对应 ID 已全部改 manual（`tools/official-l2-gate.ps1`），矩阵显示 MANUAL 而非 PASS。
    限制：同一二进制内"部分执行 + 部分 ignored"目前只计数、不逐个归因到 ID。
 9. **源码同 ID 重复**：`cpp_proc_024..027` 在 plugin-sdk 的 `session.rs` 与 `tool_result.rs`
