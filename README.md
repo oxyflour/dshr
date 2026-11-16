@@ -82,7 +82,7 @@ G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插
 走确认条（取消/Esc 不打开）；工具结果 `meta.ui` 已接到 tool card 附加区；W8 修掉两处"node 缺失时 SKIP 记 pass"的集成测试，
 `onChange` 未做（Checkbox/Switch/Select/Input/Textarea/Slider 步进已接，拖拽未接）（[m4-adc.md](docs/m4-adc.md)）。G2 已有 headless 恢复自检
 （`--selftest-recovery`：损坏会话/`.bak`/插件失败回滚），真实窗口崩溃恢复仍未验证。
-W5 已启用 wasmtime `component-model`，并用 `M4-COMPONENT-001..009` 验证 canonical ABI、
+W5 已启用 wasmtime `component-model`，并用 `M4-COMPONENT-001..010` 验证 canonical ABI、
 `cpp-v1.wit`、bindgen、fuel/epoch/memory/输出配额与 probe `ComponentPlugin`；正式 cpp-v1 工具 ABI/并发仍未接。
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory/fs read+write 的 execute 在 official gate 8/8 通过。
 G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。

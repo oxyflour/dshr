@@ -58,6 +58,39 @@ fn m4_component_009_component_plugin_fuel_limit() {
     );
 }
 
+const GROW_WAT: &str = r#"
+(component
+  (core module $m
+    (memory (export "memory") 1)
+    (func (export "run") (result i32)
+      i32.const 100
+      memory.grow
+      i32.const -1
+      i32.eq
+      (if (then unreachable))
+      i32.const 42))
+  (core instance $i (instantiate $m))
+  (func (export "run") (result u32)
+    (canon lift (core func $i "run")))
+)
+"#;
+
+/// M4-COMPONENT-010：ComponentPlugin 的 memory 上限让超限 grow 的 call 失败。
+#[test]
+fn m4_component_010_component_plugin_memory_limit() {
+    let mut plugin = ComponentPlugin::new("probe.grow", "0.1.0", GROW_WAT)
+        .expect("component plugin constructs")
+        .with_memory_limit(64 * 1024);
+    let error = plugin
+        .call("component.run", &json!({}))
+        .expect_err("memory.grow over limit must trap");
+    let message = error.to_string();
+    assert!(
+        message.contains("component trap") || message.contains("memory"),
+        "unexpected error: {message}"
+    );
+}
+
 /// M4-COMPONENT-007：ComponentPlugin 注册 `component.run`，call 返回 42。
 #[test]
 fn m4_component_007_component_plugin_round_trip() {

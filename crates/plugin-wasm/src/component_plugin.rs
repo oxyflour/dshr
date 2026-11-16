@@ -10,7 +10,7 @@ use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_tool_runtime::{ToolDefinition, ToolOrigin};
 use serde_json::{json, Value};
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreLimitsBuilder};
 
 /// 实验性 component 插件：只支持 `component.run` 探针工具。
 pub struct ComponentPlugin {
@@ -20,6 +20,8 @@ pub struct ComponentPlugin {
     component: Component,
     /// 单次 call 的 fuel 上限（默认 u64::MAX，即不主动耗尽）。
     fuel: u64,
+    /// 单次 call 的线性内存上限（默认 usize::MAX）。
+    memory_bytes: usize,
     /// 序列化结果字节上限（probe ABI 的输出配额；默认 1 MiB）。
     max_output_bytes: usize,
 }
@@ -45,8 +47,15 @@ impl ComponentPlugin {
             engine,
             component,
             fuel: u64::MAX,
+            memory_bytes: usize::MAX,
             max_output_bytes: 1024 * 1024,
         })
+    }
+
+    /// 设置单次 call 的线性内存上限（用于 W5 memory 配额）。
+    pub fn with_memory_limit(mut self, memory_bytes: usize) -> Self {
+        self.memory_bytes = memory_bytes;
+        self
     }
 
     /// 设置单次 call 的 fuel 上限（用于 W5 fuel 配额）。
@@ -63,7 +72,11 @@ impl ComponentPlugin {
 
     fn invoke_run(&mut self) -> Result<u32, PluginError> {
         let linker = Linker::new(&self.engine);
-        let mut store = Store::new(&self.engine, ());
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(self.memory_bytes)
+            .build();
+        let mut store = Store::new(&self.engine, limits);
+        store.limiter(|limits| limits);
         store
             .set_fuel(self.fuel)
             .map_err(|error| PluginError::Invalid(format!("component fuel: {error}")))?;
