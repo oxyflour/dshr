@@ -43,6 +43,30 @@ done
 if [[ -d "$ROOT/sidecar/dsh-official" ]]; then
   cp -a "$ROOT/sidecar/dsh-official" "$STAGE/sidecar/dsh-official"
 fi
+COMPONENT="$STAGE/components/cpp-component"
+mkdir -p "$COMPONENT"
+if [[ -f "$ROOT/crates/plugin-wasm/tests/fixtures/cpp-component-guest.wasm" ]]; then
+  cp "$ROOT/crates/plugin-wasm/tests/fixtures/cpp-component-guest.wasm" "$COMPONENT/plugin.wasm"
+  cat > "$COMPONENT/plugin.toml" <<'EOF'
+[plugin]
+id = "dshr.selftest.component"
+version = "0.1.0"
+api = "cordis-portable/v1"
+description = "cpp-v1 wasm component selftest"
+
+[runtime]
+kind = "wasm-component"
+entry = "plugin.wasm"
+timeout_ms = 30000
+EOF
+  cat > "$COMPONENT/package.json" <<'EOF'
+{
+  "name": "dshr.selftest.component",
+  "version": "0.1.0",
+  "private": true
+}
+EOF
+fi
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dirty)"
 cat > "$STAGE/README.txt" <<EOF
 dshr $OS package
@@ -50,8 +74,8 @@ configuration: $CONFIG
 commit: $COMMIT
 built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-Run chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery.
-Includes runtime/node, probe sidecar, and vendored dsh-official sidecar.
+Run chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery / --selftest-cpp-component.
+Includes runtime/node, probe sidecar, vendored dsh-official sidecar, and components/cpp-component.
 No installer, code signing, or auto-update in this package.
 EOF
 

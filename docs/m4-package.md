@@ -23,12 +23,13 @@ Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本�
 
 | 平台 | 产物 | 大小 | SHA-256 |
 |---|---|---|---|
-| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 59,691,270 B | `05697d7c…ea51` |
-| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 197,060,789 B | `da213f58…4fbb` |
+| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 62,718,633 B | `d7679f59…5dd4` |
+| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 213,616,441 B | `9019b78a…422e` |
 
-归档内含 `runtime/node`、`sidecar/probe-*.mjs` 与完整 `sidecar/dsh-official`（含
-node_modules）；Windows 二进制来自本机 `cargo build`，Linux 二进制来自 WSL（见
-[m4-linux.md](m4-linux.md)），两者都 exit 0。校验文件与归档同目录。
+归档内含 `runtime/node`、`sidecar/probe-*.mjs`、完整 `sidecar/dsh-official`（含
+node_modules）与 `components/cpp-component`（`plugin.toml` + `package.json` + 真实
+wasm32-wasip2 `plugin.wasm`，75,432 B）；Windows 二进制来自本机 `cargo build`，
+Linux 二进制来自 WSL（见 [m4-linux.md](m4-linux.md)），两者都 exit 0。校验文件与归档同目录。
 
 ## 3. 包内 smoke test
 
@@ -46,7 +47,15 @@ cd dist/dshr-debug-windows-x64
 .\chat.exe --selftest-official
 ```
 
-实测 `[selftest-official] PASS protocol=2 active=true host_services=3`。
+实测 `[selftest-official] PASS protocol=2 active=true host_services=3`。再跑组件自检：
+
+```powershell
+.\chat.exe --selftest-cpp-component
+.\chat.exe --selftest-cpp-install
+```
+
+实测两条都 PASS：`registry=echo`，并返回 guest 的 args；`--selftest-cpp-install` 走
+`install_package` → profile → loader。
 
 Linux 归档解压后同样直接运行：
 
@@ -54,10 +63,13 @@ Linux 归档解压后同样直接运行：
 cd dist/dshr-debug-linux-x86_64
 ./chat --selftest-sidecar-recovery
 ./chat --selftest-official
+./chat --selftest-cpp-component
+./chat --selftest-cpp-install
 ```
 
-两项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
-host_services=3`。即两个包对 probe 与官方 sidecar 都已自带运行时，不依赖外部 Node。
+四项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
+host_services=3`；组件自检注册 `echo` 并返回 args。即两个包对 probe、官方 sidecar
+与 cpp-v1 component 都已自带运行时，不依赖外部 Node。
 
 ## 4. 包校验脚本
 
@@ -66,12 +78,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Ar
 bash tools/verify-package.sh dist/dshr-debug-linux-x86_64.tar.gz
 ```
 
-脚本会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery` 与
-`--selftest-official`，最后清理。Windows/Linux 本机均 **PASS**。
+脚本会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery`、
+`--selftest-official`、`--selftest-cpp-component` 与 `--selftest-cpp-install`，最后清理。
+Windows/Linux 本机均 **PASS**。
 
 ## 5. 明确未做
 
 - 没有 macOS `.app`/签名/公证；Windows 没有 MSI/NSIS 或 Authenticode；Linux 没有 deb/AppImage。
-- 归档含 `chat`、`runtime/node`、probe sidecar 与 `dsh-official`（含 node_modules）；
-  但 `.tmp/dsh-tools-all` 等本机工具包不随包，官方工具全量仍依赖这些 fixture。
+- 归档含 `chat`、`runtime/node`、probe sidecar、`dsh-official`（含 node_modules）与
+  `components/cpp-component`；但 `.tmp/dsh-tools-all` 等本机工具包不随包，官方工具全量
+  仍依赖这些 fixture。
 - 没有安装器/签名/自动更新/差分回滚；G1 仍不能因归档可运行标完成。

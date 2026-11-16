@@ -25,6 +25,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "sidecar selftest failed: $LASTEXITCODE" }
         & .\chat.exe --selftest-official
         if ($LASTEXITCODE -ne 0) { throw "official selftest failed: $LASTEXITCODE" }
+        & .\chat.exe --selftest-cpp-component
+        if ($LASTEXITCODE -ne 0) { throw "cpp component selftest failed: $LASTEXITCODE" }
+        & .\chat.exe --selftest-cpp-install
+        if ($LASTEXITCODE -ne 0) { throw "cpp install selftest failed: $LASTEXITCODE" }
     } finally {
         Pop-Location
     }

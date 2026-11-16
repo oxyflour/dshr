@@ -42,6 +42,32 @@ if (Test-Path $official) {
     Copy-Item -Recurse -Force $official (Join-Path $sidecarStage "dsh-official")
 }
 
+$componentStage = Join-Path $stage "components/cpp-component"
+New-Item -ItemType Directory -Path $componentStage -Force | Out-Null
+$componentWasm = Join-Path $root "crates/plugin-wasm/tests/fixtures/cpp-component-guest.wasm"
+if (Test-Path -LiteralPath $componentWasm) {
+    Copy-Item -LiteralPath $componentWasm (Join-Path $componentStage "plugin.wasm")
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText((Join-Path $componentStage "plugin.toml"), @"
+[plugin]
+id = "dshr.selftest.component"
+version = "0.1.0"
+api = "cordis-portable/v1"
+description = "cpp-v1 wasm component selftest"
+
+[runtime]
+kind = "wasm-component"
+entry = "plugin.wasm"
+timeout_ms = 30000
+"@, $utf8)
+    [IO.File]::WriteAllText((Join-Path $componentStage "package.json"), @"
+{
+  "name": "dshr.selftest.component",
+  "version": "0.1.0",
+  "private": true
+}
+"@, $utf8)
+}
 $commit = (git rev-parse --short HEAD 2>$null)
 if (-not $commit) { $commit = "dirty" }
 @(
@@ -50,8 +76,8 @@ if (-not $commit) { $commit = "dirty" }
     "commit: $commit"
     "built: $((Get-Item $binary).LastWriteTime.ToString('o'))"
     ""
-    "Run chat.exe --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery."
-    "Includes runtime/node, probe sidecar, and vendored dsh-official sidecar."
+    "Run chat.exe --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery / --selftest-cpp-component."
+    "Includes runtime/node, probe sidecar, vendored dsh-official sidecar, and components/cpp-component."
     "No installer, code signing, or auto-update in this package."
 ) | Set-Content -Encoding UTF8 (Join-Path $stage "README.txt")
 

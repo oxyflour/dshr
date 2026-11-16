@@ -19,4 +19,6 @@ cd "$TMP"
 export DSHR_HOME="$TMP/.home"
 ./chat --selftest-sidecar-recovery
 ./chat --selftest-official
+./chat --selftest-cpp-component
+./chat --selftest-cpp-install
 echo "[verify-package] PASS $ARCHIVE"
