@@ -5,7 +5,7 @@ G1 要求 Windows/macOS/Linux 管线 + 两类插件来源回归。当前拆成�
 | Workflow | Runner | 内容 | 状态 |
 |---|---|---|---|
 | [`conformance.yml`](../.github/workflows/conformance.yml) | `windows-latest` | schema/links/node-test/cargo 全量、矩阵 artifact、G4 perf gate | 本机等价命令通过；Actions **未实跑** |
-| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + 自检 + zip/tar + `.sha256`） | **新增，Actions 未实跑** |
+| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + 自检 + 打包 + `verify-package`） | **新增，Actions 未实跑** |
 | [package-desktop.ps1](../tools/package-desktop.ps1) / [.sh](../tools/package-desktop.sh) | 本机 Windows/Linux | 打包 zip/tar + `.sha256`；产物含 runtime/node、probe、dsh-official | 本机 PASS |
 | [verify-package.ps1](../tools/verify-package.ps1) / [.sh](../tools/verify-package.sh) | 本机 Windows/Linux | 校验 sha256 + 解压 + sidecar/official 自检 | 本机 PASS |
 
@@ -36,8 +36,8 @@ cargo test --offline \
 
 ## 2. 明确不覆盖什么
 
-- `desktop-build` 做 `cargo build`、Linux/macOS 无窗口自检、zip/tar 打包与 `.sha256`；
-  没有 macOS 签名/公证、Linux deb/AppImage 或安装器测试。
+- `desktop-build` 做 `cargo build`、Linux/macOS 无窗口自检、zip/tar 打包、`.sha256` 与
+  `verify-package` 解压自检；没有 macOS 签名/公证、Linux deb/AppImage 或安装器测试。
 - Actions 尚未真实执行；本文件只记录 workflow 已落地、YAML 已本地解析（PyYAML），
   不代表 CI 已绿。Linux 的 `desktop-build` 等价命令已在 WSL 本机通过 `cargo build`
   （见 [m4-linux.md](m4-linux.md)），macOS/Windows runner 未验证。

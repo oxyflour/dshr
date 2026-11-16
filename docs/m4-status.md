@@ -135,7 +135,7 @@ node tools\conformance.mjs --full --compact
   `package-desktop.ps1`/`.sh` 生成自带 `runtime/node` + probe + `dsh-official`（含
   node_modules）的 zip/tar 与 `.sha256`；`verify-package.ps1/.sh` 校验 sha256、解压并跑
   `--selftest-sidecar-recovery` / `--selftest-official`，Windows/Linux 均 PASS。
-  CI 的 `desktop-build` 已加打包/校验步骤。仍缺 `.tmp/dsh-tools-all`、安装器/签名；
+  CI 的 `desktop-build` 已加 `verify-package` 步骤。仍缺 `.tmp/dsh-tools-all`、安装器/签名；
   Actions 未实跑，macOS/Windows runner 未验证；G1 不标"完成"。
 - **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
   本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。

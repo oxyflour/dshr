@@ -162,6 +162,17 @@ jobs:
         if: runner.os != 'Windows'
         run: bash tools/package-desktop.sh debug
 
+      - name: Verify desktop package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Archive $zip.FullName
+
+      - name: Verify desktop package (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: bash tools/verify-package.sh dist/*.tar.gz
+
       - name: Upload desktop binary
         uses: actions/upload-artifact@v4
         with:

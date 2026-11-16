@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T18:12:44.995Z |
-| git HEAD | b17e090eb2fd45a1bbb05aa9387c5bbd7398ccc8（clean） |
+| generated_at | 2026-11-16T18:14:12.086Z |
+| git HEAD | 6afe0497ed8993815341930a586c5e5c4703cf12（dirty，4 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.27s | `node tools/check-links.mjs` | 408 link(s) checked, 0 broken, 75 file(s) scanned |
-| node-test | pass | 0 | 0.30s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 54.48s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 70 suite(s), 885 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 408 link(s) checked, 0 broken, 75 file(s) scanned |
+| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 53.97s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 70 suite(s), 885 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -64,7 +64,7 @@
 | M3-PARALLEL-201 | M3 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-parallel-tools：sidecar 批 invoke 串行 6.1s→并行 2.0s（ratio 0.33）且事件顺序约束成立；需构建 chat 二进制 + vendored sidecar，harness 无 selftest suite，人工/脚本判定。 |
 | M4-ADC-100 | M4 | manual | MANUAL | — | 真实窗口：装载带 Button{onPress:copy} 的插件面板，点击后剪贴板得到文本；Button{onPress:call} 经 ui.action 到 fixture，下一次 render 的计数器 +1。需构建 chat.exe + external fixture；openExternal/onChange 仍未接。 |
 | M4-ADC-101 | M4 | manual | MANUAL | — | 真实窗口：Button{onPress:openExternal:https://...} 点击后出现确认条；取消/Esc 不打开，打开才调用系统浏览器；非 https 在作者期/解析期即拒绝。需构建 chat.exe + external fixture。 |
-| M4-CI-001 | M4 | manual | MANUAL | — | `.github/workflows/cross-platform.yml`：contract（schema/links/quick）、core-rust（19 个核心 crate，含 external-process/WASM）、desktop-build（dshr-desktop-gpui + Linux/macOS ADC/recovery/crash 自检）在 windows/ubuntu/macos 三平台跑。YAML 已用 PyYAML 本地解析；Linux desktop-build 与自检本机通过；Actions 未实跑，G1 不标完成。 |
+| M4-CI-001 | M4 | manual | MANUAL | — | `.github/workflows/cross-platform.yml`：contract（schema/links/quick）、core-rust（19 个核心 crate）、desktop-build（dshr-desktop-gpui + Linux/macOS ADC/recovery/crash 自检 + 打包 + verify-package）在 windows/ubuntu/macos 三平台跑。YAML 已用 PyYAML 本地解析；Linux desktop-build 与自检/打包/验证本机通过；Actions 未实跑，G1 不标完成。 |
 | M4-CI-002 | M4 | manual | MANUAL | — | node tools/official-provenance.mjs --check：3 个官方包（working-directory/todo/storage-domain）版本 + package.json/lib/index.js SHA-256 对照 sidecar/dsh-official/official-packages.lock.json；official-l2-gate.ps1 在测试前强制校验。本机 PASS，gate 8/8。 |
 | M4-CI-003 | M4 | manual | MANUAL | — | WSL Ubuntu 22.04 + Rust 1.99.1：核心 6 crate cargo check 通过；dshr-desktop-gpui --bin chat cargo build 通过（BUILD_EXIT=0，debug 682 MB）；chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery 均 PASS。无需额外系统开发包。macOS/Windows 桌面 runner 未验证；见 docs/m4-linux.md。 |
 | M4-CI-004 | M4 | manual | MANUAL | — | tools/package-desktop.ps1（Windows）与 tools/package-desktop.sh（Linux/macOS）：cargo build chat + runtime/node + probe sidecar + dsh-official（含 node_modules）+ README + 归档 + .sha256；本机 Windows zip 59.7MB、Linux tar.gz 197.1MB，均 exit 0。解压后不设 DSHR_NODE 直接 chat --selftest-sidecar-recovery / --selftest-official PASS（Vendored node，官方 v2 握手 host_services=3）。CI desktop-build 已加打包/校验步骤；不含安装器/签名/自动更新；见 docs/m4-package.md。 |
