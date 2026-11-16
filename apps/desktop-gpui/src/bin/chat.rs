@@ -5921,6 +5921,86 @@ fn selftest_recovery() -> i32 {
     }
 }
 
+/// `--selftest-sidecar-recovery`：G2 的 sidecar 崩溃场景（headless）。
+///
+/// 先确认 sidecar 可调用，再 kill 子进程；断言会话仍可追加/保存、原生工具仍注册，
+/// 且对已死 sidecar 的调用返回错误而不是挂起。
+fn selftest_sidecar_recovery() -> i32 {
+    let root = PathBuf::from(".tmp/m4-sidecar-recovery");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("s-sidecar.jsonl");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::open(
+        path.clone(),
+        "s-sidecar",
+        &cancel,
+        ApprovalBroker::new(),
+        false,
+        false,
+    );
+
+    let Some(mut host) = spawn_sidecar(None, None) else {
+        println!("[selftest-sidecar-recovery] FAIL: sidecar 不可用（需要 node + sidecar/probe-*）");
+        return 1;
+    };
+    let live = host
+        .invoke(
+            "probe_echo",
+            json!({ "text": "live" }),
+            Duration::from_secs(10),
+        )
+        .is_ok();
+    let _ = state.log.append(EventSpec::durable(
+        "message.user",
+        now_ts(),
+        json!({ "text": "before kill" }),
+    ));
+    state.save();
+    state.host = Some(host);
+
+    let killed = state
+        .host
+        .as_mut()
+        .map(|host| host.kill().is_ok())
+        .unwrap_or(false);
+    let dead_call = state
+        .host
+        .as_mut()
+        .map(|host| {
+            host.invoke(
+                "probe_echo",
+                json!({ "text": "after" }),
+                Duration::from_secs(2),
+            )
+            .is_err()
+        })
+        .unwrap_or(false);
+    let native_ok = state.plugins.registry().get("probe_native").is_some();
+    let _ = state.log.append(EventSpec::durable(
+        "message.user",
+        now_ts(),
+        json!({ "text": "after kill" }),
+    ));
+    state.save();
+    let replayed = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| SessionLog::from_jsonl("s-sidecar", &text).ok())
+        .map(|log| log.events().len())
+        .unwrap_or(0);
+    let ok = live && killed && dead_call && native_ok && replayed >= 3;
+    println!(
+        "[selftest-sidecar-recovery] live={live} killed={killed} dead_call={dead_call} native={native_ok} replayed={replayed}"
+    );
+    if ok {
+        println!("[selftest-sidecar-recovery] PASS");
+        0
+    } else {
+        println!("[selftest-sidecar-recovery] FAIL");
+        1
+    }
+}
+
 /// 取消语义自检（P1-2）：turn 开始前置位 cancel → 必须走 TurnCancelled + session.interrupted，
 /// 不出现“处理失败”，也不写空的 assistant 消息。
 fn selftest_cancel() -> i32 {
@@ -8780,6 +8860,9 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-recovery") {
         std::process::exit(selftest_recovery());
     }
+    if std::env::args().any(|arg| arg == "--selftest-sidecar-recovery") {
+        std::process::exit(selftest_sidecar_recovery());
+    }
     if std::env::args().any(|arg| arg == "--selftest-cancel") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_cancel());
@@ -9137,6 +9220,7 @@ mod tests {
             "--selftest-approval",
             "--selftest-corrupt-session",
             "--selftest-recovery",
+            "--selftest-sidecar-recovery",
             "--selftest-cancel",
             "--live",
             "--live-chat",

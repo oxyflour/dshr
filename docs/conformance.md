@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W4（2026-11-16）：注册表 **582 个测试 ID —— implemented 538、pending 18、manual 26、
+M4 G2（2026-11-16）：注册表 **583 个测试 ID —— implemented 538、pending 18、manual 27、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 496 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -172,6 +172,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-101` | manual | ADC `openExternal` 确认条：取消/Esc/打开（[m4-adc.md](m4-adc.md) §3） |
 | `M4-P2-001` | manual | node 缺失时 parallel/l2 测试 exit 101，不再 SKIP 记 pass（[m4-status.md](m4-status.md) §4） |
 | `M4-RECOVERY-001` | manual | `chat --selftest-recovery`：损坏会话/`.bak`/插件失败回滚（[m4-status.md](m4-status.md) §4） |
+| `M4-RECOVERY-002` | manual | `chat --selftest-sidecar-recovery`：kill sidecar 后会话/原生工具存活（[m4-status.md](m4-status.md) §4） |
 | `M4-PERF-001` | manual | `node tools/perf-gate.mjs`：G4 阈值/CI step；本机 PASS（[m4-perf.md](m4-perf.md)） |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
 | `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |

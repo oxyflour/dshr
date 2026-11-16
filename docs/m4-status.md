@@ -52,6 +52,9 @@ target\debug\chat.exe --selftest-plugin-lifecycle
 target\debug\chat.exe --selftest-recovery
   → corrupt/backup/continue/plugin_rollback/healthy/healthy_call 全 true，PASS（exit 0）
 
+target\debug\chat.exe --selftest-sidecar-recovery
+  → live/killed/dead_call/native 全 true、replayed=3，PASS（exit 0）
+
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-l2-gate.ps1
   → PASS（6/6；RPC-L2-201 todo execute 写 todo/write，RPC-L2-502 working_directory execute 返回 cwd）
 
@@ -96,7 +99,8 @@ node tools\conformance.mjs --full --compact
 - **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
   本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。
 - **G2 只到 headless**：`--selftest-recovery` 覆盖损坏会话/备份/插件回滚，
-  但没有真实窗口内崩溃、sidecar 被杀、重启后继续操作的 UI 场景；G2 不标"完成"。
+  `--selftest-sidecar-recovery` 覆盖 kill sidecar 后会话与原生工具存活；但没有真实窗口内
+  崩溃、重启后继续操作的 UI 场景；G2 不标"完成"。
 - **SKIP-as-pass 已修（W8）**：`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs`
   在 node 缺失时 panic。实测把 `PATH` 限制为 `C:\Windows\System32;C:\Windows` 后两个测试二进制
   exit 101（此前是 SKIP + return 记 passed）；普通环境仍全绿（parallel 10、l2 10）。
@@ -107,7 +111,7 @@ node tools\conformance.mjs --full --compact
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证** | 无 macOS/Linux runner；DSH JS 插件跨平台未跑 |
-| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless）**：`--selftest-recovery` PASS（损坏会话隔离+重建、`.bak` 恢复后可继续追加、失败插件回滚+健康插件调用） | 真实窗口内崩溃/重启恢复未覆盖；补 `M4-RECOVERY-001` 的证据与 UI 场景 |
+| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless）**：`--selftest-recovery`（损坏会话/`.bak`/插件回滚）+ `--selftest-sidecar-recovery`（kill 后会话仍可写、原生工具在、死调用报错）PASS | 真实窗口内崩溃/重启恢复未覆盖；补 `M4-RECOVERY-001/002` 的 UI 场景 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **部分**：`tools/perf-gate.mjs` 阈值 50ms / 满配额 16.7ms / a11y 0，本机 PASS；CI workflow 已加 step 与 artifact | Actions 未实跑；三平台 runner 未加 |
 
