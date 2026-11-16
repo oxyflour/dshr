@@ -10,7 +10,7 @@ use dshr_plugin_api::{Plugin, PluginContext, PluginError};
 use dshr_tool_runtime::{ToolDefinition, ToolOrigin};
 use serde_json::{json, Value};
 use wasmtime::component::{Component, Linker};
-use wasmtime::{Engine, Store};
+use wasmtime::{Config, Engine, Store};
 
 /// 实验性 component 插件：只支持 `component.run` 探针工具。
 pub struct ComponentPlugin {
@@ -18,6 +18,8 @@ pub struct ComponentPlugin {
     version: String,
     engine: Engine,
     component: Component,
+    /// 单次 call 的 fuel 上限（默认 u64::MAX，即不主动耗尽）。
+    fuel: u64,
     /// 序列化结果字节上限（probe ABI 的输出配额；默认 1 MiB）。
     max_output_bytes: usize,
 }
@@ -29,7 +31,11 @@ impl ComponentPlugin {
         version: impl Into<String>,
         source: impl AsRef<[u8]>,
     ) -> Result<Self, PluginError> {
-        let engine = Engine::default();
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config).map_err(|error| {
+            PluginError::Invalid(format!("component engine: {error}"))
+        })?;
         let component = Component::new(&engine, source.as_ref()).map_err(|error| {
             PluginError::Invalid(format!("component does not parse: {error}"))
         })?;
@@ -38,8 +44,15 @@ impl ComponentPlugin {
             version: version.into(),
             engine,
             component,
+            fuel: u64::MAX,
             max_output_bytes: 1024 * 1024,
         })
+    }
+
+    /// 设置单次 call 的 fuel 上限（用于 W5 fuel 配额）。
+    pub fn with_fuel_limit(mut self, fuel: u64) -> Self {
+        self.fuel = fuel;
+        self
     }
 
     /// 设置 probe 输出的字节上限（用于 W5 输出配额测试）。
@@ -51,6 +64,9 @@ impl ComponentPlugin {
     fn invoke_run(&mut self) -> Result<u32, PluginError> {
         let linker = Linker::new(&self.engine);
         let mut store = Store::new(&self.engine, ());
+        store
+            .set_fuel(self.fuel)
+            .map_err(|error| PluginError::Invalid(format!("component fuel: {error}")))?;
         let instance = linker
             .instantiate(&mut store, &self.component)
             .map_err(|error| PluginError::Invalid(format!("component instantiate: {error}")))?;

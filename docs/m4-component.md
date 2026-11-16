@@ -22,6 +22,8 @@
   实现 `Plugin`：`apply` 注册 `component.run`，`call` 实例化并返回 42。它是加载器骨架，
   不是最终 `cpp-v1.wit` ABI。
 - `M4-COMPONENT-008`：`with_max_output_bytes(1)` 时 `call` 返回 Err，验证 probe 输出配额。
+- `M4-COMPONENT-009`：`with_fuel_limit(1_000)` 的死循环 component call 返回 Err，
+  验证配额已进入 `ComponentPlugin` 而不是只在裸 wasmtime 测试里。
 
 命令：
 
@@ -29,7 +31,7 @@
 cargo test -p dshr-plugin-wasm --test component_model
 cargo test -p dshr-plugin-wasm --test component_bindings
 cargo test -p dshr-plugin-wasm --test component_plugin
-→ 8 passed
+→ 9 passed
 ```
 
 ## 2. 还没做
@@ -37,8 +39,8 @@ cargo test -p dshr-plugin-wasm --test component_plugin
 - `ComponentPlugin` 只是 probe ABI（`run() -> u32`），没有实现 `cpp-v1.wit` 的
   工具声明/调用；也没有被 `plugin-host` 的 manifest loader 自动识别。
 - host imports 已能生成/接入 `Linker`，但没有真实 component 实例调用它们；
-  fuel/epoch/内存/输出配额已有测试，并发仍未验证；当前 core-module 的配额路径
-  不能直接假设适用。
+  fuel/epoch/内存/输出配额已有测试（fuel/输出也进了 probe 加载器），并发仍未验证；
+  当前 core-module 的配额路径不能直接假设适用。
 - 没有 component 模板、签名/安装/卸载链路、作者文档。
 
 W5 仍是 **部分完成**，不能因为 2 个探针测试标完成。
