@@ -20,7 +20,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W2 | 键盘与无障碍 | **部分完成（待 G3 真机复验）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；见 [m4-keyboard.md](m4-keyboard.md)。G3 人工流程 `M4-KEYBOARD-001` 未跑 |
 | W3 | ADC 交互与工具卡 | **部分完成（onPress + openExternal + tool card extra + 表单 onChange + 真实点击/键盘/拖拽测试 + draw 硬预算）** | `copy`/`call`/`command`；`openExternal` 确认条；`ToolCard.extra`；Checkbox/Switch/Select/Input/Textarea onChange；Slider −/+、方向键、track 拖拽；Tabs onChange；`M4-ADC-009..025` 真实交互/键盘；`frame-probe` 硬预算 PASS；`100/101` 真机待跑；见 [m4-adc.md](m4-adc.md) |
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + id 去 leak）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用；MCP、运行中抢占、异步 trait 冻结仍待 |
-| W5 | WASM Component/WIT | **部分完成（真实 guest 工具 + ABI/WIT/配额 + probe 装载）** | wasmtime `component-model`；001 canonical ABI；002 WIT；003 bindgen host traits→Linker；004 fuel；005 epoch；006 memory；007 `ComponentPlugin` probe；008 输出；009 fuel；010 memory；011 epoch；012/013 宿主/manifest probe；014/015 真实 wasm32-wasip2 guest 的 list-tools/invoke；把 guest 接入 `ComponentPlugin`/自动装载仍缺 |
+| W5 | WASM Component/WIT | **部分完成（真实 guest 工具 + CppComponentPlugin + 配额 + probe）** | wasmtime `component-model`；001 canonical ABI；002 WIT；003 bindgen host traits→Linker；004 fuel；005 epoch；006 memory；007 probe `ComponentPlugin`；008 输出；009 fuel；010 memory；011 epoch；012/013 宿主/manifest probe；014/015 真实 guest list-tools/invoke；016 `CppComponentPlugin` 注册/调用；manifest 自动装载与并发仍未接 |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read/write execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 8/8 PASS；bash/pwsh 等 shell 工具仍未闭环 |
 | W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + Linux 构建/打包 + macOS UI 交叉检查）** | `perf-gate`/`cross-platform.yml`（contract/core/desktop-build+自检）/`official-provenance`/`package-desktop.*`；WSL Linux 核心+桌面+自检+zip/tar 通过；macOS x86_64/aarch64 的 `dshr-ui-gpui` check PASS、桌面因无 SDK 在 C 依赖处失败；Actions 未实跑 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
@@ -100,7 +100,7 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 71 suites / 902 passed / 0 failed / 8 ignored；exit 0
+  → 71 suites / 903 passed / 0 failed / 8 ignored；exit 0
     （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 

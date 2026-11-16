@@ -5,6 +5,9 @@
 
 #![cfg(test)]
 
+use dshr_plugin_api::{Plugin as PluginTrait, PluginContext};
+use dshr_plugin_wasm::CppComponentPlugin;
+use serde_json::json;
 use wasmtime::component::{bindgen, Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -138,6 +141,24 @@ fn m4_component_015_guest_invoke_round_trip() {
         other => panic!("unexpected content part: {other:?}"),
     }
     assert!(!result.is_error);
+}
+
+/// M4-COMPONENT-016：CppComponentPlugin 从真实 guest 注册 echo 并调用。
+#[test]
+fn m4_component_016_cpp_component_plugin_round_trip() {
+    let mut plugin = CppComponentPlugin::new("guest.component", "0.1.0", GUEST)
+        .expect("cpp component plugin constructs");
+    let mut ctx = PluginContext::new("guest.component");
+    plugin.apply(&mut ctx).expect("apply registers guest tools");
+    let (tools, _) = ctx.take_registrations();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "echo");
+    let result = plugin
+        .call("echo", &json!({ "text": "hello" }))
+        .expect("guest invoke");
+    assert_eq!(result["content"][0]["type"], "text");
+    assert_eq!(result["content"][0]["text"], "{\"text\":\"hello\"}");
+    assert_eq!(result["is_error"], false);
 }
 
 /// M4-COMPONENT-003：cpp-v1.wit 能生成 world `plugin` 的宿主绑定，

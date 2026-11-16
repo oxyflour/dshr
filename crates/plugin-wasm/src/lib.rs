@@ -49,9 +49,11 @@
 #![forbid(unsafe_code)]
 
 pub mod component_plugin;
+pub mod cpp_component;
 pub mod plugin;
 
 pub use component_plugin::ComponentPlugin;
+pub use cpp_component::CppComponentPlugin;
 pub use plugin::WasmPlugin;
 
 use std::path::Path;
