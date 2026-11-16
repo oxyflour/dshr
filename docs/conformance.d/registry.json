@@ -1109,7 +1109,7 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-plugin-wasm",
-      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 canonical ABI；#002 WIT；#004 fuel；#005 epoch；#006 memory。component_bindings.rs：#003 bindgen host imports；#014 examples/component-guest 的真实 wasm32-wasip2 guest 经 WASI 实例化并调用 list-tools。component_plugin.rs：#007 probe ComponentPlugin；#008 输出上限；#009 plugin fuel；#010 plugin memory；#011 plugin epoch。cargo test -p dshr-plugin-wasm",
+      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 canonical ABI；#002 WIT；#004 fuel；#005 epoch；#006 memory。component_bindings.rs：#003 bindgen host imports；#014 examples/component-guest 的真实 wasm32-wasip2 guest list-tools（echo）；#015 guest invoke(echo) canonical ABI 回传 args。component_plugin.rs：#007 probe ComponentPlugin；#008 输出上限；#009 plugin fuel；#010 plugin memory；#011 plugin epoch。cargo test -p dshr-plugin-wasm",
       "source_dirs": [
         "crates/plugin-wasm/tests"
       ],
@@ -1125,7 +1125,8 @@
         "M4-COMPONENT-009",
         "M4-COMPONENT-010",
         "M4-COMPONENT-011",
-        "M4-COMPONENT-014"
+        "M4-COMPONENT-014",
+        "M4-COMPONENT-015"
       ]
     },
     {

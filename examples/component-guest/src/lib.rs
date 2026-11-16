@@ -12,15 +12,31 @@ struct Component;
 
 impl exports::dshr::cpp_v1::tool_provider::Guest for Component {
     fn list_tools() -> Vec<dshr::cpp_v1::types::ToolDecl> {
-        Vec::new()
+        vec![dshr::cpp_v1::types::ToolDecl {
+            name: "echo".to_owned(),
+            description: "echo the canonical JSON arguments".to_owned(),
+            input_schema: r#"{"type":"object"}"#.to_owned(),
+            output_schema: None,
+            timeout_ms: Some(1_000),
+            cancelable: Some(false),
+            presentation: Some("generic".to_owned()),
+        }]
     }
 
     fn list_panels() -> Vec<dshr::cpp_v1::types::PanelDecl> {
         Vec::new()
     }
 
-    fn invoke(_tool: String, _args: String) -> Result<dshr::cpp_v1::types::ToolResult, String> {
-        Err("component guest has no tools".to_owned())
+    fn invoke(tool: String, args: String) -> Result<dshr::cpp_v1::types::ToolResult, String> {
+        if tool != "echo" {
+            return Err(format!("unknown tool: {tool}"));
+        }
+        Ok(dshr::cpp_v1::types::ToolResult {
+            content: vec![dshr::cpp_v1::types::ContentPart::Text(args)],
+            value: None,
+            meta: None,
+            is_error: false,
+        })
     }
 }
 

@@ -110,7 +110,34 @@ fn m4_component_014_guest_tool_provider_round_trip() {
         .dshr_cpp_v1_tool_provider()
         .call_list_tools(&mut store)
         .expect("list-tools call");
-    assert!(tools.is_empty(), "guest tool list should be empty");
+    assert_eq!(tools.len(), 1, "guest should declare one tool");
+    assert_eq!(tools[0].name, "echo");
+    assert_eq!(tools[0].timeout_ms, Some(1_000));
+}
+
+/// M4-COMPONENT-015：真实 cpp-v1 guest 的 `invoke("echo", args)` 走 canonical ABI
+/// 返回 `content[0].text == args`。
+#[test]
+fn m4_component_015_guest_invoke_round_trip() {
+    let engine = Engine::default();
+    let component = Component::new(&engine, GUEST).expect("guest component parses");
+    let mut linker: Linker<HostState> = Linker::new(&engine);
+    Plugin::add_to_linker::<HostState, HasSelf<HostState>>(&mut linker, |state| state)
+        .expect("host imports link");
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker).expect("wasi imports link");
+    let mut store = Store::new(&engine, HostState::default());
+    let instance = Plugin::instantiate(&mut store, &component, &linker)
+        .expect("guest component instantiates");
+    let result = instance
+        .dshr_cpp_v1_tool_provider()
+        .call_invoke(&mut store, "echo", "hello")
+        .expect("invoke call")
+        .expect("guest invoke ok");
+    match &result.content[0] {
+        dshr::cpp_v1::types::ContentPart::Text(text) => assert_eq!(text, "hello"),
+        other => panic!("unexpected content part: {other:?}"),
+    }
+    assert!(!result.is_error);
 }
 
 /// M4-COMPONENT-003：cpp-v1.wit 能生成 world `plugin` 的宿主绑定，
