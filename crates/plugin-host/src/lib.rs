@@ -1112,4 +1112,48 @@ mod tests {
             "distinct plugins should overlap (serial is ~600ms): {elapsed:?}"
         );
     }
+
+    // M4-CONC-002：同一插件的两个调用必须串行（不能被跨插件并行误伤）。
+    #[test]
+    fn m4_conc_002_same_plugin_batch_is_serial() {
+        struct SlowPair;
+        impl Plugin for SlowPair {
+            fn id(&self) -> &str {
+                "slow.pair"
+            }
+            fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+                for tool in ["pair_a", "pair_b"] {
+                    ctx.register_tool(ToolDefinition::new(
+                        tool,
+                        "slow pair",
+                        ToolOrigin::Native {
+                            plugin_id: "slow.pair".to_owned(),
+                        },
+                    ))?;
+                }
+                Ok(())
+            }
+            fn call(&mut self, _tool: &str, arguments: &Value) -> Result<Value, PluginError> {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                Ok(arguments.clone())
+            }
+        }
+
+        let mut host = PluginHost::new(AllowAll);
+        host.load(Box::new(SlowPair)).expect("load slow.pair");
+        let started = std::time::Instant::now();
+        let results = host.call_approved_batch(
+            &[
+                ("pair_a".to_owned(), json!({ "n": 1 })),
+                ("pair_b".to_owned(), json!({ "n": 2 })),
+            ],
+            2,
+        );
+        let elapsed = started.elapsed();
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(500),
+            "same-plugin calls must not overlap: {elapsed:?}"
+        );
+    }
 }
