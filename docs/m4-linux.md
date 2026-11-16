@@ -47,8 +47,17 @@ cargo build -p dshr-desktop-gpui --bin chat
 
 结果：**BUILD_EXIT=0**，产出 `/tmp/dshr-target-desktop/debug/chat`（约 682 MB 的 debug 带符号
 二进制）。WSL 没有额外安装 X11/Wayland/fontconfig 开发包；GPUI 的 Linux 后端依赖纯 Rust/dlopen，
-运行时才需要系统图形库。该二进制能启动到 `--selftest-adc-panel` 的 fixture 检查（缺
-`plugin-fixture` 时按预期报错）。
+运行时才需要系统图形库。
+
+随后在同一二进制上跑无窗口自检：
+
+```text
+chat --selftest-adc-panel     → PASS（panels=3 rendered=3，unknown/default view 诊断齐全）
+chat --selftest-recovery      → PASS（corrupt/backup/continue/plugin_rollback/healthy）
+chat --selftest-crash-recovery → PASS（crashed/backup/before/after/notice）
+```
+
+即 Linux 上不仅编译通过，ADC 面板、数据恢复、真实子进程崩溃恢复也能运行。
 
 ## 5. 边界
 

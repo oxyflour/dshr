@@ -145,6 +145,15 @@ jobs:
       - name: Build desktop chat
         run: cargo build --offline -p dshr-desktop-gpui --bin chat
 
+      # Linux/macOS 运行无窗口自检：ADC 面板、恢复、真实子进程崩溃恢复。
+      - name: Linux/macOS runtime selftests
+        if: runner.os != 'Windows'
+        run: |
+          cargo build --offline -p dshr-plugin-host --bins
+          target/debug/chat --selftest-adc-panel
+          target/debug/chat --selftest-recovery
+          target/debug/chat --selftest-crash-recovery
+
       - name: Upload desktop binary
         uses: actions/upload-artifact@v4
         with:
