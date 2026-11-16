@@ -5,12 +5,13 @@
 ## 1. 命令
 
 ```text
-rustup target add x86_64-apple-darwin
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
 cargo check --target x86_64-apple-darwin -p dshr-ui-gpui
+cargo check --target aarch64-apple-darwin -p dshr-ui-gpui
 ```
 
-结果：**PASS**（约 35s，链接不执行），`dshr-ui-gpui` 在 macOS target 上类型检查通过。
-这覆盖 GPUI/ADC 渲染器的 `cfg(target_os = "macos")` 分支。
+结果：**两个 target 都 PASS**（各约 34s，链接不执行），`dshr-ui-gpui` 在 Intel/Apple Silicon
+macOS target 上类型检查通过。这覆盖 GPUI/ADC 渲染器的 `cfg(target_os = "macos")` 分支。
 
 ## 2. 桌面二进制
 
