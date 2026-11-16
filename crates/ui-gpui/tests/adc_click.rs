@@ -1,27 +1,25 @@
-//! M4 W3：用 GPUI `TestAppContext` 模拟真实鼠标点击，验证 ADC Button 的 onPress
-//! 回调真的到达宿主 handler，而不只是构造动作树。
+//! M4 W3：用 GPUI `TestAppContext` 模拟真实鼠标点击，验证 ADC 交互元素（Button /
+//! Checkbox / Switch / Select chip）的 onPress/onChange 真的到达宿主 handler。
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use dshr_ui_gpui::{
-    adc_view_with_handler, parse_tree, Action, AdcActionHandler, Theme,
-};
+use dshr_ui_gpui::{adc_view_with_handler, parse_tree, Action, AdcActionHandler, Theme};
 use gpui::{div, prelude::*, px, IntoElement, Modifiers, Render, TestAppContext};
 
 struct Harness {
     tree: serde_json::Value,
-    clicked: Rc<Cell<bool>>,
+    on_action: Rc<dyn Fn(&Action)>,
 }
 
 impl Render for Harness {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        let clicked = self.clicked.clone();
-        let handler: AdcActionHandler = Rc::new(move |action: &Action, _, _| {
-            if matches!(action, Action::Copy { .. }) {
-                clicked.set(true);
-            }
-        });
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl IntoElement {
+        let on_action = self.on_action.clone();
+        let handler: AdcActionHandler = Rc::new(move |action: &Action, _, _| on_action(action));
         let parsed = parse_tree(&self.tree);
         div()
             .w(px(400.0))
@@ -30,28 +28,119 @@ impl Render for Harness {
     }
 }
 
-/// M4-ADC-009：TestAppContext 点击 `adc-$` 后，`copy` 动作进入 handler。
-#[gpui::test]
-fn m4_adc_009_real_click_dispatches_copy(cx: &mut TestAppContext) {
-    let clicked = Rc::new(Cell::new(false));
-    let tree = serde_json::json!({
-        "type": "Button",
-        "props": {
-            "label": "Copy",
-            "a11yLabel": "Copy text",
-            "onPress": { "copy": "hello" }
-        }
+fn click(
+    cx: &mut TestAppContext,
+    tree: serde_json::Value,
+    selector: &'static str,
+) -> Option<Action> {
+    let seen = Rc::new(Cell::new(None));
+    let sink = seen.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |action| {
+        sink.set(Some(action.clone()));
     });
-    let flag = clicked.clone();
-    let (_view, cx) = cx.add_window_view(move |_, _| Harness {
-        tree,
-        clicked: flag,
-    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
     cx.run_until_parked();
     let bounds = cx
-        .debug_bounds("adc-$")
-        .expect("Button root should record debug bounds");
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing debug bounds for {selector}"));
     cx.simulate_click(bounds.center(), Modifiers::default());
     cx.run_until_parked();
-    assert!(clicked.get(), "click did not reach ADC copy handler");
+    seen.take()
+}
+
+/// M4-ADC-009：点击 Button `adc-$`，`copy` 动作进入 handler。
+#[gpui::test]
+fn m4_adc_009_real_click_dispatches_copy(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Button",
+            "props": {
+                "label": "Copy",
+                "a11yLabel": "Copy text",
+                "onPress": { "copy": "hello" }
+            }
+        }),
+        "adc-$",
+    )
+    .expect("click should dispatch an action");
+    assert!(
+        matches!(action, Action::Copy { ref text } if text == "hello"),
+        "unexpected action: {action:?}"
+    );
+}
+
+/// M4-ADC-010：点击 Checkbox 行，onChange call 到达 handler。
+#[gpui::test]
+fn m4_adc_010_real_click_checkbox_on_change(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Checkbox",
+            "props": {
+                "label": "Enable",
+                "checked": false,
+                "a11yLabel": "Enable",
+                "onChange": { "call": "toggle", "args": {} }
+            }
+        }),
+        "adc-$",
+    )
+    .expect("checkbox click should dispatch an action");
+    assert!(
+        matches!(action, Action::Call { ref method, .. } if method == "toggle"),
+        "unexpected action: {action:?}"
+    );
+}
+
+/// M4-ADC-011：点击 Switch 行，onChange call 到达 handler。
+#[gpui::test]
+fn m4_adc_011_real_click_switch_on_change(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Switch",
+            "props": {
+                "label": "Live",
+                "checked": true,
+                "a11yLabel": "Live",
+                "onChange": { "call": "set_live", "args": {} }
+            }
+        }),
+        "adc-$",
+    )
+    .expect("switch click should dispatch an action");
+    assert!(
+        matches!(action, Action::Call { ref method, .. } if method == "set_live"),
+        "unexpected action: {action:?}"
+    );
+}
+
+/// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
+#[gpui::test]
+fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Select",
+            "props": {
+                "value": "a",
+                "a11yLabel": "Mode",
+                "options": [
+                    { "label": "A", "value": "a" },
+                    { "label": "B", "value": "b" }
+                ],
+                "onChange": { "call": "pick", "args": {} }
+            }
+        }),
+        "adc-$-option-1",
+    )
+    .expect("select chip click should dispatch an action");
+    match action {
+        Action::Call { ref method, ref args } => {
+            assert_eq!(method, "pick");
+            assert_eq!(args["value"], "b", "value not injected: {args}");
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
 }

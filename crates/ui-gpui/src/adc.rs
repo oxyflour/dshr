@@ -960,6 +960,7 @@ fn render_select(
             let aria = format!("选择 {option_label}");
             let mut chip = div()
                 .id(format!("{path}-option-{index}"))
+                .debug_selector(|| format!("adc-{path}-option-{index}"))
                 .role(Role::Button)
                 .aria_label(aria)
                 .px(px(8.0))
