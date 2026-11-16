@@ -18,7 +18,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 |---|---|---|---|
 | W1 | 分发与信任生命周期 | **完成（离线渠道口径）** | `M4-UNINSTALL-001..008`、`M4-KEY-001..010`（cargo，dshr-profile 81 passed）；`M4-SDK-001`（SDK 离线包/校验/篡改拒绝）、`M4-SIGN-001`（签名安装/轮换）、`M4-LIFECYCLE-001`；registry/CA 证书体系归 W7 |
 | W2 | 键盘与无障碍 | **部分完成（待 G3 真机复验）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；见 [m4-keyboard.md](m4-keyboard.md)。G3 人工流程 `M4-KEYBOARD-001` 未跑 |
-| W3 | ADC 交互与工具卡 | 未开始 | M3 只到 `AnyElement` 面板，事件未回 Host |
+| W3 | ADC 交互与工具卡 | **部分完成（Button onPress → 宿主 copy）** | `adc_panel_body_with_handler` + 递归 Button 回调；`copy` 写剪贴板，`call/command/openExternal` 只记日志；`M4-ADC-001` cargo，`M4-ADC-100` 真机待跑；见 [m4-adc.md](m4-adc.md) |
 | W4 | native/MCP 并发 + trait 冻结 | 未开始 | `Plugin::call` 仍同步、`&'static str` leak |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
 | W6 | 官方 execute 闭环 | 未开始 | `exec.agent` 债务 |
@@ -59,7 +59,7 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 67 suites / 856 passed / 0 failed / 6 ignored；exit 0
+  → 67 suites / 857 passed / 0 failed / 6 ignored；exit 0
     （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 
@@ -76,7 +76,8 @@ node tools\conformance.mjs --full --compact
 - **flaky 观察**：2026-11-16 的一次 `--full` 中 `dshr-ui-gpui` 出现 1 个失败（并行负载下
   ADC 构造预算），隔离子跑与随后 `--full` 均 0 failed；归入 W8 flaky 治理，不作为通过证据。
 - **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
-  [m4-keyboard.md](m4-keyboard.md) §3 人工复验。
+  [m4-keyboard.md](m4-keyboard.md) §3 人工复验。本机 `SendKeys` 自动化尝试被 Windows 前台锁
+  拦住（窗口能启动，`SetForegroundWindow` 失败，无 `[keyboard]` 行），不改判 G3。
 
 ## 4. Gate 对账
 
@@ -89,8 +90,9 @@ node tools\conformance.mjs --full --compact
 
 ## 5. 下一步（按依赖排序）
 
-1. **W2 收尾**：真实窗口按 [m4-keyboard.md](m4-keyboard.md) §3 复验 G3；补 `Esc` 停止生成、Tab 焦点环与 UIA 实机检查。
-2. **W3**：ADC 交互事件回到 Host；tool card `tool.result.extra`。
+1. **W2/W3 真机复验**：按 [m4-keyboard.md](m4-keyboard.md) §3 跑 G3；按 [m4-adc.md](m4-adc.md) §3
+   点击 copy。两者都需要真实窗口，当前本机前台锁限制见 §4。
+2. **W3 剩余**：`call`/`command` Host RPC、`openExternal` 确认、Input/Select `onChange`、tool card extra。
 3. **W7**：三平台 CI matrix、官方包 vendor 来源校验、性能基线进 CI（G1/G4 的前置）。
 
 ## 6. 复现命令

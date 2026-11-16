@@ -24,7 +24,7 @@ use gpui::{
 };
 
 use dshr_ui_contributions::{
-    parse_tree, parse_tree_str, ElementKind, ElementNode, PlaceholderReason,
+    parse_tree, parse_tree_str, Action, ElementKind, ElementNode, PlaceholderReason,
 };
 
 // 渲染入口的返回类型对 chat/tool card 是公开契约，这里一并再导出。
@@ -368,12 +368,26 @@ pub const MAX_ACCORDION_SECTIONS: usize = 12;
 /// 图表绘图区高度（px）；柱/折线共用同一归一化基准。
 pub const CHART_HEIGHT: f32 = 96.0;
 
+/// 交互元素的回调：M4 W3 起 Button 的 `onPress` 会带着已校验的 [`Action`] 回到宿主。
+///
+/// `App` 参数用于宿主动作（如写剪贴板）；插件 `call`/`command` 由 Host 在后续轮次接线。
+pub type AdcActionHandler = std::rc::Rc<dyn Fn(&Action, &mut gpui::App)>;
+
 /// 把 ADC-v1 元素节点渲染成 GPUI 元素。
 ///
 /// 纯函数（无窗口、无事件）：同一 `theme` + 同一 `node` 必然得到同一棵元素树，
-/// 满足 spec §7.2。本轮交互元素只画视觉，`onPress`/`onChange` 由 Lead 下一轮接线。
+/// 满足 spec §7.2。默认入口不接事件，保持 M3 的只读语义。
 pub fn adc_view(theme: &Theme, node: &ElementNode) -> AnyElement {
-    render_node(theme, node, "$")
+    render_node(theme, node, "$", None)
+}
+
+/// 带 `onPress` 回调的渲染入口（M4 W3）：Button 动作交给 `handler`，其余元素仍只读。
+pub fn adc_view_with_handler(
+    theme: &Theme,
+    node: &ElementNode,
+    handler: AdcActionHandler,
+) -> AnyElement {
+    render_node(theme, node, "$", Some(&handler))
 }
 
 /// 收集整棵树里缺 `a11yLabel` 的交互元素（`ADC-ELEM-A11Y-001`，渲染侧兜底）。
@@ -398,6 +412,19 @@ pub fn adc_panel_body(theme: &Theme, tree: &serde_json::Value) -> (AnyElement, V
     let parsed = parse_tree(tree);
     (
         panel_shell(adc_view(theme, &parsed.root)),
+        parsed.diagnostics,
+    )
+}
+
+/// 带 `onPress` 回调的面板入口：插件 panel 的 Button 动作回到 `handler`。
+pub fn adc_panel_body_with_handler(
+    theme: &Theme,
+    tree: &serde_json::Value,
+    handler: AdcActionHandler,
+) -> (AnyElement, Vec<Diagnostic>) {
+    let parsed = parse_tree(tree);
+    (
+        panel_shell(adc_view_with_handler(theme, &parsed.root, handler)),
         parsed.diagnostics,
     )
 }
@@ -455,23 +482,28 @@ fn collect_a11y_issues(node: &ElementNode, path: &str, issues: &mut Vec<A11yIssu
     }
 }
 
-fn render_node(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_node(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     // `visible=false` 不占位；节点仍保留在树里供 diff/诊断。
     if !node.visible {
         return div().into_any_element();
     }
     // `ElementKind` 是 `#[non_exhaustive]`：新增元素走兜底分支渲染成灰框（P4）。
     match node.kind {
-        ElementKind::Stack => render_stack(theme, node, path, false),
-        ElementKind::Row => render_stack(theme, node, path, true),
-        ElementKind::Grid => render_grid(theme, node, path),
+        ElementKind::Stack => render_stack(theme, node, path, false, handler),
+        ElementKind::Row => render_stack(theme, node, path, true, handler),
+        ElementKind::Grid => render_grid(theme, node, path, handler),
         ElementKind::Divider => render_divider(theme, node),
         ElementKind::Spacer => div().flex_1().min_h(px(0.0)).into_any_element(),
         ElementKind::Text => render_text(theme, node),
         ElementKind::Markdown => render_markdown(theme, node),
         ElementKind::Code => render_code(theme, node, path),
         ElementKind::Badge => render_badge(theme, node),
-        ElementKind::Button => render_button(theme, node, path),
+        ElementKind::Button => render_button(theme, node, path, handler),
         ElementKind::Input => render_input(theme, node, path),
         ElementKind::Textarea => render_textarea(theme, node, path),
         ElementKind::Select => render_select(theme, node, path),
@@ -485,19 +517,25 @@ fn render_node(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         ElementKind::Image => render_image(theme, node, path),
         ElementKind::Icon => render_icon(theme, node, path),
         ElementKind::Chart => render_chart(theme, node),
-        ElementKind::Card => render_card(theme, node, path),
-        ElementKind::Tabs => render_tabs(theme, node, path),
-        ElementKind::Accordion => render_accordion(theme, node, path),
+        ElementKind::Card => render_card(theme, node, path, handler),
+        ElementKind::Tabs => render_tabs(theme, node, path, handler),
+        ElementKind::Accordion => render_accordion(theme, node, path, handler),
         _ => render_placeholder(theme, node),
     }
 }
 
 // --- 布局 -----------------------------------------------------------------
 
-fn render_stack(theme: &Theme, node: &ElementNode, path: &str, row: bool) -> AnyElement {
+fn render_stack(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    row: bool,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let mut container = layout_box(node, row);
     for (index, child) in node.children.iter().enumerate() {
-        container = container.child(render_node(theme, child, &child_path(path, index)));
+        container = container.child(render_node(theme, child, &child_path(path, index), handler));
     }
     container.into_any_element()
 }
@@ -526,7 +564,12 @@ fn layout_box(node: &ElementNode, row: bool) -> Div {
         .p(spacing_px(node.i64_prop("padding")))
 }
 
-fn render_grid(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_grid(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let mut grid = div()
         .grid()
         .w_full()
@@ -538,7 +581,7 @@ fn render_grid(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         let cell = div()
             .col_span(grid_span(child.span))
             .min_w(px(0.0))
-            .child(render_node(theme, child, &child_path(path, index)));
+            .child(render_node(theme, child, &child_path(path, index), handler));
         grid = grid.child(cell);
     }
     grid.into_any_element()
@@ -725,7 +768,12 @@ fn render_badge(theme: &Theme, node: &ElementNode) -> AnyElement {
 
 // --- 交互（只画视觉，不接事件） -------------------------------------------
 
-fn render_button(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_button(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let disabled = node.bool_prop("disabled").unwrap_or(false);
@@ -759,6 +807,12 @@ fn render_button(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         .child(label);
     if disabled {
         button = button.opacity(0.6);
+    } else if let (Some(action), Some(handler)) = (node.action("onPress"), handler) {
+        // M4 W3：onPress 动作在这里回到宿主；启停/焦点由宿主状态驱动，渲染仍不持有状态。
+        let handler = handler.clone();
+        button = button
+            .cursor_pointer()
+            .on_click(move |_, _, cx| handler(&action, cx));
     }
     button.into_any_element()
 }
@@ -1561,7 +1615,12 @@ fn chart_legend(theme: &Theme, labels: &[String], values: &[f64]) -> Div {
 
 // --- 容器 -----------------------------------------------------------------
 
-fn render_card(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_card(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let border = match node.tone {
@@ -1601,12 +1660,17 @@ fn render_card(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         .p(px(12.0))
         .gap(px(8.0));
     for (index, child) in node.children.iter().enumerate() {
-        body = body.child(render_node(theme, child, &child_path(path, index)));
+        body = body.child(render_node(theme, child, &child_path(path, index), handler));
     }
     card.child(body).into_any_element()
 }
 
-fn render_tabs(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_tabs(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let tabs = node.array_prop("tabs").map(Vec::as_slice).unwrap_or(&[]);
@@ -1652,12 +1716,17 @@ fn render_tabs(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
     .child(bar);
     // `Tabs` 的节点级 children 就是当前 active 页内容（spec §6.8）。
     for (index, child) in node.children.iter().enumerate() {
-        container = container.child(render_node(theme, child, &child_path(path, index)));
+        container = container.child(render_node(theme, child, &child_path(path, index), handler));
     }
     container.into_any_element()
 }
 
-fn render_accordion(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_accordion(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let sections = node
@@ -1747,6 +1816,7 @@ fn render_accordion(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement
                     theme,
                     child,
                     &format!("{path}.sections[{key}].children[{index}]"),
+                    handler,
                 ));
             }
             container = container.child(body);
@@ -2573,6 +2643,35 @@ mod tests {
         let parsed = parse_tree(&tree);
         let accordion = &parsed.root.children[1];
         assert_eq!(accordion.nested_children["s"][0].kind.as_str(), "Text");
+        drop(body);
+    }
+
+    // M4-ADC-001：带动作回调的面板入口能渲染嵌套 Button（handler 穿透 Card/Stack），
+    // 且合法树不产生诊断；点击行为由 chat 产品路径人工复验。
+    #[test]
+    fn panel_with_action_handler_accepts_nested_button() {
+        let tree = serde_json::json!({
+            "type": "Card",
+            "props": { "title": "动作" },
+            "children": [{
+                "type": "Stack",
+                "props": { "gap": 8 },
+                "children": [{
+                    "type": "Button",
+                    "props": {
+                        "label": "复制",
+                        "a11yLabel": "复制插件 ID",
+                        "onPress": { "copy": "demo.echo" }
+                    }
+                }]
+            }]
+        });
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _| {});
+        let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
+        assert!(
+            diagnostics.is_empty(),
+            "合法动作树不应有诊断: {diagnostics:?}"
+        );
         drop(body);
     }
 }

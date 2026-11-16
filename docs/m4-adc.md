@@ -1,0 +1,40 @@
+# M4 W3 — ADC 交互（进行中）
+
+> 更新：2026-11-16。范围见 [ADR-0013](decisions/0013-m4-scope.md) W3；进度见 [m4-status.md](m4-status.md)。
+> ADC-v1 的**契约**已在 M3 冻结；本文只记录 M4 的运行时接线，不改元素词汇表。
+
+## 1. 已接线
+
+- **动作解析/校验**（M3 已有，`dshr-ui-contributions::parse_action`）：`call` / `command` /
+  `openExternal` / `copy` 四类，校验 method/args、https、copy ≤ 64 KiB；非法动作降级并诊断。
+- **Button `onPress` 回调**（M4 W3）：
+  - `dshr-ui-gpui` 新增 `adc_view_with_handler` / `adc_panel_body_with_handler`；
+  - `handler` 只接收已校验的 `Action`，Button 未 `disabled` 且声明 `onPress` 时才注册点击；
+  - 递归渲染（Stack/Row/Grid/Card/Tabs/Accordion）会把 handler 传到嵌套 Button；
+  - `adc_view` / `adc_panel_body` 保持纯渲染，M3 的工具卡/自检路径不回归。
+- **chat 插件面板**：Button 动作回到宿主：
+  - `copy` → 写系统剪贴板（真实可用）；
+  - `openExternal` → **不自动打开**，只记日志（需要确认 UI）；
+  - `call` / `command` → 记"未接线"日志，不伪装成功。
+- `M4-ADC-001`：带 handler 的嵌套 Button 树渲染、0 诊断；`cargo test -p dshr-ui-gpui`。
+
+## 2. 未接线（W3 剩余）
+
+| 项 | 现状 | 下一步 |
+|---|---|---|
+| `call` / `command` | 只记日志 | 加 `Plugin`/Host RPC 动作通道（external-process `ui.action` + SDK + 超时/错误） |
+| `openExternal` | 只记日志 | 确认弹窗 + 仅 https；用户拒绝不可执行 |
+| Input/Textarea/Select/Checkbox/Switch/Slider 的 `onChange` | 仍只读 | 值变更去抖 150ms → Host，且需要状态快照/patch |
+| Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
+| tool card `tool.result.extra` | 未渲染 | 工具卡内受限 ADC 区域，只允许元素集 |
+| 窗口 draw 预算 / a11y 焦点 | 未做 | 与 W2 焦点环、W7 性能基线合并 |
+
+## 3. 手工验证（`M4-ADC-100`）
+
+1. 用 external fixture 声明一个 `workspace.panel`，树里放
+   `Button{ "label": "复制", "a11yLabel": "复制", "onPress": { "copy": "demo" } }`；
+2. 启动 `chat.exe`，`Ctrl/⌘+J` 打开插件面板；
+3. 点击"复制"，剪贴板应为 `demo`；stderr 出现 `[adc] copy 4 bytes`；
+4. 把 `onPress` 换成 `call`，点击后 stderr 出现 `[adc] call 未接线`，**不得**显示成功或静默。
+
+当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层，点击/剪贴板必须在真实窗口复验。

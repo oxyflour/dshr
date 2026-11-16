@@ -43,6 +43,14 @@
 
 以上全部不碰鼠标即通过 G3；任一步需要鼠标都记为失败并修。
 
+复验时设 `DSHR_UI_TRACE=1`：每个快捷键触发会向 stderr 打一行 `[keyboard] <action>`，
+可作为"按键确实到达 ChatApp"的证据（不含按键内容/输入法组合态）。
+
+本机自动化限制（2026-11-16）：用 `WScript.Shell.SendKeys` + `SetForegroundWindow` 尝试
+自动注入 `Ctrl+B/J/Esc/N` 时，窗口能启动并 `AppActivate` 返回 true，但 Windows 前台锁让
+`SetForegroundWindow` 失败、GPUI 未收到按键，stderr 无 `[keyboard]` 行。因此该项仍必须由
+人工窗口或带 UI 自动化的 CI runner 复验，**不得**根据 SendKeys 失败/成功改判 G3。
+
 ## 4. 已知限制（M4 剩余）
 
 - **真实键盘事件未被自动化**：`M4-A11Y-001` 只验证快捷键表/绑定数量与 G3 键位覆盖；

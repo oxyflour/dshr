@@ -33,9 +33,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::profiler::{set_trace_enabled, FrameEvent, FrameTimingCollector};
 use gpui::{
-    actions, div, point, px, size, AnyElement, App, Bounds, Context, Entity, Focusable, Font,
-    FontWeight, KeyBinding, Rgba, Role, ScrollHandle, TextOverflow, Window, WindowBounds,
-    WindowOptions,
+    actions, div, point, px, size, AnyElement, App, Bounds, ClipboardItem, Context, Entity,
+    Focusable, Font, FontWeight, KeyBinding, Rgba, Role, ScrollHandle, TextOverflow, Window,
+    WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
@@ -81,8 +81,9 @@ use dshr_tool_runtime::{
     ToolDefinition, ToolOrigin, ToolPolicy,
 };
 use dshr_ui_gpui::{
-    adc_panel_body, diff_view_from_text, markdown_view, terminal_view_from_text, DiagnosticCode,
-    TextInput, Theme, ThemeKind,
+    adc_panel_body, adc_panel_body_with_handler, diff_view_from_text, markdown_view,
+    terminal_view_from_text, Action as AdcAction, AdcActionHandler, DiagnosticCode, TextInput,
+    Theme, ThemeKind,
 };
 
 const SESSION_ID: &str = "s-chat";
@@ -102,6 +103,13 @@ actions!(
         QuitShortcut,
     ]
 );
+
+/// `DSHR_UI_TRACE=1` 时把快捷键触发写到 stderr，供真实窗口人工/自动化复验。
+fn trace_shortcut(action: &str) {
+    if std::env::var("DSHR_UI_TRACE").as_deref() == Ok("1") {
+        eprintln!("[keyboard] {action}");
+    }
+}
 
 /// 应用里展示/自检用的快捷键说明（键位字符串与 `chat_key_bindings()` 保持一致）。
 const CHAT_SHORTCUTS: [(&str, &str); 8] = [
@@ -2829,6 +2837,7 @@ impl ChatApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        trace_shortcut("new-session");
         self.new_session(window, cx);
     }
 
@@ -2838,6 +2847,7 @@ impl ChatApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        trace_shortcut("focus-composer");
         self.focus_composer(window, cx);
     }
 
@@ -2847,6 +2857,7 @@ impl ChatApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        trace_shortcut("toggle-sidebar");
         self.toggle_sidebar(cx);
     }
 
@@ -2856,6 +2867,7 @@ impl ChatApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        trace_shortcut("toggle-plugins");
         self.toggle_plugins_panel(cx);
     }
 
@@ -2865,6 +2877,7 @@ impl ChatApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        trace_shortcut("approve-first");
         self.resolve_first_approval(ApprovalOutcome::AllowOnce, cx);
     }
 
@@ -2874,10 +2887,12 @@ impl ChatApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        trace_shortcut("deny-first");
         self.resolve_first_approval(ApprovalOutcome::Deny, cx);
     }
 
     fn shortcut_escape(&mut self, _: &EscapeShortcut, window: &mut Window, cx: &mut Context<Self>) {
+        trace_shortcut("escape");
         if self.plugins_open {
             self.plugins_open = false;
             cx.notify();
@@ -2891,6 +2906,7 @@ impl ChatApp {
     }
 
     fn shortcut_quit(&mut self, _: &QuitShortcut, _window: &mut Window, cx: &mut Context<Self>) {
+        trace_shortcut("quit");
         cx.quit();
     }
 
@@ -3064,6 +3080,27 @@ impl ChatApp {
             return None;
         }
         let p = t.palette;
+        // M4 W3：插件面板 Button 的 onPress 回到宿主。copy 直接写剪贴板；
+        // call/command 需要 host RPC，openExternal 需要确认弹窗——当前只记可读日志，
+        // 不假装已执行（避免"点了没反应"被误判为成功）。
+        let adc_action_handler: AdcActionHandler = std::rc::Rc::new(|action, app| match action {
+            AdcAction::Copy { text } => {
+                app.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                eprintln!("[adc] copy {} bytes", text.len());
+            }
+            AdcAction::OpenExternal { url } => {
+                eprintln!("[adc] openExternal 未确认，未打开: {url}");
+            }
+            AdcAction::Call { method, .. } => {
+                eprintln!("[adc] call 未接线（Host RPC 待 W3）: {method}");
+            }
+            AdcAction::Command { id } => {
+                eprintln!("[adc] command 未接线（Host RPC 待 W3）: {id}");
+            }
+            _ => {
+                eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
+            }
+        });
         let entries = self.profile.entries().to_vec();
         let editable = self.profile.can_edit();
         let enabled = entries.iter().filter(|entry| entry.enabled).count();
@@ -3232,7 +3269,8 @@ impl ChatApp {
                     );
                 match &panel.tree {
                     Some(tree) => {
-                        let (body, diagnostics) = adc_panel_body(t, tree);
+                        let (body, diagnostics) =
+                            adc_panel_body_with_handler(t, tree, adc_action_handler.clone());
                         card = card.child(body);
                         if !diagnostics.is_empty() {
                             // 未知元素 Placeholder / 配额裁剪仍然可见，诊断只作提示。
