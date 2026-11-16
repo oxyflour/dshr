@@ -1056,7 +1056,7 @@
       "status": "implemented",
       "suite": "cargo",
       "selector": "dshr-ui-gpui",
-      "notes": "crates/ui-gpui/src/adc.rs 的 #[test]（M4-ADC-001：adc_panel_body_with_handler + 嵌套 Button 动作树）；tests/adc_click.rs 用 TestAppContext 真实点击 Button/Checkbox/Switch/Select chip/Slider +/Input/Textarea（009..015）并断言动作到达 handler；cargo test -p dshr-ui-gpui",
+      "notes": "crates/ui-gpui/src/adc.rs 的 #[test]（M4-ADC-001：adc_panel_body_with_handler + 嵌套 Button 动作树）；tests/adc_click.rs 用 TestAppContext 真实点击 Button/Checkbox/Switch/Select chip/Slider +/Input/Textarea/openExternal（009..016）并断言动作到达 handler；cargo test -p dshr-ui-gpui",
       "source_dirs": [
         "crates/ui-gpui/src",
         "crates/ui-gpui/tests"
@@ -1073,7 +1073,8 @@
         "M4-ADC-012",
         "M4-ADC-013",
         "M4-ADC-014",
-        "M4-ADC-015"
+        "M4-ADC-015",
+        "M4-ADC-016"
       ]
     },
     {

@@ -199,6 +199,28 @@ fn m4_adc_015_real_click_textarea_emits_multiline_edit(cx: &mut TestAppContext) 
     }
 }
 
+/// M4-ADC-016：点击 Button 的 openExternal，URL 原样进入 handler（确认条仍由宿主负责）。
+#[gpui::test]
+fn m4_adc_016_real_click_open_external(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Button",
+            "props": {
+                "label": "Open",
+                "a11yLabel": "Open docs",
+                "onPress": { "openExternal": "https://example.com/docs" }
+            }
+        }),
+        "adc-$",
+    )
+    .expect("openExternal click should dispatch an action");
+    assert!(
+        matches!(action, Action::OpenExternal { ref url } if url == "https://example.com/docs"),
+        "unexpected action: {action:?}"
+    );
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
