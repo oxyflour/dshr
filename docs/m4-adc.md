@@ -43,7 +43,7 @@
 |---|---|---|
 | `openExternal` 的实机确认 | 确认条已实现，未真机点过 | `M4-ADC-101` 人工复验 |
 | Slider 拖拽 | 已接 track 拖拽 + 方向键；headless 测试覆盖 | 真实窗口手感/边缘值仍需手测 |
-| Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
+| Tabs `onChange` | 已接：点击/Enter/Space 注入 key；headless 测试覆盖 | 真实窗口手感仍需手测 |
 | tool card extra 的真实数据 | 模型/渲染已接，尚无真实工具写 `meta.ui` | 给一个官方/样例工具写 `meta.ui` 做端到端 |
 | 窗口 draw 预算 / a11y 焦点 | 未做 | 与 W2 焦点环、W7 性能基线合并 |
 
@@ -58,10 +58,10 @@
 5. 把 `onPress` 换成 `openExternal: "https://example.com"`，点击后出现确认条；
    点"取消"或按 `Esc` 不打开；点"打开"才调用系统浏览器。
 
-当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..022** 用 GPUI
+当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..023** 用 GPUI
 `TestAppContext` 在 headless 窗口里真实 `simulate_click`，覆盖 Button `copy`、Checkbox
 `onChange`、Switch `onChange`、Select chip 注入 value、Slider + 注入 value、Input/Textarea
-发 `__adc_edit`、Button `openExternal` 派发，以及 Button/Checkbox/Switch/Select chip
+发 `__adc_edit`、Button `openExternal` 派发、Tabs 切换，以及 Button/Checkbox/Switch/Select chip
 点击聚焦后的键盘激活、Slider 方向键与 track 拖拽。真实窗口的剪贴板/确认条/IME 仍需人工复验。
 
 ## 9. 真实点击测试（headless）

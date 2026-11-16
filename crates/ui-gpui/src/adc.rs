@@ -1984,7 +1984,7 @@ fn render_tabs(
         .gap(px(4.0))
         .border_b_1()
         .border_color(palette.color(palette.border_l1));
-    for tab in tabs.iter().take(MAX_TABS) {
+    for (index, tab) in tabs.iter().take(MAX_TABS).enumerate() {
         let key = tab
             .get("key")
             .and_then(|value| value.as_str())
@@ -1995,6 +1995,8 @@ fn render_tabs(
             .unwrap_or_default();
         let is_active = !active.is_empty() && key == active;
         let mut chip = div()
+            .id(format!("{path}-tab-{index}"))
+            .debug_selector(|| format!("adc-{path}-tab-{index}"))
             .flex_none()
             .px(px(10.0))
             .py(px(5.0))
@@ -2006,6 +2008,25 @@ fn render_tabs(
         } else {
             chip.text_color(palette.color(palette.label_secondary))
         };
+        if let (Some(action @ Action::Call { .. }), Some(handler)) =
+            (node.action("onChange"), handler)
+        {
+            let next = action_with_value(&action, key);
+            let handler = handler.clone();
+            let key_handler = handler.clone();
+            let key_next = next.clone();
+            chip = chip
+                .role(Role::Button)
+                .aria_label(format!("切换 {label}"))
+                .cursor_pointer()
+                .focusable()
+                .on_click(move |_, window, cx| handler(&next, window, cx))
+                .on_key_down(move |event, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        key_handler(&key_next, window, cx);
+                    }
+                });
+        }
         bar = bar.child(chip.child(label.to_owned()));
     }
     let mut container = interactive_base(

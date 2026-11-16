@@ -408,6 +408,35 @@ fn m4_adc_022_drag_slider_track_sets_value(cx: &mut TestAppContext) {
     }
 }
 
+/// M4-ADC-023：点击 Tabs 非 active tab，key 注入 onChange args。
+#[gpui::test]
+fn m4_adc_023_real_click_tabs_changes_key(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Tabs",
+            "props": {
+                "activeKey": "a",
+                "a11yLabel": "Sections",
+                "tabs": [
+                    { "key": "a", "label": "A" },
+                    { "key": "b", "label": "B" }
+                ],
+                "onChange": { "call": "switch_tab", "args": {} }
+            }
+        }),
+        "adc-$-tab-1",
+    )
+    .expect("tab click should dispatch an action");
+    match action {
+        Action::Call { ref method, ref args } => {
+            assert_eq!(method, "switch_tab");
+            assert_eq!(args["value"], "b", "tab key not injected: {args}");
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
