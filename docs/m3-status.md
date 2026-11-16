@@ -159,7 +159,7 @@ Cordis Service class，当前 sidecar plugin seam 不能按普通 plugin 装载�
 | 官方 `execute` 闭环 | `exec.agent` 债务 | M3 只验证装载绿+方法往返+错误面；execute 闭环 M4 |
 | P2 余项（窗口 draw、matrix full 落盘、panel id/事件、`--selftest-*` SKIP 语义、native 并发、leak 等） | 非 gate | 已记录在 review P2；M4 前修或写进已知限制 |
 | `plugin-api` trait 冻结 | 插件 ABI | `Plugin` 仍同步 `call`（`&'static str` leak），冻结留到并发改造（M4） |
-| Beta 对外口径 290–470 | 产品 | 待产品确认；按 ADR-0007 §5 砍单 |
+| Beta 对外口径 | 产品 | **已确认（2026-11-16）：时间无硬指标、不设硬上限；预算按 PLAN §9.2 追加 80–140 候选，不据此砍 G1–G3** |
 
 ## 7. 下一步（按依赖排序）
 
