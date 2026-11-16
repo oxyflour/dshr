@@ -185,7 +185,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` + `dshr-desktop-gpui` `cargo build` + ADC/recovery/crash 自检（[m4-linux.md](m4-linux.md)） |
 | `M4-COMPONENT-001/002` | implemented | wasmtime Component canonical ABI + `cpp-v1.wit` 解析（[m4-component.md](m4-component.md)） |
 | `M4-ADC-009..015` | implemented | GPUI TestAppContext 真实点击 Button/Checkbox/Switch/Select chip/Slider +/Input/Textarea，断言动作到达 handler（`crates/ui-gpui/tests/adc_click.rs`） |
-| `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe + dsh-official 的 Windows zip / Linux tar.gz，解压后 sidecar/official 自检 PASS（[m4-package.md](m4-package.md)） |
+| `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe + dsh-official 的 zip/tar + `.sha256`，解压后 sidecar/official 自检 PASS（[m4-package.md](m4-package.md)） |
 | `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |

@@ -14,21 +14,21 @@ bash tools/package-desktop.sh debug
 1. `cargo build -p dshr-desktop-gpui --bin chat`；
 2. 把 `chat`/`chat.exe`、`runtime/node`、`sidecar/probe-*`、`sidecar/dsh-official`（含
    node_modules）与 `README.txt` 放到 `dist/dshr-<config>-<os>-<arch>/`；
-3. 压成 zip（Windows）或 tar.gz（Linux/macOS）。
+3. 压成 zip（Windows）或 tar.gz（Linux/macOS），并生成同名 `.sha256` 校验文件。
 
 Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本可用
 `CARGO=/path/to/cargo` 指定工具链。
 
 ## 2. 本机实测
 
-| 平台 | 产物 | 大小 |
-|---|---|---|
-| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 59,691,270 B |
-| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 197,060,789 B |
+| 平台 | 产物 | 大小 | SHA-256 |
+|---|---|---|---|
+| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 59,691,270 B | `05697d7c…ea51` |
+| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 197,060,789 B | `da213f58…4fbb` |
 
 归档内含 `runtime/node`、`sidecar/probe-*.mjs` 与完整 `sidecar/dsh-official`（含
 node_modules）；Windows 二进制来自本机 `cargo build`，Linux 二进制来自 WSL（见
-[m4-linux.md](m4-linux.md)），两者都 exit 0。
+[m4-linux.md](m4-linux.md)），两者都 exit 0。校验文件与归档同目录。
 
 ## 3. 包内 smoke test
 

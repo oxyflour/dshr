@@ -154,6 +154,14 @@ jobs:
           target/debug/chat --selftest-recovery
           target/debug/chat --selftest-crash-recovery
 
+      - name: Package desktop (Windows)
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug
+
+      - name: Package desktop (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: bash tools/package-desktop.sh debug
+
       - name: Upload desktop binary
         uses: actions/upload-artifact@v4
         with:
@@ -161,5 +169,16 @@ jobs:
           path: |
             target/debug/chat
             target/debug/chat.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload desktop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-package-${{ matrix.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 14

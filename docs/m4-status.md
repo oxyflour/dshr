@@ -76,9 +76,9 @@ WSL Ubuntu 22.04 + Rust 1.99.1:
   → 三项均 PASS（Linux 上 ADC 面板/恢复/崩溃恢复）
 
 powershell -File tools\package-desktop.ps1 -Configuration debug
-  → dist/dshr-debug-windows-x64.zip（59.7 MB，含 runtime/node + probe + dsh-official）
+  → dist/dshr-debug-windows-x64.zip（59.7 MB）+ .sha256（05697d7c…）
 bash tools/package-desktop.sh debug
-  → dist/dshr-debug-linux-x86_64.tar.gz（197.1 MB，含 runtime/node + probe + dsh-official）
+  → dist/dshr-debug-linux-x86_64.tar.gz（197.1 MB）+ .sha256（da213f58…）
 解压包后直接 chat(.exe) --selftest-sidecar-recovery / --selftest-official（不设 DSHR_NODE）
   → 两项 PASS（Vendored node；official protocol=2 active=true host_services=3）
 
@@ -131,10 +131,10 @@ node tools\conformance.mjs --full --compact
   干扰，不判回归，也不标"窗口 draw 稳定达标"。
 - **G1 Linux 构建/自检/打包已本机过**：WSL 构建+ADC/recovery/crash 自检通过；
   `package-desktop.ps1`/`.sh` 生成自带 `runtime/node` + probe + `dsh-official`（含
-  node_modules）的 Windows zip（59.7 MB）与 Linux tar.gz（197.1 MB）；解压后不设
-  `DSHR_NODE` 直接 `--selftest-sidecar-recovery` 与 `--selftest-official` 均 PASS。
-  仍缺 `.tmp/dsh-tools-all` 工具包、安装器/签名；Actions 未实跑，macOS/Windows runner
-  未验证；G1 不标"完成"。
+  node_modules）的 zip/tar 与 `.sha256`；解压后不设 `DSHR_NODE` 直接
+  `--selftest-sidecar-recovery` / `--selftest-official` 均 PASS。CI 的 `desktop-build`
+  已加打包/校验步骤。仍缺 `.tmp/dsh-tools-all`、安装器/签名；Actions 未实跑，
+  macOS/Windows runner 未验证；G1 不标"完成"。
 - **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
   本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。
 - **G2 只到 headless/进程级 + 恢复横幅**：三个 selftest 覆盖损坏/备份/插件回滚、kill sidecar、

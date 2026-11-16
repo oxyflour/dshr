@@ -58,4 +58,6 @@ EOF
 ARCHIVE="$ROOT/dist/dshr-$CONFIG-$OS-$ARCH.tar.gz"
 rm -f "$ARCHIVE"
 tar -C "$STAGE" -czf "$ARCHIVE" .
+sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
 echo "[package-desktop] $ARCHIVE"
+echo "[package-desktop] sha256=$(cut -d' ' -f1 "$ARCHIVE.sha256")"

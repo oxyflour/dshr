@@ -58,4 +58,8 @@ if (-not $commit) { $commit = "dirty" }
 $zip = Join-Path $root "$OutDir/dshr-$Configuration-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip
+$hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$leaf = Split-Path $zip -Leaf
+"$hash  $leaf" | Set-Content -Encoding ASCII "$zip.sha256"
 Write-Host "[package-desktop] $zip"
+Write-Host "[package-desktop] sha256=$hash"
