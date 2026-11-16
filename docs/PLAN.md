@@ -726,9 +726,11 @@ v0.1 把 Loop 写成"组装 prompt 就发请求"，这是不可行的。以下�
 - [ ] **WASM Component**：`cpp-v1.wit` + Wasmtime + fuel/epoch/内存/输出/并发五维配额 +
       三故障注入（超时/fuel/内存）。*（**W6/W8：wasmtime `=50.0.1` core-module ABI 已实现并接入
       宿主/产品链路**（`WasmPlugin` + loader + `--selftest-wasm`；`CPP-WASM-001..027` 含资源上限
-      多 memory/大 table 负面测试）；`cpp-v1.wit` 仍草案，**Component Model/WIT canonical ABI 未做**
-      ——见 [ADR-0012](decisions/0012-m3-gate-closure.md)、[`wasm-host.md`](wasm-host.md)；
-      external-process 退路保留）*
+      多 memory/大 table 负面测试）；M4 W5 已启用 `component-model` 并新增
+      `M4-COMPONENT-001/002`（canonical ABI + `cpp-v1.wit` 解析校验，修 `quota` 重名），
+      但 Component 加载器/host imports/配额仍未接** ——见
+      [ADR-0012](decisions/0012-m3-gate-closure.md)、[`wasm-host.md`](wasm-host.md)、
+      [m4-component.md](m4-component.md)；external-process 退路保留）*
 - [ ] **DSH L2**：`sidecar-rpc` v2 host-service 代理 + 证据选出的 3 个 adapter + conformance。
       *（W4 端到端 + W5/W8 官方包验收 + W8 sessionProjections：未修改 `dsh-tool-working-directory`
       / `dsh-tool-todo` 装载绿 + `exec.agent` 债务证据、官方 `dsh-storage-domain` 经

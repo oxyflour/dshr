@@ -1,0 +1,72 @@
+//! M4 W5：WASM Component Model 的最小 canonical ABI 探针。
+//!
+//! 这里只验证宿主能加载/实例化 component，并通过 canonical ABI 调用一个导出函数；
+//! 真正的 `cpp-component/v1` 插件 ABI 仍待实现（见 spec/cpp-v1-component.wit）。
+//! 用内联 WAT 避免引入 wasm-tools / 预编译 fixture。
+
+#![cfg(test)]
+
+use wasmtime::component::{Component, Linker};
+use wasmtime::{Engine, Store};
+use wit_parser::{Resolve, WorldKey};
+
+const COMPONENT_WAT: &str = r#"
+(component
+  (core module $m
+    (func (export "run") (result i32)
+      i32.const 42))
+  (core instance $i (instantiate $m))
+  (func (export "run") (result u32)
+    (canon lift (core func $i "run")))
+)
+"#;
+
+/// M4-COMPONENT-001：component-model 能加载、实例化并走 canonical ABI 返回 u32。
+#[test]
+fn m4_component_001_canonical_abi_round_trip() {
+    let engine = Engine::default();
+    let component = Component::new(&engine, COMPONENT_WAT).expect("component parses");
+    let linker = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .expect("component instantiates");
+    let run = instance
+        .get_typed_func::<(), (u32,)>(&mut store, "run")
+        .expect("run export typed");
+    let (value,) = run.call(&mut store, ()).expect("canonical call");
+    assert_eq!(value, 42);
+}
+
+/// M4-COMPONENT-002：`docs/spec/cpp-v1.wit` 可解析，world `plugin` 导入 host、
+/// 导出 tool-provider（W5 契约冻结前的语法/形状校验）。
+#[test]
+fn m4_component_002_wit_contract_parses() {
+    let mut resolve = Resolve::default();
+    let package = resolve
+        .push_str(
+            "cpp-v1.wit",
+            include_str!("../../../docs/spec/cpp-v1.wit"),
+        )
+        .expect("cpp-v1.wit parses");
+    let world = resolve
+        .select_world(&[package], Some("plugin"))
+        .expect("world plugin exists");
+    let world = &resolve.worlds[world];
+    assert!(
+        world.imports.keys().any(|key| match key {
+            WorldKey::Name(name) => name == "host",
+            WorldKey::Interface(id) => resolve.interfaces[*id].name.as_deref() == Some("host"),
+        }),
+        "host import missing"
+    );
+    assert!(
+        world.exports.keys().any(|key| match key {
+            WorldKey::Name(name) => name == "tool-provider",
+            WorldKey::Interface(id) => {
+                resolve.interfaces[*id].name.as_deref() == Some("tool-provider")
+            }
+        }),
+        "tool-provider export missing"
+    );
+}

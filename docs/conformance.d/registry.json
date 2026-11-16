@@ -1069,6 +1069,21 @@
       ]
     },
     {
+      "name": "M4-COMPONENT（plugin-wasm Component Model/WIT）",
+      "area": "M4",
+      "status": "implemented",
+      "suite": "cargo",
+      "selector": "dshr-plugin-wasm",
+      "notes": "crates/plugin-wasm/tests/component_model.rs：#001 Component::new + canonical ABI 调用；#002 wit-parser 解析 docs/spec/cpp-v1.wit 并校验 world plugin 的 host/tool-provider。cargo test -p dshr-plugin-wasm --test component_model",
+      "source_dirs": [
+        "crates/plugin-wasm/tests"
+      ],
+      "ids": [
+        "M4-COMPONENT-001",
+        "M4-COMPONENT-002"
+      ]
+    },
+    {
       "name": "M4-ADC-EXTRA（conversation-model：tool.result.meta.ui 附加区）",
       "area": "M4",
       "status": "implemented",

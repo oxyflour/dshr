@@ -8,7 +8,10 @@ edition.workspace = true
 dshr-plugin-api = { path = "../plugin-api" }
 dshr-tool-runtime = { path = "../tool-runtime" }
 # 精确 pin；升级必须连同 conformance 一起走（ADR-008）。core-module ABI 见 lib.rs 文档。
-wasmtime = "=50.0.1"
+wasmtime = { version = "=50.0.1", features = ["component-model"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+wit-parser = "0.261.0"

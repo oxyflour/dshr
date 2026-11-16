@@ -6,7 +6,7 @@
 //! 约定：
 //! - 参数/结果跨边界一律是 canonical JSON 字符串（与 cpp-v1 §7.2 一致），WIT 只描述信封，
 //!   不把宿主 Rust 类型暴露给插件；
-//! - 配额通过 `host.quota()` 只读暴露，插件不能修改；
+//! - 配额通过 `host.get-quota()` 只读暴露，插件不能修改；
 //! - 结果形状对齐 cpp-v1 §7.3（content/value/meta/is_error）。
 
 package dshr:cpp-v1@0.1.0;
@@ -67,7 +67,7 @@ interface types {
 interface host {
     use types.{quota};
     log: func(level: string, message: string);
-    quota: func() -> quota;
+    get-quota: func() -> quota;
     /// 插件配置（manifest `config.schema` 校验后的 JSON）。
     config: func() -> string;
     /// 取消等待：返回 true 表示已取消。
