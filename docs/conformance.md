@@ -125,9 +125,9 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-16）：注册表 **585 个测试 ID —— implemented 538、pending 18、manual 29、
+M4 W3（2026-11-16）：注册表 **586 个测试 ID —— implemented 539、pending 18、manual 29、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
-496 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
+497 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
 
 上一轮 `--full` 实跑（2026-11-15，M3 收尾）：`67 suites / 836 passed / 1 failed / 6 ignored`；
@@ -166,6 +166,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-003` | implemented | `dshr-plugin-host` external E2E：`ui.action` → 下一次 `ui.render` 状态变化 |
 | `M4-ADC-004` | implemented | `dshr-conversation-model`：`tool.result.meta.ui` → `ToolCard.extra` |
 | `M4-ADC-005` | implemented | `dshr-ui-gpui`：Checkbox/Switch `onChange` 树渲染（点击真机复验） |
+| `M4-ADC-006` | implemented | `dshr-ui-gpui`：Select `onChange` 选项 chip + `args.value` 注入 |
 | `M4-TRAIT-001` | implemented | `dshr-plugin-api`：`Plugin::id/version` 借用 `&str`，动态插件 id 不 leak |
 | `M4-ADC-100` | manual | 插件面板 Button `onPress` click → 剪贴板/`ui.action`（[m4-adc.md](m4-adc.md) §3） |
 | `M4-ADC-101` | manual | ADC `openExternal` 确认条：取消/Esc/打开（[m4-adc.md](m4-adc.md) §3） |

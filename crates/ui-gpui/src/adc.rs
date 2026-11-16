@@ -506,7 +506,7 @@ fn render_node(
         ElementKind::Button => render_button(theme, node, path, handler),
         ElementKind::Input => render_input(theme, node, path),
         ElementKind::Textarea => render_textarea(theme, node, path),
-        ElementKind::Select => render_select(theme, node, path),
+        ElementKind::Select => render_select(theme, node, path, handler),
         ElementKind::Checkbox => render_checkbox(theme, node, path, handler),
         ElementKind::Switch => render_switch(theme, node, path, handler),
         ElementKind::Slider => render_slider(theme, node, path),
@@ -889,7 +889,12 @@ fn render_textarea(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement 
         .into_any_element()
 }
 
-fn render_select(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_select(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let value = node.str_prop("value").unwrap_or_default();
@@ -901,6 +906,72 @@ fn render_select(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         .and_then(|option| option.get("label").and_then(|label| label.as_str()))
         .unwrap_or(value)
         .to_owned();
+    // M4 W3：有 onChange(call) 时把选项展开成可点 chip，点击把 value 注入 args 后回传；
+    // 没有 handler/action 时保持原来的只读展示。
+    if let (Some(action @ Action::Call { .. }), Some(handler)) = (node.action("onChange"), handler)
+    {
+        let mut chips = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.0))
+            .w_full();
+        for (index, option) in options.iter().take(20).enumerate() {
+            let option_value = option
+                .get("value")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let option_label = option
+                .get("label")
+                .and_then(|label| label.as_str())
+                .unwrap_or(&option_value)
+                .to_owned();
+            let selected = option_value == value;
+            let next = action_with_value(&action, &option_value);
+            let handler = handler.clone();
+            let aria = format!("选择 {option_label}");
+            let mut chip = div()
+                .id(format!("{path}-option-{index}"))
+                .role(Role::Button)
+                .aria_label(aria)
+                .px(px(8.0))
+                .py(px(3.0))
+                .rounded(theme.radii.sm)
+                .cursor_pointer()
+                .text_size(type_scale.small)
+                .line_height(type_scale.small_line)
+                .text_color(palette.color(if selected {
+                    palette.bg_base
+                } else {
+                    palette.label_primary
+                }))
+                .bg(palette.color(if selected {
+                    palette.business_primary
+                } else {
+                    palette.input_major
+                }))
+                .on_click(move |_, _, cx| handler(&next, cx));
+            chip = chip.child(option_label);
+            chips = chips.child(chip);
+        }
+        return interactive_base(div(), node, path, Role::ComboBox)
+            .flex_none()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .aria_value(label.clone())
+            .child(
+                div()
+                    .text_size(type_scale.small)
+                    .text_color(palette.color(palette.label_caption))
+                    .child(label.clone()),
+            )
+            .child(chips)
+            .into_any_element();
+    }
     interactive_base(div(), node, path, Role::ComboBox)
         .flex_none()
         .w_full()
@@ -927,6 +998,23 @@ fn render_select(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
                 .child("▾"),
         )
         .into_any_element()
+}
+
+/// Select 的 `onChange` 只对 `call` 注入 `args.value`；其他动作保持原样（无法携带值）。
+fn action_with_value(action: &Action, value: &str) -> Action {
+    match action {
+        Action::Call { method, args } => {
+            let mut args = args.clone();
+            if let Some(object) = args.as_object_mut() {
+                object.insert("value".to_owned(), serde_json::json!(value));
+            }
+            Action::Call {
+                method: method.clone(),
+                args,
+            }
+        }
+        other => other.clone(),
+    }
 }
 
 fn render_checkbox(
@@ -2731,5 +2819,42 @@ mod tests {
             "合法 onChange 树不应有诊断: {diagnostics:?}"
         );
         drop(body);
+    }
+
+    // M4-ADC-006：Select onChange(call) 点击时把选项 value 注入 args；无 handler 时保持只读盒。
+    #[test]
+    fn select_on_change_injects_value_and_renders() {
+        let tree = serde_json::json!({
+            "type": "Select",
+            "props": {
+                "value": "a",
+                "options": [
+                    { "value": "a", "label": "A" },
+                    { "value": "b", "label": "B" }
+                ],
+                "a11yLabel": "选择",
+                "onChange": { "call": "pick", "args": { "source": "ui" } }
+            }
+        });
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _| {});
+        let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
+        assert!(
+            diagnostics.is_empty(),
+            "合法 Select onChange 树不应有诊断: {diagnostics:?}"
+        );
+        drop(body);
+
+        let action = Action::Call {
+            method: "pick".to_owned(),
+            args: serde_json::json!({ "source": "ui" }),
+        };
+        match action_with_value(&action, "b") {
+            Action::Call { method, args } => {
+                assert_eq!(method, "pick");
+                assert_eq!(args["value"], "b");
+                assert_eq!(args["source"], "ui");
+            }
+            other => panic!("expected call, got {other:?}"),
+        }
     }
 }
