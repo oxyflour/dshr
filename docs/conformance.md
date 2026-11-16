@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **597 个测试 ID —— implemented 544、pending 18、manual 35、
+M4 G1（2026-11-17）：注册表 **598 个测试 ID —— implemented 544、pending 18、manual 36、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 502 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -183,7 +183,8 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 核心 crate + desktop-build；Linux 本机 build 通过，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `M4-CI-003` | manual | WSL Ubuntu 22.04 核心 6 crate `cargo check` + `dshr-desktop-gpui` `cargo build` + ADC/recovery/crash 自检（[m4-linux.md](m4-linux.md)） |
-| `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe sidecar 的 Windows zip / Linux tar.gz，解压后 sidecar 自检 PASS（[m4-package.md](m4-package.md)） |
+| `M4-CI-004` | manual | `package-desktop.ps1/sh`：自带 runtime/node + probe + dsh-official 的 Windows zip / Linux tar.gz，解压后 sidecar/official 自检 PASS（[m4-package.md](m4-package.md)） |
+| `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |
 | `M4-DRAW-001` | manual | `frame-probe` 窗口 draw：RDP 下硬预算 PASS，相对基线受环境干扰未判回归（[m4-draw-budget.md](m4-draw-budget.md)） |

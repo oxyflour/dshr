@@ -40,6 +40,9 @@ mkdir -p "$STAGE/sidecar"
 for name in probe-sidecar.mjs probe-plugin.mjs; do
   [[ -f "$ROOT/sidecar/$name" ]] && cp "$ROOT/sidecar/$name" "$STAGE/sidecar/$name"
 done
+if [[ -d "$ROOT/sidecar/dsh-official" ]]; then
+  cp -a "$ROOT/sidecar/dsh-official" "$STAGE/sidecar/dsh-official"
+fi
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dirty)"
 cat > "$STAGE/README.txt" <<EOF
 dshr $OS package
@@ -48,7 +51,7 @@ commit: $COMMIT
 built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 Run chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery.
-Includes runtime/node and probe sidecar; no dsh-official node_modules.
+Includes runtime/node, probe sidecar, and vendored dsh-official sidecar.
 No installer, code signing, or auto-update in this package.
 EOF
 

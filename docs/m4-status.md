@@ -76,11 +76,11 @@ WSL Ubuntu 22.04 + Rust 1.99.1:
   → 三项均 PASS（Linux 上 ADC 面板/恢复/崩溃恢复）
 
 powershell -File tools\package-desktop.ps1 -Configuration debug
-  → dist/dshr-debug-windows-x64.zip（56.6 MB，含 runtime/node + probe sidecar）
+  → dist/dshr-debug-windows-x64.zip（59.7 MB，含 runtime/node + probe + dsh-official）
 bash tools/package-desktop.sh debug
-  → dist/dshr-debug-linux-x86_64.tar.gz（195.0 MB，含 runtime/node + probe sidecar）
-解压包后直接 chat(.exe) --selftest-sidecar-recovery（不设 DSHR_NODE）
-  → PASS（Vendored node；live/killed/dead_call/native/replayed=3）
+  → dist/dshr-debug-linux-x86_64.tar.gz（197.1 MB，含 runtime/node + probe + dsh-official）
+解压包后直接 chat(.exe) --selftest-sidecar-recovery / --selftest-official（不设 DSHR_NODE）
+  → 两项 PASS（Vendored node；official protocol=2 active=true host_services=3）
 
 node tools\official-provenance.mjs --check
   → PASS（3 个官方包，版本+SHA-256 匹配；official-l2-gate 测试前强制）
@@ -130,9 +130,10 @@ node tools\conformance.mjs --full --compact
   draw_p95=9.40ms < 31.25ms；同主机相对基线 avg_fps 19.2 < 22.42 未通过，属远程合成器
   干扰，不判回归，也不标"窗口 draw 稳定达标"。
 - **G1 Linux 构建/自检/打包已本机过**：WSL 构建+ADC/recovery/crash 自检通过；
-  `package-desktop.ps1`/`.sh` 生成自带 `runtime/node` + probe sidecar 的 Windows zip
-  （56.6 MB）与 Linux tar.gz（195.0 MB）；解压后不设 `DSHR_NODE` 直接 sidecar 自检 PASS。
-  仍缺 `dsh-official/node_modules`、安装器/签名；Actions 未实跑，macOS/Windows runner
+  `package-desktop.ps1`/`.sh` 生成自带 `runtime/node` + probe + `dsh-official`（含
+  node_modules）的 Windows zip（59.7 MB）与 Linux tar.gz（197.1 MB）；解压后不设
+  `DSHR_NODE` 直接 `--selftest-sidecar-recovery` 与 `--selftest-official` 均 PASS。
+  仍缺 `.tmp/dsh-tools-all` 工具包、安装器/签名；Actions 未实跑，macOS/Windows runner
   未验证；G1 不标"完成"。
 - **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
   本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。

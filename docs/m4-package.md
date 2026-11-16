@@ -12,8 +12,8 @@ bash tools/package-desktop.sh debug
 `-Configuration release` / `release` 走 release 构建。脚本会：
 
 1. `cargo build -p dshr-desktop-gpui --bin chat`；
-2. 把 `chat`/`chat.exe`、`README.txt`（配置、commit、构建时间、自检命令）放到
-   `dist/dshr-<config>-<os>-<arch>/`；
+2. 把 `chat`/`chat.exe`、`runtime/node`、`sidecar/probe-*`、`sidecar/dsh-official`（含
+   node_modules）与 `README.txt` 放到 `dist/dshr-<config>-<os>-<arch>/`；
 3. 压成 zip（Windows）或 tar.gz（Linux/macOS）。
 
 Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本可用
@@ -23,11 +23,12 @@ Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本�
 
 | 平台 | 产物 | 大小 |
 |---|---|---|
-| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 56,612,384 B |
-| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 195,024,785 B |
+| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 59,691,270 B |
+| Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 197,060,789 B |
 
-归档内含 `runtime/node`（vendored Node）与 `sidecar/probe-*.mjs`；Windows 二进制来自本机
-`cargo build`，Linux 二进制来自 WSL（见 [m4-linux.md](m4-linux.md)），两者都 exit 0。
+归档内含 `runtime/node`、`sidecar/probe-*.mjs` 与完整 `sidecar/dsh-official`（含
+node_modules）；Windows 二进制来自本机 `cargo build`，Linux 二进制来自 WSL（见
+[m4-linux.md](m4-linux.md)），两者都 exit 0。
 
 ## 3. 包内 smoke test
 
@@ -39,24 +40,28 @@ cd dist/dshr-debug-windows-x64
 ```
 
 实测 `live=true killed=true dead_call=true native=true replayed=3`，PASS；日志显示
-`sidecar node=...\runtime\node\node.exe（Vendored）`。
+`sidecar node=...\runtime\node\node.exe（Vendored）`。再跑官方 sidecar 自检：
+
+```powershell
+.\chat.exe --selftest-official
+```
+
+实测 `[selftest-official] PASS protocol=2 active=true host_services=3`。
 
 Linux 归档解压后同样直接运行：
 
 ```bash
 cd dist/dshr-debug-linux-x86_64
 ./chat --selftest-sidecar-recovery
+./chat --selftest-official
 ```
 
-实测同样 PASS，`sidecar node=.../runtime/node/node（Vendored）`。即两个包对 probe
-sidecar 已自带运行时，不再依赖外部 Node。
+两项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
+host_services=3`。即两个包对 probe 与官方 sidecar 都已自带运行时，不依赖外部 Node。
 
 ## 4. 明确未做
 
 - 没有 macOS `.app`/签名/公证；Windows 没有 MSI/NSIS 或 Authenticode；Linux 没有 deb/AppImage。
-- 归档含 `chat`、`runtime/node` 与 probe sidecar，但不含 `dsh-official/node_modules`；
-  完整 DSH 官方工具仍需把官方 sidecar 依赖一起打包。
-- 没有自动更新/差分/回滚。
-- CI 尚未实跑打包脚本；本机 Windows/Linux 已验证。
-
-G1 仍不能因为这两个归档标完成。
+- 归档含 `chat`、`runtime/node`、probe sidecar 与 `dsh-official`（含 node_modules）；
+  但 `.tmp/dsh-tools-all` 等本机工具包不随包，官方工具全量仍依赖这些 fixture。
+- 没有安装器/签名/自动更新/差分回滚；G1 仍不能因归档可运行标完成。

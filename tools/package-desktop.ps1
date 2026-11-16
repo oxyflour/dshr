@@ -31,6 +31,17 @@ if (Test-Path -LiteralPath $nodeExe) {
     Write-Warning "[package-desktop] 缺少 node runtime，包将进入 Native-only 模式"
 }
 
+$sidecarStage = Join-Path $stage "sidecar"
+New-Item -ItemType Directory -Path $sidecarStage -Force | Out-Null
+foreach ($name in @("probe-sidecar.mjs", "probe-plugin.mjs")) {
+    $src = Join-Path $root "sidecar/$name"
+    if (Test-Path $src) { Copy-Item $src (Join-Path $sidecarStage $name) }
+}
+$official = Join-Path $root "sidecar/dsh-official"
+if (Test-Path $official) {
+    Copy-Item -Recurse -Force $official (Join-Path $sidecarStage "dsh-official")
+}
+
 $commit = (git rev-parse --short HEAD 2>$null)
 if (-not $commit) { $commit = "dirty" }
 @(
@@ -40,7 +51,7 @@ if (-not $commit) { $commit = "dirty" }
     "built: $((Get-Item $binary).LastWriteTime.ToString('o'))"
     ""
     "Run chat.exe --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery."
-    "Includes runtime/node and probe sidecar; no dsh-official node_modules."
+    "Includes runtime/node, probe sidecar, and vendored dsh-official sidecar."
     "No installer, code signing, or auto-update in this package."
 ) | Set-Content -Encoding UTF8 (Join-Path $stage "README.txt")
 

@@ -8886,6 +8886,67 @@ fn selftest_live_20() -> i32 {
     }
 }
 
+/// `--selftest-official`：打包后的官方 sidecar 自检（不依赖源码树 fixture）。
+///
+/// 从 `app_root()/sidecar/dsh-official` 启动 vendored sidecar，断言 v2 握手、
+/// host services active、白名单 3 张表；用于验证 zip/tar 包里的 node_modules 与
+/// `runtime/node` 布局。失败即 exit 1，不做 SKIP。
+fn selftest_official_sidecar() -> i32 {
+    let dsh_dir = app_root().join("sidecar/dsh-official");
+    if !dsh_dir.join("sidecar-dsh.mjs").exists() || !dsh_dir.join("node_modules").exists() {
+        eprintln!(
+            "[selftest-official] FAIL 缺少官方 sidecar: {}",
+            dsh_dir.display()
+        );
+        return 1;
+    }
+    let l2 = ChatSessionAccess::new(sessions_dir_from_env());
+    let env_keys = [
+        "DSHR_SIDECAR",
+        "DSHR_DSH_PLUGINS",
+        "DSHR_HOST_SERVICES",
+        "DSHR_FS_WRITE",
+    ];
+    let saved: Vec<Option<std::ffi::OsString>> = env_keys.iter().map(std::env::var_os).collect();
+    std::env::set_var("DSHR_SIDECAR", "dsh");
+    std::env::set_var("DSHR_DSH_PLUGINS", "[]");
+    std::env::set_var("DSHR_HOST_SERVICES", "1");
+    std::env::set_var("DSHR_FS_WRITE", "0");
+    let host = spawn_sidecar(None, Some(l2));
+    for (key, value) in env_keys.iter().zip(saved) {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+    match host {
+        None => {
+            eprintln!("[selftest-official] FAIL 官方 sidecar 启动失败");
+            1
+        }
+        Some(host) => {
+            let protocol = host.negotiated_protocol();
+            let active = host.host_services_active();
+            let tables = host
+                .host_services_payload()
+                .and_then(|payload| payload.as_array().map(Vec::len))
+                .unwrap_or(0);
+            drop(host);
+            if protocol == 2 && active && tables == 3 {
+                println!(
+                    "[selftest-official] PASS protocol={protocol} active={active} host_services={tables}"
+                );
+                0
+            } else {
+                eprintln!(
+                    "[selftest-official] FAIL protocol={protocol} active={active} host_services={tables}"
+                );
+                1
+            }
+        }
+    }
+}
+
 /// `--selftest-l2`：v2 Host Service 的 CLI 层 smoke（不依赖真实 DSH 插件执行）。
 ///
 /// Phase A（可选，需要 vendored 官方 sidecar）：真握手到 v2，断言
@@ -9300,6 +9361,10 @@ fn main() {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_dsh());
     }
+    if std::env::args().any(|arg| arg == "--selftest-official") {
+        std::env::set_var("DSHR_FORCE_MOCK", "1");
+        std::process::exit(selftest_official_sidecar());
+    }
     if std::env::args().any(|arg| arg == "--selftest-l2") {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_l2());
@@ -9550,6 +9615,7 @@ mod tests {
             "--selftest-stream",
             "--selftest-dsh",
             "--selftest-l2",
+            "--selftest-official",
             "--selftest-parallel-tools",
             "--selftest-dsh-write",
             "--selftest-approval",
