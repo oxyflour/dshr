@@ -20,12 +20,40 @@ TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 BIN="$TARGET_DIR/$CONFIG/chat"
 if [[ ! -x "$BIN" ]]; then echo "missing $BIN" >&2; exit 1; fi
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+OS="${OS_OVERRIDE:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
 ARCH="$(uname -m)"
 STAGE="$ROOT/dist/dshr-$CONFIG-$OS-$ARCH"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp "$BIN" "$STAGE/chat"
+
+if [[ "$OS" == "darwin" ]]; then
+  APP="$STAGE/dshr.app"
+  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+  cp "$BIN" "$APP/Contents/MacOS/chat"
+  cat > "$APP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.dshr.desktop</string>
+  <key>CFBundleName</key><string>dshr</string>
+  <key>CFBundleDisplayName</key><string>dshr</string>
+  <key>CFBundleExecutable</key><string>chat</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+EOF
+  if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
+    codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$APP"
+    codesign --verify --strict --verbose=2 "$APP"
+  else
+    echo "[package-desktop] warning: dshr.app is unsigned (MACOS_SIGN_IDENTITY not set)" >&2
+  fi
+fi
 
 # 随包运行时：vendor node + probe sidecar（不含 dsh-official/node_modules）。
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
