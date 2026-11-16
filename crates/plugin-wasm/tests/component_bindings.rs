@@ -205,6 +205,33 @@ fn m4_component_021_cpp_component_plugin_fuel_limit() {
     assert_eq!(result["content"][0]["text"], "{\"ok\":true}");
 }
 
+/// M4-COMPONENT-022：同一 CppComponentPlugin 的 `call_shared` 可被多线程并行调用，
+/// 每次调用使用独立 Store/实例。
+#[test]
+fn m4_component_022_shared_component_calls() {
+    let plugin = std::sync::Arc::new(
+        CppComponentPlugin::new("guest.shared", "0.1.0", GUEST)
+            .expect("cpp component plugin constructs"),
+    );
+    let handles: Vec<_> = (0..2)
+        .map(|index| {
+            let plugin = std::sync::Arc::clone(&plugin);
+            std::thread::spawn(move || {
+                plugin
+                    .call_shared("echo", &json!({ "shared": index }))
+                    .expect("shared invoke")
+            })
+        })
+        .collect();
+    for (index, handle) in handles.into_iter().enumerate() {
+        let result = handle.join().expect("thread joins");
+        assert_eq!(
+            result["content"][0]["text"],
+            format!("{{\"shared\":{index}}}")
+        );
+    }
+}
+
 /// M4-COMPONENT-003：cpp-v1.wit 能生成 world `plugin` 的宿主绑定，
 /// 并把 `host` imports 接到 Linker。
 #[test]

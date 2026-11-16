@@ -56,6 +56,8 @@
   验证宿主并行装载不同组件插件时的 Send/隔离；同一插件实例仍按 `&mut` 串行。
 - `M4-COMPONENT-021`：`CppComponentPlugin::with_fuel_limit(100_000)` 调 guest `spin`
   触发 fuel trap；之后同一插件仍能调 `echo`，验证真实插件路径的配额。
+- `M4-COMPONENT-022`：同一 `CppComponentPlugin` 的 `call_shared` 被两个线程并行调用，
+  每次调用独立 Store/实例；`Plugin` trait 的 `&mut self` 路径仍由宿主串行。
 
 构建 guest：
 

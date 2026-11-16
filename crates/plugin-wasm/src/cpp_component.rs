@@ -226,6 +226,15 @@ impl PluginTrait for CppComponentPlugin {
     }
 
     fn call(&mut self, tool: &str, arguments: &Value) -> Result<Value, PluginError> {
+        self.call_shared(tool, arguments)
+    }
+}
+
+impl CppComponentPlugin {
+    /// 共享引用调用：每次调用创建独立 Store/实例，允许同一插件被多个线程并行调用。
+    ///
+    /// `Plugin` trait 仍是 `&mut self`，宿主按实例串行；需要并行时用这条 API。
+    pub fn call_shared(&self, tool: &str, arguments: &Value) -> Result<Value, PluginError> {
         let (mut store, instance) = self.instantiate()?;
         let result = instance
             .dshr_cpp_v1_tool_provider()
