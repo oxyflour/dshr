@@ -221,6 +221,31 @@ fn m4_adc_016_real_click_open_external(cx: &mut TestAppContext) {
     );
 }
 
+/// M4-ADC-017：Button 真实点击获得焦点后，Space 再触发一次 onPress。
+#[gpui::test]
+fn m4_adc_017_keyboard_activates_focused_button(cx: &mut TestAppContext) {
+    let count = Rc::new(Cell::new(0usize));
+    let sink = count.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |_| sink.set(sink.get() + 1));
+    let tree = serde_json::json!({
+        "type": "Button",
+        "props": {
+            "label": "Run",
+            "a11yLabel": "Run",
+            "onPress": { "copy": "hello" }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("adc-$").expect("button bounds");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(count.get(), 1, "click should fire once");
+    cx.simulate_keystrokes("space");
+    cx.run_until_parked();
+    assert_eq!(count.get(), 2, "Space should activate focused button");
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {

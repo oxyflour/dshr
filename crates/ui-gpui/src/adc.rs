@@ -810,9 +810,17 @@ fn render_button(
     } else if let (Some(action), Some(handler)) = (node.action("onPress"), handler) {
         // M4 W3：onPress 动作在这里回到宿主；启停/焦点由宿主状态驱动，渲染仍不持有状态。
         let handler = handler.clone();
+        let key_handler = handler.clone();
+        let key_action = action.clone();
         button = button
             .cursor_pointer()
-            .on_click(move |_, window, cx| handler(&action, window, cx));
+            .focusable()
+            .on_click(move |_, window, cx| handler(&action, window, cx))
+            .on_key_down(move |event, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    key_handler(&key_action, window, cx);
+                }
+            });
     }
     button.into_any_element()
 }

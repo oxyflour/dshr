@@ -57,15 +57,16 @@
 5. 把 `onPress` 换成 `openExternal: "https://example.com"`，点击后出现确认条；
    点"取消"或按 `Esc` 不打开；点"打开"才调用系统浏览器。
 
-当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..016** 用 GPUI
+当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..017** 用 GPUI
 `TestAppContext` 在 headless 窗口里真实 `simulate_click`，覆盖 Button `copy`、Checkbox
 `onChange`、Switch `onChange`、Select chip 注入 value、Slider + 注入 value、Input/Textarea
-发 `__adc_edit`、Button `openExternal` 派发（确认条仍由宿主负责）。真实窗口的
-剪贴板/确认条/IME 仍需人工复验。
+发 `__adc_edit`、Button `openExternal` 派发，以及 Button 点击获得焦点后 Space 再触发
+`onPress`。真实窗口的剪贴板/确认条/IME 仍需人工复验。
 
 ## 9. 真实点击测试（headless）
 
 - `interactive_base` 给交互元素加 `debug_selector("adc-<path>")`（仅测试 feature 记录 bounds）；
 - `adc_click.rs` 渲染 Button/Checkbox/Switch/Select/Slider/Input/Textarea，`add_window_view` →
-  `debug_bounds(...)` → `simulate_click` → 断言 handler 收到 `Copy`/`Call`（含注入 value/`__adc_edit`）。
+  `debug_bounds(...)` → `simulate_click` → 断言 handler 收到 `Copy`/`Call`（含注入 value/`__adc_edit`）；
+  Button 还验证点击后 Space 的键盘激活。
 - 覆盖"渲染树正确但点击没绑上"的回归；不替代真实窗口 IME/剪贴板/拖拽手测。
