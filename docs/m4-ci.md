@@ -51,7 +51,24 @@ node tools/conformance.mjs --quick --compact
 核心 crate 的 Windows 等价命令见上面 `cargo test`；macOS/Linux 需要在对应 runner 上跑，
 本机 Windows 不能替代。
 
-## 4. 何时可以把 G1 标完成
+## 4. 官方包来源/摘要
+
+`tools/official-provenance.mjs` 用
+[`official-packages.lock.json`](../sidecar/dsh-official/official-packages.lock.json) 校验
+`dsh-tool-working-directory` / `dsh-tool-todo` / `dsh-storage-domain` 的版本与
+`package.json`、`lib/index.js` SHA-256；`official-l2-gate.ps1` 在跑测试前强制执行，
+不匹配直接 exit 1。升级官方包时必须：
+
+```text
+node tools/official-provenance.mjs --update   # 重写 lock
+node tools/official-provenance.mjs --check    # 复查
+```
+
+lock 与 fixture 版本绑定，因此仍不能替代"官方发行渠道校验"（CA/签名/registry），
+只是把 N4 的"形状正确即可"堵住。
+
+
+## 5. 何时可以把 G1 标完成
 
 必须同时满足：
 

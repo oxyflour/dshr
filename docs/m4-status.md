@@ -22,7 +22,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（动态插件 id 不再 leak）** | `Plugin::id/version` 改为 `&str`，external/WASM 删除 `Box::leak`；native/MCP 并发、异步/取消冻结仍待 |
 | W5 | WASM Component/WIT | 未开始 | 当前 `dshr-wasm-core/v1` 是 core module |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 6/6 PASS；其余官方工具仍需 shell/systemPrompt 等 agent 面 |
-| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 contract/core matrix 文件）** | `tools/perf-gate.mjs` + conformance.yml step/artifact；`cross-platform.yml` 三平台 contract + 19 核心 crate（含 external/WASM）；Actions 未实跑、桌面 GPUI 未覆盖 |
+| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + 官方包来源 lock）** | `tools/perf-gate.mjs` + step/artifact；`cross-platform.yml` 三平台 contract + 19 核心 crate；`official-provenance.mjs` 校验 3 个官方包版本/SHA-256；Actions 未实跑、桌面 GPUI 未覆盖 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
 ## 3. W1 证据（2026-11-16）
@@ -63,6 +63,9 @@ node tools\perf-gate.mjs --json docs\perf-baseline.json
 
 python -c "import yaml; yaml.safe_load(open('.github/workflows/cross-platform.yml',encoding='utf-8'))"
   → YAML 解析 OK（contract 5 steps / core-rust 6 steps；Actions 未实跑）
+
+node tools\official-provenance.mjs --check
+  → PASS（3 个官方包，版本+SHA-256 匹配；official-l2-gate 测试前强制）
 
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
   → [authoring-check] PASS（含卸载生命周期；exit 0）

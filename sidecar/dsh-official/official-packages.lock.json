@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "tool": "tools/official-provenance.mjs",
+  "packages": [
+    {
+      "name": "@deepseek-ai/dsh-tool-working-directory",
+      "version": "0.2.2-rc.1",
+      "source": ".tmp/dsh-tools-all/dsh-tool-working-directory",
+      "files": {
+        "package.json": "d5e67a9d22471bca92949689a5054a57ce82e2593afe2eaf63ddd62899830460",
+        "lib/index.js": "32dbc26fd9b8f8b69746decbb88ce59c129284148a4a13978bdc2a9ce0b18763"
+      }
+    },
+    {
+      "name": "@deepseek-ai/dsh-tool-todo",
+      "version": "0.2.2-rc.1",
+      "source": ".tmp/dsh-tools-all/dsh-tool-todo",
+      "files": {
+        "package.json": "f7ed49b541922983dfa616da4d53ab02ae02a4e4a265f6307670223b40ec0a18",
+        "lib/index.js": "7391f77f8933e5bfee65b92b121b0979d7a16fe7d55a00033698392cd3703d11"
+      }
+    },
+    {
+      "name": "@deepseek-ai/dsh-storage-domain",
+      "version": "0.2.2-rc.1",
+      "source": "sidecar/dsh-official/node_modules/@deepseek-ai/dsh-storage-domain",
+      "files": {
+        "package.json": "2f2516b0bcbb299853b84c27650e490c29748552f56f46573394050fce0b9870",
+        "lib/index.js": "c425203d549c358d0a72d6476cec32235e51ae8e98ef32cac8576bd4c9b217c2"
+      }
+    }
+  ]
+}

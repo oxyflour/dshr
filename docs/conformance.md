@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1/G2（2026-11-16）：注册表 **584 个测试 ID —— implemented 538、pending 18、manual 28、
+M4 G1（2026-11-16）：注册表 **585 个测试 ID —— implemented 538、pending 18、manual 29、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 496 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -174,6 +174,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-RECOVERY-002` | manual | `chat --selftest-sidecar-recovery`：kill sidecar 后会话/原生工具存活（[m4-status.md](m4-status.md) §4） |
 | `M4-PERF-001` | manual | `node tools/perf-gate.mjs`：G4 阈值/CI step；本机 PASS（[m4-perf.md](m4-perf.md)） |
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 19 核心 crate；YAML 已解析，Actions 未跑（[m4-ci.md](m4-ci.md)） |
+| `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
 | `CPP-PROC-001..010,020..032` | implemented | `dshr-plugin-sdk`（external-process 协议/会话 SDK；024..027 在 session.rs/tool_result.rs 有同 ID，按唯一 ID 登记） |
 | `CPP-ISO-001..015,018..019,020..021,026..031` | implemented | `dshr-plugin-host`（external-process 生命周期/隔离/读写边界/帧通道/写 watchdog/G2 E2E） |
 | `CPP-WASM-001..027` | implemented（cargo；首次编译 wasmtime 1–3 分钟） | `dshr-plugin-wasm`（wasmtime 主机：fuel/epoch/内存/输出/并发配额 + 多 memory/大 table/alloc=0/WasmPlugin 适配；见 `wasm-host.md`） |

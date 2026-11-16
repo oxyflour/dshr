@@ -87,6 +87,7 @@ G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions �
 G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 已覆盖 kill sidecar 后会话继续写。
 W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并发/异步 trait 冻结仍未做。
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate），但 Actions 未实跑、桌面 GPUI 未覆盖。
+官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。
 三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
 
 **M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见
