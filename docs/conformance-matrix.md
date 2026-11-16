@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-16T15:56:08.299Z |
-| git HEAD | b1e8f718310360786b40b6f3a798df9a0a1a3232（dirty，6 个文件未提交） |
+| generated_at | 2026-11-16T15:57:15.984Z |
+| git HEAD | 5a10aad137f379e1c108eb301c8e2d4f9e1c726b（clean） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 396 link(s) checked, 0 broken, 72 file(s) scanned |
-| node-test | pass | 0 | 0.28s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 53.97s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 865 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
+| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 396 link(s) checked, 0 broken, 72 file(s) scanned |
+| node-test | pass | 0 | 0.44s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 54.95s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 67 suite(s), 865 passed, 0 failed, 6 ignored；未执行: official_packages(6 ignored) |
 
 ## 测试矩阵
 
