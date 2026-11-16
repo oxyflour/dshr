@@ -45,7 +45,7 @@ PLAN §9.2 的 8 项追加候选（80–140 工程日）与 M4 基线的跨平�
 | **W4** | **并发与 Plugin trait 冻结** | native/MCP 工具并发；`Plugin::call` 取消/异步；`id/version` 借用收口；trait 冻结 ADR | `M4-CONC-*` / `M4-TRAIT-*` | G2 |
 | **W5** | **WASM Component/WIT** | canonical ABI、工具/面板声明读取、与 core-module 路径共存/迁移 | `M4-WIT-*` | G2 |
 | **W6** | **官方 execute 闭环** | 最小 `exec.agent` facade（session.append → session-log/v1）；官方 todo/working_directory execute 真实往返；其余工具后续 | `M4-OFFICIAL-*` | G2 |
-| **W7** | **三平台 CI 与性能基线** | Windows/macOS/Linux matrix；官方包 vendor/来源校验；`tools/perf-gate.mjs` 阈值进 CI | `M4-CI-*` / `M4-PERF-*` | G1/G4 |
+| **W7** | **三平台 CI 与性能基线** | Windows/macOS/Linux contract + 核心 crate matrix；桌面 GPUI 管线；官方包 vendor/来源校验；`tools/perf-gate.mjs` 阈值进 CI | `M4-CI-*` / `M4-PERF-*` | G1/G4 |
 | **W8** | **P2 余项** | 矩阵元数据、事件顺序文档、`session_id` 接线、flaky 治理、SKIP-as-pass 清理 | `M4-P2-*` | — |
 
 **W1 完成口径**（2026-11-16）：uninstall、密钥生命周期、作者签名打包/安装、SDK 离线

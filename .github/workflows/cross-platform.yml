@@ -1,0 +1,106 @@
+name: cross-platform
+
+# M4 W7/G1 的三平台前半段：契约 + 核心 crate 测试。桌面 GPUI（Windows-first）仍由
+# conformance.yml 在 windows-latest 上跑完整矩阵；本 workflow 只证明契约与核心运行时
+# 不依赖 Windows，并把 macOS/Linux 的构建失败暴露出来。
+#
+# 注意：本 workflow 尚未在 GitHub Actions 实跑；G1 在实跑绿之前不标完成。
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Schema fixtures
+        run: node schema/check.mjs
+
+      - name: Markdown links
+        run: node tools/check-links.mjs
+
+      - name: Conformance quick matrix
+        run: node tools/conformance.mjs --quick --compact
+
+  core-rust:
+    name: core rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # rust-toolchain.toml 固定 1.99.1；runner 自带 rustup，会按文件安装。
+      - name: Show toolchain
+        run: |
+          rustup show
+          cargo --version
+          node --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-core-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-core-cargo-
+
+      - name: Fetch dependencies
+        run: cargo fetch
+
+      # 只测不依赖 GPUI/窗口系统的核心 crate；desktop-gpui/ui-gpui 仍只在 Windows 跑。
+      - name: Core Rust tests
+        run: >
+          cargo test --offline
+          -p dshr-agent-context
+          -p dshr-agent-core
+          -p dshr-compat-dsh-host
+          -p dshr-compat-dsh-protocol
+          -p dshr-compat-mcp
+          -p dshr-conversation-model
+          -p dshr-llm-deepseek
+          -p dshr-llm-openai
+          -p dshr-llm-retry
+          -p dshr-plugin-api
+          -p dshr-plugin-host
+          -p dshr-plugin-sdk
+          -p dshr-plugin-wasm
+          -p dshr-profile
+          -p dshr-sandbox
+          -p dshr-session-export
+          -p dshr-session-store
+          -p dshr-tool-runtime
+          -p dshr-ui-contributions
