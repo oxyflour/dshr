@@ -6135,6 +6135,92 @@ fn selftest_recovery() -> i32 {
     }
 }
 
+/// `--selftest-crash-child <path>`：模拟进程在保存后崩溃（主文件缺失、`.bak` 完整），
+/// 由父进程 `--selftest-crash-recovery` 验证恢复与继续追加。
+fn selftest_crash_child(path: &str) -> i32 {
+    let path = PathBuf::from(path);
+    let _ = std::fs::remove_file(&path);
+    let mut log = SessionLog::new("s-crash");
+    let _ = log.append_created(now_ts(), &SessionCreated::root(String::from(".")));
+    let _ = log.append(EventSpec::durable(
+        "message.user",
+        now_ts(),
+        json!({ "text": "before crash" }),
+    ));
+    let _ = save_atomic(&path, log.to_jsonl().as_bytes());
+    // 第二次保存产生 `.bak`（上一版含 before crash），再删主文件模拟替换窗口崩溃。
+    let _ = save_atomic(&path, log.to_jsonl().as_bytes());
+    let _ = std::fs::remove_file(&path);
+    std::process::abort();
+}
+
+/// `--selftest-crash-recovery`：真实子进程崩溃 → `.bak` 恢复 → 继续追加。
+fn selftest_crash_recovery() -> i32 {
+    let root = PathBuf::from(".tmp/m4-crash-recovery");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("s-crash.jsonl");
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            println!("[selftest-crash-recovery] FAIL: current_exe: {error}");
+            return 1;
+        }
+    };
+    let status = std::process::Command::new(exe)
+        .arg("--selftest-crash-child")
+        .arg(&path)
+        .status();
+    let crashed = status.map(|status| !status.success()).unwrap_or(false);
+    let backup_exists = path.with_extension("jsonl.bak").exists();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut state = ChatState::open(
+        path.clone(),
+        "s-crash",
+        &cancel,
+        ApprovalBroker::new(),
+        false,
+        false,
+    );
+    let before_ok = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| SessionLog::from_jsonl("s-crash", &text).ok())
+        .map(|log| {
+            log.events().iter().any(|event| {
+                event.event_type == "message.user"
+                    && event.payload["text"].as_str() == Some("before crash")
+            })
+        })
+        .unwrap_or(false);
+    let _ = state.log.append(EventSpec::durable(
+        "message.user",
+        now_ts(),
+        json!({ "text": "after crash" }),
+    ));
+    state.save();
+    let after_ok = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| SessionLog::from_jsonl("s-crash", &text).ok())
+        .map(|log| {
+            log.events().iter().any(|event| {
+                event.event_type == "message.user"
+                    && event.payload["text"].as_str() == Some("after crash")
+            })
+        })
+        .unwrap_or(false);
+    let ok = crashed && backup_exists && before_ok && after_ok;
+    println!(
+        "[selftest-crash-recovery] crashed={crashed} backup={backup_exists} before={before_ok} after={after_ok}"
+    );
+    if ok {
+        println!("[selftest-crash-recovery] PASS");
+        0
+    } else {
+        println!("[selftest-crash-recovery] FAIL");
+        1
+    }
+}
+
 /// `--selftest-sidecar-recovery`：G2 的 sidecar 崩溃场景（headless）。
 ///
 /// 先确认 sidecar 可调用，再 kill 子进程；断言会话仍可追加/保存、原生工具仍注册，
@@ -9068,7 +9154,15 @@ fn main() {
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_approval());
     }
-    if std::env::args().any(|arg| arg == "--selftest-corrupt-session") {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--selftest-crash-child") {
+        let path = args.get(index + 1).cloned().unwrap_or_default();
+        std::process::exit(selftest_crash_child(&path));
+    }
+    if args.iter().any(|arg| arg == "--selftest-crash-recovery") {
+        std::process::exit(selftest_crash_recovery());
+    }
+    if args.iter().any(|arg| arg == "--selftest-corrupt-session") {
         std::process::exit(selftest_corrupt_session());
     }
     if std::env::args().any(|arg| arg == "--selftest-recovery") {
@@ -9434,6 +9528,8 @@ mod tests {
             "--selftest-dsh-write",
             "--selftest-approval",
             "--selftest-corrupt-session",
+            "--selftest-crash-recovery",
+            "--selftest-crash-child",
             "--selftest-recovery",
             "--selftest-sidecar-recovery",
             "--selftest-cancel",

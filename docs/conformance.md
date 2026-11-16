@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W3（2026-11-16）：注册表 **591 个测试 ID —— implemented 543、pending 18、manual 30、
+M4 G2（2026-11-17）：注册表 **592 个测试 ID —— implemented 543、pending 18、manual 31、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 501 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -177,6 +177,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-P2-001` | manual | node 缺失时 parallel/l2 测试 exit 101，不再 SKIP 记 pass（[m4-status.md](m4-status.md) §4） |
 | `M4-RECOVERY-001` | manual | `chat --selftest-recovery`：损坏会话/`.bak`/插件失败回滚（[m4-status.md](m4-status.md) §4） |
 | `M4-RECOVERY-002` | manual | `chat --selftest-sidecar-recovery`：kill sidecar 后会话/原生工具存活（[m4-status.md](m4-status.md) §4） |
+| `M4-RECOVERY-003` | manual | `chat --selftest-crash-recovery`：真实子进程 abort → `.bak` 恢复 → 继续追加 |
 | `M4-PERF-001` | manual | `node tools/perf-gate.mjs`：G4 阈值/CI step；本机 PASS（[m4-perf.md](m4-perf.md)） |
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 19 核心 crate；YAML 已解析，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |

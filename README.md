@@ -84,7 +84,8 @@ G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插
 （`--selftest-recovery`：损坏会话/`.bak`/插件失败回滚），真实窗口崩溃恢复仍未验证。
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory 的 execute 在 official gate 6/6 通过。
 G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。
-G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 已覆盖 kill sidecar 后会话继续写。
+G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 覆盖 kill sidecar，`--selftest-crash-recovery`
+覆盖真实子进程 abort 后从 `.bak` 继续追加。
 W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并实现 native 跨插件批并行；
 同插件/MCP 并发与异步 trait 冻结仍未做。
 G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate），但 Actions 未实跑、桌面 GPUI 未覆盖。
