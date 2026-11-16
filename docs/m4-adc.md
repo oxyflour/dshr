@@ -31,7 +31,9 @@
 - **Input/Textarea `onChange`**（M4 W3）：点击发保留动作 `__adc_edit`（带 `path/value/on_change`），
   宿主打开真实 `TextInput` 模态；保存时把值注入 `on_change.args.value` 再派发。
 - `M4-ADC-006`：Select onChange 树渲染 + `action_with_value` 注入断言。
-- `M4-ADC-007`：Input/Textarea `__adc_edit` 携带 path/value/on_change。
+- **Slider `onChange`**（M4 W3）：有 handler 且动作为 `call` 时显示 −/+ 步进按钮，
+  点击注入数值 `args.value`；**不是拖拽**，拖拽/元素 bounds 仍未做。
+- `M4-ADC-008`：Slider 步进数值注入 + 树渲染。
 - `M4-ADC-002`：`PluginHost::dispatch_action` 路由/未知插件；`cargo test -p dshr-plugin-host`。
 
 ## 2. 未接线（W3 剩余）
@@ -39,7 +41,7 @@
 | 项 | 现状 | 下一步 |
 |---|---|---|
 | `openExternal` 的实机确认 | 确认条已实现，未真机点过 | `M4-ADC-101` 人工复验 |
-| Slider 的 `onChange` | 仍只读 | 需要拖拽/键盘与元素 bounds |
+| Slider 拖拽/键盘 | 只有 −/+ 步进，无拖拽 | 需要元素 bounds 与 pointer drag，后续做 |
 | Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
 | tool card extra 的真实数据 | 模型/渲染已接，尚无真实工具写 `meta.ui` | 给一个官方/样例工具写 `meta.ui` 做端到端 |
 | 窗口 draw 预算 / a11y 焦点 | 未做 | 与 W2 焦点环、W7 性能基线合并 |

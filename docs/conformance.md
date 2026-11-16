@@ -125,9 +125,9 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 W3（2026-11-16）：注册表 **590 个测试 ID —— implemented 542、pending 18、manual 30、
+M4 W3（2026-11-16）：注册表 **591 个测试 ID —— implemented 543、pending 18、manual 30、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
-500 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
+501 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
 
 上一轮 `--full` 实跑（2026-11-15，M3 收尾）：`67 suites / 836 passed / 1 failed / 6 ignored`；
@@ -168,6 +168,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-005` | implemented | `dshr-ui-gpui`：Checkbox/Switch `onChange` 树渲染（点击真机复验） |
 | `M4-ADC-006` | implemented | `dshr-ui-gpui`：Select `onChange` 选项 chip + `args.value` 注入 |
 | `M4-ADC-007` | implemented | `dshr-ui-gpui`：Input/Textarea `__adc_edit` 携带 path/value/on_change |
+| `M4-ADC-008` | implemented | `dshr-ui-gpui`：Slider 步进按钮注入数值 `args.value` |
 | `M4-TRAIT-001` | implemented | `dshr-plugin-api`：`Plugin::id/version` 借用 `&str`，动态插件 id 不 leak |
 | `M4-CONC-001` | implemented | `dshr-plugin-host`：native 按插件分组并行、同插件串行 |
 | `M4-CONC-002` | implemented | `dshr-plugin-host`：同插件两个调用串行（不被跨插件并行误伤） |

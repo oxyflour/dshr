@@ -509,7 +509,7 @@ fn render_node(
         ElementKind::Select => render_select(theme, node, path, handler),
         ElementKind::Checkbox => render_checkbox(theme, node, path, handler),
         ElementKind::Switch => render_switch(theme, node, path, handler),
-        ElementKind::Slider => render_slider(theme, node, path),
+        ElementKind::Slider => render_slider(theme, node, path, handler),
         ElementKind::List => render_list(theme, node, path),
         ElementKind::Table => render_table(theme, node, path),
         ElementKind::Tree => render_tree(theme, node, path),
@@ -1028,11 +1028,16 @@ fn render_select(
 
 /// Select 的 `onChange` 只对 `call` 注入 `args.value`；其他动作保持原样（无法携带值）。
 fn action_with_value(action: &Action, value: &str) -> Action {
+    action_with_json(action, serde_json::json!(value))
+}
+
+/// 把任意 JSON 值（字符串/数字）注入 `call.args.value`；非 `call` 原样返回。
+fn action_with_json(action: &Action, value: serde_json::Value) -> Action {
     match action {
         Action::Call { method, args } => {
             let mut args = args.clone();
             if let Some(object) = args.as_object_mut() {
-                object.insert("value".to_owned(), serde_json::json!(value));
+                object.insert("value".to_owned(), value);
             }
             Action::Call {
                 method: method.clone(),
@@ -1192,12 +1197,19 @@ fn render_switch(
     row.into_any_element()
 }
 
-fn render_slider(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
+fn render_slider(
+    theme: &Theme,
+    node: &ElementNode,
+    path: &str,
+    handler: Option<&AdcActionHandler>,
+) -> AnyElement {
     let palette = theme.palette;
     let type_scale = theme.type_scale;
     let value = node.f64_prop("value").unwrap_or(0.0);
     let min = node.f64_prop("min").unwrap_or(0.0);
     let max = node.f64_prop("max").unwrap_or(100.0);
+    let step = node.f64_prop("step").unwrap_or(1.0);
+    let step = if step > 0.0 { step } else { 1.0 };
     let fraction = slider_fraction(value, min, max);
     let accent = palette.color(palette.business_primary);
     // 填充/剩余两段都用 flex_grow 表达比例，不依赖百分比宽度。
@@ -1222,15 +1234,60 @@ fn render_slider(theme: &Theme, node: &ElementNode, path: &str) -> AnyElement {
         // flex_grow(0) 的段宽为 0；再垫一个 0 高元素避免空段触发布局歧义。
         track = track.child(div().flex_none().h(px(0.0)));
     }
-    interactive_base(div(), node, path, Role::Slider)
+    let mut slider = interactive_base(div(), node, path, Role::Slider)
         .flex()
         .flex_row()
         .items_center()
         .gap(px(8.0))
         .aria_numeric_value(value)
         .aria_min_numeric_value(min)
-        .aria_max_numeric_value(max)
-        .child(track)
+        .aria_max_numeric_value(max);
+    if let (Some(action @ Action::Call { .. }), Some(handler)) = (node.action("onChange"), handler)
+    {
+        let lower = (value - step).max(min);
+        let upper = (value + step).min(max);
+        let dec = action_with_json(&action, serde_json::json!(lower));
+        let inc = action_with_json(&action, serde_json::json!(upper));
+        let dec_handler = handler.clone();
+        let inc_handler = handler.clone();
+        slider = slider
+            .child(
+                div()
+                    .id(format!("{path}-dec"))
+                    .role(Role::Button)
+                    .aria_label("减少数值")
+                    .flex_none()
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(theme.radii.xs)
+                    .bg(palette.color(palette.input_major))
+                    .cursor_pointer()
+                    .text_size(type_scale.small)
+                    .text_color(palette.color(palette.label_primary))
+                    .child("−")
+                    .on_click(move |_, window, cx| dec_handler(&dec, window, cx)),
+            )
+            .child(track)
+            .child(
+                div()
+                    .id(format!("{path}-inc"))
+                    .role(Role::Button)
+                    .aria_label("增加数值")
+                    .flex_none()
+                    .px(px(6.0))
+                    .py(px(2.0))
+                    .rounded(theme.radii.xs)
+                    .bg(palette.color(palette.input_major))
+                    .cursor_pointer()
+                    .text_size(type_scale.small)
+                    .text_color(palette.color(palette.label_primary))
+                    .child("+")
+                    .on_click(move |_, window, cx| inc_handler(&inc, window, cx)),
+            );
+    } else {
+        slider = slider.child(track);
+    }
+    slider
         .child(
             div()
                 .flex_none()
@@ -2929,6 +2986,41 @@ mod tests {
                 assert_eq!(args["on_change"]["args"]["id"], "x");
             }
             other => panic!("expected edit call, got {other:?}"),
+        }
+    }
+
+    // M4-ADC-008：Slider 的步进动作注入数值（不是字符串），树渲染 0 诊断。
+    #[test]
+    fn slider_step_action_injects_number_and_renders() {
+        let tree = serde_json::json!({
+            "type": "Slider",
+            "props": {
+                "value": 5.0,
+                "min": 0.0,
+                "max": 10.0,
+                "step": 2.5,
+                "a11yLabel": "进度",
+                "onChange": { "call": "set-progress" }
+            }
+        });
+        let handler: AdcActionHandler = std::rc::Rc::new(|_, _, _| {});
+        let (body, diagnostics) = adc_panel_body_with_handler(&Theme::light(), &tree, handler);
+        assert!(
+            diagnostics.is_empty(),
+            "合法 Slider onChange 树不应有诊断: {diagnostics:?}"
+        );
+        drop(body);
+
+        let action = Action::Call {
+            method: "set-progress".to_owned(),
+            args: serde_json::json!({}),
+        };
+        match action_with_json(&action, serde_json::json!(7.5)) {
+            Action::Call { args, .. } => {
+                assert_eq!(args["value"], serde_json::json!(7.5));
+                assert!(args["value"].is_number());
+            }
+            other => panic!("expected call, got {other:?}"),
         }
     }
 }
