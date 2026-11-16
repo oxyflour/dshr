@@ -360,6 +360,54 @@ fn m4_adc_021_keyboard_steps_slider(cx: &mut TestAppContext) {
     }
 }
 
+/// M4-ADC-022：拖拽 Slider track 到 75% 位置，value 按 step 注入。
+#[gpui::test]
+fn m4_adc_022_drag_slider_track_sets_value(cx: &mut TestAppContext) {
+    let last = Rc::new(Cell::new(None));
+    let sink = last.clone();
+    let on_action: Rc<dyn Fn(&Action)> = Rc::new(move |action| sink.set(Some(action.clone())));
+    let tree = serde_json::json!({
+        "type": "Slider",
+        "props": {
+            "value": 0.0,
+            "min": 0.0,
+            "max": 10.0,
+            "step": 1.0,
+            "a11yLabel": "Level",
+            "onChange": { "call": "set_level", "args": {} }
+        }
+    });
+    let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
+    cx.run_until_parked();
+    let track = cx.debug_bounds("adc-$-track").expect("track bounds");
+    let start = gpui::point(track.origin.x + px(2.0), track.center().y);
+    let target = gpui::point(
+        track.origin.x + track.size.width * 0.75,
+        track.center().y,
+    );
+    cx.simulate_mouse_move(start, None, Modifiers::default());
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        gpui::point(track.origin.x + track.size.width * 0.5, track.center().y),
+        Some(gpui::MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(target, Some(gpui::MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(target, gpui::MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    match last.take() {
+        Some(Action::Call { method, args }) => {
+            assert_eq!(method, "set_level");
+            let value = args["value"].as_f64().expect("numeric value");
+            assert!(
+                (value - 7.0).abs() <= 1.0 || (value - 8.0).abs() <= 1.0,
+                "drag value should be near 75%: {value}"
+            );
+        }
+        other => panic!("expected drag action, got {other:?}"),
+    }
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {

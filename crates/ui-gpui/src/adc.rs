@@ -19,8 +19,8 @@
 use std::collections::HashSet;
 
 use gpui::{
-    div, prelude::*, px, AlignContent, AlignItems, AnyElement, Div, Font, Pixels, Rgba, Role,
-    SharedString, Stateful, TextAlign, Toggled,
+    div, prelude::*, px, AlignContent, AlignItems, AnyElement, Div, Entity, Font, Pixels, Render,
+    Rgba, Role, SharedString, Stateful, TextAlign, Toggled,
 };
 
 use dshr_ui_contributions::{
@@ -1230,6 +1230,18 @@ fn render_switch(
     row.into_any_element()
 }
 
+struct SliderDragPreview;
+
+impl Render for SliderDragPreview {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        div().size(px(1.0))
+    }
+}
+
 fn render_slider(
     theme: &Theme,
     node: &ElementNode,
@@ -1247,6 +1259,7 @@ fn render_slider(
     let accent = palette.color(palette.business_primary);
     // 填充/剩余两段都用 flex_grow 表达比例，不依赖百分比宽度。
     let mut track = div()
+        .id(format!("{path}-track"))
         .flex()
         .flex_row()
         .flex_1()
@@ -1266,6 +1279,29 @@ fn render_slider(
     if fraction <= 0.0 {
         // flex_grow(0) 的段宽为 0；再垫一个 0 高元素避免空段触发布局歧义。
         track = track.child(div().flex_none().h(px(0.0)));
+    }
+    if let (Some(action @ Action::Call { .. }), Some(handler)) = (node.action("onChange"), handler)
+    {
+        let drag_action = action.clone();
+        let drag_handler = handler.clone();
+        track = track
+            .debug_selector(|| format!("adc-{path}-track"))
+            .on_drag((), |_, _, _, cx| cx.new(|_| SliderDragPreview))
+            .on_drag_move(
+                move |event: &gpui::DragMoveEvent<()>, window, cx| {
+                    let width = event.bounds.size.width.as_f32();
+                    if width <= 0.0 {
+                        return;
+                    }
+                    let x = (event.event.position.x - event.bounds.origin.x).as_f32();
+                    let fraction = ((x / width).clamp(0.0, 1.0)) as f64;
+                    let raw = min + fraction * (max - min);
+                    let snapped = ((raw - min) / step).round() * step + min;
+                    let value = snapped.clamp(min, max);
+                    let action = action_with_json(&drag_action, serde_json::json!(value));
+                    drag_handler(&action, window, cx);
+                },
+            );
     }
     let mut slider = interactive_base(div(), node, path, Role::Slider)
         .flex()

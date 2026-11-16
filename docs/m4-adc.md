@@ -32,7 +32,8 @@
   宿主打开真实 `TextInput` 模态；保存时把值注入 `on_change.args.value` 再派发。
 - `M4-ADC-006`：Select onChange 树渲染 + `action_with_value` 注入断言。
 - **Slider `onChange`**（M4 W3）：有 handler 且动作为 `call` 时显示 −/+ 步进按钮，
-  点击注入数值 `args.value`；**不是拖拽**，拖拽/元素 bounds 仍未做。
+  点击注入数值 `args.value`；`M4-ADC-022` 已接 track 拖拽（按元素 bounds 计算比例），
+  方向键 Left/Right/Up/Down 也在聚焦后步进。
 - `M4-ADC-008`：Slider 步进数值注入 + 树渲染。
 - `M4-ADC-002`：`PluginHost::dispatch_action` 路由/未知插件；`cargo test -p dshr-plugin-host`。
 
@@ -41,7 +42,7 @@
 | 项 | 现状 | 下一步 |
 |---|---|---|
 | `openExternal` 的实机确认 | 确认条已实现，未真机点过 | `M4-ADC-101` 人工复验 |
-| Slider 拖拽/键盘 | 只有 −/+ 步进，无拖拽 | 需要元素 bounds 与 pointer drag，后续做 |
+| Slider 拖拽 | 已接 track 拖拽 + 方向键；headless 测试覆盖 | 真实窗口手感/边缘值仍需手测 |
 | Tabs `onChange` | 仍只读 | 与 panel 状态回写一起做 |
 | tool card extra 的真实数据 | 模型/渲染已接，尚无真实工具写 `meta.ui` | 给一个官方/样例工具写 `meta.ui` 做端到端 |
 | 窗口 draw 预算 / a11y 焦点 | 未做 | 与 W2 焦点环、W7 性能基线合并 |
@@ -57,16 +58,17 @@
 5. 把 `onPress` 换成 `openExternal: "https://example.com"`，点击后出现确认条；
    点"取消"或按 `Esc` 不打开；点"打开"才调用系统浏览器。
 
-当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..021** 用 GPUI
+当前 `--selftest-adc-panel` 只验证到 `AnyElement` 构造层；**M4-ADC-009..022** 用 GPUI
 `TestAppContext` 在 headless 窗口里真实 `simulate_click`，覆盖 Button `copy`、Checkbox
 `onChange`、Switch `onChange`、Select chip 注入 value、Slider + 注入 value、Input/Textarea
 发 `__adc_edit`、Button `openExternal` 派发，以及 Button/Checkbox/Switch/Select chip
-点击聚焦后的键盘激活与 Slider 方向键。真实窗口的剪贴板/确认条/IME/拖拽仍需人工复验。
+点击聚焦后的键盘激活、Slider 方向键与 track 拖拽。真实窗口的剪贴板/确认条/IME 仍需人工复验。
 
 ## 9. 真实点击测试（headless）
 
 - `interactive_base` 给交互元素加 `debug_selector("adc-<path>")`（仅测试 feature 记录 bounds）；
 - `adc_click.rs` 渲染 Button/Checkbox/Switch/Select/Slider/Input/Textarea，`add_window_view` →
-  `debug_bounds(...)` → `simulate_click` → 断言 handler 收到 `Copy`/`Call`（含注入 value/`__adc_edit`）；
-  Button 还验证点击后 Space 的键盘激活。
-- 覆盖"渲染树正确但点击没绑上"的回归；不替代真实窗口 IME/剪贴板/拖拽手测。
+  `debug_bounds(...)` → `simulate_click` / `simulate_mouse_move` → 断言 handler 收到
+  `Copy`/`Call`（含注入 value/`__adc_edit`）；Button 还验证点击后 Space 的键盘激活，
+  Slider 验证方向键与 track 拖拽。
+- 覆盖"渲染树正确但点击没绑上"的回归；不替代真实窗口 IME/剪贴板手测。
