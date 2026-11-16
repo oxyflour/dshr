@@ -1255,6 +1255,7 @@ fn render_slider(
             .child(
                 div()
                     .id(format!("{path}-dec"))
+                    .debug_selector(|| format!("adc-{path}-dec"))
                     .role(Role::Button)
                     .aria_label("减少数值")
                     .flex_none()
@@ -1272,6 +1273,7 @@ fn render_slider(
             .child(
                 div()
                     .id(format!("{path}-inc"))
+                    .debug_selector(|| format!("adc-{path}-inc"))
                     .role(Role::Button)
                     .aria_label("增加数值")
                     .flex_none()

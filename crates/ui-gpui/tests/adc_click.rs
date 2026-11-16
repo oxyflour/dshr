@@ -116,6 +116,34 @@ fn m4_adc_011_real_click_switch_on_change(cx: &mut TestAppContext) {
     );
 }
 
+/// M4-ADC-013：点击 Slider 的 + 步进，value 注入 onChange args。
+#[gpui::test]
+fn m4_adc_013_real_click_slider_step_injects_value(cx: &mut TestAppContext) {
+    let action = click(
+        cx,
+        serde_json::json!({
+            "type": "Slider",
+            "props": {
+                "value": 5.0,
+                "min": 0.0,
+                "max": 10.0,
+                "step": 1.0,
+                "a11yLabel": "Level",
+                "onChange": { "call": "set_level", "args": {} }
+            }
+        }),
+        "adc-$-inc",
+    )
+    .expect("slider + click should dispatch an action");
+    match action {
+        Action::Call { ref method, ref args } => {
+            assert_eq!(method, "set_level");
+            assert_eq!(args["value"], 6.0, "slider step not injected: {args}");
+        }
+        other => panic!("unexpected action: {other:?}"),
+    }
+}
+
 /// M4-ADC-012：点击 Select 的第 2 个 chip，value 注入 onChange args。
 #[gpui::test]
 fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
