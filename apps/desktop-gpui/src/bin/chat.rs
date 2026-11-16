@@ -19,6 +19,9 @@
 //!   cargo run ... --bin chat -- --selftest-adc-panel         # ADC 插件面板链路自检
 //!   cargo run ... --bin chat -- --selftest-wasm              # WASM 插件链路自检（安装→装载→调用→trap→卸载）
 //!   cargo run ... --bin chat -- --selftest-defaults          # M3 默认差异接线自检
+//!   cargo run ... --bin chat -- --selftest-plugin-lifecycle  # M4：安装→卸载→密钥轮换自检
+//!   cargo run ... --bin chat -- --uninstall-plugin <name>    # 卸载插件（目录/profile/审计）
+//!   cargo run ... --bin chat -- --trust-key <action> ...     # 信任密钥库管理
 //!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
 use std::path::PathBuf;
@@ -61,8 +64,9 @@ use dshr_plugin_api::manifest::RuntimeKind;
 use dshr_plugin_api::{HostVersion, Manifest, Plugin, PluginContext, PluginError};
 use dshr_plugin_host::{ExternalPlugin, ExternalPluginSpec, PluginHost};
 use dshr_profile::{
-    install_package, install_package_trusted, package_digest, read_installed_meta, Profile,
-    ProfileSource, TrustPolicy, TrustStore,
+    add_trust_key, install_package, install_package_trusted, package_digest, read_installed_meta,
+    remove_trust_key, revoke_trust_key, rotate_trust_key, uninstall_package, Profile,
+    ProfileSource, TrustKey, TrustPolicy, TrustStore,
 };
 use dshr_sandbox::Workspace;
 use dshr_session_export::{export_session, verify_export, ExportOptions, SpillStoreSource};
@@ -5825,12 +5829,8 @@ struct InstallCliOptions {
 
 fn install_plugin_cli(package: PathBuf) -> i32 {
     let args: Vec<String> = std::env::args().collect();
-    let sidecar_dir = std::env::var("DSHR_SIDECAR_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| app_root().join("sidecar/dsh-official"));
-    let profile_dir = std::env::var("DSHR_PROFILE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(".tmp/profile"));
+    let sidecar_dir = sidecar_dir_for_app();
+    let profile_dir = profile_dir_for_app();
     install_plugin_with_options(
         &InstallCliOptions {
             package,
@@ -6023,6 +6023,397 @@ fn sidecar_dir_for_app() -> PathBuf {
     std::env::var("DSHR_SIDECAR_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| app_root().join("sidecar/dsh-official"))
+}
+
+/// profile 目录（与 `--install-plugin` 同源）。
+fn profile_dir_for_app() -> PathBuf {
+    std::env::var("DSHR_PROFILE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(".tmp/profile"))
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `chat --uninstall-plugin <name>`：目录 + profile + 审计（M4 W1）。
+fn uninstall_plugin_cli(name: String) -> i32 {
+    let sidecar_dir = sidecar_dir_for_app();
+    let profile_dir = profile_dir_for_app();
+    let mut profile = match Profile::load(&profile_dir) {
+        Ok(profile) => profile,
+        Err(err) => {
+            eprintln!("[uninstall] 加载 profile 失败: {err}");
+            return 1;
+        }
+    };
+    match uninstall_package(&sidecar_dir, &name, &mut profile) {
+        Ok(report) => {
+            println!(
+                "[uninstall] {} version={} dir_removed={} profile_removed={}",
+                report.name,
+                report.version.as_deref().unwrap_or("-"),
+                report.removed_dir,
+                report.removed_profile_entry
+            );
+            if let Some(error) = report.audit_error {
+                eprintln!("[uninstall] 警告：审计写入失败（卸载已生效）: {error}");
+            }
+            println!(
+                "[uninstall] 审计: {}",
+                profile_dir.join("install-audit.jsonl").display()
+            );
+            0
+        }
+        Err(err) => {
+            eprintln!("[uninstall] 卸载失败: {err}");
+            1
+        }
+    }
+}
+
+fn trust_key_status(key: &TrustKey, at_ms: u64) -> &'static str {
+    if key.revoked {
+        "revoked"
+    } else if key.not_before_ms.is_some_and(|before| at_ms < before) {
+        "not-yet-valid"
+    } else if key.not_after_ms.is_some_and(|after| at_ms > after) {
+        "expired"
+    } else {
+        "active"
+    }
+}
+
+/// `chat --trust-key <list|add|remove|revoke|rotate> ...`：本机信任密钥库管理。
+fn trust_key_cli(args: &[String]) -> i32 {
+    let profile_dir = profile_dir_for_app();
+    if let Err(err) = std::fs::create_dir_all(&profile_dir) {
+        eprintln!("[trust-key] 创建 profile 目录失败: {err}");
+        return 1;
+    }
+    let action = args.first().map(String::as_str).unwrap_or("list");
+    let at_ms = now_millis();
+    match action {
+        "list" => {
+            let store = match TrustStore::load(&profile_dir) {
+                Ok(store) => store,
+                Err(err) => {
+                    eprintln!("[trust-key] 密钥库无效（{}）: {err}", err.code());
+                    return 1;
+                }
+            };
+            if store.keys().is_empty() {
+                println!("[trust-key] 密钥库为空（{}）", profile_dir.display());
+            }
+            for key in store.keys() {
+                println!(
+                    "[trust-key] key_id={} status={} not_before={} not_after={} note={}",
+                    key.key_id,
+                    trust_key_status(key, at_ms),
+                    key.not_before_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| String::from("-")),
+                    key.not_after_ms
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| String::from("-")),
+                    key.note.as_deref().unwrap_or("-")
+                );
+            }
+            0
+        }
+        "add" => {
+            let (Some(key_id), Some(public_key_hex)) = (args.get(1), args.get(2)) else {
+                eprintln!("用法: chat --trust-key add <key_id> <public_key_hex> [--note <text>]");
+                return 2;
+            };
+            let note = args
+                .iter()
+                .position(|arg| arg == "--note")
+                .and_then(|index| args.get(index + 1))
+                .cloned();
+            let mut key = TrustKey::new(key_id, public_key_hex);
+            key.note = note;
+            match add_trust_key(&profile_dir, key, at_ms) {
+                Ok(report) => {
+                    println!(
+                        "[trust-key] add {}（keys={}）",
+                        report.key_id, report.key_count
+                    );
+                    0
+                }
+                Err(err) => {
+                    eprintln!("[trust-key] 添加失败（{}）: {err}", err.code());
+                    1
+                }
+            }
+        }
+        "remove" | "revoke" => {
+            let Some(key_id) = args.get(1) else {
+                eprintln!("用法: chat --trust-key {action} <key_id>");
+                return 2;
+            };
+            let result = if action == "remove" {
+                remove_trust_key(&profile_dir, key_id, at_ms)
+            } else {
+                revoke_trust_key(&profile_dir, key_id, at_ms)
+            };
+            match result {
+                Ok(report) => {
+                    println!(
+                        "[trust-key] {} {}（keys={}）",
+                        report.action, report.key_id, report.key_count
+                    );
+                    0
+                }
+                Err(err) => {
+                    eprintln!("[trust-key] {action} 失败（{}）: {err}", err.code());
+                    1
+                }
+            }
+        }
+        "rotate" => {
+            let (Some(old_key_id), Some(new_key_id), Some(public_key_hex)) =
+                (args.get(1), args.get(2), args.get(3))
+            else {
+                eprintln!(
+                    "用法: chat --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>"
+                );
+                return 2;
+            };
+            let new_key = TrustKey::new(new_key_id, public_key_hex);
+            match rotate_trust_key(&profile_dir, old_key_id, new_key, at_ms) {
+                Ok(report) => {
+                    println!(
+                        "[trust-key] rotate {} -> {}（keys={}）",
+                        report.old_key_id.as_deref().unwrap_or("-"),
+                        report.key_id,
+                        report.key_count
+                    );
+                    0
+                }
+                Err(err) => {
+                    eprintln!("[trust-key] 轮换失败（{}）: {err}", err.code());
+                    1
+                }
+            }
+        }
+        other => {
+            eprintln!(
+                "未知 --trust-key 动作 `{other}`；可用: list / add / remove / revoke / rotate"
+            );
+            2
+        }
+    }
+}
+
+fn ed25519_keypair() -> Option<ring::signature::Ed25519KeyPair> {
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).ok()?;
+    ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).ok()
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// 用给定 ed25519 钥重签包（自检专用；作者侧签名由 `tools/plugin-pack.mjs` 完成）。
+fn sign_package_with_key(
+    package_dir: &std::path::Path,
+    name: &str,
+    version: &str,
+    keypair: &ring::signature::Ed25519KeyPair,
+    key_id: &str,
+) -> Result<String, String> {
+    let digest = package_digest(package_dir).map_err(|err| err.to_string())?;
+    let message = format!("dshr-trust/v1\n{name}\n{version}\n{digest}");
+    let signature = keypair.sign(message.as_bytes());
+    let trust = json!({
+        "schema_version": 1,
+        "plugin_id": name,
+        "version": version,
+        "package": { "digest_sha256": digest },
+        "signature": {
+            "scheme": "ed25519",
+            "key_id": key_id,
+            "value_hex": hex_lower(signature.as_ref())
+        }
+    });
+    std::fs::write(
+        package_dir.join("dshr-trust.json"),
+        trust.to_string() + "\n",
+    )
+    .map_err(|err| format!("写 dshr-trust.json 失败: {err}"))?;
+    Ok(digest)
+}
+
+/// 自检：安装 → 卸载（目录/profile/审计）→ 密钥轮换（旧钥拒、新钥装）。
+fn selftest_plugin_lifecycle() -> i32 {
+    use ring::signature::KeyPair as _;
+
+    let root = PathBuf::from(".tmp/m4-plugin-lifecycle");
+    let _ = std::fs::remove_dir_all(&root);
+    let package = root.join("pkg");
+    let sidecar = root.join("sidecar");
+    let profile_dir = root.join("profile");
+    if std::fs::create_dir_all(package.join("lib")).is_err() {
+        eprintln!("[selftest-lifecycle] 创建目录失败");
+        return 1;
+    }
+    let name = "m4.lifecycle";
+    if std::fs::write(
+        package.join("package.json"),
+        json!({ "name": name, "version": "0.1.0" }).to_string(),
+    )
+    .is_err()
+        || std::fs::write(package.join("lib/index.js"), "export const ok = true\n").is_err()
+    {
+        eprintln!("[selftest-lifecycle] 写包失败");
+        return 1;
+    }
+    let Some(old_key) = ed25519_keypair() else {
+        eprintln!("[selftest-lifecycle] 生成旧钥失败");
+        return 1;
+    };
+    let Some(new_key) = ed25519_keypair() else {
+        eprintln!("[selftest-lifecycle] 生成新钥失败");
+        return 1;
+    };
+
+    // A. 首装（未签名 → --yes-install）→ 卸载。
+    let digest_ok = package_digest(&package)
+        .map(|digest| {
+            let trust = json!({
+                "schema_version": 1,
+                "plugin_id": name,
+                "version": "0.1.0",
+                "package": { "digest_sha256": digest }
+            });
+            std::fs::write(package.join("dshr-trust.json"), trust.to_string()).is_ok()
+        })
+        .unwrap_or(false);
+    let installed = digest_ok
+        && install_plugin_with_options(
+            &InstallCliOptions {
+                package: package.clone(),
+                yes_install: true,
+                allow_downgrade: false,
+            },
+            &sidecar,
+            &profile_dir,
+        ) == 0;
+    let destination = sidecar.join("node_modules").join(name);
+    let installed_ok = installed && destination.exists();
+
+    let mut profile = match Profile::load(&profile_dir) {
+        Ok(profile) => profile,
+        Err(err) => {
+            eprintln!("[selftest-lifecycle] 加载 profile 失败: {err}");
+            return 1;
+        }
+    };
+    let uninstalled = uninstall_package(&sidecar, name, &mut profile);
+    let audit_text =
+        std::fs::read_to_string(profile_dir.join("install-audit.jsonl")).unwrap_or_default();
+    let uninstall_ok = uninstalled
+        .as_ref()
+        .map(|report| report.removed_dir && report.removed_profile_entry)
+        .unwrap_or(false)
+        && !destination.exists()
+        && !profile.entries().iter().any(|entry| entry.name == name)
+        && audit_text.contains("\"action\":\"uninstall\"")
+        && audit_text.contains("\"decision\":\"accepted\"");
+
+    // B. 旧钥签名安装 → 轮换 → 旧钥被拒 → 新钥重签安装。
+    let key_added = add_trust_key(
+        &profile_dir,
+        TrustKey::new("old", hex_lower(old_key.public_key().as_ref())),
+        now_millis(),
+    )
+    .is_ok();
+    let signed_old = sign_package_with_key(&package, name, "0.1.0", &old_key, "old").is_ok();
+    let old_install = signed_old
+        && install_plugin_with_options(
+            &InstallCliOptions {
+                package: package.clone(),
+                yes_install: false,
+                allow_downgrade: false,
+            },
+            &sidecar,
+            &profile_dir,
+        ) == 0;
+    let rotated = rotate_trust_key(
+        &profile_dir,
+        "old",
+        TrustKey::new("new", hex_lower(new_key.public_key().as_ref())),
+        now_millis(),
+    )
+    .is_ok();
+    let store_ok = TrustStore::load(&profile_dir)
+        .map(|store| {
+            store.get("old").is_some_and(|key| key.revoked)
+                && store.get("new").is_some_and(|key| !key.revoked)
+        })
+        .unwrap_or(false);
+    let old_rejected = install_plugin_with_options(
+        &InstallCliOptions {
+            package: package.clone(),
+            yes_install: false,
+            allow_downgrade: false,
+        },
+        &sidecar,
+        &profile_dir,
+    ) == 1;
+    let signed_new = sign_package_with_key(&package, name, "0.1.0", &new_key, "new").is_ok();
+    let new_install = signed_new
+        && install_plugin_with_options(
+            &InstallCliOptions {
+                package: package.clone(),
+                yes_install: false,
+                allow_downgrade: false,
+            },
+            &sidecar,
+            &profile_dir,
+        ) == 0;
+    let meta_ok = read_installed_meta(&destination)
+        .map(|meta| {
+            meta.signature.status == "verified" && meta.signature.key_id.as_deref() == Some("new")
+        })
+        .unwrap_or(false);
+    let key_audit =
+        std::fs::read_to_string(profile_dir.join("trust-key-audit.jsonl")).unwrap_or_default();
+    let key_audit_ok = key_audit.contains("\"action\":\"add\"")
+        && key_audit.contains("\"action\":\"rotate\"")
+        && key_audit.contains("\"old_key_id\":\"old\"");
+
+    let ok = installed_ok
+        && uninstall_ok
+        && key_added
+        && old_install
+        && rotated
+        && store_ok
+        && old_rejected
+        && new_install
+        && meta_ok
+        && key_audit_ok;
+    println!(
+        "[selftest-lifecycle] installed={installed_ok} uninstalled={uninstall_ok} key_added={key_added} old_install={old_install} rotated={rotated} store_ok={store_ok} old_rejected={old_rejected} new_install={new_install} meta_ok={meta_ok} key_audit={key_audit_ok}"
+    );
+    if ok {
+        println!("[selftest-lifecycle] PASS");
+        0
+    } else {
+        println!("[selftest-lifecycle] FAIL");
+        1
+    }
 }
 
 /// 宿主兼容基线：用 `dshr-plugin-api` 的 semver（0.1.0），不是应用 workspace 的 0.0.0。
@@ -7877,6 +8268,9 @@ fn main() {
     if std::env::args().any(|arg| arg == "--selftest-trust-install") {
         std::process::exit(selftest_trust_install());
     }
+    if std::env::args().any(|arg| arg == "--selftest-plugin-lifecycle") {
+        std::process::exit(selftest_plugin_lifecycle());
+    }
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
     }
@@ -7897,6 +8291,17 @@ fn main() {
             std::process::exit(2);
         };
         std::process::exit(install_plugin_cli(PathBuf::from(path)));
+    }
+    if let Some(index) = std::env::args().position(|arg| arg == "--uninstall-plugin") {
+        let Some(name) = std::env::args().nth(index + 1) else {
+            eprintln!("用法: chat --uninstall-plugin <插件名>");
+            std::process::exit(2);
+        };
+        std::process::exit(uninstall_plugin_cli(name));
+    }
+    if let Some(index) = std::env::args().position(|arg| arg == "--trust-key") {
+        let rest: Vec<String> = std::env::args().skip(index + 1).collect();
+        std::process::exit(trust_key_cli(&rest));
     }
     if let Some(index) = std::env::args().position(|arg| arg == "--export-session") {
         let Some(id) = std::env::args().nth(index + 1) else {
@@ -8184,6 +8589,9 @@ mod tests {
             "--export-session",
             "--retention-plan",
             "--install-plugin",
+            "--uninstall-plugin",
+            "--trust-key",
+            "--selftest-plugin-lifecycle",
             "--seed-perf-session",
             "--console",
         ] {

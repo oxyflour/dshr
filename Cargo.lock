@@ -1314,6 +1314,7 @@ dependencies = [
  "dshr-ui-gpui",
  "gpui",
  "gpui_platform",
+ "ring",
  "serde_json",
  "windows-sys 0.61.2",
 ]

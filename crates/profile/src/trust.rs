@@ -8,8 +8,12 @@
 //! 3. **知情**：首装/未验证签名需要调用方确认，接受与拒绝都写
 //!    `<profile>/install-audit.jsonl`；安装后写 `<dest>/.dshr-install.json`。
 //!
-//! 不做 CA/证书链/吊销/时间戳（M4）。信任文件是**包级兄弟文件**而不是 manifest 字段，
-//! 因为 manifest 无法包含自身摘要（自引用）。
+//! M4 增加**密钥生命周期**：`not_before_ms` / `not_after_ms` / `revoked` 字段，
+//! 吊销与过期在验证阶段拒绝；轮换先登记新钥再吊销旧钥；密钥库变更写
+//! `<profile>/trust-key-audit.jsonl`（见 [`append_key_audit`]）。
+//! 仍不做 CA/证书链/时间戳/透明日志。
+//!
+//! 信任文件是**包级兄弟文件**而不是 manifest 字段，因为 manifest 无法包含自身摘要（自引用）。
 
 use std::fs;
 use std::io::Write as _;
@@ -32,6 +36,8 @@ pub const TRUST_SCHEMA_VERSION: u32 = 1;
 pub const INSTALL_META_FILE: &str = ".dshr-install.json";
 /// 审计日志文件名（写在 profile 目录）。
 pub const AUDIT_FILE: &str = "install-audit.jsonl";
+/// 信任密钥库变更审计文件名（写在 profile 目录）。
+pub const KEY_AUDIT_FILE: &str = "trust-key-audit.jsonl";
 /// 信任密钥库文件名（写在 profile 目录）。
 pub const KEY_STORE_FILE: &str = "trust-keys.json";
 
@@ -51,6 +57,12 @@ pub enum TrustError {
     IntegrityMismatch { expected: String, actual: String },
     #[error("unknown signing key `{key_id}`")]
     UnknownKey { key_id: String },
+    #[error("signing key `{key_id}` has been revoked")]
+    KeyRevoked { key_id: String },
+    #[error("signing key `{key_id}` is not valid yet")]
+    KeyNotYetValid { key_id: String },
+    #[error("signing key `{key_id}` has expired")]
+    KeyExpired { key_id: String },
     #[error("invalid ed25519 signature (key `{key_id}`)")]
     Signature { key_id: String },
     #[error("package version {candidate} is older than installed {installed}")]
@@ -70,6 +82,9 @@ impl TrustError {
             Self::TrustManifest(_) => "E_TRUST_MANIFEST",
             Self::IntegrityMismatch { .. } => "E_INTEGRITY_MISMATCH",
             Self::UnknownKey { .. } => "E_TRUST_UNKNOWN_KEY",
+            Self::KeyRevoked { .. } => "E_TRUST_KEY_REVOKED",
+            Self::KeyNotYetValid { .. } => "E_TRUST_KEY_NOT_YET_VALID",
+            Self::KeyExpired { .. } => "E_TRUST_KEY_EXPIRED",
             Self::Signature { .. } => "E_TRUST_SIGNATURE",
             Self::Downgrade { .. } => "E_TRUST_DOWNGRADE",
             Self::NotConfirmed => "E_TRUST_NOT_CONFIRMED",
@@ -105,6 +120,9 @@ pub struct PackageSignature {
 }
 
 /// 信任密钥库中的一把公钥。
+///
+/// M4 起支持时间窗与吊销：字段缺省时等价于 M3 的"永久有效、未吊销"，
+/// 旧 `trust-keys.json` 可直接读取。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustKey {
@@ -113,6 +131,81 @@ pub struct TrustKey {
     pub public_key_hex: String,
     #[serde(default)]
     pub note: Option<String>,
+    /// 生效时间（含）；None 表示不限制。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before_ms: Option<u64>,
+    /// 过期时间（含）；None 表示不限制。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after_ms: Option<u64>,
+    /// 是否已吊销；吊销后任何签名都不再接受。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub revoked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at_ms: Option<u64>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl TrustKey {
+    /// 便于测试/调用方构造 M3 形状的密钥（无时间窗、未吊销）。
+    pub fn new(key_id: impl Into<String>, public_key_hex: impl Into<String>) -> Self {
+        Self {
+            key_id: key_id.into(),
+            public_key_hex: public_key_hex.into(),
+            note: None,
+            not_before_ms: None,
+            not_after_ms: None,
+            revoked: false,
+            revoked_at_ms: None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), TrustError> {
+        if self.key_id.trim().is_empty() {
+            return Err(TrustError::TrustManifest(
+                "trust key has empty key_id".to_owned(),
+            ));
+        }
+        decode_hex_exact(&self.public_key_hex, HEX_PUBLIC_KEY_LEN, "public_key_hex")
+            .map_err(TrustError::TrustManifest)?;
+        if let (Some(before), Some(after)) = (self.not_before_ms, self.not_after_ms) {
+            if before > after {
+                return Err(TrustError::TrustManifest(format!(
+                    "trust key `{}` has not_before_ms > not_after_ms",
+                    self.key_id
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// 在 `now_ms` 时刻是否可用于验证签名。
+    fn check_valid(&self, now_ms: Option<u64>) -> Result<(), TrustError> {
+        if self.revoked {
+            return Err(TrustError::KeyRevoked {
+                key_id: self.key_id.clone(),
+            });
+        }
+        if let Some(now) = now_ms {
+            if let Some(before) = self.not_before_ms {
+                if now < before {
+                    return Err(TrustError::KeyNotYetValid {
+                        key_id: self.key_id.clone(),
+                    });
+                }
+            }
+            if let Some(after) = self.not_after_ms {
+                if now > after {
+                    return Err(TrustError::KeyExpired {
+                        key_id: self.key_id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -151,19 +244,13 @@ impl TrustStore {
         }
         let mut seen = Vec::new();
         for key in &file.keys {
-            if key.key_id.trim().is_empty() {
-                return Err(TrustError::TrustManifest(
-                    "trust key has empty key_id".to_owned(),
-                ));
-            }
+            key.validate()?;
             if seen.contains(&key.key_id) {
                 return Err(TrustError::TrustManifest(format!(
                     "duplicate trust key id `{}`",
                     key.key_id
                 )));
             }
-            decode_hex_exact(&key.public_key_hex, HEX_PUBLIC_KEY_LEN, "public_key_hex")
-                .map_err(TrustError::TrustManifest)?;
             seen.push(key.key_id.clone());
         }
         Ok(Self { keys: file.keys })
@@ -176,6 +263,282 @@ impl TrustStore {
     pub fn keys(&self) -> &[TrustKey] {
         &self.keys
     }
+
+    /// 取一把可用于验证的密钥；吊销/未生效/过期分别返回稳定错误码。
+    ///
+    /// `now_ms = None` 表示调用方没有时间源（M3 兼容路径）：只检查吊销，
+    /// 不检查时间窗。安装路径总会传 `TrustPolicy.now_ms`/系统时间。
+    pub fn key_status(&self, key_id: &str, now_ms: Option<u64>) -> Result<&TrustKey, TrustError> {
+        let key = self.get(key_id).ok_or_else(|| TrustError::UnknownKey {
+            key_id: key_id.to_owned(),
+        })?;
+        key.check_valid(now_ms)?;
+        Ok(key)
+    }
+
+    /// 追加一把新钥；重复 `key_id` 与非法字段拒绝（不覆盖旧钥）。
+    pub fn insert(&mut self, key: TrustKey) -> Result<(), TrustError> {
+        key.validate()?;
+        if self.get(&key.key_id).is_some() {
+            return Err(TrustError::TrustManifest(format!(
+                "duplicate trust key id `{}`",
+                key.key_id
+            )));
+        }
+        self.keys.push(key);
+        Ok(())
+    }
+
+    /// 删除一把钥；不存在返回 false（不做隐式幂等成功）。
+    pub fn remove(&mut self, key_id: &str) -> bool {
+        if let Some(index) = self.keys.iter().position(|key| key.key_id == key_id) {
+            self.keys.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 吊销一把钥；重复吊销保留第一次的 `revoked_at_ms`。
+    pub fn revoke(&mut self, key_id: &str, at_ms: u64) -> Result<(), TrustError> {
+        let key = self
+            .keys
+            .iter_mut()
+            .find(|key| key.key_id == key_id)
+            .ok_or_else(|| TrustError::UnknownKey {
+                key_id: key_id.to_owned(),
+            })?;
+        if !key.revoked {
+            key.revoked = true;
+            key.revoked_at_ms = Some(at_ms);
+        }
+        Ok(())
+    }
+
+    /// 轮换：先登记新钥，再吊销旧钥。新钥插入失败时不改动旧钥。
+    pub fn rotate(
+        &mut self,
+        old_key_id: &str,
+        new_key: TrustKey,
+        at_ms: u64,
+    ) -> Result<(), TrustError> {
+        if self.get(old_key_id).is_none() {
+            return Err(TrustError::UnknownKey {
+                key_id: old_key_id.to_owned(),
+            });
+        }
+        if new_key.key_id == old_key_id {
+            return Err(TrustError::TrustManifest(format!(
+                "rotate target `{old_key_id}` must differ from the old key"
+            )));
+        }
+        self.insert(new_key)?;
+        self.revoke(old_key_id, at_ms)
+    }
+
+    /// 原子写回 `<profile_dir>/trust-keys.json`（临时文件 + 备份 rename）。
+    pub fn save(&self, profile_dir: &Path) -> Result<(), TrustError> {
+        for key in &self.keys {
+            key.validate()?;
+        }
+        fs::create_dir_all(profile_dir)?;
+        let path = profile_dir.join(KEY_STORE_FILE);
+        let file = TrustKeyStoreFile {
+            schema_version: TRUST_SCHEMA_VERSION,
+            keys: self.keys.clone(),
+        };
+        let text = serde_json::to_string_pretty(&file).map_err(|err| {
+            TrustError::TrustManifest(format!("serialize {KEY_STORE_FILE}: {err}"))
+        })?;
+        write_file_atomically(&path, format!("{text}\n").as_bytes())?;
+        Ok(())
+    }
+}
+
+fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| String::from("trust-keys.json"));
+    let stamp = format!("{}-{}", std::process::id(), unix_nanos());
+    let temp = parent.join(format!(".{name}.tmp-{stamp}"));
+    let backup = parent.join(format!(".{name}.bak-{stamp}"));
+
+    fs::write(&temp, bytes)?;
+    let had_old = path.exists();
+    if had_old {
+        if let Err(err) = fs::rename(path, &backup) {
+            let _ = fs::remove_file(&temp);
+            return Err(err);
+        }
+    }
+    match fs::rename(&temp, path) {
+        Ok(()) => {
+            if had_old {
+                let _ = fs::remove_file(&backup);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if had_old {
+                let _ = fs::rename(&backup, path);
+            }
+            let _ = fs::remove_file(&temp);
+            Err(err)
+        }
+    }
+}
+
+/// 密钥库一次变更的结果（CLI/自检展示用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyChangeReport {
+    pub action: &'static str,
+    pub key_id: String,
+    pub old_key_id: Option<String>,
+    pub key_count: usize,
+}
+
+/// 追加一条密钥库审计；与安装审计共用 JSONL 形式，独立文件避免混入安装语义。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyAuditRecord {
+    pub ts: u64,
+    pub action: String,
+    pub key_id: String,
+    pub public_key_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_key_id: Option<String>,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+pub fn append_key_audit(profile_dir: &Path, record: &KeyAuditRecord) -> Result<(), TrustError> {
+    append_json_line(profile_dir, KEY_AUDIT_FILE, record)
+}
+
+fn append_json_line<T: Serialize>(
+    profile_dir: &Path,
+    file_name: &str,
+    record: &T,
+) -> Result<(), TrustError> {
+    fs::create_dir_all(profile_dir)?;
+    let path = profile_dir.join(file_name);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = serde_json::to_string(record)
+        .map_err(|err| TrustError::TrustManifest(format!("serialize {file_name}: {err}")))?;
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")?;
+    Ok(())
+}
+
+fn key_audit(
+    profile_dir: &Path,
+    action: &str,
+    key: &TrustKey,
+    old_key_id: Option<&str>,
+    at_ms: u64,
+) -> Result<(), TrustError> {
+    append_key_audit(
+        profile_dir,
+        &KeyAuditRecord {
+            ts: at_ms,
+            action: action.to_owned(),
+            key_id: key.key_id.clone(),
+            public_key_hex: key.public_key_hex.clone(),
+            old_key_id: old_key_id.map(str::to_owned),
+            decision: String::from("accepted"),
+            reason: None,
+        },
+    )
+}
+
+/// 登记一把信任钥并写回密钥库 + 审计。
+pub fn add_trust_key(
+    profile_dir: &Path,
+    key: TrustKey,
+    at_ms: u64,
+) -> Result<KeyChangeReport, TrustError> {
+    let mut store = TrustStore::load(profile_dir)?;
+    store.insert(key.clone())?;
+    store.save(profile_dir)?;
+    key_audit(profile_dir, "add", &key, None, at_ms)?;
+    Ok(KeyChangeReport {
+        action: "add",
+        key_id: key.key_id,
+        old_key_id: None,
+        key_count: store.keys().len(),
+    })
+}
+
+/// 删除一把信任钥（硬删除）并写回 + 审计；未知 `key_id` 返回 `UnknownKey`。
+pub fn remove_trust_key(
+    profile_dir: &Path,
+    key_id: &str,
+    at_ms: u64,
+) -> Result<KeyChangeReport, TrustError> {
+    let mut store = TrustStore::load(profile_dir)?;
+    let key = store
+        .get(key_id)
+        .cloned()
+        .ok_or_else(|| TrustError::UnknownKey {
+            key_id: key_id.to_owned(),
+        })?;
+    store.remove(key_id);
+    store.save(profile_dir)?;
+    key_audit(profile_dir, "remove", &key, None, at_ms)?;
+    Ok(KeyChangeReport {
+        action: "remove",
+        key_id: key_id.to_owned(),
+        old_key_id: None,
+        key_count: store.keys().len(),
+    })
+}
+
+/// 吊销一把信任钥（保留公钥与吊销时间，便于审计/恢复决策）。
+pub fn revoke_trust_key(
+    profile_dir: &Path,
+    key_id: &str,
+    at_ms: u64,
+) -> Result<KeyChangeReport, TrustError> {
+    let mut store = TrustStore::load(profile_dir)?;
+    let key = store
+        .get(key_id)
+        .cloned()
+        .ok_or_else(|| TrustError::UnknownKey {
+            key_id: key_id.to_owned(),
+        })?;
+    store.revoke(key_id, at_ms)?;
+    store.save(profile_dir)?;
+    key_audit(profile_dir, "revoke", &key, None, at_ms)?;
+    Ok(KeyChangeReport {
+        action: "revoke",
+        key_id: key_id.to_owned(),
+        old_key_id: None,
+        key_count: store.keys().len(),
+    })
+}
+
+/// 轮换：登记新钥 + 吊销旧钥，一次写回 + 一条 rotate 审计。
+pub fn rotate_trust_key(
+    profile_dir: &Path,
+    old_key_id: &str,
+    new_key: TrustKey,
+    at_ms: u64,
+) -> Result<KeyChangeReport, TrustError> {
+    let mut store = TrustStore::load(profile_dir)?;
+    store.rotate(old_key_id, new_key.clone(), at_ms)?;
+    store.save(profile_dir)?;
+    key_audit(profile_dir, "rotate", &new_key, Some(old_key_id), at_ms)?;
+    Ok(KeyChangeReport {
+        action: "rotate",
+        key_id: new_key.key_id,
+        old_key_id: Some(old_key_id.to_owned()),
+        key_count: store.keys().len(),
+    })
 }
 
 /// 签名验证结果（写进安装预览/元数据/审计）。
@@ -361,11 +724,25 @@ fn is_skipped_dir(name: &str) -> bool {
 }
 
 /// 读取并按信任链校验一个包（不安装）。
+///
+/// M3 兼容入口：不检查密钥时间窗（只检查吊销）。安装路径用
+/// [`verify_package_at`] 传入策略时间，过期/未生效的钥会被拒绝。
 pub fn verify_package(
     root: &Path,
     actual_name: &str,
     actual_version: Option<&str>,
     store: &TrustStore,
+) -> Result<TrustReport, TrustError> {
+    verify_package_at(root, actual_name, actual_version, store, None)
+}
+
+/// 同 [`verify_package`]，但按 `now_ms` 检查密钥 `not_before_ms`/`not_after_ms`。
+pub fn verify_package_at(
+    root: &Path,
+    actual_name: &str,
+    actual_version: Option<&str>,
+    store: &TrustStore,
+    now_ms: Option<u64>,
 ) -> Result<TrustReport, TrustError> {
     let digest_sha256 = package_digest(root)?;
     let trust_path = root.join(TRUST_FILE);
@@ -394,11 +771,7 @@ pub fn verify_package(
                 signature.scheme
             )));
         }
-        let key = store
-            .get(&signature.key_id)
-            .ok_or_else(|| TrustError::UnknownKey {
-                key_id: signature.key_id.clone(),
-            })?;
+        let key = store.key_status(&signature.key_id, now_ms)?;
         let public_key =
             decode_hex_exact(&key.public_key_hex, HEX_PUBLIC_KEY_LEN, "public_key_hex")
                 .map_err(TrustError::TrustManifest)?;
@@ -497,17 +870,7 @@ fn write_installed_meta(destination: &Path, meta: &InstalledMeta) -> Result<(), 
 
 /// 追加审计记录；审计失败不阻塞安装（记录到 stderr 由调用方决定），但这里返回错误让调用方可见。
 pub fn append_audit(profile_dir: &Path, record: &AuditRecord) -> Result<(), TrustError> {
-    fs::create_dir_all(profile_dir)?;
-    let path = profile_dir.join(AUDIT_FILE);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let line = serde_json::to_string(record)
-        .map_err(|err| TrustError::Package(format!("serialize audit: {err}")))?;
-    file.write_all(line.as_bytes())?;
-    file.write_all(b"\n")?;
-    Ok(())
+    append_json_line(profile_dir, AUDIT_FILE, record)
 }
 
 /// `Profile::path()` 指向 `plugins.json`（文件），审计/密钥库需要的是 profile 目录。
@@ -550,7 +913,14 @@ where
 {
     let name = read_manifest(package_dir).map_err(TrustError::Package)?;
     let actual_version = read_package_version(package_dir).map_err(TrustError::Package)?;
-    let trust = verify_package(package_dir, &name, actual_version.as_deref(), &policy.store)?;
+    let at_ms = now_ms(policy);
+    let trust = verify_package_at(
+        package_dir,
+        &name,
+        actual_version.as_deref(),
+        &policy.store,
+        Some(at_ms),
+    )?;
 
     let destination = sidecar_dir.join("node_modules").join(&name);
     let installed = read_installed_meta(&destination);
@@ -606,13 +976,13 @@ where
             status: trust.signature_status.as_str().to_owned(),
             key_id: trust.key_id.clone(),
         },
-        installed_at_ms: now_ms(policy),
+        installed_at_ms: at_ms,
     };
     write_installed_meta(&install.destination, &meta)?;
     append_audit(
         profile_dir_of(profile),
         &AuditRecord {
-            ts: now_ms(policy),
+            ts: at_ms,
             action: "install".to_owned(),
             name,
             version: trust.version.clone(),
@@ -688,6 +1058,13 @@ fn now_ms(policy: &TrustPolicy) -> u64 {
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or(0)
     })
+}
+
+fn unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
 }
 
 /// 极简 SemVer 比较（只比较 x.y.z 与预发布后缀；build metadata 忽略）。
@@ -841,11 +1218,10 @@ mod tests {
     }
 
     fn store_with(keypair: &Ed25519KeyPair, key_id: &str) -> TrustStore {
-        TrustStore::new(vec![TrustKey {
-            key_id: key_id.to_owned(),
-            public_key_hex: to_hex(keypair.public_key().as_ref()),
-            note: None,
-        }])
+        TrustStore::new(vec![TrustKey::new(
+            key_id,
+            to_hex(keypair.public_key().as_ref()),
+        )])
     }
 
     fn signed_trust(dir: &Path, name: &str, version: &str, keypair: &Ed25519KeyPair, key_id: &str) {
@@ -1362,5 +1738,251 @@ mod tests {
             digest, "ec652b76464236c0cb3f71cd5a24013050f417394d8da3cc0c7c869e362cce08",
             "若 fixture 有变更请同步更新期望值（并与 tools/plugin-pack.mjs --verify 对齐）"
         );
+    }
+
+    // ---- M4 W1：密钥生命周期（吊销/时间窗/轮换/审计） -------------------------
+
+    fn key_for(keypair: &Ed25519KeyPair, key_id: &str) -> TrustKey {
+        TrustKey::new(key_id, to_hex(keypair.public_key().as_ref()))
+    }
+
+    fn signed_package(root: &Path, name: &str, keypair: &Ed25519KeyPair, key_id: &str) -> PathBuf {
+        let dir = package(root, name, "1.0.0");
+        signed_trust(&dir, name, "1.0.0", keypair, key_id);
+        dir
+    }
+
+    // M4-KEY-001：已吊销的钥即使签名有效也被拒。
+    #[test]
+    fn m4_key_001_revoked_key_is_rejected() {
+        let root = temp_root("key-revoked");
+        let dir = package(&root, "m4.revoked", "1.0.0");
+        let keypair = signing_key();
+        signed_trust(&dir, "m4.revoked", "1.0.0", &keypair, "old");
+        let mut key = key_for(&keypair, "old");
+        key.revoked = true;
+        key.revoked_at_ms = Some(1_763_000_000_000);
+        let store = TrustStore::new(vec![key]);
+        let error = verify_package(&dir, "m4.revoked", Some("1.0.0"), &store).unwrap_err();
+        assert!(matches!(error, TrustError::KeyRevoked { .. }), "{error}");
+        assert_eq!(error.code(), "E_TRUST_KEY_REVOKED");
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-002：过期钥在传入时间时被拒（verify_package 的 M3 兼容路径不检查时间窗）。
+    #[test]
+    fn m4_key_002_expired_key_is_rejected_at_time() {
+        let root = temp_root("key-expired");
+        let dir = package(&root, "m4.expired", "1.0.0");
+        let keypair = signing_key();
+        signed_trust(&dir, "m4.expired", "1.0.0", &keypair, "expired");
+        let mut key = key_for(&keypair, "expired");
+        key.not_after_ms = Some(1_000);
+        let store = TrustStore::new(vec![key]);
+
+        assert!(verify_package(&dir, "m4.expired", Some("1.0.0"), &store).is_ok());
+        let error =
+            verify_package_at(&dir, "m4.expired", Some("1.0.0"), &store, Some(1_001)).unwrap_err();
+        assert!(matches!(error, TrustError::KeyExpired { .. }), "{error}");
+        assert_eq!(error.code(), "E_TRUST_KEY_EXPIRED");
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-003：尚未生效的钥被拒。
+    #[test]
+    fn m4_key_003_not_yet_valid_key_is_rejected() {
+        let root = temp_root("key-future");
+        let dir = package(&root, "m4.future", "1.0.0");
+        let keypair = signing_key();
+        signed_trust(&dir, "m4.future", "1.0.0", &keypair, "future");
+        let mut key = key_for(&keypair, "future");
+        key.not_before_ms = Some(2_000);
+        let store = TrustStore::new(vec![key]);
+        let error =
+            verify_package_at(&dir, "m4.future", Some("1.0.0"), &store, Some(1_999)).unwrap_err();
+        assert!(
+            matches!(error, TrustError::KeyNotYetValid { .. }),
+            "{error}"
+        );
+        assert_eq!(error.code(), "E_TRUST_KEY_NOT_YET_VALID");
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-004：rotate = 登记新钥 + 吊销旧钥；新钥可用，旧钥被拒。
+    #[test]
+    fn m4_key_004_rotate_revokes_old_and_activates_new() {
+        let old = signing_key();
+        let new = signing_key();
+        let mut store = TrustStore::new(vec![key_for(&old, "old")]);
+        store
+            .rotate("old", key_for(&new, "new"), 1_763_000_000_000)
+            .unwrap();
+
+        let old = store.key_status("old", None).unwrap_err();
+        assert!(matches!(old, TrustError::KeyRevoked { .. }), "{old}");
+        let new = store.key_status("new", None).unwrap();
+        assert!(!new.revoked);
+        assert_eq!(store.keys().len(), 2, "轮换保留旧钥用于审计");
+    }
+
+    // M4-KEY-005：密钥库原子保存/重载，吊销/时间窗字段不丢，无临时残留。
+    #[test]
+    fn m4_key_005_store_persists_status_without_temp_files() {
+        let root = temp_root("key-persist");
+        let keypair = signing_key();
+        let mut revoked = key_for(&keypair, "revoked");
+        revoked.revoked = true;
+        revoked.revoked_at_ms = Some(42);
+        let mut expiring = key_for(&signing_key(), "expiring");
+        expiring.not_after_ms = Some(9_999);
+        let store = TrustStore::new(vec![revoked, expiring]);
+        store.save(&root).unwrap();
+
+        let loaded = TrustStore::load(&root).unwrap();
+        assert!(loaded.get("revoked").unwrap().revoked);
+        assert_eq!(loaded.get("revoked").unwrap().revoked_at_ms, Some(42));
+        assert_eq!(loaded.get("expiring").unwrap().not_after_ms, Some(9_999));
+
+        let leftovers: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| {
+                name.starts_with(".trust-keys.json.tmp-")
+                    || name.starts_with(".trust-keys.json.bak-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "不得残留临时文件: {leftovers:?}");
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-006：rotate 拒绝未知旧钥 / 目标与旧钥同名 / 重复目标；失败不改库。
+    #[test]
+    fn m4_key_006_rotate_rejects_invalid_targets() {
+        let old = signing_key();
+        let new = signing_key();
+        let mut store = TrustStore::new(vec![key_for(&old, "old")]);
+
+        let unknown = store
+            .rotate("missing", key_for(&new, "new"), 1)
+            .unwrap_err();
+        assert!(
+            matches!(unknown, TrustError::UnknownKey { .. }),
+            "{unknown}"
+        );
+        let same = store.rotate("old", key_for(&new, "old"), 1).unwrap_err();
+        assert!(matches!(same, TrustError::TrustManifest(_)), "{same}");
+
+        store.insert(key_for(&new, "new")).unwrap();
+        let duplicate = store.rotate("old", key_for(&new, "new"), 1).unwrap_err();
+        assert!(
+            matches!(duplicate, TrustError::TrustManifest(_)),
+            "{duplicate}"
+        );
+        assert!(!store.get("old").unwrap().revoked, "失败不得吊销旧钥");
+        assert_eq!(store.keys().len(), 2);
+    }
+
+    // M4-KEY-007：安装路径按策略时间拒绝过期钥，且不落盘/不写安装审计。
+    #[test]
+    fn m4_key_007_install_rejects_expired_key() {
+        let root = temp_root("key-install-expired");
+        let mut profile = Profile::load(root.join("profile")).unwrap();
+        let dir = signed_package(&root, "m4.expired-install", &signing_key(), "expired");
+        let keypair = signing_key();
+        signed_trust(&dir, "m4.expired-install", "1.0.0", &keypair, "expired");
+        let mut key = key_for(&keypair, "expired");
+        key.not_after_ms = Some(1_000);
+        let mut policy = policy(TrustStore::new(vec![key]));
+        policy.now_ms = Some(1_001);
+
+        let error = install_package_trusted(&sidecar(&root), &dir, &mut profile, &policy, |_| {
+            panic!("过期钥不得进入确认阶段")
+        })
+        .unwrap_err();
+        assert!(matches!(error, TrustError::KeyExpired { .. }), "{error}");
+        assert!(!root
+            .join("sidecar/node_modules/m4.expired-install")
+            .exists());
+        assert!(!profile_dir_of(&profile).join(AUDIT_FILE).exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-008：轮换后旧钥签名的包被拒，新钥重签后可安装（真实安装路径）。
+    #[test]
+    fn m4_key_008_rotation_flow_through_install() {
+        let root = temp_root("key-rotation-install");
+        let mut profile = Profile::load(root.join("profile")).unwrap();
+        let sidecar_dir = sidecar(&root);
+        let old = signing_key();
+        let new = signing_key();
+        let dir = signed_package(&root, "m4.rotation", &old, "old");
+
+        let mut store = TrustStore::new(vec![key_for(&old, "old")]);
+        let policy_old = policy(store.clone());
+        install_package_trusted(&sidecar_dir, &dir, &mut profile, &policy_old, |_| {
+            panic!("verified package must not prompt")
+        })
+        .unwrap();
+
+        store
+            .rotate("old", key_for(&new, "new"), 1_763_000_000_000)
+            .unwrap();
+        let policy_rotated = policy(store);
+        let error =
+            install_package_trusted(&sidecar_dir, &dir, &mut profile, &policy_rotated, |_| true)
+                .unwrap_err();
+        assert!(matches!(error, TrustError::KeyRevoked { .. }), "{error}");
+
+        signed_trust(&dir, "m4.rotation", "1.0.0", &new, "new");
+        let report =
+            install_package_trusted(&sidecar_dir, &dir, &mut profile, &policy_rotated, |_| {
+                panic!("verified package must not prompt")
+            })
+            .unwrap();
+        assert_eq!(report.trust.signature_status, SignatureStatus::Verified);
+        assert_eq!(report.trust.key_id.as_deref(), Some("new"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-009：密钥库变更写入独立审计（add/rotate/revoke），并保留旧钥吊销记录。
+    #[test]
+    fn m4_key_009_key_changes_are_audited() {
+        let root = temp_root("key-audit");
+        let old = signing_key();
+        let new = signing_key();
+        add_trust_key(&root, key_for(&old, "old"), 10).unwrap();
+        rotate_trust_key(&root, "old", key_for(&new, "new"), 20).unwrap();
+        revoke_trust_key(&root, "new", 30).unwrap();
+
+        let store = TrustStore::load(&root).unwrap();
+        assert!(store.get("old").unwrap().revoked);
+        assert!(store.get("new").unwrap().revoked);
+        let audit = fs::read_to_string(root.join(KEY_AUDIT_FILE)).unwrap();
+        let records: Vec<KeyAuditRecord> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].action, "add");
+        assert_eq!(records[1].action, "rotate");
+        assert_eq!(records[1].old_key_id.as_deref(), Some("old"));
+        assert_eq!(records[2].action, "revoke");
+        assert_eq!(records[2].key_id, "new");
+        fs::remove_dir_all(root).ok();
+    }
+
+    // M4-KEY-010：硬删除后该钥立即不可用（UnknownKey），且密钥库持久化。
+    #[test]
+    fn m4_key_010_remove_deletes_key() {
+        let root = temp_root("key-remove");
+        let keypair = signing_key();
+        add_trust_key(&root, key_for(&keypair, "gone"), 1).unwrap();
+        remove_trust_key(&root, "gone", 2).unwrap();
+        let store = TrustStore::load(&root).unwrap();
+        assert!(store.get("gone").is_none());
+        let error = store.key_status("gone", None).unwrap_err();
+        assert!(matches!(error, TrustError::UnknownKey { .. }), "{error}");
+        fs::remove_dir_all(root).ok();
     }
 }

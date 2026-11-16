@@ -305,7 +305,7 @@ node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录>
 }
 ```
 
-**可选签名**（M3 不做密钥体系，只做摘要签名）：
+**可选签名**（M4 W1 起支持密钥吊销/时间窗/轮换）：
 
 ```text
 签名输入 = "dshr-trust/v1\n<plugin_id>\n<version>\n<digest_sha256_hex>"
@@ -330,7 +330,21 @@ $env:DSHR_SIDECAR_DIR = "<sidecar>"     # 默认 <app_root>/sidecar/dsh-official
 - **降级拒绝**：候选版本低于已安装版本 → `E_TRUST_DOWNGRADE`（退出码 1）；显式 `--allow-downgrade` 才允许，且审计 `downgrade: true`。
 - **篡改拒绝**：摘要不匹配 → `E_INTEGRITY_MISMATCH`（退出码 1）。
 - **未确认**：不带 `--yes-install` 且需要确认 → 退出码 2，不安装。
-- **卸载（M3 现状）**：无 `--uninstall-plugin` CLI。手动删除 `<sidecar>/node_modules/<name>` 并从 `<profile>/plugins.json` 移除同名条目即可；审计不重写（下一次安装会重新记录）。
+- **卸载（M4 W1）**：`target\debug\chat.exe --uninstall-plugin <包名>`。先 rename 插件目录到同父目录的 `.dshr-remove-*` 再删除（失败恢复原名），随后移除 `<profile>/plugins.json` 同名条目并写 `install-audit.jsonl`（`action: "uninstall"`）。目录已删但 profile 落盘失败时返回错误，重跑即可收敛。
+
+**信任密钥库管理**（`<profile>/trust-keys.json`，变更写 `trust-key-audit.jsonl`）：
+
+```powershell
+target\debug\chat.exe --trust-key list
+target\debug\chat.exe --trust-key add <key_id> <public_key_hex> [--note "作者 2026"]
+target\debug\chat.exe --trust-key revoke <key_id>
+target\debug\chat.exe --trust-key remove <key_id>
+target\debug\chat.exe --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>
+```
+
+- `revoke` 保留公钥与吊销时间，旧钥签名的包立即被 `E_TRUST_KEY_REVOKED` 拒绝；`remove` 硬删除（`E_TRUST_UNKNOWN_KEY`）。
+- `rotate` 先登记新钥、再吊销旧钥；作者用新钥重签并重新安装即可，不需要删 profile。
+- 密钥可选 `not_before_ms` / `not_after_ms`；安装路径按当前时间检查（`E_TRUST_KEY_NOT_YET_VALID` / `E_TRUST_KEY_EXPIRED`）。
 
 **本地开发免签名流程**：直接打包不带 `dshr-trust.json` 的目录（或不用 plugin-pack，把源码目录当包），安装时 `--yes-install` 确认即可——宿主标记 `unsigned` 并审计，但仍会复制与装载。**不要**用这种方式分发。
 
@@ -350,6 +364,8 @@ $env:DSHR_SIDECAR_DIR = "<sidecar>"     # 默认 <app_root>/sidecar/dsh-official
 ```powershell
 node tools/plugin-pack.mjs --verify <包目录> --digest <hex>   # 摘要可复现
 target\debug\chat.exe --install-plugin <包目录> --yes-install  # 安装链路
+target\debug\chat.exe --uninstall-plugin <包名>                # 卸载 + 审计
+target\debug\chat.exe --selftest-plugin-lifecycle              # 安装→卸载→密钥轮换产品路径
 ```
 
 手工看握手（把一行 `process.hello` 喂给 stdin，stdout 应回一行 `process.ready`；进程读到 EOF 即退出）：
@@ -385,7 +401,8 @@ host → process.shutdown → child → process.bye → exit
 - [ ] 篡改包内容后重装被 `E_INTEGRITY_MISMATCH` 拒绝；
 - [ ] 降级安装被 `E_TRUST_DOWNGRADE` 拒绝；
 - [ ] 升级安装成功，审计新增 accepted；
-- [ ] 卸载后包目录与 profile 条目被移除（手动流程，见 §6.3）。
+- [ ] `chat --uninstall-plugin <name>` 后包目录与 profile 条目被移除，审计新增 `action: "uninstall"`；
+- [ ] 密钥轮换后旧钥签名的包被 `E_TRUST_KEY_REVOKED` 拒绝，新钥重签可安装。
 
 ## 9. 参考
 

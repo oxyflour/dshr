@@ -36,6 +36,10 @@ path = "../../crates/sidecar-guard"
 [dependencies.serde_json]
 workspace = true
 
+# M4 W1 自检需要现场生成 ed25519 键对（生产签名仍由作者侧工具完成）。
+[dependencies.ring]
+version = "=0.17.14"
+
 [dependencies.dshr-agent-core]
 path = "../../crates/agent-core"
 

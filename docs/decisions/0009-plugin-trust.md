@@ -5,6 +5,9 @@
 - 关联：[`../PLAN.md`](../PLAN.md) §8 M3、[`../spec/plugin-trust.md`](../spec/plugin-trust.md)、
   [`0007-m3-scope.md`](0007-m3-scope.md) §1 第 8 项、[`004`](0004-adc-slot-contract.md)
 
+> **M4 更新（2026-11-16）**：第 6 条的"密钥吊销/轮换"已作为 W1 交付（[ADR-0013](0013-m4-scope.md)，
+> spec §4，`M4-KEY-001..010`）；CA/证书链、时间戳/透明日志、远程 registry 信任根仍未做。
+
 ## 背景
 
 M3 要求"最小信任链：签名（或来源校验）+ 首次安装风险提示；不要求完整证书体系"

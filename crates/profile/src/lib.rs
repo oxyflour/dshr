@@ -22,13 +22,16 @@ pub mod archive;
 pub mod install;
 pub mod loader;
 pub mod trust;
+pub mod uninstall;
 
 pub use install::{install_package, InstallReport};
 pub use trust::{
-    install_package_trusted, package_digest, read_installed_meta, verify_package, AuditRecord,
-    InstallPreview, InstalledMeta, SignatureStatus, TrustError, TrustKey, TrustPolicy, TrustReport,
-    TrustStore, TrustedInstallReport, TRUST_FILE,
+    add_trust_key, install_package_trusted, package_digest, read_installed_meta, remove_trust_key,
+    revoke_trust_key, rotate_trust_key, verify_package, AuditRecord, InstallPreview, InstalledMeta,
+    KeyAuditRecord, KeyChangeReport, SignatureStatus, TrustError, TrustKey, TrustPolicy,
+    TrustReport, TrustStore, TrustedInstallReport, TRUST_FILE,
 };
+pub use uninstall::{uninstall_package, UninstallReport};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -140,6 +143,19 @@ impl Profile {
     /// 追加条目（安装流程用；不去重，由安装器保证）。
     pub fn entries_mut_push(&mut self, entry: PluginEntry) {
         self.entries.push(entry);
+    }
+
+    /// 移除同名的第一条插件条目（卸载流程用）；返回是否移除。不落盘。
+    ///
+    /// 正常 profile 不会出现同名重复（安装器去重、Loader 派生也可能重复），
+    /// 这里只删一条，保留其余条目，避免卸载误伤用户手写的同名配置。
+    pub fn remove_entry(&mut self, name: &str) -> bool {
+        if let Some(index) = self.entries.iter().position(|entry| entry.name == name) {
+            self.entries.remove(index);
+            true
+        } else {
+            false
+        }
     }
 
     /// 启用/禁用；未知插件返回 false。
@@ -330,6 +346,53 @@ mod tests {
         let dir = temp_dir("unknown");
         let mut profile = Profile::load(&dir).expect("load");
         assert!(!profile.set_enabled("not-installed", false));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // M4-UNINSTALL-008：remove_entry 只删同名第一条，不触碰其它条目，并可落盘。
+    #[test]
+    fn m4_uninstall_008_remove_entry_is_targeted_and_persisted() {
+        let dir = temp_dir("remove-entry");
+        let mut profile = Profile::load(&dir).expect("load");
+        profile.entries_mut_push(PluginEntry {
+            name: String::from("m4.entry"),
+            enabled: true,
+            config: Value::Null,
+            inject: None,
+        });
+        profile.entries_mut_push(PluginEntry {
+            name: String::from("m4.entry"),
+            enabled: false,
+            config: Value::Null,
+            inject: None,
+        });
+        profile.save().expect("save");
+
+        assert!(profile.remove_entry("m4.entry"));
+        assert_eq!(
+            profile
+                .entries()
+                .iter()
+                .filter(|entry| entry.name == "m4.entry")
+                .count(),
+            1,
+            "同名重复只删一条"
+        );
+        assert!(profile
+            .entries()
+            .iter()
+            .any(|entry| entry.name == "@deepseek-ai/dsh-tool-fs"));
+        assert!(!profile.remove_entry("m4.missing"));
+        profile.save().expect("save");
+        let reloaded = Profile::load(&dir).expect("reload");
+        assert_eq!(
+            reloaded
+                .entries()
+                .iter()
+                .filter(|entry| entry.name == "m4.entry")
+                .count(),
+            1
+        );
         fs::remove_dir_all(dir).ok();
     }
 

@@ -171,6 +171,8 @@ Cordis Service class，当前 sidecar plugin seam 不能按普通 plugin 装载�
 3. **M4 候选**（已记录，不在 M3 gate）：Component/WIT canonical ABI、SDK 发布 + uninstall +
    真实签名安装、官方 execute 闭环、native 并发/trait 冻结、ADC 交互/tool card、窗口 draw、
    子会话并行/sidecar 工具继承、P2 余项。
+   *（2026-11-16：M4 已启动，W1 交付 uninstall + 密钥生命周期；范围见
+   [ADR-0013](decisions/0013-m4-scope.md)，进度见 [m4-status.md](m4-status.md)。）*
 
 ## 8. 复现命令
 

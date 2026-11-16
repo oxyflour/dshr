@@ -244,7 +244,7 @@ pub(crate) fn read_package_version(package_dir: &Path) -> Result<Option<String>,
     Ok(None)
 }
 
-fn validate_package_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_package_name(name: &str) -> Result<(), String> {
     if name.starts_with('.') || name.starts_with('/') || name.contains('\\') {
         return Err(format!("非法包名: {name}"));
     }

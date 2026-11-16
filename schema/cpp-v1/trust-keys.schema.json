@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dshr.local/schema/cpp-v1/trust-keys.schema.json",
+  "title": "dshr-trust/v1 local trust key store",
+  "description": "Local trust key store (<profile>/trust-keys.json) used to verify package signatures. See docs/spec/plugin-trust.md §4.",
+  "type": "object",
+  "required": ["schema_version", "keys"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key_id", "public_key_hex"],
+        "additionalProperties": false,
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "public_key_hex": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "not_before_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "not_after_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "revoked_at_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

@@ -20,6 +20,7 @@ const schemas = {
   slotRegistration: load('adc-v1/slot-registration.schema.json'),
   manifest: load('cpp-v1/manifest.schema.json'),
   trust: load('cpp-v1/trust.schema.json'),
+  trustKeys: load('cpp-v1/trust-keys.schema.json'),
   envelope: load('sidecar-rpc/envelope.schema.json'),
 }
 
@@ -637,6 +638,31 @@ const cases = [
     version: '0.1.0',
     package: {},
   }, false],
+  // ---- Trust key store（M4 W1：时间窗/吊销/轮换） ----
+  ['trustKeys', 'valid: active + revoked keys', {
+    schema_version: 1,
+    keys: [
+      { key_id: 'cad-vendor-2026', public_key_hex: 'a'.repeat(64), note: 'active' },
+      { key_id: 'cad-vendor-2025', public_key_hex: 'b'.repeat(64), revoked: true, revoked_at_ms: 1763000000000 },
+      { key_id: 'cad-vendor-2027', public_key_hex: 'c'.repeat(64), not_before_ms: 1763000000000, not_after_ms: 1794536000000 },
+    ],
+  }, true],
+  ['trustKeys', 'invalid: short public key', {
+    schema_version: 1,
+    keys: [{ key_id: 'k1', public_key_hex: 'abcd' }],
+  }, false],
+  ['trustKeys', 'invalid: empty key_id', {
+    schema_version: 1,
+    keys: [{ key_id: '', public_key_hex: 'a'.repeat(64) }],
+  }, false],
+  ['trustKeys', 'invalid: unknown key field', {
+    schema_version: 1,
+    keys: [{ key_id: 'k1', public_key_hex: 'a'.repeat(64), scope: 'global' }],
+  }, false],
+  ['trustKeys', 'invalid: schema_version 2', {
+    schema_version: 2,
+    keys: [],
+  }, false],
   // ---- Sidecar envelope ----
   ['envelope', 'valid: tool.invoke', {
     version: 1,
@@ -721,6 +747,7 @@ const validators = {
   slotRegistration: (data) => validate(schemas.slotRegistration, data, '$', schemas.slotRegistration),
   manifest: (data) => validate(schemas.manifest, data, '$', schemas.manifest),
   trust: (data) => validate(schemas.trust, data, '$', schemas.trust),
+  trustKeys: (data) => validate(schemas.trustKeys, data, '$', schemas.trustKeys),
   envelope: (data) => validate(schemas.envelope, data, '$', schemas.envelope),
   slots: (data) => checkSlotsCatalog(data),
   registrationContract: (data) => checkRegistration(data),

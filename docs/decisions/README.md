@@ -42,3 +42,4 @@
 | [0010-isolation-runtime-quota.md](0010-isolation-runtime-quota.md) | 隔离运行时配额五维；WASM 主方案因本机离线暂由 `external-process`（Job Object）退路承担 G3 | Accepted（退路启用） | M3 |
 | [0011-adc-v1-freeze.md](0011-adc-v1-freeze.md) | ADC-v1 冻结范围、变更政策与已知渲染降级 | Accepted | M3（G1） |
 | [0012-m3-gate-closure.md](0012-m3-gate-closure.md) | 独立 review 后 M3 gate 口径修正：G2 Preview、WASM 接宿主/Component 移 M4、L2 官方包 manual gate、测试诚实性 | Accepted | M3 收尾 |
+| [0013-m4-scope.md](0013-m4-scope.md) | M4 范围锁定：8 个工作包、四条 Beta gate 口径、本机不可验证项的诚实标注 | Accepted | M4 启动 |

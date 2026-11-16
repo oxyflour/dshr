@@ -53,7 +53,7 @@ const DEFAULT_TIMEOUT_MS = {
 }
 
 // 矩阵与 --list 的领域排序（便于 300+ 条 ID 的表格按领域阅读）。
-const AREA_ORDER = ['SCHEMA', 'DOC', 'CARGO', 'ADC', 'CPP', 'RPC', 'MCP', 'JS', 'M3', 'SELF', 'GATE']
+const AREA_ORDER = ['SCHEMA', 'DOC', 'CARGO', 'ADC', 'CPP', 'RPC', 'MCP', 'JS', 'M3', 'M4', 'SELF', 'GATE']
 function compareTests(a, b) {
   const ai = AREA_ORDER.indexOf(a.area)
   const bi = AREA_ORDER.indexOf(b.area)
@@ -179,7 +179,7 @@ function isPlainObject(value) {
 // 从测试函数名推导测试 ID：cpp_fiber_001_xxx → CPP-FIBER-001、adc_slot_001_xxx → ADC-SLOT-001、
 // rpc_l2_101_xxx → RPC-L2-101。ui-gpui / profile 的测试用注释标注 ID，由扫描器关联到下一条 fn。
 function idFromTestFn(fnName) {
-  const match = fnName.match(/^(cpp|adc|rpc|m3)_([a-z0-9]+)_(\d{3})_/)
+  const match = fnName.match(/^(cpp|adc|rpc|m3|m4)_([a-z0-9]+)_(\d{3})_/)
   if (!match) return null
   return `${match[1].toUpperCase()}-${match[2].toUpperCase()}-${match[3]}`
 }
@@ -213,7 +213,7 @@ function scanTestIds(sourceDirs) {
     const lines = readFileSync(file, 'utf8').split(/\r?\n/)
     let pendingId = null
     for (const line of lines) {
-      const comment = line.match(/^\s*\/{2,3}\s*((?:ADC|CPP|RPC|M3)(?:-[A-Z0-9]+)+-\d{3})\b/)
+      const comment = line.match(/^\s*\/{2,3}\s*((?:ADC|CPP|RPC|M3|M4)(?:-[A-Z0-9]+)+-\d{3})\b/)
       if (comment) pendingId = comment[1]
       const fn = line.match(/^\s*(?:pub\s+)?fn\s+([a-z0-9_]+)\s*\(/)
       if (!fn) continue
