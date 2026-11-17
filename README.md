@@ -88,7 +88,7 @@ G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插
 W5 已启用 wasmtime `component-model`，并用 `M4-COMPONENT-001..023` 验证 canonical ABI、
 `cpp-v1.wit`、bindgen、配额、probe、真实 guest、`CppComponentPlugin`/manifest loader、
 `--selftest-cpp-component`/`--selftest-cpp-install`/`--selftest-cpp-cli-install`、并行/共享调用与真实 fuel trap；
-GUI 点击/签名仍未接。
+真实窗口/剪贴板 smoke 也已在 Windows 通过。
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory/fs read+write 的 execute 在 official gate 8/8 通过。
 G4 已有 `tools/perf-gate.mjs`（阈值 + CI step），GitHub Actions 已实跑成功（run 44122517731）。
 G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 覆盖 kill sidecar，`--selftest-crash-recovery`

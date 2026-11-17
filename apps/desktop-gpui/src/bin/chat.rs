@@ -7639,6 +7639,22 @@ fn selftest_external_plugin() -> i32 {
 /// `trap` 工具撞 fuel 看门狗 → 宿主存活（再 call echo）→ unload。
 ///
 /// 包建在 data root 下（不依赖用户 `%TEMP%` 是否可写），断言不联网。
+fn selftest_clipboard() -> i32 {
+    application().run(|cx: &mut App| {
+        let expected = "dshr clipboard selftest 中文";
+        cx.write_to_clipboard(ClipboardItem::new_string(expected.to_owned()));
+        let actual = cx.read_from_clipboard().and_then(|item| item.text());
+        if actual.as_deref() != Some(expected) {
+            eprintln!("[selftest-clipboard] FAIL: {actual:?}");
+            cx.quit();
+            std::process::exit(1);
+        }
+        println!("[selftest-clipboard] PASS text={expected:?}");
+        cx.quit();
+    });
+    0
+}
+
 /// `--selftest-window`：真正打开一个 GPUI 窗口，等首帧后自动关闭。
 /// 只验证窗口系统/事件循环，不依赖 sidecar 或 GPU 工具。
 struct WindowProbe;
@@ -9590,6 +9606,9 @@ fn main() {
     }
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-clipboard") {
+        std::process::exit(selftest_clipboard());
     }
     if std::env::args().any(|arg| arg == "--selftest-window") {
         std::process::exit(selftest_window());
