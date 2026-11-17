@@ -402,5 +402,8 @@ mod tests {
         let plugin = DynamicIdPlugin("dynamic.plugin".to_owned());
         assert_eq!(plugin.id(), "dynamic.plugin");
         assert_eq!(plugin.version(), "9.9.9");
+        // M4 W4 trait 冻结：错误信息/注册表都按 `dyn Plugin` 使用，必须保持 object-safe。
+        let boxed: Box<dyn Plugin> = Box::new(plugin);
+        assert_eq!(boxed.id(), "dynamic.plugin");
     }
 }
