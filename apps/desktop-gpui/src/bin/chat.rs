@@ -9867,6 +9867,7 @@ fn main() {
         let state = state;
         let rows = rows;
         let app_cancel = app_cancel;
+        let flow_approvals = approvals.clone();
         let store = store;
         let sessions = sessions;
         let active = active;
@@ -9952,10 +9953,22 @@ fn main() {
         )
         .expect("failed to open window");
         if std::env::var("DSHR_KEYBOARD_FLOW").as_deref() == Ok("1") {
+            let approval_result = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let approval_out = approval_result.clone();
+            let approvals = flow_approvals.clone();
+            std::thread::spawn(move || {
+                let outcome = approvals.request(
+                    "flow-approval",
+                    "bash",
+                    &serde_json::json!({ "command": "echo flow" }),
+                    std::time::Duration::from_secs(10),
+                );
+                *approval_out.lock().unwrap() = Some(outcome);
+            });
             cx.spawn(async move |cx| {
-                for key in ["cmd-n", "cmd-j", "cmd-w"] {
+                for key in ["cmd-n", "cmd-k"] {
                     cx.background_executor()
-                        .timer(std::time::Duration::from_millis(600))
+                        .timer(std::time::Duration::from_millis(400))
                         .await;
                     let _ = window_handle.update(cx, |_app, window, cx| {
                         window.defer(cx, move |window, cx| {
@@ -9965,6 +9978,68 @@ fn main() {
                             );
                         });
                     });
+                }
+                for ch in "hello keyboard".chars() {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(30))
+                        .await;
+                    let _ = window_handle.update(cx, |_app, window, cx| {
+                        window.defer(cx, move |window, cx| {
+                            let keystroke = gpui::Keystroke {
+                                modifiers: gpui::Modifiers::default(),
+                                key: ch.to_string(),
+                                key_char: Some(ch.to_string()),
+                            };
+                            window.dispatch_keystroke(keystroke, cx);
+                        });
+                    });
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let _ = window_handle.update(cx, |_app, window, cx| {
+                    window.defer(cx, |window, cx| {
+                        window.dispatch_keystroke(
+                            gpui::Keystroke::parse("enter").expect("enter"),
+                            cx,
+                        );
+                    });
+                });
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1_500))
+                    .await;
+                let _ = window_handle.update(cx, |_app, window, cx| {
+                    window.defer(cx, |window, cx| {
+                        window.dispatch_keystroke(
+                            gpui::Keystroke::parse("cmd-shift-a").expect("approve"),
+                            cx,
+                        );
+                    });
+                });
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let approved = matches!(
+                    *approval_result.lock().unwrap(),
+                    Some(dshr_tool_runtime::ApprovalOutcome::AllowOnce)
+                );
+                if !approved {
+                    eprintln!("[keyboard-flow] FAIL: approval not resolved to AllowOnce");
+                    cx.update(|cx| cx.quit());
+                    std::process::exit(1);
+                }
+                for key in ["cmd-j", "cmd-w"] {
+                    let _ = window_handle.update(cx, |_app, window, cx| {
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_keystroke(
+                                gpui::Keystroke::parse(key).expect("flow keystroke"),
+                                cx,
+                            );
+                        });
+                    });
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(500))
+                        .await;
                 }
             })
             .detach();

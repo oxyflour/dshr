@@ -69,17 +69,19 @@
 - 这仍只证明窗口/按键路由，不证明 ChatApp 主流程；G3 仍需要真实桌面人工跑
   新建→发送→审批→切换面板→关闭，或为 ChatApp 写 `TestAppContext` 全流程测试。
 
-### 5.1 ChatApp 真实快捷键流程（环境变量）
+### 5.1 ChatApp 真实快捷键全流程（环境变量）
 
-设置 `DSHR_KEYBOARD_FLOW=1` 后启动 GUI，应用会在首帧后通过 `window.defer` 依次注入
-`cmd-n`、`cmd-j`、`cmd-w`：
+设置 `DSHR_KEYBOARD_FLOW=1` 后启动 GUI，应用会在首帧后通过 `window.defer` 依次注入：
 
-```text
-DSHR_KEYBOARD_FLOW=1 chat.exe
-exit 0
-```
+1. `cmd-n` 新建会话；
+2. `cmd-k` 聚焦输入框；
+3. 逐字符输入 `hello keyboard`；
+4. `Enter` 发送；
+5. 一个后台线程向 `ApprovalBroker` 发起 synthetic 审批，`cmd-shift-a` 允许一次；
+6. `cmd-j` 切换插件面板；
+7. `cmd-w` 退出。
 
-本机 Windows 实测 exit 0，并生成新会话日志；GitHub Actions Windows runner 的
-`desktop build`（run 44153399097）也通过。证明真实 ChatApp 的
-“新建会话 / 切换插件面板 / 退出”快捷键能被窗口事件路由到。尚未自动覆盖：
-文本输入、Enter 发送、审批快捷键；这些仍需人工或 `TestAppContext` 全流程。
+本机 Windows 实测 **exit 0**，会话日志包含 `message.user hello keyboard`，审批结果为
+`AllowOnce`；GitHub Actions Windows `desktop build` 也执行该流程。它覆盖真实窗口的
+新建→输入→发送→审批→面板→关闭键盘路径；审批请求是 synthetic，不是一次真实模型工具调用
+（真实工具审批由 `--selftest-approval` 覆盖）。仍未自动覆盖：IME 组合输入、macOS Cmd 键位。

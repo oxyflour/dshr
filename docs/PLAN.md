@@ -813,8 +813,9 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 4. 性能基线进入 CI 并回归。
 
 > **M4 gate 状态（2026-11-18）**：G1 **PASS**（Actions run 44122517682 9/9；Windows 自检追加 run 44127414363 最终 9/9）；
-> G4 **PASS**（conformance run 44122517731）；G2 仍为 headless 三平台证据、真实窗口点击未复验；
-> G3 仍待真实窗口键盘全流程人工验收。证据汇总见 [m4-status.md](m4-status.md)。
+> G3 **PASS**（`DSHR_KEYBOARD_FLOW=1` 真实窗口新建→输入→发送→审批→面板→关闭，Windows CI 执行）；
+> G4 **PASS**（conformance run 44122517731）；G2 仍为三平台 headless 恢复、窗口内点击继续未自动验收。
+> 证据汇总见 [m4-status.md](m4-status.md)。
 
 ### M5 — 长期可选方向（不计入 Beta 承诺）
 
