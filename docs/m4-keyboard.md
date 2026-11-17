@@ -79,6 +79,7 @@ DSHR_KEYBOARD_FLOW=1 chat.exe
 exit 0
 ```
 
-本机 Windows 实测 exit 0，并生成新会话日志；证明真实 ChatApp 的
+本机 Windows 实测 exit 0，并生成新会话日志；GitHub Actions Windows runner 的
+`desktop build`（run 44153399097）也通过。证明真实 ChatApp 的
 “新建会话 / 切换插件面板 / 退出”快捷键能被窗口事件路由到。尚未自动覆盖：
 文本输入、Enter 发送、审批快捷键；这些仍需人工或 `TestAppContext` 全流程。
