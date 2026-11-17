@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-17T18:57:28.040Z |
-| git HEAD | c2265830ba2efacdd2765d4e4f4a043b27ed10e3（clean） |
+| generated_at | 2026-11-17T19:26:08.339Z |
+| git HEAD | 9c7fd10bf7ce409c499a372dbf63e596abc8a303（clean） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.27s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
 | node-test | pass | 0 | 0.30s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 56.76s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| cargo | pass | 0 | 56.14s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -82,7 +82,7 @@
 | M4-DRAW-001 | M4 | manual | MANUAL | — | tools/frame-probe.ps1 -Frames 120：RDP 32Hz 下 draw_p95=9.40ms <= 31.25ms、missed_ratio=0（HARD PASS）；相对基线 avg_fps=19.2 < 22.42，环境原因未通过，不判回归。见 docs/m4-draw-budget.md。 |
 | M4-KEY-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --trust-key：本机 trust-keys.json 管理与 trust-key-audit.jsonl；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
 | M4-KEYBOARD-001 | M4 | manual | MANUAL | — | 真实窗口人工/UI 自动化：Ctrl/⌘+N 新建、Ctrl/⌘+K 聚焦输入、Enter 发送、Ctrl/⌘+Shift+A/D 审批、Ctrl/⌘+B/J 切侧栏/插件面板、Esc 关闭面板、Ctrl/⌘+W 关闭；chat --selftest 不驱动真实键盘事件，必须在 GUI 复验。 |
-| M4-KEYBOARD-002 | M4 | manual | MANUAL | — | DSHR_KEYBOARD_FLOW=1：首帧后 defer 注入 cmd-n/cmd-j/cmd-w，本机 Windows exit 0 且生成新会话日志。未覆盖文本输入/Enter 发送/审批。见 docs/m4-keyboard.md §5.1。 |
+| M4-KEYBOARD-002 | M4 | manual | MANUAL | — | DSHR_KEYBOARD_FLOW=1：真实窗口 defer 注入 cmd-n/cmd-k、逐字符 hello keyboard、Enter、synthetic 审批 + cmd-shift-a、cmd-j、cmd-w；本机 Windows exit 0，会话日志含 hello keyboard，审批 AllowOnce；Windows CI desktop job 执行。未覆盖 IME/macOS 键位。见 docs/m4-keyboard.md §5.1。 |
 | M4-LIFECYCLE-001 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-plugin-lifecycle：安装→卸载（目录/profile/审计）→旧钥签名安装→rotate→旧钥 E_TRUST_KEY_REVOKED→新钥重签安装；需构建 chat 二进制，人工/脚本判定。 |
 | M4-OFFICIAL-001 | M4 | manual | MANUAL | — | chat --selftest-official：从 app_root()/sidecar/dsh-official 启动 vendored 官方 sidecar，断言 protocol=2、host_services_active=true、3 张表；Windows/Linux 解压包均 PASS。用于验证 zip/tar 自带 dsh-official/node_modules 与 runtime/node。 |
 | M4-P2-001 | M4 | manual | MANUAL | — | 把 PATH 限制为 Windows 系统目录后运行 parallel_batch/l2_host_services 测试二进制：现在 exit 101 / panic "node is required..."（修复前 eprintln SKIP + return 记 passed）。普通环境仍全绿；见 m4-status §4。 |
