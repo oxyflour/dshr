@@ -707,14 +707,18 @@ async function runSuite(name, timeoutMs) {
       label: SUITE_COMMANDS[name],
     }
   } else if (name === 'node-test') {
+    const args = ['--test']
+    // Node 22 的 CI runtime 不接受 --test-isolation（本地较新 Node 才支持）。
+    if (process.allowedNodeEnvironmentFlags.has('--test-isolation')) {
+      args.push('--test-isolation=none')
+    }
+    args.push(
+      'sidecar/dsh-official/lib/host-services.test.mjs',
+      'sidecar/dsh-official/lib/session-projections.test.mjs',
+    )
     invocation = {
       command: process.execPath,
-      args: [
-        '--test',
-        '--test-isolation=none',
-        'sidecar/dsh-official/lib/host-services.test.mjs',
-        'sidecar/dsh-official/lib/session-projections.test.mjs',
-      ],
+      args,
       label: SUITE_COMMANDS[name],
     }
   } else {
