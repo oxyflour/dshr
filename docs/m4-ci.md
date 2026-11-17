@@ -36,7 +36,7 @@ cargo test --offline \
 
 ## 2. 明确不覆盖什么
 
-- `desktop-build` 做 `cargo build`、Linux/macOS 无窗口自检、zip/tar 打包（macOS 含
+- `desktop-build` 做 `cargo build`、Windows/Linux/macOS 无窗口自检（ADC/recovery/crash）、zip/tar 打包（macOS 含
   `dshr.app` 布局）、`.sha256` 与 `verify-package` 解压自检（含 cpp-v1 component 的 5 项自检）；
   Windows Authenticode 与 macOS `codesign` 有**可选**步骤，只有配置 secrets 才执行，当前本机无证书/未实跑。
 - Actions 已真实执行：commit `89730e3` 的 `cross-platform` 9/9 jobs success，`conformance` success；

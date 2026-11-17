@@ -152,7 +152,7 @@ node tools\conformance.mjs --full --compact
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **PASS** | `cross-platform` run 44122517682：Windows/Ubuntu/macOS 的 contract、core-rust、desktop-build 全部 success；desktop 包在 Linux/macOS/Windows 解压后跑 5 项自检；cpp-v1 component + external/official 两类来源均覆盖。签名/公证是可选项，未配置证书，不影响本 gate |
-| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless + UI 提示）**：`--selftest-recovery` / `--selftest-sidecar-recovery` / `--selftest-crash-recovery` PASS；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后继续操作的端到端 UI 未覆盖 |
+| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（三平台 headless + UI 提示）**：Windows/Linux/macOS CI 均跑 `--selftest-recovery` / `--selftest-crash-recovery`，`--selftest-sidecar-recovery` 覆盖 kill sidecar；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后点击继续的端到端 UI 未覆盖 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **PASS** | `cross-platform`/`conformance` 的 `tools/perf-gate.mjs --json artifacts/perf-baseline.json` 在 Actions 成功；本机同命令 PASS |
 

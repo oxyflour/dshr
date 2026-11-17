@@ -150,6 +150,14 @@ jobs:
         run: cargo build --offline -p dshr-desktop-gpui --bin chat
 
       # Linux/macOS 运行无窗口自检：ADC 面板、恢复、真实子进程崩溃恢复。
+      - name: Windows runtime selftests
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --offline -p dshr-plugin-host --bins
+          target\debug\chat.exe --selftest-adc-panel
+          target\debug\chat.exe --selftest-recovery
+          target\debug\chat.exe --selftest-crash-recovery
+
       - name: Linux/macOS runtime selftests
         if: runner.os != 'Windows'
         run: |
