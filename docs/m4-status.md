@@ -153,7 +153,7 @@ node tools\conformance.mjs --full --compact
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **PASS** | run 44122517682（9/9）与 44127414363（Windows 自检追加，rerun 后 9/9）：Windows/Ubuntu/macOS 的 contract、core-rust、desktop-build 全部 success；desktop 包解压后 5 项自检；cpp-v1 component + external/official 两类来源覆盖。签名/公证可选，未配证书，不影响本 gate |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（三平台 headless + UI 提示）**：Windows/Linux/macOS CI 均跑 `--selftest-recovery` / `--selftest-crash-recovery`，`--selftest-sidecar-recovery` 覆盖 kill sidecar；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后点击继续的端到端 UI 未覆盖 |
-| G3 键盘全流程 | 无鼠标完成主流程 | **部分（真实窗口 + 键盘路由 + headless 交互）**：`--selftest-window` 在真实窗口 defer 注入 Enter 并校验 handler；`--selftest-clipboard` 本机/CI PASS；ADC 键盘/点击有 headless tests | 新建→发送→审批→切换面板→关闭的 ChatApp 主流程仍待人工按 [m4-keyboard.md](m4-keyboard.md) 验收 |
+| G3 键盘全流程 | 无鼠标完成主流程 | **部分（真实 ChatApp 快捷键 + 窗口键盘路由）**：`DSHR_KEYBOARD_FLOW=1` 在真实窗口注入 cmd-n/cmd-j/cmd-w，本机 Windows exit 0 并建会话；`--selftest-window` 真实按键路由 PASS | 文本输入/Enter 发送/审批快捷键仍待真实桌面人工验收 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **PASS** | `cross-platform`/`conformance` 的 `tools/perf-gate.mjs --json artifacts/perf-baseline.json` 在 Actions 成功；本机同命令 PASS |
 
 ## 5. 下一步（按依赖排序）

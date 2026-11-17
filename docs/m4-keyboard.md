@@ -68,3 +68,17 @@
   输出 `[selftest-window] PASS window+keyboard`。
 - 这仍只证明窗口/按键路由，不证明 ChatApp 主流程；G3 仍需要真实桌面人工跑
   新建→发送→审批→切换面板→关闭，或为 ChatApp 写 `TestAppContext` 全流程测试。
+
+### 5.1 ChatApp 真实快捷键流程（环境变量）
+
+设置 `DSHR_KEYBOARD_FLOW=1` 后启动 GUI，应用会在首帧后通过 `window.defer` 依次注入
+`cmd-n`、`cmd-j`、`cmd-w`：
+
+```text
+DSHR_KEYBOARD_FLOW=1 chat.exe
+exit 0
+```
+
+本机 Windows 实测 exit 0，并生成新会话日志；证明真实 ChatApp 的
+“新建会话 / 切换插件面板 / 退出”快捷键能被窗口事件路由到。尚未自动覆盖：
+文本输入、Enter 发送、审批快捷键；这些仍需人工或 `TestAppContext` 全流程。

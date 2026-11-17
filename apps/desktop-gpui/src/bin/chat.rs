@@ -9875,7 +9875,7 @@ fn main() {
         let session_depths = session_depths;
         let plugin_errors = plugin_errors;
         let adc_panels = adc_panels;
-        cx.open_window(
+        let window_handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
@@ -9951,6 +9951,24 @@ fn main() {
             },
         )
         .expect("failed to open window");
+        if std::env::var("DSHR_KEYBOARD_FLOW").as_deref() == Ok("1") {
+            cx.spawn(async move |cx| {
+                for key in ["cmd-n", "cmd-j", "cmd-w"] {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(600))
+                        .await;
+                    let _ = window_handle.update(cx, |_app, window, cx| {
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_keystroke(
+                                gpui::Keystroke::parse(key).expect("flow keystroke"),
+                                cx,
+                            );
+                        });
+                    });
+                }
+            })
+            .detach();
+        }
         cx.activate(true);
     });
 }

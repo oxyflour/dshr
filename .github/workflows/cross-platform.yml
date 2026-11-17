@@ -159,6 +159,10 @@ jobs:
           target\debug\chat.exe --selftest-crash-recovery
           target\debug\chat.exe --selftest-window
           target\debug\chat.exe --selftest-clipboard
+          $env:DSHR_KEYBOARD_FLOW = '1'
+          target\debug\chat.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:\DSHR_KEYBOARD_FLOW
 
       - name: Linux/macOS runtime selftests
         if: runner.os != 'Windows'
