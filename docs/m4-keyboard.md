@@ -59,16 +59,12 @@
 - 生成中的"停止"只有鼠标按钮，没有 `Esc`/`cmd-.` 绑定；避免与取消重命名冲突后补。
 - 屏幕阅读器（Windows UIA/VoiceOver）未实机验证；目前只保证 role/label 元数据齐全。
 
-## 5. 真实窗口直接 `dispatch_keystroke` 实验（2026-11-18）
+## 5. 真实窗口按键注入（2026-11-18）
 
-在 `--selftest-window` 的 async task 里用
-`WindowHandle::update(... window.dispatch_keystroke("enter") ...)` 注入按键时，
-GPUI 报：
-
-```text
-cannot update chat::WindowProbe while it is already being updated
-```
-
-这是实体重入限制，不是按键语义问题。该实验已回退，`--selftest-window` 只保留
-窗口创建/首帧/退出，没有把自动键盘注入纳入 CI；G3 仍需真实桌面人工验收，
-或改用 GPUI `TestAppContext` 的测试路径（`M4-ADC-009..025` 已覆盖元素级键盘）。
+- 直接在一个 `WindowHandle::update` 回调里 `window.dispatch_keystroke("enter")` 会触发
+  GPUI 实体重入 panic：`cannot update chat::WindowProbe while it is already being updated`。
+- 正确做法是 `window.defer(cx, |window, cx| window.dispatch_keystroke(...))`，
+  把注入排到本帧更新之后；`--selftest-window` 已用该方式验证真实窗口的 key handler，
+  输出 `[selftest-window] PASS window+keyboard`。
+- 这仍只证明窗口/按键路由，不证明 ChatApp 主流程；G3 仍需要真实桌面人工跑
+  新建→发送→审批→切换面板→关闭，或为 ChatApp 写 `TestAppContext` 全流程测试。
