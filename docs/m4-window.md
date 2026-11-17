@@ -11,6 +11,6 @@ exit 0
 ```
 
 - 本机 Windows 桌面会话：**PASS**。
+- GitHub Actions Windows runner（run 44138465346 的 `desktop build (windows-latest)`）：也 **PASS**。
 - 只覆盖窗口创建/事件循环/首帧，不覆盖输入法、剪贴板、键盘全流程或 GPU 合成。
-- 没有加入 CI：GitHub Windows runner 是无交互会话，窗口创建结果不可靠；
-  G3 仍需真实桌面人工按键验收。
+- G3 仍需真实桌面人工按键验收；窗口 smoke 只是必要非充分证据。

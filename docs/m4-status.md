@@ -18,7 +18,7 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 |---|---|---|---|
 | W1 | 分发与信任生命周期 | **完成（离线渠道口径）** | `M4-UNINSTALL-001..008`、`M4-KEY-001..010`（cargo，dshr-profile 81 passed）；`M4-SDK-001`（SDK 离线包/校验/篡改拒绝）、`M4-SIGN-001`（签名安装/轮换）、`M4-LIFECYCLE-001`；registry/CA 证书体系归 W7 |
 | W2 | 键盘与无障碍 | **部分完成（真实窗口 smoke + 待 G3 全流程）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；`--selftest-window` 真实开窗 PASS；G3 人工流程 `M4-KEYBOARD-001` 未跑。见 [m4-keyboard.md](m4-keyboard.md) |
-| W3 | ADC 交互与工具卡 | **部分完成（onPress/openExternal/tool card/adc 表单 + 真实窗口/剪贴板 smoke）** | copy/call/command、openExternal 确认条、ToolCard.extra、Checkbox/Switch/Select/Input/Textarea/Slider/Tabs、`M4-ADC-009..025`；`--selftest-window`/`--selftest-clipboard` 本机 PASS；真实 IME 与 `100/101` 真机待跑 |
+| W3 | ADC 交互与工具卡 | **部分完成（onPress/openExternal/tool card/adc 表单 + 真实窗口/剪贴板 CI）** | copy/call/command、openExternal 确认条、ToolCard.extra、Checkbox/Switch/Select/Input/Textarea/Slider/Tabs、`M4-ADC-009..025`；window/clipboard smoke 本机 + GitHub Windows runner PASS；真实 IME 与 `100/101` 真机待跑 |
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + id 去 leak）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用；MCP、运行中抢占、异步 trait 冻结仍待 |
 | W5 | WASM Component/WIT | **完成（真实 guest + 安装/CLI/装载 + 作者模板 + 并行/共享/配额）** | 001 ABI；002 WIT；003 bindgen；004-006 配额；007 probe；008-011 probe 配额；012/013 probe 装载；014/015 真实 guest；016-019 CppComponentPlugin/manifest/产品自检/直接安装；020 并行实例；021 真实 fuel trap；022 call_shared；023 信任安装 CLI；作者模板 74KB；`Plugin` trait 的 `&mut self` 仍按实例串行（设计如此） |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read/write execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 8/8 PASS；bash/pwsh 等 shell 工具仍未闭环 |
@@ -153,7 +153,7 @@ node tools\conformance.mjs --full --compact
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **PASS** | run 44122517682（9/9）与 44127414363（Windows 自检追加，rerun 后 9/9）：Windows/Ubuntu/macOS 的 contract、core-rust、desktop-build 全部 success；desktop 包解压后 5 项自检；cpp-v1 component + external/official 两类来源覆盖。签名/公证可选，未配证书，不影响本 gate |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（三平台 headless + UI 提示）**：Windows/Linux/macOS CI 均跑 `--selftest-recovery` / `--selftest-crash-recovery`，`--selftest-sidecar-recovery` 覆盖 kill sidecar；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后点击继续的端到端 UI 未覆盖 |
-| G3 键盘全流程 | 无鼠标完成主流程 | **部分（真实窗口 smoke + headless 交互）**：`chat --selftest-window` 在本机 Windows 真实开窗/首帧/关闭 PASS；ADC 键盘/点击有 headless tests | 新建→发送→审批→切换面板→关闭的真实窗口键盘流程仍待人工按 [m4-keyboard.md](m4-keyboard.md) 验收 |
+| G3 键盘全流程 | 无鼠标完成主流程 | **部分（真实窗口/剪贴板 + headless 交互）**：`--selftest-window`/`--selftest-clipboard` 在本机与 GitHub Windows runner PASS；ADC 键盘/点击有 headless tests | 新建→发送→审批→切换面板→关闭的真实窗口键盘流程仍待人工按 [m4-keyboard.md](m4-keyboard.md) 验收 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **PASS** | `cross-platform`/`conformance` 的 `tools/perf-gate.mjs --json artifacts/perf-baseline.json` 在 Actions 成功；本机同命令 PASS |
 
 ## 5. 下一步（按依赖排序）

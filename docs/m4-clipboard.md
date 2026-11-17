@@ -9,5 +9,5 @@ exit 0
 ```
 
 - 本机 Windows 桌面会话 **PASS**。
+- GitHub Actions Windows runner（run 44138465346 的 `desktop build (windows-latest)`）也 **PASS**。
 - 覆盖真实系统剪贴板读写与 Unicode；不覆盖富文本/图片、剪贴板权限拒绝、Linux Wayland。
-- 未加入 CI：Windows runner 无交互剪贴板，结果不可靠。
