@@ -977,7 +977,13 @@ async function collectGitInfo() {
         .split(/\r?\n/)
         .filter(Boolean)
         .filter((line) => {
-          const path = line.slice(3).replace(/^.* -> /, '')
+          // `runProcess` trims stdout, so a leading space of " M path" may be gone;
+          // parse the two status columns as a prefix instead of slicing 3.
+          const path = line
+            .replace(/^[ MARCUD?!]{1,2}\s+/, '')
+            .replace(/^.* -> /, '')
+            .trim()
+            .replace(/\\/g, '/')
           return !generated.has(path)
         })
     : []
