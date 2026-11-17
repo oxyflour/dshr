@@ -11,6 +11,7 @@ set "TMP=%ROOT%\.tmp"
 set "TEMP=%ROOT%\.tmp"
 if not exist "%TMP%" mkdir "%TMP%" >nul 2>&1
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+if exist "%USERPROFILE%\.rustup\toolchains\1.99.1-x86_64-pc-windows-msvc\bin" set "PATH=%USERPROFILE%\.rustup\toolchains\1.99.1-x86_64-pc-windows-msvc\bin;%PATH%"
 
 set "VCVARS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 if exist "%VCVARS%" call "%VCVARS%" >nul
