@@ -58,3 +58,17 @@
 - 没有完整的 Tab 焦点环与 Shift+Tab 逆序；侧栏会话列表、主题按钮等仍主要依赖鼠标。
 - 生成中的"停止"只有鼠标按钮，没有 `Esc`/`cmd-.` 绑定；避免与取消重命名冲突后补。
 - 屏幕阅读器（Windows UIA/VoiceOver）未实机验证；目前只保证 role/label 元数据齐全。
+
+## 5. 真实窗口直接 `dispatch_keystroke` 实验（2026-11-18）
+
+在 `--selftest-window` 的 async task 里用
+`WindowHandle::update(... window.dispatch_keystroke("enter") ...)` 注入按键时，
+GPUI 报：
+
+```text
+cannot update chat::WindowProbe while it is already being updated
+```
+
+这是实体重入限制，不是按键语义问题。该实验已回退，`--selftest-window` 只保留
+窗口创建/首帧/退出，没有把自动键盘注入纳入 CI；G3 仍需真实桌面人工验收，
+或改用 GPUI `TestAppContext` 的测试路径（`M4-ADC-009..025` 已覆盖元素级键盘）。
