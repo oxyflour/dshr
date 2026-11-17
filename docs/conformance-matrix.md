@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-17T18:45:54.876Z |
-| git HEAD | cb3f71bf383a5bc3b7e97cf0f0f68c5a7729296e（dirty，2 个文件未提交） |
+| generated_at | 2026-11-17T18:53:54.992Z |
+| git HEAD | 672ec11859e1cfda41965eb7c2f269f99a1fa0ec（clean） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
-| node-test | pass | 0 | 0.32s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 79.33s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.25s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.31s | `node tools/check-links.mjs` | 418 link(s) checked, 0 broken, 81 file(s) scanned |
+| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 58.40s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -92,7 +92,7 @@
 | M4-SDK-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 的 0d 步：sdk-pack 生成 sdk-manifest.json + SHA256SUMS，--verify 通过；篡改 SDK 后 verify 非零；--force 重建后恢复；new-plugin --sdk 消费离线包构建。需 node + 已构建 chat.exe。 |
 | M4-SIGN-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 第 10 步：--generate-key → --trust-key add → plugin-pack --key/--key-id → chat --install-plugin 免 --yes-install → --trust-key rotate → 旧钥包 E_TRUST_KEY_REVOKED → 新钥重签安装；需构建 chat.exe。 |
 | M4-UNINSTALL-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --uninstall-plugin：目录原子移除 + profile 条目 + install-audit 的 action=uninstall；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
-| M4-WINDOW-001 | M4 | manual | MANUAL | — | chat --selftest-window：真实打开窗口、等 800ms 首帧、自动退出；本机 Windows PASS；GitHub Actions Windows runner 的 desktop build（run 44138465346）也 PASS。不含 IME/键盘全流程。见 docs/m4-window.md。 |
+| M4-WINDOW-001 | M4 | manual | MANUAL | — | chat --selftest-window：真实开窗、defer 注入 Enter、校验 key handler、退出；本机 Windows PASS；GitHub Actions Windows runner（run 44138465346）也 PASS。不含 ChatApp 主流程/IME。见 docs/m4-window.md。 |
 | SELF-CHAT-001 | SELF | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
 | SELF-CHAT-002 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | SELF-CHAT-003 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
