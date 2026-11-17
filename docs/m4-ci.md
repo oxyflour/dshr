@@ -5,7 +5,7 @@ G1 要求 Windows/macOS/Linux 管线 + 两类插件来源回归。当前拆成�
 | Workflow | Runner | 内容 | 状态 |
 |---|---|---|---|
 | [`conformance.yml`](../.github/workflows/conformance.yml) | `windows-latest` | schema/links/node-test/cargo 全量、矩阵 artifact、G4 perf gate | **Actions 成功**：[run 44122517731](https://github.com/oxyflour/dshr/actions/runs/44122517731) |
-| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + ADC/recovery/crash 自检 + 打包 + `verify-package`） | **Actions 成功**：[run 44122517682](https://github.com/oxyflour/dshr/actions/runs/44122517682) 9/9；Windows 自检追加后 [run 44127414363](https://github.com/oxyflour/dshr/actions/runs/44127414363) rerun 后 9/9 |
+| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + ADC/recovery/crash 自检 + Windows window/clipboard smoke + 打包 + `verify-package`） | **Actions 成功**：[run 44147577715](https://github.com/oxyflour/dshr/actions/runs/44147577715) 9/9；更早 [44122517682](https://github.com/oxyflour/dshr/actions/runs/44122517682) 9/9 |
 | [package-desktop.ps1](../tools/package-desktop.ps1) / [.sh](../tools/package-desktop.sh) | CI 三平台 | 打包 zip/tar + `.sha256`；产物含 runtime/node、probe、dsh-official、cpp-v1 component | CI PASS |
 | [verify-package.ps1](../tools/verify-package.ps1) / [.sh](../tools/verify-package.sh) | CI 三平台 | 校验 sha256 + 解压 + 5 项自检（sidecar/official/cpp/install/cli-install） | CI PASS |
 
