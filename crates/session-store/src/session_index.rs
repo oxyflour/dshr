@@ -711,7 +711,8 @@ mod tests {
     fn scan_sorts_newest_first() {
         let index = temp_index("sort");
         seed(&index, "s-old", &[&user_event("old")]);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        // modified_at 以秒为单位；必须跨过一秒，否则 CI 上同一秒内排序不稳定。
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
         seed(&index, "s-new", &[&user_event("new")]);
         let sessions = index.scan().unwrap();
         assert_eq!(sessions[0].id, "s-new");
