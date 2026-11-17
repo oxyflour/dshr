@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-17T17:28:45.734Z |
-| git HEAD | 0ceb4d9fd64745a9ac31872c28a2221194de240f（clean） |
+| generated_at | 2026-11-17T18:10:14.966Z |
+| git HEAD | 4ebff9f8d64be77cc3ebb637e067135cfe2f188b（dirty，5 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -22,22 +22,22 @@
 |---|---:|
 | 总测试 ID | 647 |
 | implemented | 581 |
-| implemented passed | 581 |
-| implemented failed | 0 |
+| implemented passed | 42 |
+| implemented failed | 539 |
 | implemented skipped | 0 |
 | pending | 18 |
 | manual | 48 |
 | blocked | 0 |
-| **failed（导致退出码 1）** | **0** |
+| **failed（导致退出码 1）** | **539** |
 
 ## Suite 结果
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
-| node-test | pass | 0 | 0.32s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 57.05s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
+| node-test | pass | 0 | 0.30s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | fail | 9009 | 2.10s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 0 suite(s), 0 passed, 0 failed, 0 ignored |
 
 ## 测试矩阵
 
@@ -45,13 +45,391 @@
 
 | ID | 领域 | 状态 | 结果 | 证据 | 消息 |
 |---|---|---|---|---|---|
+| CARGO-UNIT-001 | CARGO | implemented | FAIL | all | cargo workspace 失败（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CARGO-UNIT-002 | CARGO | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CARGO-UNIT-003 | CARGO | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CARGO-UNIT-004 | CARGO | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | ADC-BIND-001 | ADC | pending | PENDING | — | 依赖 adc-v1 绑定/动作实现；断言见 review-m3-plan.md §6 ADC-BIND-*。 |
+| ADC-ELEM-001 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-002 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-003 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-004 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-005 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-006 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-007 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-008 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-009 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-010 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-011 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-012 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-013 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-014 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-015 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-016 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-017 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-018 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-019 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-020 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-021 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-022 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-A11Y-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-A11Y-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-A11Y-003 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-A11Y-004 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-ALIGN-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-CHART-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-CHART-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-GRID-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-GRID-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-ICON-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-JUSTIFY-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-LIST-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-NUM-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-003 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-004 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-005 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-006 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-007 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-008 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-009 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-010 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-API-001 | ADC | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-API-002 | ADC | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-HOST-001 | ADC | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-HOST-002 | ADC | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-HOST-003 | ADC | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PANEL-HOST-004 | ADC | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-PLACEHOLDER-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-RENDER-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-RENDER-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-RENDER-003 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-SLIDER-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-SPACING-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-SPACING-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-TABLE-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-TABLE-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-TEXT-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-TEXT-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-TEXT-003 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-ELEM-TONE-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | ADC-PANEL-001 | ADC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-adc-panel：装载 fixture 插件→panels→render_panel（验证到 AnyElement 构造层）→未知元素 view；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
+| ADC-PERF-001 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-PERF-002 | ADC | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-001 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-002 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-003 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-004 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-005 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-006 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-007 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-008 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SEC-009 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-001 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-002 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-003 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-004 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-005 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-006 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-007 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-008 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-009 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-010 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-011 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-012 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-013 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-014 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-015 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-016 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-017 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-018 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-019 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-020 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-021 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-022 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| ADC-SLOT-023 | ADC | implemented | FAIL | dshr-ui-contributions | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | CPP-AUTHOR-001 | CPP | manual | MANUAL | — | tools/authoring-check.ps1；仓库外按 docs/plugin-authoring.md + templates 构建/打包/安装（G2），人工/脚本判定。 |
+| CPP-EFF-001 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-002 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-003 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-004 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-005 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-006 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-007 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-008 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-009 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-EFF-010 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-001 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-002 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-003 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-004 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-005 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-006 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-007 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-008 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-009 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-010 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-011 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-012 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-013 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-014 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-015 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-016 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-017 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-018 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-019 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-020 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-021 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-022 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-023 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-024 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-025 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-026 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-027 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-101 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-102 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-103 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-104 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-105 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-111 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-112 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-113 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-114 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-115 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-116 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-121 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-122 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-123 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-124 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-125 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-126 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-127 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-131 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-132 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-FIBER-133 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-001 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-002 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-003 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-004 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-005 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-006 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-007 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-008 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-009 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-010 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-011 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-012 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-013 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-014 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-015 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-018 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-019 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-020 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-021 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | CPP-ISO-022 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-external-plugin（安装→装载→调用→卸载→重载）；需构建 chat 二进制后运行，harness 尚无 selftest suite，人工/脚本判定。 |
+| CPP-ISO-026 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-027 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-028 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-029 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-030 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-ISO-031 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-001 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-002 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-003 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-004 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-005 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-006 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-007 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-008 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-009 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-010 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-011 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-012 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-013 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-014 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-015 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-016 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-017 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-018 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-019 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-020 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-021 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-022 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-023 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-024 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-025 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-MANIFEST-026 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PANEL-002 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-001 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-002 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-003 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-004 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-005 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-006 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-007 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-008 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-009 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-010 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-020 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-021 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-022 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-023 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-024 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-025 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-026 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-027 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-028 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-029 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-030 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-031 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-032 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-PROC-033 | CPP | implemented | FAIL | dshr-plugin-sdk | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-001 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-002 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-003 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-004 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-005 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-006 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-007 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-008 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-009 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-010 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-011 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-012 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-013 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-SVC-014 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-001 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-002 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-003 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-004 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-005 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-006 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-007 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-008 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-009 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-010 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-011 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-012 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-013 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-014 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-015 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-016 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-017 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-TRUST-018 | CPP | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | CPP-TRUST-019 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-trust-install；需构建 chat 二进制后运行（harness 尚无 selftest suite），对应 M3 G2 信任链证据，人工/脚本判定。 |
+| CPP-VER-001 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-VER-002 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-VER-003 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-VER-004 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-VER-005 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-VER-006 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-VER-007 | CPP | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-001 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-002 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-003 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-004 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-005 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-006 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-007 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-008 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-009 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-010 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-011 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-012 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-013 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-014 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-015 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-016 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-017 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-018 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-019 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-020 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-021 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-022 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-023 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-024 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-025 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-026 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-027 | CPP | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| CPP-WASM-033 | CPP | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | CPP-WASM-100 | CPP | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-wasm：安装→装载→调用→trap→卸载（review P1-1）；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
+| RPC-L2-001 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-002 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-003 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-004 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-005 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-006 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-007 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-008 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-009 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-010 | RPC | implemented | FAIL | dshr-compat-dsh-protocol | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-101 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-102 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-103 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-104 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-105 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-106 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-107 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-108 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-109 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-110 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-111 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-112 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-113 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-114 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-115 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-116 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-117 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-118 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-119 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-121 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-122 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-123 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-124 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-125 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-126 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-127 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-128 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | RPC-L2-201 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。M4 W6：execute 经 exec.agent.session.append → session-log/v1 events.append 写入 todo/write；gate 8/8 PASS。缺 fixture 时 gate exit 1；默认 cargo 中 #[ignore]。 |
+| RPC-L2-202 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-203 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-204 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-205 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-206 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-207 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-208 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-221 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-222 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-223 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-224 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-225 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-226 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-227 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-228 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-301 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-302 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-303 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-304 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-305 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-306 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-307 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-308 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-309 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-310 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-311 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-312 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-313 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-401 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-402 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-403 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-404 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-405 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-406 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-407 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-408 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-409 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| RPC-L2-410 | RPC | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | RPC-L2-411 | RPC | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-l2：phase A 真实 sidecar protocol=2 握手+host_services，phase B fixture storage-kv 往返；需构建 chat 二进制（phase A 还需 vendored 官方 sidecar），harness 无 selftest suite，人工/脚本判定。 |
 | RPC-L2-501 | RPC | manual | MANUAL | — | 需 .tmp/dsh-tools-all + vendored sidecar；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。缺 fixture 时 gate exit 1；默认 cargo 0 passed/8 ignored（不计为通过）。 |
 | RPC-L2-502 | RPC | manual | MANUAL | — | M4 W6：最小 exec.agent facade 后，未修改官方工具的 execute 真实返回 cwd，不再报 requires an agent Session；gate 8/8 PASS。command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`。 |
@@ -60,8 +438,127 @@
 | RPC-L2-505 | RPC | manual | MANUAL | — | 同 RPC-L2-501；command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
 | RPC-L2-506 | RPC | manual | MANUAL | — | M4 W6：未修改官方 fs 工具的 read 方法经 sidecar fs/systemPrompt seam 真实读取 fixture 文件；gate 8/8 PASS。command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
 | RPC-L2-507 | RPC | manual | MANUAL | — | M4 W6：未修改官方 fs 工具（write/edit/applyPatch 配置）经 Rust FsWriteService 审批后真实落盘；测试自动 AllowOnce；gate 8/8 PASS。command=`powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`；默认 cargo 中 #[ignore]。 |
+| MCP-CLIENT-001 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-002 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-003 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-004 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-005 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-006 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-007 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-008 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-009 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-010 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-011 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-012 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-013 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-014 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-015 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-016 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| MCP-CLIENT-017 | MCP | implemented | FAIL | dshr-compat-mcp | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-001 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-002 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-003 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-004 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-010 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-011 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-012 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-013 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-014 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-015 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-020 | M3 | implemented | FAIL | dshr-llm-retry | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-021 | M3 | implemented | FAIL | dshr-llm-retry | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-022 | M3 | implemented | FAIL | dshr-llm-retry | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-023 | M3 | implemented | FAIL | dshr-llm-retry | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-024 | M3 | implemented | FAIL | dshr-llm-retry | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-025 | M3 | implemented | FAIL | dshr-llm-retry | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-030 | M3 | implemented | FAIL | dshr-llm-deepseek | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-031 | M3 | implemented | FAIL | dshr-llm-deepseek | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-032 | M3 | implemented | FAIL | dshr-llm-deepseek | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-035 | M3 | implemented | FAIL | dshr-llm-openai | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-036 | M3 | implemented | FAIL | dshr-llm-openai | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-037 | M3 | implemented | FAIL | dshr-llm-openai | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-040 | M3 | implemented | FAIL | dshr-agent-context | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-041 | M3 | implemented | FAIL | dshr-agent-context | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-042 | M3 | implemented | FAIL | dshr-agent-context | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-043 | M3 | implemented | FAIL | dshr-agent-context | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-044 | M3 | implemented | FAIL | dshr-agent-context | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-045 | M3 | implemented | FAIL | dshr-agent-context | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-050 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-051 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-052 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-053 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-054 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-055 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-056 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-060 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-061 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-062 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DEFAULT-063 | M3 | implemented | FAIL | dshr-tool-runtime | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M3-DEFAULT-070 | M3 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-defaults：无网络自检 approval 默认/read-only/重复工具软提醒阈值/默认差异接线；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
+| M3-DIGEST-001 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-DIGEST-002 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-INSTALL-001 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-INSTALL-002 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-INSTALL-003 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-001 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-002 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-003 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-004 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-005 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-006 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-007 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-008 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-009 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-010 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-011 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-012 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-013 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-014 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-LOADER-015 | M3 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-001 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-002 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-003 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-004 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-005 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-006 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-007 | M3 | implemented | FAIL | dshr-agent-core | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-101 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-102 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-103 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-104 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-105 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-106 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-107 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-108 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-109 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M3-PARALLEL-110 | M3 | implemented | FAIL | dshr-compat-dsh-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M3-PARALLEL-201 | M3 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-parallel-tools：sidecar 批 invoke 串行 6.1s→并行 2.0s（ratio 0.33）且事件顺序约束成立；需构建 chat 二进制 + vendored sidecar，harness 无 selftest suite，人工/脚本判定。 |
+| M4-A11Y-001 | M4 | implemented | FAIL | dshr-desktop-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-001 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-002 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-003 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-004 | M4 | implemented | FAIL | dshr-conversation-model | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-005 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-006 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-007 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-008 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-009 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-010 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-011 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-012 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-013 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-014 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-015 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-016 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-017 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-018 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-019 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-020 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-021 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-022 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-023 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-024 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-ADC-025 | M4 | implemented | FAIL | dshr-ui-gpui | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M4-ADC-100 | M4 | manual | MANUAL | — | 真实窗口：装载带 Button{onPress:copy} 的插件面板，点击后剪贴板得到文本；Button{onPress:call} 经 ui.action 到 fixture，下一次 render 的计数器 +1。需构建 chat.exe + external fixture；openExternal/onChange 仍未接。 |
 | M4-ADC-101 | M4 | manual | MANUAL | — | 真实窗口：Button{onPress:openExternal:https://...} 点击后出现确认条；取消/Esc 不打开，打开才调用系统浏览器；非 https 在作者期/解析期即拒绝。需构建 chat.exe + external fixture。 |
 | M4-CI-001 | M4 | manual | MANUAL | — | `.github/workflows/cross-platform.yml`：contract（schema/links/quick）、core-rust（19 个核心 crate）、desktop-build（dshr-desktop-gpui + Linux/macOS ADC/recovery/crash 自检 + 打包 + verify-package）在 windows/ubuntu/macos 三平台跑。YAML 已用 PyYAML 本地解析；Linux desktop-build 与自检/打包/验证本机通过；Actions 未实跑，G1 不标完成。 |
@@ -74,12 +571,45 @@
 | M4-CI-008 | M4 | manual | MANUAL | — | cross-platform.yml 的 desktop-build 增加可选 Windows PFX 签名与 macOS codesign 步骤，仅 secrets 存在时执行；YAML 本地 PyYAML 解析通过。无 secrets、未实跑，macOS notarization 未实现。 |
 | M4-CI-009 | M4 | manual | MANUAL | — | OS_OVERRIDE=darwin bash tools/package-desktop.sh debug：生成 dshr.app/Contents/MacOS/chat + Info.plist；无 codesign（Linux 无 codesign），未在 macOS 打开/签名。见 docs/m4-macos.md。 |
 | M4-CI-010 | M4 | manual | MANUAL | — | commit 89730e3：conformance run 44122517731 success；cross-platform run 44122517682 success，9/9 jobs。commit d0ba579 追加 Windows runtime selftests：run 44127414363 的 9/9 jobs 最终 success（momentary macOS core 取消后 rerun 通过），Windows/Linux/macOS 均跑 ADC/recovery/crash，desktop 包 5 项自检通过；G4 perf gate 在 conformance 成功。 |
-| M4-CLIPBOARD-001 | M4 | manual | MANUAL | — | chat --selftest-clipboard：GPUI 写入并读回含中文 UTF-8 文本；本机 Windows PASS。见 docs/m4-clipboard.md。 |
+| M4-CLIPBOARD-001 | M4 | manual | MANUAL | — | chat --selftest-clipboard：GPUI 写入并读回含中文 UTF-8 文本；本机 Windows PASS；GitHub Actions Windows runner（run 44138465346）也 PASS。见 docs/m4-clipboard.md。 |
+| M4-COMPONENT-001 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-002 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-003 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-004 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-005 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-006 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-007 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-008 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-009 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-010 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-011 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-012 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-013 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-014 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-015 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-016 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-017 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M4-COMPONENT-018 | M4 | manual | MANUAL | — | chat --selftest-cpp-component：把 cpp-component-guest.wasm 写临时包，经 load_cpp_component_plugin_from_manifest 注册 echo、call_approved 返回 args。本机 PASS；仍需真实窗口安装验收。 |
 | M4-COMPONENT-019 | M4 | manual | MANUAL | — | chat --selftest-cpp-install：临时包写 plugin.toml/package.json/plugin.wasm，走 install_package 复制到 sidecar、Profile::load、load_enabled_external_plugins，注册 echo 并 call 返回 installed。本机 PASS；覆盖真实安装 CLI 的复制/profile/装载链路（非 GUI 点击）。 |
+| M4-COMPONENT-020 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-021 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-COMPONENT-022 | M4 | implemented | FAIL | dshr-plugin-wasm | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M4-COMPONENT-023 | M4 | manual | MANUAL | — | chat --selftest-cpp-cli-install：走 install_plugin_with_options（TrustStore/预览/--yes-install/profile 写入/审计），再从 profile 装载 cpp component 并调用 echo。本机 PASS，signature=missing。仍非 GUI 点击。 |
 | M4-COMPONENT-AUTHOR-001 | M4 | manual | MANUAL | — | tools/new-component-plugin.mjs + templates/wasm-component-plugin：生成 demo.echo，wasm32-wasip2 release 74KB，cargo build exit 0；WIT 随项目复制。仅作者路径，未在真实 chat 安装/调用、无签名。见 docs/m4-component-authoring.md。 |
+| M4-CONC-001 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-CONC-002 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-CONC-003 | M4 | implemented | FAIL | dshr-plugin-host | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M4-DRAW-001 | M4 | manual | MANUAL | — | tools/frame-probe.ps1 -Frames 120：RDP 32Hz 下 draw_p95=9.40ms <= 31.25ms、missed_ratio=0（HARD PASS）；相对基线 avg_fps=19.2 < 22.42，环境原因未通过，不判回归。见 docs/m4-draw-budget.md。 |
+| M4-KEY-001 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-002 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-003 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-004 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-005 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-006 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-007 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-008 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-009 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-KEY-010 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M4-KEY-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --trust-key：本机 trust-keys.json 管理与 trust-key-audit.jsonl；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
 | M4-KEYBOARD-001 | M4 | manual | MANUAL | — | 真实窗口人工/UI 自动化：Ctrl/⌘+N 新建、Ctrl/⌘+K 聚焦输入、Enter 发送、Ctrl/⌘+Shift+A/D 审批、Ctrl/⌘+B/J 切侧栏/插件面板、Esc 关闭面板、Ctrl/⌘+W 关闭；chat --selftest 不驱动真实键盘事件，必须在 GUI 复验。 |
 | M4-LIFECYCLE-001 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --selftest-plugin-lifecycle：安装→卸载（目录/profile/审计）→旧钥签名安装→rotate→旧钥 E_TRUST_KEY_REVOKED→新钥重签安装；需构建 chat 二进制，人工/脚本判定。 |
@@ -91,8 +621,17 @@
 | M4-RECOVERY-003 | M4 | manual | MANUAL | — | chat --selftest-crash-recovery：子进程 save_atomic 两次后删主文件并 abort；父进程恢复 .bak、校验 before crash、追加 after crash 并保存；恢复后 plugin_errors 含“已恢复”横幅。PASS（crashed/backup/before/after/notice 全 true）。 |
 | M4-SDK-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 的 0d 步：sdk-pack 生成 sdk-manifest.json + SHA256SUMS，--verify 通过；篡改 SDK 后 verify 非零；--force 重建后恢复；new-plugin --sdk 消费离线包构建。需 node + 已构建 chat.exe。 |
 | M4-SIGN-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 第 10 步：--generate-key → --trust-key add → plugin-pack --key/--key-id → chat --install-plugin 免 --yes-install → --trust-key rotate → 旧钥包 E_TRUST_KEY_REVOKED → 新钥重签安装；需构建 chat.exe。 |
+| M4-TRAIT-001 | M4 | implemented | FAIL | dshr-plugin-api | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-001 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-002 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-003 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-004 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-005 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-006 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-007 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
+| M4-UNINSTALL-008 | M4 | implemented | FAIL | dshr-profile | cargo suite fail（0 suite(s), 0 passed, 0 failed, 0 ignored） |
 | M4-UNINSTALL-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --uninstall-plugin：目录原子移除 + profile 条目 + install-audit 的 action=uninstall；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
-| M4-WINDOW-001 | M4 | manual | MANUAL | — | chat --selftest-window：真实打开窗口、等 800ms 首帧、自动退出；本机 Windows PASS。窗口创建/事件循环证据，不含 IME/剪贴板/键盘全流程。见 docs/m4-window.md。 |
+| M4-WINDOW-001 | M4 | manual | MANUAL | — | chat --selftest-window：真实打开窗口、等 800ms 首帧、自动退出；本机 Windows PASS；GitHub Actions Windows runner 的 desktop build（run 44138465346）也 PASS。不含 IME/键盘全流程。见 docs/m4-window.md。 |
 | SELF-CHAT-001 | SELF | pending | PENDING | — | 已存在但未纳入 harness；需构建 chat 二进制（未来 suite=selftest-chat）。 |
 | SELF-CHAT-002 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | SELF-CHAT-003 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
@@ -112,7 +651,7 @@
 | SELF-CHAT-017 | SELF | pending | PENDING | — | 已存在但未纳入 harness；未来 suite=selftest-chat。 |
 | GATE-G2-001 | GATE | manual | MANUAL | — | M3 G2 需人工 checklist：docs/plugin-authoring.md + templates + 未读 crates/ 源码；harness 无法自动判定。 |
 
-### PASS（逐 ID；共 581 条）
+### PASS（逐 ID；共 42 条）
 
 | ID | 结果 |
 |---|---|
@@ -137,401 +676,6 @@
 | SCHEMA-FIXTURE-019 | PASS |
 | SCHEMA-FIXTURE-020 | PASS |
 | DOC-LINK-001 | PASS |
-| CARGO-UNIT-001 | PASS |
-| CARGO-UNIT-002 | PASS |
-| CARGO-UNIT-003 | PASS |
-| CARGO-UNIT-004 | PASS |
-| ADC-ELEM-001 | PASS |
-| ADC-ELEM-002 | PASS |
-| ADC-ELEM-003 | PASS |
-| ADC-ELEM-004 | PASS |
-| ADC-ELEM-005 | PASS |
-| ADC-ELEM-006 | PASS |
-| ADC-ELEM-007 | PASS |
-| ADC-ELEM-008 | PASS |
-| ADC-ELEM-009 | PASS |
-| ADC-ELEM-010 | PASS |
-| ADC-ELEM-011 | PASS |
-| ADC-ELEM-012 | PASS |
-| ADC-ELEM-013 | PASS |
-| ADC-ELEM-014 | PASS |
-| ADC-ELEM-015 | PASS |
-| ADC-ELEM-016 | PASS |
-| ADC-ELEM-017 | PASS |
-| ADC-ELEM-018 | PASS |
-| ADC-ELEM-019 | PASS |
-| ADC-ELEM-020 | PASS |
-| ADC-ELEM-021 | PASS |
-| ADC-ELEM-022 | PASS |
-| ADC-ELEM-A11Y-001 | PASS |
-| ADC-ELEM-A11Y-002 | PASS |
-| ADC-ELEM-A11Y-003 | PASS |
-| ADC-ELEM-A11Y-004 | PASS |
-| ADC-ELEM-ALIGN-001 | PASS |
-| ADC-ELEM-CHART-001 | PASS |
-| ADC-ELEM-CHART-002 | PASS |
-| ADC-ELEM-GRID-001 | PASS |
-| ADC-ELEM-GRID-002 | PASS |
-| ADC-ELEM-ICON-001 | PASS |
-| ADC-ELEM-JUSTIFY-001 | PASS |
-| ADC-ELEM-LIST-001 | PASS |
-| ADC-ELEM-NUM-001 | PASS |
-| ADC-ELEM-PANEL-001 | PASS |
-| ADC-ELEM-PANEL-002 | PASS |
-| ADC-ELEM-PANEL-003 | PASS |
-| ADC-ELEM-PANEL-004 | PASS |
-| ADC-ELEM-PANEL-005 | PASS |
-| ADC-ELEM-PANEL-006 | PASS |
-| ADC-ELEM-PANEL-007 | PASS |
-| ADC-ELEM-PANEL-008 | PASS |
-| ADC-ELEM-PANEL-009 | PASS |
-| ADC-ELEM-PANEL-010 | PASS |
-| ADC-ELEM-PANEL-API-001 | PASS |
-| ADC-ELEM-PANEL-API-002 | PASS |
-| ADC-ELEM-PANEL-HOST-001 | PASS |
-| ADC-ELEM-PANEL-HOST-002 | PASS |
-| ADC-ELEM-PANEL-HOST-003 | PASS |
-| ADC-ELEM-PANEL-HOST-004 | PASS |
-| ADC-ELEM-PLACEHOLDER-001 | PASS |
-| ADC-ELEM-RENDER-001 | PASS |
-| ADC-ELEM-RENDER-002 | PASS |
-| ADC-ELEM-RENDER-003 | PASS |
-| ADC-ELEM-SLIDER-001 | PASS |
-| ADC-ELEM-SPACING-001 | PASS |
-| ADC-ELEM-SPACING-002 | PASS |
-| ADC-ELEM-TABLE-001 | PASS |
-| ADC-ELEM-TABLE-002 | PASS |
-| ADC-ELEM-TEXT-001 | PASS |
-| ADC-ELEM-TEXT-002 | PASS |
-| ADC-ELEM-TEXT-003 | PASS |
-| ADC-ELEM-TONE-001 | PASS |
-| ADC-PERF-001 | PASS |
-| ADC-PERF-002 | PASS |
-| ADC-SEC-001 | PASS |
-| ADC-SEC-002 | PASS |
-| ADC-SEC-003 | PASS |
-| ADC-SEC-004 | PASS |
-| ADC-SEC-005 | PASS |
-| ADC-SEC-006 | PASS |
-| ADC-SEC-007 | PASS |
-| ADC-SEC-008 | PASS |
-| ADC-SEC-009 | PASS |
-| ADC-SLOT-001 | PASS |
-| ADC-SLOT-002 | PASS |
-| ADC-SLOT-003 | PASS |
-| ADC-SLOT-004 | PASS |
-| ADC-SLOT-005 | PASS |
-| ADC-SLOT-006 | PASS |
-| ADC-SLOT-007 | PASS |
-| ADC-SLOT-008 | PASS |
-| ADC-SLOT-009 | PASS |
-| ADC-SLOT-010 | PASS |
-| ADC-SLOT-011 | PASS |
-| ADC-SLOT-012 | PASS |
-| ADC-SLOT-013 | PASS |
-| ADC-SLOT-014 | PASS |
-| ADC-SLOT-015 | PASS |
-| ADC-SLOT-016 | PASS |
-| ADC-SLOT-017 | PASS |
-| ADC-SLOT-018 | PASS |
-| ADC-SLOT-019 | PASS |
-| ADC-SLOT-020 | PASS |
-| ADC-SLOT-021 | PASS |
-| ADC-SLOT-022 | PASS |
-| ADC-SLOT-023 | PASS |
-| CPP-EFF-001 | PASS |
-| CPP-EFF-002 | PASS |
-| CPP-EFF-003 | PASS |
-| CPP-EFF-004 | PASS |
-| CPP-EFF-005 | PASS |
-| CPP-EFF-006 | PASS |
-| CPP-EFF-007 | PASS |
-| CPP-EFF-008 | PASS |
-| CPP-EFF-009 | PASS |
-| CPP-EFF-010 | PASS |
-| CPP-FIBER-001 | PASS |
-| CPP-FIBER-002 | PASS |
-| CPP-FIBER-003 | PASS |
-| CPP-FIBER-004 | PASS |
-| CPP-FIBER-005 | PASS |
-| CPP-FIBER-006 | PASS |
-| CPP-FIBER-007 | PASS |
-| CPP-FIBER-008 | PASS |
-| CPP-FIBER-009 | PASS |
-| CPP-FIBER-010 | PASS |
-| CPP-FIBER-011 | PASS |
-| CPP-FIBER-012 | PASS |
-| CPP-FIBER-013 | PASS |
-| CPP-FIBER-014 | PASS |
-| CPP-FIBER-015 | PASS |
-| CPP-FIBER-016 | PASS |
-| CPP-FIBER-017 | PASS |
-| CPP-FIBER-018 | PASS |
-| CPP-FIBER-019 | PASS |
-| CPP-FIBER-020 | PASS |
-| CPP-FIBER-021 | PASS |
-| CPP-FIBER-022 | PASS |
-| CPP-FIBER-023 | PASS |
-| CPP-FIBER-024 | PASS |
-| CPP-FIBER-025 | PASS |
-| CPP-FIBER-026 | PASS |
-| CPP-FIBER-027 | PASS |
-| CPP-FIBER-101 | PASS |
-| CPP-FIBER-102 | PASS |
-| CPP-FIBER-103 | PASS |
-| CPP-FIBER-104 | PASS |
-| CPP-FIBER-105 | PASS |
-| CPP-FIBER-111 | PASS |
-| CPP-FIBER-112 | PASS |
-| CPP-FIBER-113 | PASS |
-| CPP-FIBER-114 | PASS |
-| CPP-FIBER-115 | PASS |
-| CPP-FIBER-116 | PASS |
-| CPP-FIBER-121 | PASS |
-| CPP-FIBER-122 | PASS |
-| CPP-FIBER-123 | PASS |
-| CPP-FIBER-124 | PASS |
-| CPP-FIBER-125 | PASS |
-| CPP-FIBER-126 | PASS |
-| CPP-FIBER-127 | PASS |
-| CPP-FIBER-131 | PASS |
-| CPP-FIBER-132 | PASS |
-| CPP-FIBER-133 | PASS |
-| CPP-ISO-001 | PASS |
-| CPP-ISO-002 | PASS |
-| CPP-ISO-003 | PASS |
-| CPP-ISO-004 | PASS |
-| CPP-ISO-005 | PASS |
-| CPP-ISO-006 | PASS |
-| CPP-ISO-007 | PASS |
-| CPP-ISO-008 | PASS |
-| CPP-ISO-009 | PASS |
-| CPP-ISO-010 | PASS |
-| CPP-ISO-011 | PASS |
-| CPP-ISO-012 | PASS |
-| CPP-ISO-013 | PASS |
-| CPP-ISO-014 | PASS |
-| CPP-ISO-015 | PASS |
-| CPP-ISO-018 | PASS |
-| CPP-ISO-019 | PASS |
-| CPP-ISO-020 | PASS |
-| CPP-ISO-021 | PASS |
-| CPP-ISO-026 | PASS |
-| CPP-ISO-027 | PASS |
-| CPP-ISO-028 | PASS |
-| CPP-ISO-029 | PASS |
-| CPP-ISO-030 | PASS |
-| CPP-ISO-031 | PASS |
-| CPP-MANIFEST-001 | PASS |
-| CPP-MANIFEST-002 | PASS |
-| CPP-MANIFEST-003 | PASS |
-| CPP-MANIFEST-004 | PASS |
-| CPP-MANIFEST-005 | PASS |
-| CPP-MANIFEST-006 | PASS |
-| CPP-MANIFEST-007 | PASS |
-| CPP-MANIFEST-008 | PASS |
-| CPP-MANIFEST-009 | PASS |
-| CPP-MANIFEST-010 | PASS |
-| CPP-MANIFEST-011 | PASS |
-| CPP-MANIFEST-012 | PASS |
-| CPP-MANIFEST-013 | PASS |
-| CPP-MANIFEST-014 | PASS |
-| CPP-MANIFEST-015 | PASS |
-| CPP-MANIFEST-016 | PASS |
-| CPP-MANIFEST-017 | PASS |
-| CPP-MANIFEST-018 | PASS |
-| CPP-MANIFEST-019 | PASS |
-| CPP-MANIFEST-020 | PASS |
-| CPP-MANIFEST-021 | PASS |
-| CPP-MANIFEST-022 | PASS |
-| CPP-MANIFEST-023 | PASS |
-| CPP-MANIFEST-024 | PASS |
-| CPP-MANIFEST-025 | PASS |
-| CPP-MANIFEST-026 | PASS |
-| CPP-PANEL-002 | PASS |
-| CPP-PROC-001 | PASS |
-| CPP-PROC-002 | PASS |
-| CPP-PROC-003 | PASS |
-| CPP-PROC-004 | PASS |
-| CPP-PROC-005 | PASS |
-| CPP-PROC-006 | PASS |
-| CPP-PROC-007 | PASS |
-| CPP-PROC-008 | PASS |
-| CPP-PROC-009 | PASS |
-| CPP-PROC-010 | PASS |
-| CPP-PROC-020 | PASS |
-| CPP-PROC-021 | PASS |
-| CPP-PROC-022 | PASS |
-| CPP-PROC-023 | PASS |
-| CPP-PROC-024 | PASS |
-| CPP-PROC-025 | PASS |
-| CPP-PROC-026 | PASS |
-| CPP-PROC-027 | PASS |
-| CPP-PROC-028 | PASS |
-| CPP-PROC-029 | PASS |
-| CPP-PROC-030 | PASS |
-| CPP-PROC-031 | PASS |
-| CPP-PROC-032 | PASS |
-| CPP-PROC-033 | PASS |
-| CPP-SVC-001 | PASS |
-| CPP-SVC-002 | PASS |
-| CPP-SVC-003 | PASS |
-| CPP-SVC-004 | PASS |
-| CPP-SVC-005 | PASS |
-| CPP-SVC-006 | PASS |
-| CPP-SVC-007 | PASS |
-| CPP-SVC-008 | PASS |
-| CPP-SVC-009 | PASS |
-| CPP-SVC-010 | PASS |
-| CPP-SVC-011 | PASS |
-| CPP-SVC-012 | PASS |
-| CPP-SVC-013 | PASS |
-| CPP-SVC-014 | PASS |
-| CPP-TRUST-001 | PASS |
-| CPP-TRUST-002 | PASS |
-| CPP-TRUST-003 | PASS |
-| CPP-TRUST-004 | PASS |
-| CPP-TRUST-005 | PASS |
-| CPP-TRUST-006 | PASS |
-| CPP-TRUST-007 | PASS |
-| CPP-TRUST-008 | PASS |
-| CPP-TRUST-009 | PASS |
-| CPP-TRUST-010 | PASS |
-| CPP-TRUST-011 | PASS |
-| CPP-TRUST-012 | PASS |
-| CPP-TRUST-013 | PASS |
-| CPP-TRUST-014 | PASS |
-| CPP-TRUST-015 | PASS |
-| CPP-TRUST-016 | PASS |
-| CPP-TRUST-017 | PASS |
-| CPP-TRUST-018 | PASS |
-| CPP-VER-001 | PASS |
-| CPP-VER-002 | PASS |
-| CPP-VER-003 | PASS |
-| CPP-VER-004 | PASS |
-| CPP-VER-005 | PASS |
-| CPP-VER-006 | PASS |
-| CPP-VER-007 | PASS |
-| CPP-WASM-001 | PASS |
-| CPP-WASM-002 | PASS |
-| CPP-WASM-003 | PASS |
-| CPP-WASM-004 | PASS |
-| CPP-WASM-005 | PASS |
-| CPP-WASM-006 | PASS |
-| CPP-WASM-007 | PASS |
-| CPP-WASM-008 | PASS |
-| CPP-WASM-009 | PASS |
-| CPP-WASM-010 | PASS |
-| CPP-WASM-011 | PASS |
-| CPP-WASM-012 | PASS |
-| CPP-WASM-013 | PASS |
-| CPP-WASM-014 | PASS |
-| CPP-WASM-015 | PASS |
-| CPP-WASM-016 | PASS |
-| CPP-WASM-017 | PASS |
-| CPP-WASM-018 | PASS |
-| CPP-WASM-019 | PASS |
-| CPP-WASM-020 | PASS |
-| CPP-WASM-021 | PASS |
-| CPP-WASM-022 | PASS |
-| CPP-WASM-023 | PASS |
-| CPP-WASM-024 | PASS |
-| CPP-WASM-025 | PASS |
-| CPP-WASM-026 | PASS |
-| CPP-WASM-027 | PASS |
-| CPP-WASM-033 | PASS |
-| RPC-L2-001 | PASS |
-| RPC-L2-002 | PASS |
-| RPC-L2-003 | PASS |
-| RPC-L2-004 | PASS |
-| RPC-L2-005 | PASS |
-| RPC-L2-006 | PASS |
-| RPC-L2-007 | PASS |
-| RPC-L2-008 | PASS |
-| RPC-L2-009 | PASS |
-| RPC-L2-010 | PASS |
-| RPC-L2-101 | PASS |
-| RPC-L2-102 | PASS |
-| RPC-L2-103 | PASS |
-| RPC-L2-104 | PASS |
-| RPC-L2-105 | PASS |
-| RPC-L2-106 | PASS |
-| RPC-L2-107 | PASS |
-| RPC-L2-108 | PASS |
-| RPC-L2-109 | PASS |
-| RPC-L2-110 | PASS |
-| RPC-L2-111 | PASS |
-| RPC-L2-112 | PASS |
-| RPC-L2-113 | PASS |
-| RPC-L2-114 | PASS |
-| RPC-L2-115 | PASS |
-| RPC-L2-116 | PASS |
-| RPC-L2-117 | PASS |
-| RPC-L2-118 | PASS |
-| RPC-L2-119 | PASS |
-| RPC-L2-121 | PASS |
-| RPC-L2-122 | PASS |
-| RPC-L2-123 | PASS |
-| RPC-L2-124 | PASS |
-| RPC-L2-125 | PASS |
-| RPC-L2-126 | PASS |
-| RPC-L2-127 | PASS |
-| RPC-L2-128 | PASS |
-| RPC-L2-202 | PASS |
-| RPC-L2-203 | PASS |
-| RPC-L2-204 | PASS |
-| RPC-L2-205 | PASS |
-| RPC-L2-206 | PASS |
-| RPC-L2-207 | PASS |
-| RPC-L2-208 | PASS |
-| RPC-L2-221 | PASS |
-| RPC-L2-222 | PASS |
-| RPC-L2-223 | PASS |
-| RPC-L2-224 | PASS |
-| RPC-L2-225 | PASS |
-| RPC-L2-226 | PASS |
-| RPC-L2-227 | PASS |
-| RPC-L2-228 | PASS |
-| RPC-L2-301 | PASS |
-| RPC-L2-302 | PASS |
-| RPC-L2-303 | PASS |
-| RPC-L2-304 | PASS |
-| RPC-L2-305 | PASS |
-| RPC-L2-306 | PASS |
-| RPC-L2-307 | PASS |
-| RPC-L2-308 | PASS |
-| RPC-L2-309 | PASS |
-| RPC-L2-310 | PASS |
-| RPC-L2-311 | PASS |
-| RPC-L2-312 | PASS |
-| RPC-L2-313 | PASS |
-| RPC-L2-401 | PASS |
-| RPC-L2-402 | PASS |
-| RPC-L2-403 | PASS |
-| RPC-L2-404 | PASS |
-| RPC-L2-405 | PASS |
-| RPC-L2-406 | PASS |
-| RPC-L2-407 | PASS |
-| RPC-L2-408 | PASS |
-| RPC-L2-409 | PASS |
-| RPC-L2-410 | PASS |
-| MCP-CLIENT-001 | PASS |
-| MCP-CLIENT-002 | PASS |
-| MCP-CLIENT-003 | PASS |
-| MCP-CLIENT-004 | PASS |
-| MCP-CLIENT-005 | PASS |
-| MCP-CLIENT-006 | PASS |
-| MCP-CLIENT-007 | PASS |
-| MCP-CLIENT-008 | PASS |
-| MCP-CLIENT-009 | PASS |
-| MCP-CLIENT-010 | PASS |
-| MCP-CLIENT-011 | PASS |
-| MCP-CLIENT-012 | PASS |
-| MCP-CLIENT-013 | PASS |
-| MCP-CLIENT-014 | PASS |
-| MCP-CLIENT-015 | PASS |
-| MCP-CLIENT-016 | PASS |
-| MCP-CLIENT-017 | PASS |
 | JS-L2SVC-001 | PASS |
 | JS-L2SVC-002 | PASS |
 | JS-L2SVC-003 | PASS |
@@ -553,150 +697,6 @@
 | JS-L2SVC-026 | PASS |
 | JS-L2SVC-027 | PASS |
 | JS-L2SVC-028 | PASS |
-| M3-DEFAULT-001 | PASS |
-| M3-DEFAULT-002 | PASS |
-| M3-DEFAULT-003 | PASS |
-| M3-DEFAULT-004 | PASS |
-| M3-DEFAULT-010 | PASS |
-| M3-DEFAULT-011 | PASS |
-| M3-DEFAULT-012 | PASS |
-| M3-DEFAULT-013 | PASS |
-| M3-DEFAULT-014 | PASS |
-| M3-DEFAULT-015 | PASS |
-| M3-DEFAULT-020 | PASS |
-| M3-DEFAULT-021 | PASS |
-| M3-DEFAULT-022 | PASS |
-| M3-DEFAULT-023 | PASS |
-| M3-DEFAULT-024 | PASS |
-| M3-DEFAULT-025 | PASS |
-| M3-DEFAULT-030 | PASS |
-| M3-DEFAULT-031 | PASS |
-| M3-DEFAULT-032 | PASS |
-| M3-DEFAULT-035 | PASS |
-| M3-DEFAULT-036 | PASS |
-| M3-DEFAULT-037 | PASS |
-| M3-DEFAULT-040 | PASS |
-| M3-DEFAULT-041 | PASS |
-| M3-DEFAULT-042 | PASS |
-| M3-DEFAULT-043 | PASS |
-| M3-DEFAULT-044 | PASS |
-| M3-DEFAULT-045 | PASS |
-| M3-DEFAULT-050 | PASS |
-| M3-DEFAULT-051 | PASS |
-| M3-DEFAULT-052 | PASS |
-| M3-DEFAULT-053 | PASS |
-| M3-DEFAULT-054 | PASS |
-| M3-DEFAULT-055 | PASS |
-| M3-DEFAULT-056 | PASS |
-| M3-DEFAULT-060 | PASS |
-| M3-DEFAULT-061 | PASS |
-| M3-DEFAULT-062 | PASS |
-| M3-DEFAULT-063 | PASS |
-| M3-DIGEST-001 | PASS |
-| M3-DIGEST-002 | PASS |
-| M3-INSTALL-001 | PASS |
-| M3-INSTALL-002 | PASS |
-| M3-INSTALL-003 | PASS |
-| M3-LOADER-001 | PASS |
-| M3-LOADER-002 | PASS |
-| M3-LOADER-003 | PASS |
-| M3-LOADER-004 | PASS |
-| M3-LOADER-005 | PASS |
-| M3-LOADER-006 | PASS |
-| M3-LOADER-007 | PASS |
-| M3-LOADER-008 | PASS |
-| M3-LOADER-009 | PASS |
-| M3-LOADER-010 | PASS |
-| M3-LOADER-011 | PASS |
-| M3-LOADER-012 | PASS |
-| M3-LOADER-013 | PASS |
-| M3-LOADER-014 | PASS |
-| M3-LOADER-015 | PASS |
-| M3-PARALLEL-001 | PASS |
-| M3-PARALLEL-002 | PASS |
-| M3-PARALLEL-003 | PASS |
-| M3-PARALLEL-004 | PASS |
-| M3-PARALLEL-005 | PASS |
-| M3-PARALLEL-006 | PASS |
-| M3-PARALLEL-007 | PASS |
-| M3-PARALLEL-101 | PASS |
-| M3-PARALLEL-102 | PASS |
-| M3-PARALLEL-103 | PASS |
-| M3-PARALLEL-104 | PASS |
-| M3-PARALLEL-105 | PASS |
-| M3-PARALLEL-106 | PASS |
-| M3-PARALLEL-107 | PASS |
-| M3-PARALLEL-108 | PASS |
-| M3-PARALLEL-109 | PASS |
-| M3-PARALLEL-110 | PASS |
-| M4-A11Y-001 | PASS |
-| M4-ADC-001 | PASS |
-| M4-ADC-002 | PASS |
-| M4-ADC-003 | PASS |
-| M4-ADC-004 | PASS |
-| M4-ADC-005 | PASS |
-| M4-ADC-006 | PASS |
-| M4-ADC-007 | PASS |
-| M4-ADC-008 | PASS |
-| M4-ADC-009 | PASS |
-| M4-ADC-010 | PASS |
-| M4-ADC-011 | PASS |
-| M4-ADC-012 | PASS |
-| M4-ADC-013 | PASS |
-| M4-ADC-014 | PASS |
-| M4-ADC-015 | PASS |
-| M4-ADC-016 | PASS |
-| M4-ADC-017 | PASS |
-| M4-ADC-018 | PASS |
-| M4-ADC-019 | PASS |
-| M4-ADC-020 | PASS |
-| M4-ADC-021 | PASS |
-| M4-ADC-022 | PASS |
-| M4-ADC-023 | PASS |
-| M4-ADC-024 | PASS |
-| M4-ADC-025 | PASS |
-| M4-COMPONENT-001 | PASS |
-| M4-COMPONENT-002 | PASS |
-| M4-COMPONENT-003 | PASS |
-| M4-COMPONENT-004 | PASS |
-| M4-COMPONENT-005 | PASS |
-| M4-COMPONENT-006 | PASS |
-| M4-COMPONENT-007 | PASS |
-| M4-COMPONENT-008 | PASS |
-| M4-COMPONENT-009 | PASS |
-| M4-COMPONENT-010 | PASS |
-| M4-COMPONENT-011 | PASS |
-| M4-COMPONENT-012 | PASS |
-| M4-COMPONENT-013 | PASS |
-| M4-COMPONENT-014 | PASS |
-| M4-COMPONENT-015 | PASS |
-| M4-COMPONENT-016 | PASS |
-| M4-COMPONENT-017 | PASS |
-| M4-COMPONENT-020 | PASS |
-| M4-COMPONENT-021 | PASS |
-| M4-COMPONENT-022 | PASS |
-| M4-CONC-001 | PASS |
-| M4-CONC-002 | PASS |
-| M4-CONC-003 | PASS |
-| M4-KEY-001 | PASS |
-| M4-KEY-002 | PASS |
-| M4-KEY-003 | PASS |
-| M4-KEY-004 | PASS |
-| M4-KEY-005 | PASS |
-| M4-KEY-006 | PASS |
-| M4-KEY-007 | PASS |
-| M4-KEY-008 | PASS |
-| M4-KEY-009 | PASS |
-| M4-KEY-010 | PASS |
-| M4-TRAIT-001 | PASS |
-| M4-UNINSTALL-001 | PASS |
-| M4-UNINSTALL-002 | PASS |
-| M4-UNINSTALL-003 | PASS |
-| M4-UNINSTALL-004 | PASS |
-| M4-UNINSTALL-005 | PASS |
-| M4-UNINSTALL-006 | PASS |
-| M4-UNINSTALL-007 | PASS |
-| M4-UNINSTALL-008 | PASS |
 
 ## 说明与已知缺口
 
@@ -724,5 +724,5 @@
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，本报告由本机命令生成。
 - 本文件由 tools/conformance.mjs 生成，请勿手改；新增证据请改 docs/conformance.d/registry.json。
 
-退出码：`0`。pending / manual / blocked 不计失败。
+退出码：`1`。pending / manual / blocked 不计失败。
 
