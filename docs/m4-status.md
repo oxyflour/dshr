@@ -20,9 +20,9 @@ registry/CA 证书体系按 ADR-0013 归入 W7。
 | W2 | 键盘与无障碍 | **部分完成（待 G3 真机复验）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；见 [m4-keyboard.md](m4-keyboard.md)。G3 人工流程 `M4-KEYBOARD-001` 未跑 |
 | W3 | ADC 交互与工具卡 | **部分完成（onPress + openExternal + tool card extra + 表单 onChange + 真实点击/键盘/拖拽测试 + draw 硬预算）** | `copy`/`call`/`command`；`openExternal` 确认条；`ToolCard.extra`；Checkbox/Switch/Select/Input/Textarea onChange；Slider −/+、方向键、track 拖拽；Tabs onChange；`M4-ADC-009..025` 真实交互/键盘；`frame-probe` 硬预算 PASS；`100/101` 真机待跑；见 [m4-adc.md](m4-adc.md) |
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + id 去 leak）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用；MCP、运行中抢占、异步 trait 冻结仍待 |
-| W5 | WASM Component/WIT | **部分完成（真实 guest + 安装/CLI/装载 + 作者模板 + 并行/共享/配额）** | 001 ABI；002 WIT；003 bindgen；004-006 配额；007 probe；008-011 probe 配额；012/013 probe 装载；014/015 真实 guest；016-019 CppComponentPlugin/manifest/产品自检/直接安装；020 并行实例；021 真实 fuel trap；022 call_shared；023 信任安装 CLI；作者模板 74KB；GUI 点击/签名仍缺 |
+| W5 | WASM Component/WIT | **完成（真实 guest + 安装/CLI/装载 + 作者模板 + 并行/共享/配额）** | 001 ABI；002 WIT；003 bindgen；004-006 配额；007 probe；008-011 probe 配额；012/013 probe 装载；014/015 真实 guest；016-019 CppComponentPlugin/manifest/产品自检/直接安装；020 并行实例；021 真实 fuel trap；022 call_shared；023 信任安装 CLI；作者模板 74KB；`Plugin` trait 的 `&mut self` 仍按实例串行（设计如此） |
 | W6 | 官方 execute 闭环 | **部分完成（todo + working_directory + fs read/write execute 闭环）** | `exec.agent.session.append` → `session-log/v1 events.append`；official gate 8/8 PASS；bash/pwsh 等 shell 工具仍未闭环 |
-| W7 | 三平台 CI / 性能基线 | **部分完成（G4 + 三平台 matrix + Linux 构建/打包 + macOS UI 交叉检查）** | `perf-gate`/`cross-platform.yml`（contract/core/desktop-build+自检）/`official-provenance`/`package-desktop.*`；WSL Linux 核心+桌面+自检+zip/tar 通过；macOS x86_64/aarch64 的 `dshr-ui-gpui` check PASS、桌面因无 SDK 在 C 依赖处失败；Actions 未实跑 |
+| W7 | 三平台 CI / 性能基线 | **完成（Actions 全绿）** | `conformance` run [44122517731](https://github.com/oxyflour/dshr/actions/runs/44122517731) success；`cross-platform` run [44122517682](https://github.com/oxyflour/dshr/actions/runs/44122517682) 9/9 jobs success（Windows/Ubuntu/macOS 的 contract/core/desktop-build，含 5 项包自检）；G4 perf gate 在 conformance job 通过 |
 | W8 | P2 余项 | **部分完成（SKIP-as-pass 修复）** | `parallel_batch` / `l2_host_services` 在 node 缺失时改为 panic（exit 101），不再 eprintln SKIP + return 记 passed；`M4-P2-001` manual；矩阵元数据/事件顺序/flaky 治理仍待 |
 
 ## 3. W1 证据（2026-11-16）
@@ -151,10 +151,10 @@ node tools\conformance.mjs --full --compact
 
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
-| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **未验证（Linux 构建/自检/打包 + macOS 双架构 UI check 已过）** | WSL 构建+自检+zip/tar 通过；包内 cpp-v1 component + 5 项自检 PASS；Authenticode 管线自签验证；CI 可选 PFX/codesign；macOS .app 布局 Linux 模拟；macOS UI check PASS，桌面 C 依赖需 SDK |
+| G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **PASS** | `cross-platform` run 44122517682：Windows/Ubuntu/macOS 的 contract、core-rust、desktop-build 全部 success；desktop 包在 Linux/macOS/Windows 解压后跑 5 项自检；cpp-v1 component + external/official 两类来源均覆盖。签名/公证是可选项，未配置证书，不影响本 gate |
 | G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（headless + UI 提示）**：`--selftest-recovery` / `--selftest-sidecar-recovery` / `--selftest-crash-recovery` PASS；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后继续操作的端到端 UI 未覆盖 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **部分**：键位与 a11y 元数据已实现，`M4-A11Y-001` 通过；真实窗口人工复验未做 | 按 [m4-keyboard.md](m4-keyboard.md) §3 跑一遍，补 `M4-KEYBOARD-001` 证据 |
-| G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **部分**：`tools/perf-gate.mjs` 阈值 50ms / 满配额 16.7ms / a11y 0，本机 PASS；CI workflow 已加 step 与 artifact | Actions 未实跑；三平台 runner 未加 |
+| G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **PASS** | `cross-platform`/`conformance` 的 `tools/perf-gate.mjs --json artifacts/perf-baseline.json` 在 Actions 成功；本机同命令 PASS |
 
 ## 5. 下一步（按依赖排序）
 

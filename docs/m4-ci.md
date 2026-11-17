@@ -4,10 +4,10 @@ G1 要求 Windows/macOS/Linux 管线 + 两类插件来源回归。当前拆成�
 
 | Workflow | Runner | 内容 | 状态 |
 |---|---|---|---|
-| [`conformance.yml`](../.github/workflows/conformance.yml) | `windows-latest` | schema/links/node-test/cargo 全量、矩阵 artifact、G4 perf gate | 本机等价命令通过；Actions **未实跑** |
-| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + 自检 + 打包 + `verify-package`） | **新增，Actions 未实跑** |
-| [package-desktop.ps1](../tools/package-desktop.ps1) / [.sh](../tools/package-desktop.sh) | 本机 Windows/Linux | 打包 zip/tar + `.sha256`；产物含 runtime/node、probe、dsh-official | 本机 PASS |
-| [verify-package.ps1](../tools/verify-package.ps1) / [.sh](../tools/verify-package.sh) | 本机 Windows/Linux | 校验 sha256 + 解压 + sidecar/official 自检 | 本机 PASS |
+| [`conformance.yml`](../.github/workflows/conformance.yml) | `windows-latest` | schema/links/node-test/cargo 全量、矩阵 artifact、G4 perf gate | **Actions 成功**：[run 44122517731](https://github.com/oxyflour/dshr/actions/runs/44122517731) |
+| [`cross-platform.yml`](../.github/workflows/cross-platform.yml) | `windows/ubuntu/macos-latest` | 三平台契约 + 核心 crate 测试 + `desktop-build`（二进制 + 自检 + 打包 + `verify-package`） | **Actions 成功**：[run 44122517682](https://github.com/oxyflour/dshr/actions/runs/44122517682)，9/9 jobs |
+| [package-desktop.ps1](../tools/package-desktop.ps1) / [.sh](../tools/package-desktop.sh) | CI 三平台 | 打包 zip/tar + `.sha256`；产物含 runtime/node、probe、dsh-official、cpp-v1 component | CI PASS |
+| [verify-package.ps1](../tools/verify-package.ps1) / [.sh](../tools/verify-package.sh) | CI 三平台 | 校验 sha256 + 解压 + 5 项自检（sidecar/official/cpp/install/cli-install） | CI PASS |
 
 ## 1. cross-platform.yml 覆盖什么
 
@@ -39,9 +39,10 @@ cargo test --offline \
 - `desktop-build` 做 `cargo build`、Linux/macOS 无窗口自检、zip/tar 打包（macOS 含
   `dshr.app` 布局）、`.sha256` 与 `verify-package` 解压自检（含 cpp-v1 component 的 5 项自检）；
   Windows Authenticode 与 macOS `codesign` 有**可选**步骤，只有配置 secrets 才执行，当前本机无证书/未实跑。
-- Actions 尚未真实执行；本文件只记录 workflow 已落地、YAML 已本地解析（PyYAML），
-  不代表 CI 已绿。Linux 的 `desktop-build` 等价命令已在 WSL 本机通过 `cargo build`
-  （见 [m4-linux.md](m4-linux.md)），macOS/Windows runner 未验证。
+- Actions 已真实执行：commit `89730e3` 的 `cross-platform` 9/9 jobs success，`conformance` success；
+  首次运行暴露的 `node_modules` 未入库、CRLF 改变摘要、Node 22 `--test-isolation` 不兼容、
+  `scan_sorts_newest_first` 同秒排序都已修复。macOS runner 的 desktop-build 也通过，
+  但仍未配置签名/公证证书。
 - 签名 secrets：`WINDOWS_CERT_PFX_BASE64`/`WINDOWS_CERT_PASSWORD`（Windows），
   `MACOS_SIGN_IDENTITY`（macOS，codesign 身份）；没有 secrets 时签名步骤跳过，
   不会把 unsigned 误当 signed。macOS 公证（notarization）仍未实现。

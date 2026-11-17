@@ -1,3 +1,6 @@
+[![cross-platform](https://github.com/oxyflour/dshr/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/oxyflour/dshr/actions/workflows/cross-platform.yml)
+[![conformance](https://github.com/oxyflour/dshr/actions/workflows/conformance.yml/badge.svg)](https://github.com/oxyflour/dshr/actions/workflows/conformance.yml)
+
 # Native Agent Desktop — workspace
 
 Rust 是唯一权威运行时；GPUI 是原生渲染底座；DSH 通过 Node Sidecar 兼容；UI 扩展走 ADC-v1。
@@ -87,12 +90,13 @@ W5 已启用 wasmtime `component-model`，并用 `M4-COMPONENT-001..023` 验证 
 `--selftest-cpp-component`/`--selftest-cpp-install`/`--selftest-cpp-cli-install`、并行/共享调用与真实 fuel trap；
 GUI 点击/签名仍未接。
 W6 已补最小 `exec.agent` facade，官方 todo/working_directory/fs read+write 的 execute 在 official gate 8/8 通过。
-G4 已有 `tools/perf-gate.mjs`（阈值 + CI step，本机 PASS），Actions 尚未实跑。
+G4 已有 `tools/perf-gate.mjs`（阈值 + CI step），GitHub Actions 已实跑成功（run 44122517731）。
 G2 除损坏会话/插件回滚外，`--selftest-sidecar-recovery` 覆盖 kill sidecar，`--selftest-crash-recovery`
 覆盖真实子进程 abort 后从 `.bak` 继续追加。
 W4 已去掉动态插件 id 的 `Box::leak`（`Plugin::id/version` 借用），并实现 native 跨插件批并行
 与调用前协作式取消；运行中抢占/MCP 与异步 trait 冻结仍未做。
-G1 新增 `cross-platform.yml`（三平台契约 + 核心 crate + desktop-build），但 Actions 未实跑、macOS/Windows 桌面 runner 未验证。
+G1 的 `cross-platform.yml`（三平台契约 + 核心 crate + desktop-build + 包 5 项自检）已由 GitHub Actions 实跑全绿：
+[run 44122517682](https://github.com/oxyflour/dshr/actions/runs/44122517682)，9/9 jobs success；签名/公证仍为可选、未配证书。
 WSL Linux 上核心 6 crate、`dshr-desktop-gpui` 构建与 ADC/recovery/crash 自检均已通过；
 macOS target 上 `dshr-ui-gpui` 在 x86_64/aarch64 均类型检查 PASS，桌面二进制因本机无 macOS SDK 在 C 依赖处未过。
 Windows Authenticode 管线已用一次性自签证书验证（`status=UnknownError`，见 [m4-signing.md](docs/m4-signing.md)），
