@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **645 个测试 ID —— implemented 581、pending 18、manual 46、
+M4 G1（2026-11-17）：注册表 **646 个测试 ID —— implemented 581、pending 18、manual 47、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 539 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -197,6 +197,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-008` | manual | CI 可选签名步骤（Windows PFX / macOS codesign），仅 secrets 存在时执行；未实跑 |
 | `M4-CI-009` | manual | `OS_OVERRIDE=darwin` 生成 `dshr.app` 布局；未在 macOS 打开/codesign |
 | `M4-CI-010` | manual | Actions 三平台全绿：conformance 44122517731 / cross-platform 44122517682（9/9 jobs） |
+| `M4-WINDOW-001` | manual | `chat --selftest-window`：真实 GPUI 窗口打开/首帧/关闭 PASS（Windows） |
 | `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |

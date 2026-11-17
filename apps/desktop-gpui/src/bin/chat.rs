@@ -7639,6 +7639,42 @@ fn selftest_external_plugin() -> i32 {
 /// `trap` 工具撞 fuel 看门狗 → 宿主存活（再 call echo）→ unload。
 ///
 /// 包建在 data root 下（不依赖用户 `%TEMP%` 是否可写），断言不联网。
+/// `--selftest-window`：真正打开一个 GPUI 窗口，等首帧后自动关闭。
+/// 只验证窗口系统/事件循环，不依赖 sidecar 或 GPU 工具。
+struct WindowProbe;
+
+impl Render for WindowProbe {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child("window probe")
+    }
+}
+
+fn selftest_window() -> i32 {
+    application().run(|cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(640.0), px(480.0)), cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            },
+            |_window, cx| {
+                let probe = cx.new(|_| WindowProbe);
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(800))
+                        .await;
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+                probe
+            },
+        )
+        .expect("open window");
+    });
+    println!("[selftest-window] PASS");
+    0
+}
+
 /// `--selftest-cpp-component`：把真实 wasm32-wasip2 guest 写进临时包，
 /// 经 manifest loader 注册 `echo` 并调用，验证产品侧 cpp-v1 装载路径。
 fn selftest_cpp_component() -> i32 {
@@ -9554,6 +9590,9 @@ fn main() {
     }
     if std::env::args().any(|arg| arg == "--selftest-external-plugin") {
         std::process::exit(selftest_external_plugin());
+    }
+    if std::env::args().any(|arg| arg == "--selftest-window") {
+        std::process::exit(selftest_window());
     }
     if std::env::args().any(|arg| arg == "--selftest-cpp-cli-install") {
         std::process::exit(selftest_cpp_cli_install());
