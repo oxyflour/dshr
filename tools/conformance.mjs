@@ -966,7 +966,21 @@ async function collectGitInfo() {
   const head = await runGit(['rev-parse', 'HEAD'])
   const branch = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'])
   const status = await runGit(['status', '--porcelain'])
-  const dirtyFiles = status ? status.split(/\r?\n/).filter(Boolean) : []
+  // 矩阵产物本身由本命令写入，不应把“重新生成矩阵”算成脏工作区；
+  // 否则每次刷新都要二次提交才能得到 dirty=false。
+  const generated = new Set([
+    'docs/conformance-matrix.json',
+    'docs/conformance-matrix.md',
+  ])
+  const dirtyFiles = status
+    ? status
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .filter((line) => {
+          const path = line.slice(3).replace(/^.* -> /, '')
+          return !generated.has(path)
+        })
+    : []
   return {
     head: head || null,
     head_short: head ? head.slice(0, 7) : null,

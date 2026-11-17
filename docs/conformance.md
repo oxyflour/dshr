@@ -129,6 +129,7 @@ M4 G1（2026-11-17）：注册表 **645 个测试 ID —— implemented 581、pe
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 539 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
+矩阵产物 `docs/conformance-matrix.json/.md` 不计入 `dirty_files`，所以刷新矩阵本身不会把工作区标脏。
 
 上一轮 `--full` 实跑（2026-11-15，M3 收尾）：`67 suites / 836 passed / 1 failed / 6 ignored`；
 唯一失败是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
