@@ -8,8 +8,8 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-17T16:33:34.023Z |
-| git HEAD | 64bafe0236b53f86f3b757603f6aa7abdbe8b734（clean） |
+| generated_at | 2026-11-17T17:14:37.855Z |
+| git HEAD | d0ba579f93dea51acc6093240ed8f0d0e900c435（dirty，4 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.26s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 79 file(s) scanned |
-| node-test | pass | 0 | 0.34s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 56.13s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.24s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 418 link(s) checked, 0 broken, 79 file(s) scanned |
+| node-test | pass | 0 | 0.29s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 56.86s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -73,7 +73,7 @@
 | M4-CI-007 | M4 | manual | MANUAL | — | tools/sign-windows.ps1 -SelfSignedTest：一次性证书签 chat.exe，Get-AuthenticodeSignature status=UnknownError、signer 一致；临时证书已删除。生产证书/时间戳/CI secrets 未做。见 docs/m4-signing.md。 |
 | M4-CI-008 | M4 | manual | MANUAL | — | cross-platform.yml 的 desktop-build 增加可选 Windows PFX 签名与 macOS codesign 步骤，仅 secrets 存在时执行；YAML 本地 PyYAML 解析通过。无 secrets、未实跑，macOS notarization 未实现。 |
 | M4-CI-009 | M4 | manual | MANUAL | — | OS_OVERRIDE=darwin bash tools/package-desktop.sh debug：生成 dshr.app/Contents/MacOS/chat + Info.plist；无 codesign（Linux 无 codesign），未在 macOS 打开/签名。见 docs/m4-macos.md。 |
-| M4-CI-010 | M4 | manual | MANUAL | — | commit 89730e3：conformance run 44122517731 success；cross-platform run 44122517682 success，9/9 jobs（windows/ubuntu/macos 的 contract/core/desktop-build），desktop 包 5 项自检通过；G4 perf gate 在 conformance 成功。 |
+| M4-CI-010 | M4 | manual | MANUAL | — | commit 89730e3：conformance run 44122517731 success；cross-platform run 44122517682 success，9/9 jobs。commit d0ba579 追加 Windows runtime selftests：run 44127414363 的 9/9 jobs 最终 success（momentary macOS core 取消后 rerun 通过），Windows/Linux/macOS 均跑 ADC/recovery/crash，desktop 包 5 项自检通过；G4 perf gate 在 conformance 成功。 |
 | M4-COMPONENT-018 | M4 | manual | MANUAL | — | chat --selftest-cpp-component：把 cpp-component-guest.wasm 写临时包，经 load_cpp_component_plugin_from_manifest 注册 echo、call_approved 返回 args。本机 PASS；仍需真实窗口安装验收。 |
 | M4-COMPONENT-019 | M4 | manual | MANUAL | — | chat --selftest-cpp-install：临时包写 plugin.toml/package.json/plugin.wasm，走 install_package 复制到 sidecar、Profile::load、load_enabled_external_plugins，注册 echo 并 call 返回 installed。本机 PASS；覆盖真实安装 CLI 的复制/profile/装载链路（非 GUI 点击）。 |
 | M4-COMPONENT-023 | M4 | manual | MANUAL | — | chat --selftest-cpp-cli-install：走 install_plugin_with_options（TrustStore/预览/--yes-install/profile 写入/审计），再从 profile 装载 cpp component 并调用 echo。本机 PASS，signature=missing。仍非 GUI 点击。 |
