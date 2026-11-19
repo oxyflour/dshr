@@ -11,6 +11,7 @@ import { createInterface } from 'node:readline'
 
 let generation = 'node-0001'
 const inflight = new Map()
+const callbackErrors = {}
 const TOOLS = ['batch_fast', 'batch_sleep', 'batch_ignore_cancel']
 
 const send = (kind, requestId, payload, extra = {}) => {
@@ -53,6 +54,13 @@ async function runTool(msg) {
     const duration = Number.isFinite(Number(args.ms)) ? Number(args.ms) : 2_000
     if (name === 'batch_ignore_cancel') {
       await sleep(duration)
+      if (args.callbacks) {
+        const scope = { tool_request_id: msg.request_id }
+        send('fs.write.request', 'late-fs', scope, { call_id: msg.call_id })
+        send('host.service.request', 'late-service', { method: 'get', args: {}, ...scope }, {
+          session_id: sessionId, service_key: 'working-directory/v1',
+        })
+      }
       result(msg, { session_id: sessionId, tool: name, ignored_cancel: true })
       return
     }
@@ -71,7 +79,7 @@ async function runTool(msg) {
           return
         }
       }
-      result(msg, { session_id: sessionId, tool: name })
+      result(msg, { session_id: sessionId, tool: name, callback_errors: callbackErrors })
       return
     }
     send(
@@ -115,6 +123,12 @@ async function handle(msg) {
       if (state) state.cancelled = true
       return
     }
+    case 'fs.write.result':
+      callbackErrors.fs = msg.payload?.error?.code
+      return
+    case 'host.service.result':
+      callbackErrors.service = msg.error?.code
+      return
     default:
       return
   }

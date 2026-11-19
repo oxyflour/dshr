@@ -6,7 +6,7 @@
 //! 已实现的不变量（对应规范 §4）：
 //! - I1 append-only：事件只能追加，`seq` 由日志分配；
 //! - I2 `seq` 连续、从 1 开始；
-//! - I3 一个 `call_id` 至多一次结算（`tool.result` XOR `tool.aborted`）；
+//! - I3 每次工具调用至多一次结算（`tool.result` XOR `tool.aborted`）；
 //! - I4 `message.assistant.settled` 每个 `message_id` 恰好一次；
 //! - I8 稳定 ID（`session_id` / `call_id`）与插件 generation 无关；
 //! - I9 `session.created` 是第一条事件，`parent_session_id` 写入一次后不可改（会话树，§7）。
@@ -269,11 +269,27 @@ pub enum LogError {
     Invalid(String),
 }
 
+/// 按调用事件序号区分重复的模型 ID。旧日志仍按原来的 call_id 关联。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ToolCallKey {
+    Seq(u64),
+    Id(String),
+}
+
+impl ToolCallKey {
+    pub fn from_payload(payload: &Value) -> Self {
+        match payload.get("call_seq").and_then(Value::as_u64) {
+            Some(seq) => Self::Seq(seq),
+            None => Self::Id(payload_str(payload, "call_id")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionLog {
     session_id: String,
     events: Vec<Event>,
-    settled_calls: HashSet<String>,
+    settled_calls: HashSet<ToolCallKey>,
     settled_messages: HashSet<String>,
     /// `session.created` 里的树字段；旧日志（M2 之前）没有该事件时为 None。
     created: Option<SessionCreated>,
@@ -345,12 +361,37 @@ impl SessionLog {
                 }
                 self.created = Some(created);
             }
+            "tool.call" => {
+                if let ToolCallKey::Seq(call_seq) = ToolCallKey::from_payload(&spec.payload) {
+                    if call_seq != seq {
+                        return Err(LogError::Invalid(format!(
+                            "tool.call has invalid call_seq {call_seq}"
+                        )));
+                    }
+                }
+            }
             "tool.result" | "tool.aborted" => {
                 let call_id = required_str(&spec.payload, "call_id", &spec.event_type)?;
                 if spec.event_type == "tool.aborted" {
                     required_str(&spec.payload, "reason", &spec.event_type)?;
                 }
-                if !self.settled_calls.insert(call_id.to_owned()) {
+                let key = ToolCallKey::from_payload(&spec.payload);
+                if let ToolCallKey::Seq(call_seq) = key {
+                    let call = call_seq
+                        .checked_sub(1)
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| self.events.get(index));
+                    if !call.is_some_and(|event| {
+                        event.event_type == "tool.call"
+                            && event.payload.get("call_id").and_then(Value::as_str) == Some(call_id)
+                            && ToolCallKey::from_payload(&event.payload) == key
+                    }) {
+                        return Err(LogError::Invalid(format!(
+                            "tool {call_id} has no call at seq {call_seq}"
+                        )));
+                    }
+                }
+                if !self.settled_calls.insert(key) {
                     return Err(LogError::DuplicateSettlement {
                         call_id: call_id.to_owned(),
                     });
@@ -533,7 +574,7 @@ impl SessionLog {
     /// 回放：只从事件推导视图，不触发任何副作用（规范 §6）。
     pub fn replay(&self) -> SessionView {
         let mut view = SessionView::default();
-        let mut tool_index: HashMap<String, usize> = HashMap::new();
+        let mut tool_index: HashMap<ToolCallKey, usize> = HashMap::new();
 
         for event in &self.events {
             if event.durability == Durability::Ephemeral {
@@ -559,7 +600,10 @@ impl SessionLog {
                 }
                 "tool.call" => {
                     let call_id = payload_str(&event.payload, "call_id");
-                    tool_index.insert(call_id.clone(), view.tool_calls.len());
+                    tool_index.insert(
+                        ToolCallKey::from_payload(&event.payload),
+                        view.tool_calls.len(),
+                    );
                     view.tool_calls.push(ToolCallView {
                         call_id,
                         tool: payload_str(&event.payload, "tool"),
@@ -567,8 +611,7 @@ impl SessionLog {
                     });
                 }
                 "tool.result" => {
-                    let call_id = payload_str(&event.payload, "call_id");
-                    if let Some(ix) = tool_index.get(&call_id) {
+                    if let Some(ix) = tool_index.get(&ToolCallKey::from_payload(&event.payload)) {
                         view.tool_calls[*ix].state = ToolState::Settled {
                             is_error: event
                                 .payload
@@ -581,8 +624,7 @@ impl SessionLog {
                     }
                 }
                 "tool.aborted" => {
-                    let call_id = payload_str(&event.payload, "call_id");
-                    if let Some(ix) = tool_index.get(&call_id) {
+                    if let Some(ix) = tool_index.get(&ToolCallKey::from_payload(&event.payload)) {
                         view.tool_calls[*ix].state = ToolState::Aborted {
                             reason: payload_str(&event.payload, "reason"),
                         };

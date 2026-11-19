@@ -180,7 +180,7 @@ test('L2JS-004 timeout settles with E_SERVICE_TIMEOUT and sends cancel', async (
   assert.equal(cancel.payload.method, 'ensure')
 })
 
-// L2JS-005：tool.cancel → cancelForCall 取消同一 call_id 的在途调用（其余不受影响）。
+// L2JS-005：原始 call_id 重复时，只取消目标 tool.invoke 的在途服务请求。
 test('L2JS-005 cancelForCall cancels only that tool call chain', async () => {
   const transport = captureTransport()
   const client = createHostServiceClient({ send: transport.send, timeoutMs: 5_000 })
@@ -189,21 +189,24 @@ test('L2JS-005 cancelForCall cancels only that tool call chain', async () => {
     method: 'get',
     sessionId: 's-0001',
     callId: 'call-1',
+    toolRequestId: 'req-invoke-1',
   })
   const second = client.call({
     serviceKey: SERVICE_KEYS.storageKv,
     method: 'unit.loadAll',
     args: { unit_id: 'unit-000001' },
     callId: 'call-1',
+    toolRequestId: 'req-invoke-1',
   })
   const other = client.call({
     serviceKey: SERVICE_KEYS.workingDirectory,
     method: 'get',
     sessionId: 's-0001',
-    callId: 'call-2',
+    callId: 'call-1',
+    toolRequestId: 'req-invoke-2',
   })
   assert.equal(client.pendingCount(), 3)
-  assert.equal(client.cancelForCall('call-1'), 2)
+  assert.equal(client.cancelForCall('call-1', 'tool-cancelled', 'req-invoke-1'), 2)
   assert.equal(client.pendingCount(), 1)
   await assert.rejects(first, (error) => error.code === 'E_CANCELLED')
   await assert.rejects(second, (error) => error.code === 'E_CANCELLED')

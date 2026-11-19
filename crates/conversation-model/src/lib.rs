@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use dshr_session_store::{Durability, LogError, SessionLog, ToolState};
+use dshr_session_store::{Durability, LogError, SessionLog, ToolCallKey, ToolState};
 use dshr_tool_runtime::Presentation;
 use serde_json::Value;
 
@@ -62,7 +62,7 @@ pub fn build(jsonl: &str, session_id: &str) -> Result<Vec<Item>, LogError> {
 
 pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
-    let mut tool_index: HashMap<String, usize> = HashMap::new();
+    let mut tool_index: HashMap<ToolCallKey, usize> = HashMap::new();
 
     // 压缩区间与摘要消息：区间内事件不再渲染，摘要消息只经 context.compacted 展示。
     let mut ranges: Vec<(u64, u64)> = Vec::new();
@@ -101,7 +101,7 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
             }
             "tool.call" => {
                 let call_id = str_of(&event.payload, "call_id");
-                tool_index.insert(call_id.clone(), items.len());
+                tool_index.insert(ToolCallKey::from_payload(&event.payload), items.len());
                 items.push(Item::Tool(ToolItem {
                     call_id,
                     tool: str_of(&event.payload, "tool"),
@@ -116,8 +116,10 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                 }));
             }
             "tool.result" => {
-                let call_id = str_of(&event.payload, "call_id");
-                let Some(ix) = tool_index.get(&call_id).copied() else {
+                let Some(ix) = tool_index
+                    .get(&ToolCallKey::from_payload(&event.payload))
+                    .copied()
+                else {
                     continue;
                 };
                 let Some(Item::Tool(tool)) = items.get_mut(ix) else {
@@ -155,8 +157,10 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                 });
             }
             "tool.aborted" => {
-                let call_id = str_of(&event.payload, "call_id");
-                let Some(ix) = tool_index.get(&call_id).copied() else {
+                let Some(ix) = tool_index
+                    .get(&ToolCallKey::from_payload(&event.payload))
+                    .copied()
+                else {
                     continue;
                 };
                 let Some(Item::Tool(tool)) = items.get_mut(ix) else {

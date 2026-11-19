@@ -31,7 +31,7 @@ pub use spill::{PendingSpill, RecordedSpill, Retention, SpillPolicy, SpillRef, S
 use std::collections::{HashMap, HashSet};
 
 use dshr_agent_core::{ChatMessage, ModelToolCall};
-use dshr_session_store::{Durability, SessionLog};
+use dshr_session_store::{Durability, SessionLog, ToolCallKey};
 use serde_json::Value;
 
 /// 默认保留的历史消息条数（无预算信息时的兜底）。
@@ -472,7 +472,7 @@ struct SeqMessage {
 /// 历史重建时的外部化上下文：已留痕的记录（始终生效）+ 新策略（可关闭）+ 待落盘队列。
 struct SpillStage<'a> {
     policy: Option<&'a SpillPolicy>,
-    recorded: &'a HashMap<String, spill::RecordedSpill>,
+    recorded: &'a HashMap<ToolCallKey, spill::RecordedSpill>,
     pending: &'a mut Vec<PendingSpill>,
 }
 
@@ -524,8 +524,8 @@ fn history_with_seqs_spilled(
     let in_range = |seq: u64| ranges.iter().any(|(from, to)| seq >= *from && seq <= *to);
 
     let mut messages: Vec<SeqMessage> = Vec::new();
-    let mut pending: HashSet<String> = HashSet::new();
-    let mut settled: HashSet<String> = HashSet::new();
+    let mut pending = HashSet::new();
+    let mut settled = HashSet::new();
 
     for event in log.events() {
         if event.durability == Durability::Ephemeral || in_range(event.seq) {
@@ -575,7 +575,7 @@ fn history_with_seqs_spilled(
                         .cloned()
                         .unwrap_or(Value::Null),
                 };
-                pending.insert(call_id);
+                pending.insert(ToolCallKey::from_payload(&event.payload));
                 // 工具调用必须挂在 assistant 消息上；若上一条不是 assistant，补一条空的。
                 match messages.last_mut() {
                     Some(wrapped) => match &mut wrapped.message {
@@ -604,11 +604,11 @@ fn history_with_seqs_spilled(
             }
             "tool.result" | "tool.aborted" => {
                 let call_id = str_of(&event.payload, "call_id");
+                let key = ToolCallKey::from_payload(&event.payload);
                 // 没有对应调用（日志残缺）就跳过：宁可少一条，也不要非法序列。
-                if !pending.contains(&call_id) || settled.contains(&call_id) {
+                if !pending.contains(&key) || !settled.insert(key.clone()) {
                     continue;
                 }
-                settled.insert(call_id.clone());
                 let content = if event.event_type == "tool.aborted" {
                     format!("ERROR: 工具已中止（{}）", str_of(&event.payload, "reason"))
                 } else {
@@ -623,7 +623,13 @@ fn history_with_seqs_spilled(
                     {
                         format!("ERROR: {text}")
                     } else {
-                        externalize_tool_content(&call_id, &text, &content_value, spill.as_mut())
+                        externalize_tool_content(
+                            &call_id,
+                            &key,
+                            &text,
+                            &content_value,
+                            spill.as_mut(),
+                        )
                     }
                 };
                 messages.push(SeqMessage {
@@ -654,6 +660,7 @@ fn history_with_seqs_spilled(
 /// 模型可见的工具结果文本：已留痕的外部化按事件还原引用；否则按策略判断是否新外部化。
 fn externalize_tool_content(
     call_id: &str,
+    key: &ToolCallKey,
     text: &str,
     content: &Value,
     stage: Option<&mut SpillStage<'_>>,
@@ -661,7 +668,7 @@ fn externalize_tool_content(
     let Some(stage) = stage else {
         return text.to_owned();
     };
-    if let Some(recorded) = stage.recorded.get(call_id) {
+    if let Some(recorded) = stage.recorded.get(key) {
         let preview = spill::preview_of(text, recorded.preview_chars);
         return spill::render_reference(&recorded.spill, &preview);
     }
@@ -670,6 +677,10 @@ fn externalize_tool_content(
             let preview = spill::preview_of(text, policy.preview_chars);
             stage.pending.push(PendingSpill {
                 call_id: call_id.to_owned(),
+                call_seq: match key {
+                    ToolCallKey::Seq(seq) => Some(*seq),
+                    ToolCallKey::Id(_) => None,
+                },
                 spill: spill_ref.clone(),
                 payload,
                 preview_chars: policy.preview_chars,

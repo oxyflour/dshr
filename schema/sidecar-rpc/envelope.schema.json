@@ -44,7 +44,7 @@
       "description": "Service route anchor: `<name>/v<major>` (docs/spec/README.md §3). Required on every service proxy message; absent on v1 messages."
     },
     "session_id": { "type": "string", "pattern": "^s-[0-9]+$" },
-    "call_id": { "type": "string", "pattern": "^call-[0-9]+$" },
+    "call_id": { "type": "string", "minLength": 1 },
     "depth": { "type": "integer", "minimum": 0, "maximum": 4 },
     "trace_id": { "type": "string", "minLength": 1, "maxLength": 64 },
     "ts": {

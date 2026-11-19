@@ -82,7 +82,6 @@ const HOST_REQUEST_TIMEOUT_MS = 120_000
 // 工具调用的执行上下文：官方 fs 方法的签名里没有 call_id，用 AbortSignal 关联
 // 到发起它的 tool.invoke（审批审计需要同一个 call_id）。
 const callContexts = new WeakMap()
-const activeCalls = []
 
 const send = (kind, requestId, payload, extra = {}) => {
   process.stdout.write(
@@ -240,9 +239,11 @@ function createFsService(options = {}) {
     return describeTarget(absolute)
   }
 
-  const callOf = (signal) =>
-    callContexts.get(signal) ??
-    activeCalls.at(-1) ?? { callId: `fs-${Date.now()}`, tool: 'write' }
+  const callOf = (signal) => {
+    const call = callContexts.get(signal) ?? callStore.getStore()
+    if (!call) throw new Error('filesystem mutation requires an active tool call')
+    return call
+  }
 
   const readIfExists = async (target) => {
     try {
@@ -278,6 +279,7 @@ function createFsService(options = {}) {
     }
     const payload = {
       call_id: call.callId,
+      tool_request_id: call.toolRequestId,
       tool: call.tool,
       operation,
       path: meta.relative,
@@ -290,7 +292,7 @@ function createFsService(options = {}) {
     const result = await requestHost('fs.write.request', payload, {
       call_id: call.callId,
       plugin_id: 'dsh-official',
-    })
+    }, call.controller.signal)
     if (!result?.ok) {
       const code = result?.error?.code ?? 'FS_IO_ERROR'
       const message = result?.error?.message ?? `write failed (${code})`
@@ -584,24 +586,39 @@ function replaceOnce(text, search, replacement) {
  * sidecar → host 请求。当前只有 `fs.write.request`，答复 kind 为 `fs.write.result`。
  * Rust 在等待 tool.result 的读循环里同步服务这些请求（不会死锁）。
  */
-async function requestHost(kind, payload, extra = {}) {
+async function requestHost(kind, payload, extra, signal) {
+  signal.throwIfAborted()
   hostRequestSeq += 1
   const requestId = `host-${hostRequestSeq}`
   const response = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
       pendingHostRequests.delete(requestId)
+    }
+    const onAbort = () => {
+      cleanup()
+      reject(signal.reason)
+    }
+    const timer = setTimeout(() => {
+      cleanup()
       reject(
         Object.assign(new Error(`sidecar request ${kind} timed out`), {
           code: 'FS_IO_ERROR',
         }),
       )
     }, HOST_REQUEST_TIMEOUT_MS)
-    pendingHostRequests.set(requestId, { resolve, timer, kind })
+    signal.addEventListener('abort', onAbort, { once: true })
+    pendingHostRequests.set(requestId, {
+      resolve(result) {
+        cleanup()
+        resolve(result)
+      },
+    })
     try {
       send(kind, requestId, payload, extra)
     } catch (error) {
-      clearTimeout(timer)
-      pendingHostRequests.delete(requestId)
+      cleanup()
       reject(error)
     }
   })
@@ -674,17 +691,17 @@ async function bootPlugins(entries) {
 
 async function runTool(definition, msg) {
   const controller = new AbortController()
-  inflight.set(msg.call_id, controller)
-  const call = { callId: msg.call_id, tool: definition.name }
-  callContexts.set(controller.signal, call)
-  activeCalls.push(call)
   // 服务代理读取的调用上下文：session_id 只从信封来（spec §5），depth 用于 +1。
   const callContext = {
     callId: msg.call_id,
+    toolRequestId: msg.request_id,
+    controller,
     tool: definition.name,
     sessionId: msg.session_id,
     depth: Number.isInteger(msg.depth) ? msg.depth : 0,
   }
+  inflight.set(msg.request_id, callContext)
+  callContexts.set(controller.signal, callContext)
   const started = Date.now()
   try {
     // ToolRunContext 在官方实现里由执行器组装；这里给最小可用集合：
@@ -741,6 +758,7 @@ async function runTool(definition, msg) {
       definition.execute(argumentsValue, exec),
     )
     await Promise.all(pendingSessionWrites)
+    controller.signal.throwIfAborted()
     if (sessionWriteError) throw sessionWriteError
 
     let content
@@ -770,6 +788,9 @@ async function runTool(definition, msg) {
       message: `dsh tool ${definition.name} done in ${Date.now() - started}ms`,
     })
   } catch (error) {
+    const code = controller.signal.aborted
+      ? 'E_CANCELLED'
+      : typeof error?.code === 'string' ? error.code : 'E_TOOL'
     send(
       'tool.result',
       msg.request_id,
@@ -783,16 +804,14 @@ async function runTool(definition, msg) {
       {
         call_id: msg.call_id,
         error: {
-          code: error?.code ?? 'E_TOOL',
+          code,
           message: String(error?.message ?? error),
           retryable: false,
         },
       },
     )
   } finally {
-    const index = activeCalls.indexOf(call)
-    if (index >= 0) activeCalls.splice(index, 1)
-    inflight.delete(msg.call_id)
+    inflight.delete(msg.request_id)
   }
 }
 
@@ -889,8 +908,6 @@ async function handle(msg) {
         })
         return
       }
-      clearTimeout(pending.timer)
-      pendingHostRequests.delete(msg.request_id)
       pending.resolve(
         msg.error
           ? { ok: false, error: { code: msg.error.code, message: msg.error.message } }
@@ -916,11 +933,13 @@ async function handle(msg) {
       return
     }
     case 'tool.cancel': {
-      const controller = inflight.get(msg.call_id)
-      if (controller) controller.abort()
-      // 服务调用取消（spec §8/§13.6）：同一调用链上在途的 host.service.request
-      // 逐个发 host.service.cancel，本地以 E_CANCELLED 结算。
-      if (hostServices && msg.call_id) hostServices.cancelForCall(msg.call_id)
+      const requestId = msg.payload?.tool_request_id
+      for (const call of inflight.values()) {
+        if (call.callId !== msg.call_id || (requestId && requestId !== call.toolRequestId)) continue
+        inflight.delete(call.toolRequestId)
+        call.controller.abort()
+        hostServices?.cancelForCall(call.callId, call.toolRequestId)
+      }
       return
     }
     case 'host.service.result': {

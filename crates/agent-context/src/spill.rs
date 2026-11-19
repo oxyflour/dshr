@@ -20,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dshr_session_store::{EventSpec, LogError, SessionLog};
+use dshr_session_store::{EventSpec, LogError, SessionLog, ToolCallKey};
 use serde_json::{json, Value};
 
 use crate::sha256::digest_hex;
@@ -229,6 +229,7 @@ impl SpillRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingSpill {
     pub call_id: String,
+    pub call_seq: Option<u64>,
     pub spill: SpillRef,
     pub payload: Vec<u8>,
     pub preview_chars: usize,
@@ -295,9 +296,10 @@ pub fn render_reference(spill: &SpillRef, preview: &str) -> String {
 /// 2. 否则通过 `tool.result.pruned.spill_ref` 关联到同 id 的 `spill.created`。
 ///
 /// 找不到 `spill.created` 的 `pruned` 事件会被忽略（退化为完整内容，不阻塞回放）。
-pub fn recorded_spills(log: &SessionLog) -> HashMap<String, RecordedSpill> {
+pub fn recorded_spills(log: &SessionLog) -> HashMap<ToolCallKey, RecordedSpill> {
     let mut created: HashMap<String, RecordedSpill> = HashMap::new();
-    let mut edges: Vec<(String, String)> = Vec::new();
+    let mut map = HashMap::new();
+    let mut edges = Vec::new();
 
     for event in log.events() {
         match event.event_type.as_str() {
@@ -317,8 +319,7 @@ pub fn recorded_spills(log: &SessionLog) -> HashMap<String, RecordedSpill> {
                 };
                 if let Some(call_id) = event.payload.get("call_id").and_then(Value::as_str) {
                     if !call_id.is_empty() {
-                        created
-                            .entry(format!("call:{call_id}"))
+                        map.entry(ToolCallKey::from_payload(&event.payload))
                             .or_insert(recorded.clone());
                     }
                 }
@@ -338,25 +339,16 @@ pub fn recorded_spills(log: &SessionLog) -> HashMap<String, RecordedSpill> {
                     .unwrap_or_default()
                     .to_owned();
                 if !call_id.is_empty() && !spill_ref.is_empty() {
-                    edges.push((call_id, spill_ref));
+                    edges.push((ToolCallKey::from_payload(&event.payload), spill_ref));
                 }
             }
             _ => {}
         }
     }
 
-    let mut map: HashMap<String, RecordedSpill> = HashMap::new();
-    for (key, recorded) in &created {
-        if let Some(call_id) = key.strip_prefix("call:") {
-            map.insert(call_id.to_owned(), recorded.clone());
-        }
-    }
-    for (call_id, spill_ref) in edges {
-        if map.contains_key(&call_id) {
-            continue;
-        }
+    for (key, spill_ref) in edges {
         if let Some(recorded) = created.get(&spill_ref) {
-            map.insert(call_id, recorded.clone());
+            map.entry(key).or_insert_with(|| recorded.clone());
         }
     }
     map
@@ -389,24 +381,22 @@ pub fn record_spill(
     pending: &PendingSpill,
     ts: &str,
 ) -> Result<(u64, u64), LogError> {
-    let created_seq = log.append(EventSpec::durable(
-        EVENT_SPILL_CREATED,
-        ts,
-        pending
-            .spill
-            .event_payload(&pending.call_id, pending.preview_chars),
-    ))?;
-    let pruned_seq = log.append(EventSpec::durable(
-        EVENT_TOOL_RESULT_PRUNED,
-        ts,
-        json!({
-            "call_id": pending.call_id,
-            "original_size": pending.spill.size,
-            "spill_ref": pending.spill.id,
-            "mode": "spill",
-            "preview_chars": pending.preview_chars,
-        }),
-    ))?;
+    let mut created = pending
+        .spill
+        .event_payload(&pending.call_id, pending.preview_chars);
+    let mut pruned = json!({
+        "call_id": pending.call_id,
+        "original_size": pending.spill.size,
+        "spill_ref": pending.spill.id,
+        "mode": "spill",
+        "preview_chars": pending.preview_chars,
+    });
+    if let Some(call_seq) = pending.call_seq {
+        created["call_seq"] = json!(call_seq);
+        pruned["call_seq"] = json!(call_seq);
+    }
+    let created_seq = log.append(EventSpec::durable(EVENT_SPILL_CREATED, ts, created))?;
+    let pruned_seq = log.append(EventSpec::durable(EVENT_TOOL_RESULT_PRUNED, ts, pruned))?;
     Ok((created_seq, pruned_seq))
 }
 
@@ -804,7 +794,9 @@ mod tests {
         .expect("pruned");
 
         let recorded = recorded_spills(&log);
-        let entry = recorded.get("c9").expect("edge 关联");
+        let entry = recorded
+            .get(&ToolCallKey::Id("c9".to_owned()))
+            .expect("edge 关联");
         assert_eq!(entry.spill, spill);
         assert_eq!(entry.preview_chars, 64);
         assert_eq!(spill_refs_in_log(&log), vec![spill]);

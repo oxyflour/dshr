@@ -171,26 +171,37 @@ fn m3_parallel_103_per_call_timeout_isolated() {
 /// M3-PARALLEL-104：超时后的迟到结果被丢弃，不干扰后续调用。
 #[test]
 fn m3_parallel_104_late_result_is_dropped() {
-    let mut host = spawn_probe().expect("probe sidecar (no silent skip)");
-    let calls = vec![BatchInvokeCall::new(
-        "call-late",
-        "probe_slow",
-        json!({}),
-        Duration::from_millis(200),
-    )];
-    let results = host.invoke_batch(&calls, 1, None);
-    assert!(
-        matches!(results[0], Err(HostError::Timeout(_))),
-        "{:?}",
-        results[0]
+    let mut host = spawn_batch_fixture().expect("batch fixture (no silent skip)");
+    let generation = host.generation().to_owned();
+    let raw_id = "model_call_unchanged";
+    let expired = host.invoke_in_session(
+        raw_id,
+        Some("s-before-timeout"),
+        "batch_ignore_cancel",
+        json!({ "ms": 350, "callbacks": true }),
+        Duration::from_millis(100),
     );
+    assert!(matches!(expired, Err(HostError::Timeout(_))), "{expired:?}");
 
-    // probe_slow 的迟到 tool.result 会在 ~2s 后到达；随后单调用必须正常。
-    thread::sleep(Duration::from_millis(2_200));
-    let outcome = host
-        .invoke("probe_echo", json!({ "i": 7 }), Duration::from_secs(5))
-        .expect("invoke after late result");
-    assert_eq!(value_of(&outcome)["echo"]["i"], 7);
+    // A's terminal reply and callbacks arrive while B is active with the same raw model ID.
+    let calls = vec![BatchInvokeCall::new(
+        raw_id,
+        "batch_sleep",
+        json!({ "ms": 650 }),
+        Duration::from_secs(5),
+    )
+    .with_session("s-after-timeout")];
+    let results = host.invoke_batch(&calls, 1, None);
+    let outcome = results[0].as_ref().expect("invoke after late result");
+    let value = value_of(outcome);
+    assert_eq!(outcome.terminal.call_id.as_deref(), Some(raw_id));
+    assert_eq!(value["session_id"], "s-after-timeout");
+    assert_eq!(
+        value["callback_errors"],
+        json!({ "fs": "E_CANCELLED", "service": "E_CANCELLED" })
+    );
+    assert!(!host.has_exited());
+    assert_eq!(host.generation(), generation);
 }
 
 /// M3-PARALLEL-105：取消置位 → 对在途调用发 tool.cancel，批快速返回 aborted 终态。

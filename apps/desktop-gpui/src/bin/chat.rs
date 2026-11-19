@@ -24,6 +24,7 @@
 //!   cargo run ... --bin chat -- --trust-key <action> ...     # 信任密钥库管理
 //!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
@@ -635,7 +636,7 @@ struct ChatState {
     path: PathBuf,
     host: Option<SidecarHost>,
     plugins: PluginHost,
-    /// 必须跨轮复用：turn id 单调递增，否则 call_id 重复会被 Session Log 拒收。
+    /// Agent 在窗口内复用，会话上下文由当前日志重建。
     agent: Agent<Box<dyn ModelProvider>>,
     seq: u64,
     /// 审批 broker：工作线程阻塞等待 UI 决定；不属于大锁保护范围。
@@ -652,8 +653,8 @@ struct ChatState {
     cancel: Arc<AtomicBool>,
     /// 是否允许派生子会话（子会话本身为 false，保证默认单层）。
     allow_spawn: bool,
-    /// sidecar 启动/插件装载/会话加载阶段上报的错误（启动错误提示用）。
-    plugin_errors: Vec<String>,
+    external_plugin_errors: Vec<String>,
+    session_errors: Vec<String>,
     /// 原会话文件存在但读不出来时置位：禁止 save 覆盖（否则会把读失败当成空会话写回）。
     save_blocked: Option<String>,
     /// 插件 ADC 面板缓存（`workspace.panel` 的 view → 元素树 JSON）。
@@ -1228,6 +1229,15 @@ impl ChatSessionAccess {
         taken
     }
 
+    fn clear_snapshot(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.published = None;
+        inner.pending.clear();
+    }
+
     // ServiceError 携带结构化 detail（与协议层一致的大 Err），这里按 host crate 的
     // 同样取舍保留原类型，不为了 clippy 的尺寸阈值再包一层 Box。
     #[allow(clippy::result_large_err)]
@@ -1516,12 +1526,15 @@ impl ToolExecutor for ChatExecutor<'_> {
                 ToolOrigin::Sidecar { .. } => {
                     if self.host.is_some() {
                         sidecar_indices.push(index);
-                        sidecar_calls.push(dshr_compat_dsh_host::BatchInvokeCall::new(
-                            call.call_id.clone(),
-                            call.tool.clone(),
-                            call.arguments.clone(),
-                            sidecar_tool_timeout(&definition),
-                        ));
+                        sidecar_calls.push(
+                            dshr_compat_dsh_host::BatchInvokeCall::new(
+                                call.call_id.clone(),
+                                call.tool.clone(),
+                                call.arguments.clone(),
+                                sidecar_tool_timeout(&definition),
+                            )
+                            .with_session(self.parent_id),
+                        );
                     } else {
                         outcomes[index] = Some(ToolOutcome::failure("sidecar unavailable"));
                     }
@@ -1663,8 +1676,9 @@ impl ChatExecutor<'_> {
                 // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
                 // 可取消版本在用户停止时发 tool.cancel 给 sidecar（慢工具不再等待完整超时）。
                 let timeout = sidecar_tool_timeout(definition);
-                let result = host.invoke_as_cancellable(
+                let result = host.invoke_as_cancellable_in_session(
                     &call.call_id,
+                    Some(self.parent_id),
                     &call.tool,
                     call.arguments.clone(),
                     timeout,
@@ -1864,6 +1878,107 @@ fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
     }
 }
 
+struct OpenedSessionLog {
+    log: SessionLog,
+    errors: Vec<String>,
+    save_blocked: Option<String>,
+    wrote_created: bool,
+    recovered: bool,
+}
+
+fn open_session_log(path: &std::path::Path, session_id: &str) -> OpenedSessionLog {
+    let mut errors = Vec::new();
+    let mut recovered = false;
+    // 上次保存若在 Windows remove→rename 窗口崩溃，主文件会缺失而 .bak 完整：
+    // 先尝试恢复，避免把可恢复的历史当成“新会话”重写。
+    if !path.exists() {
+        match recover_backup(path) {
+            Ok(true) => {
+                recovered = true;
+                eprintln!("[chat] 已从备份恢复会话日志 {}", path.display());
+                errors.push(format!(
+                    "已恢复：会话从备份恢复（{}），可继续使用",
+                    path.display()
+                ));
+            }
+            Ok(false) => {}
+            Err(err) => errors.push(format!("会话备份恢复失败：{err}")),
+        }
+    }
+    let mut save_blocked: Option<String> = None;
+    let mut log = if path.exists() {
+        match std::fs::read_to_string(path) {
+            Ok(text) => match SessionLog::from_jsonl(session_id, &text) {
+                Ok(log) => log,
+                // 损坏：隔离原文件（字节保留供导出排查），绝不覆盖。
+                Err(err) => {
+                    match quarantine_corrupt(path) {
+                        Ok(quarantined) => {
+                            let message = format!(
+                                "会话日志损坏，已隔离为 {}（原文件保留，可导出排查）: {err}",
+                                quarantined.display()
+                            );
+                            eprintln!("[chat] {message}");
+                            errors.push(message);
+                        }
+                        Err(quarantine_err) => {
+                            let message = format!(
+                                "会话日志损坏且隔离失败（为避免覆盖，已停止写入）: {err}; {quarantine_err}"
+                            );
+                            eprintln!("[chat] {message}");
+                            errors.push(message);
+                            save_blocked = Some(String::from("会话日志损坏且无法隔离"));
+                        }
+                    }
+                    SessionLog::new(session_id)
+                }
+            },
+            Err(err) => {
+                // 文件存在但读失败（锁定/权限）：绝不能当空会话重写。
+                let message = format!("读取会话日志失败（为避免覆盖，已停止写入）: {err}");
+                eprintln!("[chat] {message}");
+                errors.push(message);
+                save_blocked = Some(format!("读取会话日志失败: {err}"));
+                SessionLog::new(session_id)
+            }
+        }
+    } else {
+        SessionLog::new(session_id)
+    };
+    // 新会话：把 `session.created` 作为第一条事件（父链/来源/工作区的权威来源）。
+    let mut wrote_created = false;
+    if log.is_empty() {
+        let workspace = workspace_root().display().to_string();
+        match log.append_created(now_ts(), &SessionCreated::root(workspace)) {
+            Ok(_) => wrote_created = true,
+            Err(err) => eprintln!("[chat] 写入 session.created 失败: {err}"),
+        }
+    }
+
+    OpenedSessionLog {
+        log,
+        errors,
+        save_blocked,
+        wrote_created,
+        recovered,
+    }
+}
+/// 旧日志可能包含别的 ID 格式。只恢复此处生成的消息计数。
+fn last_message_seq(log: &SessionLog) -> u64 {
+    log.events()
+        .iter()
+        .filter_map(|event| {
+            let id = event.payload.get("message_id")?.as_str()?;
+            let seq = id
+                .strip_prefix("m-u")
+                .or_else(|| id.strip_prefix("m-a"))
+                .or_else(|| id.strip_prefix("m-sum"))?;
+            seq.parse::<u64>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 impl ChatState {
     fn new(
         path: PathBuf,
@@ -1885,71 +2000,13 @@ impl ChatState {
         allow_spawn: bool,
         with_sidecar: bool,
     ) -> Self {
-        let mut boot_errors: Vec<String> = Vec::new();
-        // 上次保存若在 Windows remove→rename 窗口崩溃，主文件会缺失而 .bak 完整：
-        // 先尝试恢复，避免把可恢复的历史当成“新会话”重写。
-        if !path.exists() {
-            match recover_backup(&path) {
-                Ok(true) => {
-                    eprintln!("[chat] 已从备份恢复会话日志 {}", path.display());
-                    boot_errors.push(format!(
-                        "已恢复：会话从备份恢复（{}），可继续使用",
-                        path.display()
-                    ));
-                }
-                Ok(false) => {}
-                Err(err) => boot_errors.push(format!("会话备份恢复失败：{err}")),
-            }
-        }
-        let mut save_blocked: Option<String> = None;
-        let mut log = if path.exists() {
-            match std::fs::read_to_string(&path) {
-                Ok(text) => match SessionLog::from_jsonl(session_id, &text) {
-                    Ok(log) => log,
-                    // 损坏：隔离原文件（字节保留供导出排查），绝不覆盖。
-                    Err(err) => {
-                        match quarantine_corrupt(&path) {
-                            Ok(quarantined) => {
-                                let message = format!(
-                                    "会话日志损坏，已隔离为 {}（原文件保留，可导出排查）: {err}",
-                                    quarantined.display()
-                                );
-                                eprintln!("[chat] {message}");
-                                boot_errors.push(message);
-                            }
-                            Err(quarantine_err) => {
-                                let message = format!(
-                                    "会话日志损坏且隔离失败（为避免覆盖，已停止写入）: {err}; {quarantine_err}"
-                                );
-                                eprintln!("[chat] {message}");
-                                boot_errors.push(message);
-                                save_blocked = Some(String::from("会话日志损坏且无法隔离"));
-                            }
-                        }
-                        SessionLog::new(session_id)
-                    }
-                },
-                Err(err) => {
-                    // 文件存在但读失败（锁定/权限）：绝不能当空会话重写。
-                    let message = format!("读取会话日志失败（为避免覆盖，已停止写入）: {err}");
-                    eprintln!("[chat] {message}");
-                    boot_errors.push(message);
-                    save_blocked = Some(format!("读取会话日志失败: {err}"));
-                    SessionLog::new(session_id)
-                }
-            }
-        } else {
-            SessionLog::new(session_id)
-        };
-        // 新会话：把 `session.created` 作为第一条事件（父链/来源/工作区的权威来源）。
-        let mut wrote_created = false;
-        if log.is_empty() {
-            let workspace = workspace_root().display().to_string();
-            match log.append_created(now_ts(), &SessionCreated::root(workspace)) {
-                Ok(_) => wrote_created = true,
-                Err(err) => eprintln!("[chat] 写入 session.created 失败: {err}"),
-            }
-        }
+        let OpenedSessionLog {
+            log,
+            errors: session_errors,
+            save_blocked,
+            wrote_created,
+            ..
+        } = open_session_log(&path, session_id);
 
         let sessions_dir = path
             .parent()
@@ -1989,19 +2046,14 @@ impl ChatState {
         if let Some(sidecar) = &host {
             register_sidecar_tools(&mut plugins, sidecar);
         }
-        let mut plugin_errors = host
-            .as_ref()
-            .map(|sidecar| sidecar.boot_errors().to_vec())
-            .unwrap_or_default();
-        plugin_errors.extend(boot_errors);
-
+        let seq = last_message_seq(&log);
         let mut state = Self {
             log,
             path: path.clone(),
             host,
             plugins,
             agent: Agent::new(select_provider(cancel)),
-            seq: 0,
+            seq,
             approvals,
             spill: SpillStore::new(spill_dir_for(&path)),
             session_id: session_id.to_owned(),
@@ -2009,7 +2061,8 @@ impl ChatState {
             l2_access,
             cancel: cancel.clone(),
             allow_spawn,
-            plugin_errors,
+            external_plugin_errors: Vec::new(),
+            session_errors,
             save_blocked,
             adc_panels: Vec::new(),
         };
@@ -2020,6 +2073,36 @@ impl ChatState {
             state.save();
         }
         state
+    }
+
+    /// 在同一个会话目录内切换日志，复用窗口持有的工具运行时。
+    /// 返回是否已新建或恢复日志，供侧栏刷新索引。
+    fn switch_session(&mut self, path: PathBuf, session_id: &str) -> bool {
+        let opened = open_session_log(&path, session_id);
+        if let Some(access) = &self.l2_access {
+            access.clear_snapshot();
+        }
+        self.seq = last_message_seq(&opened.log);
+        self.log = opened.log;
+        self.spill = SpillStore::new(spill_dir_for(&path));
+        self.path = path;
+        self.session_id = session_id.to_owned();
+        self.session_errors = opened.errors;
+        self.save_blocked = opened.save_blocked;
+        if opened.wrote_created {
+            self.save();
+        }
+        opened.wrote_created || opened.recovered
+    }
+
+    fn load_errors(&self) -> Vec<String> {
+        self.host
+            .iter()
+            .flat_map(|host| host.boot_errors())
+            .chain(&self.external_plugin_errors)
+            .chain(&self.session_errors)
+            .cloned()
+            .collect()
     }
 
     /// 刷新 `workspace.panel` 的 ADC 视图缓存（装载/重载插件后调用一次）。
@@ -2105,7 +2188,6 @@ impl ChatState {
             return false;
         };
         register_sidecar_tools(&mut self.plugins, &host);
-        self.plugin_errors = host.boot_errors().to_vec();
         self.host = Some(host);
         true
     }
@@ -2260,6 +2342,7 @@ impl ChatState {
                 l2_access: self.l2_access.clone(),
             };
             let log_for_events = log_cell.clone();
+            let mut pending_call_seqs: HashMap<String, VecDeque<u64>> = HashMap::new();
             self.agent.run_turn_streaming(
                 &history,
                 text,
@@ -2276,11 +2359,13 @@ impl ChatState {
                             .unwrap_or_else(|| ("unknown".to_owned(), "generic".to_owned()));
                         {
                             let mut log = log_for_events.borrow_mut();
-                            let _ = log.append(EventSpec::durable(
+                            let call_seq = log.len() as u64 + 1;
+                            if let Ok(seq) = log.append(EventSpec::durable(
                                 "tool.call",
                                 &ts,
                                 json!({
                                     "call_id": call.call_id,
+                                    "call_seq": call_seq,
                                     "tool": call.tool,
                                     "origin": origin,
                                     // 展示元数据随事件持久化（spec/session-log.md §6）：
@@ -2288,11 +2373,16 @@ impl ChatState {
                                     "presentation": presentation,
                                     "arguments": call.arguments
                                 }),
-                            ));
+                            )) {
+                                pending_call_seqs.entry(call.call_id.clone()).or_default().push_back(seq);
+                            }
                         }
                         emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::ToolResult { call_id, outcome } => {
+                        let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
+                            return;
+                        };
                         {
                             let mut log = log_for_events.borrow_mut();
                             // P1-3：普通工具失败（拒绝/报错/预算耗尽）必须写 tool.result(is_error)，
@@ -2303,6 +2393,7 @@ impl ChatState {
                                     &ts,
                                     json!({
                                         "call_id": call_id,
+                                        "call_seq": call_seq,
                                         "reason": "cancel"
                                     }),
                                 ));
@@ -2312,6 +2403,7 @@ impl ChatState {
                                     &ts,
                                     json!({
                                         "call_id": call_id,
+                                        "call_seq": call_seq,
                                         "is_error": outcome.is_error,
                                         // 对齐 DSH：content 给模型，value/meta 给展示与回放。
                                         "content": outcome.content,
@@ -2324,12 +2416,15 @@ impl ChatState {
                         emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::ToolCancelled { call_id, reason } => {
+                        let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
+                            return;
+                        };
                         {
                             let mut log = log_for_events.borrow_mut();
                             let _ = log.append(EventSpec::durable(
                                 "tool.aborted",
                                 &ts,
-                                json!({ "call_id": call_id, "reason": reason }),
+                                json!({ "call_id": call_id, "call_seq": call_seq, "reason": reason }),
                             ));
                         }
                         emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
@@ -2711,6 +2806,7 @@ struct ChatApp {
     session_depths: std::collections::BTreeMap<String, u32>,
     /// sidecar 启动/插件装载/插件面板错误：插件面板顶部提示（避免"插件失败但界面无感"）。
     plugin_errors: Vec<String>,
+    sidecar_reload_pending: bool,
     /// 插件 ADC 面板快照（渲染路径只读；刷新见加载插件/打开面板处，不持锁渲染）。
     adc_panels: Vec<AdcPanelView>,
 }
@@ -2765,11 +2861,15 @@ impl ChatApp {
         // 模型调用与工具执行都在工作线程：UI 线程不允许被网络阻塞。
         // 事件 → 快照 → channel → UI 合并，UI 侧没有事件重放逻辑。
         let state = self.state.clone();
+        let reload_sidecar = std::mem::take(&mut self.sidecar_reload_pending);
         let (tx, rx) = mpsc::channel::<Vec<Row>>();
         std::thread::spawn(move || {
             let mut guard = state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if reload_sidecar || guard.host.as_mut().is_some_and(SidecarHost::has_exited) {
+                let _ = guard.restart_sidecar();
+            }
             guard.stream_turn(&text, &mut |rows| {
                 // UI 已关闭时发送失败：忽略并继续，不要 panic。
                 let _ = tx.send(rows);
@@ -2813,6 +2913,9 @@ impl ChatApp {
                 }
                 if closed {
                     let _ = this.update(cx, |app, cx| {
+                        if let Ok(guard) = app.state.try_lock() {
+                            app.plugin_errors = guard.load_errors();
+                        }
                         app.busy = false;
                         cx.notify();
                     });
@@ -3254,7 +3357,7 @@ impl ChatApp {
             .unwrap_or_else(|| self.session_id.clone())
     }
 
-    /// 切到另一个会话：新建一份 ChatState（含侧车/插件），把 UI 状态整体替换。
+    /// 切到另一个会话：加载日志并刷新对话视图，保留窗口的侧车和插件。
     ///
     /// 生成中不允许切换——工作线程还在往旧 state 写，切走会让 UI 与日志分叉。
     fn open_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -3262,21 +3365,25 @@ impl ChatApp {
             return;
         }
         let path = self.store.path_for(&id);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let state = ChatState::new(path, &id, &cancel, self.approvals.clone());
-        let rows = rows_snapshot(&state.log, None);
-        self.plugin_errors = state.plugin_errors.clone();
-        self.state = Arc::new(Mutex::new(state));
-        self.cancel = cancel;
-        self.rows = rows;
+        let index_changed = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let index_changed = state.switch_session(path, &id);
+            self.rows = rows_snapshot(&state.log, None);
+            self.plugin_errors = state.load_errors();
+            index_changed
+        };
         self.session_id = id;
-        self.busy = false;
         self.initial_scroll_done = false;
         self.visible_limit = usize::MAX;
         self.renaming = None;
         self.rename_input = None;
         self.pending_delete = None;
-        self.reload_sessions();
+        if index_changed {
+            self.reload_sessions();
+        }
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -3289,9 +3396,6 @@ impl ChatApp {
         if let Err(err) = self.store.create(&id) {
             eprintln!("[chat] 新建会话失败: {err}");
             return;
-        }
-        if !self.store.path_for(&id).exists() {
-            self.reload_sessions();
         }
         self.open_session(id, window, cx);
     }
@@ -3392,7 +3496,7 @@ impl ChatApp {
         cx.notify();
     }
 
-    /// 启用/禁用插件：写 profile、更新 sidecar 环境、空闲时重启当前会话的 sidecar。
+    /// 启用/禁用插件：写 profile、更新 sidecar 环境，生成中则留待下一轮重载。
     fn toggle_plugin(&mut self, name: String, cx: &mut Context<Self>) {
         if !self.profile.can_edit() {
             eprintln!("[chat] Loader 模式插件列表只读（改 cordis.yml / patch 后重启）");
@@ -3415,7 +3519,9 @@ impl ChatApp {
             eprintln!("[chat] 保存插件 profile 失败: {err}");
         }
         std::env::set_var("DSHR_DSH_PLUGINS", self.profile.sidecar_json());
-        if !self.busy {
+        if self.busy {
+            self.sidecar_reload_pending = true;
+        } else {
             let mut guard = self
                 .state
                 .lock()
@@ -3423,7 +3529,8 @@ impl ChatApp {
             if !guard.restart_sidecar() {
                 eprintln!("[chat] 重启 sidecar 失败（插件开关已保存，下次启动生效）");
             }
-            self.plugin_errors = guard.plugin_errors.clone();
+            self.sidecar_reload_pending = false;
+            self.plugin_errors = guard.load_errors();
         }
         cx.notify();
     }
@@ -3438,7 +3545,7 @@ impl ChatApp {
         let enabled = entries.iter().filter(|entry| entry.enabled).count();
         let total = entries.len();
         let footer = if editable {
-            String::from("切换会重启当前会话的 sidecar；配置写入 DSHR_PROFILE_DIR/plugins.json")
+            String::from("修改插件开关后重载 sidecar，配置保存到 DSHR_PROFILE_DIR/plugins.json")
         } else {
             String::from("来自 Loader YAML（DSHR_LOADER_BUNDLE），只读；修改 bundle/patch 后重启")
         };
@@ -5148,7 +5255,76 @@ fn selftest() -> i32 {
         path.display()
     );
 
-    if ok && same {
+    // 切换时复用真实 Node generation；两个会话可各自调用同一个工具，并能回到旧会话继续。
+    const RAW_ID: &str = "model-call-preserved";
+    struct FixedToolIdProvider(bool);
+    impl ModelProvider for FixedToolIdProvider {
+        fn complete(&mut self, _: &CompletionRequest) -> Result<ModelReply, String> {
+            self.0 = !self.0;
+            if self.0 {
+                Ok(ModelReply {
+                    text: String::new(),
+                    tool_calls: vec![ModelToolCall {
+                        id: RAW_ID.to_owned(),
+                        name: "probe_echo".to_owned(),
+                        arguments: json!({"text": "same model ID"}),
+                    }],
+                })
+            } else {
+                Ok(ModelReply::text_only("done"))
+            }
+        }
+    }
+    state.agent = Agent::new(Box::new(FixedToolIdProvider(false)));
+    let generation = state.host.as_ref().map(|host| host.generation().to_owned());
+    let timed_out = state.host.as_mut().is_some_and(|host| {
+        matches!(
+            host.invoke_as(RAW_ID, "probe_slow", json!({}), Duration::from_millis(50)),
+            Err(dshr_compat_dsh_host::HostError::Timeout(_))
+        )
+    });
+    let other_id = "s-selftest-other";
+    let other_path = path.with_file_name(format!("{other_id}.jsonl"));
+    reset_session_file(&other_path);
+    let created = state.switch_session(other_path.clone(), other_id);
+    state.submit("用工具试一下");
+    let other_ok = matches!(state.items().as_slice(), [_, Item::Tool(t), _]
+        if t.call_id == RAW_ID && t.origin == "sidecar" && t.state == ToolState::Settled { is_error: false });
+    let started = std::time::Instant::now();
+    let index_changed = state.switch_session(path, SESSION_ID);
+    let switch_elapsed = started.elapsed();
+    let restored = state.items() == items;
+    state.submit("切回来再用工具");
+    state.submit("下一轮复用同一个原始 ID");
+    let resumed = matches!(state.items().get(items.len()..), Some([_, Item::Tool(a), _, _, Item::Tool(b), _])
+        if [a, b].iter().all(|t| t.call_id == RAW_ID && t.state == ToolState::Settled { is_error: false }));
+    let replayed_raw_ids = std::fs::read_to_string(&state.path).ok()
+        .and_then(|text| SessionLog::from_jsonl(SESSION_ID, &text).ok())
+        .is_some_and(|saved| {
+            let history = history_from_log(&saved);
+            history.iter().filter(|msg| matches!(msg, ChatMessage::Tool { call_id, .. } if call_id == RAW_ID)).count() == 2
+                && history.iter().filter(|msg| matches!(msg, ChatMessage::Assistant { tool_calls, .. } if tool_calls.iter().any(|call| call.id == RAW_ID))).count() == 2
+        });
+    let reused = state
+        .host
+        .as_mut()
+        .is_some_and(|host| !host.has_exited() && generation.as_deref() == Some(host.generation()));
+    reset_session_file(&other_path);
+    println!(
+        "[selftest] switch created={created} other_ok={other_ok} restored={restored} resumed={resumed} reused={reused} timed_out={timed_out} replayed_raw_ids={replayed_raw_ids} load={switch_elapsed:?}"
+    );
+
+    if ok
+        && same
+        && created
+        && other_ok
+        && !index_changed
+        && restored
+        && resumed
+        && reused
+        && timed_out
+        && replayed_raw_ids
+    {
         println!("[selftest] PASS");
         0
     } else {
@@ -6007,7 +6183,7 @@ fn selftest_corrupt_session() -> i32 {
         .unwrap_or(false);
 
     let reported = state
-        .plugin_errors
+        .session_errors
         .iter()
         .any(|message| message.contains("会话日志损坏") && message.contains("隔离"));
     let preserved = quarantined_bytes == corrupt_bytes;
@@ -6232,7 +6408,7 @@ fn selftest_crash_recovery() -> i32 {
         .unwrap_or(false);
     let ok = crashed && backup_exists && before_ok && after_ok;
     let notice_ok = state
-        .plugin_errors
+        .session_errors
         .iter()
         .any(|message| message.starts_with("已恢复："));
     println!(
@@ -9914,14 +10090,14 @@ fn main() {
     )));
     let app_cancel = cancel.clone();
     // 已安装的 external-process 插件：按 profile 的 enabled 条目在启动时装载；
-    // 单个插件失败只进 plugin_errors，不阻塞窗口。
+    // 单个插件失败会在窗口上报。
     {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let external_errors =
             load_enabled_external_plugins(&mut guard.plugins, &profile, &sidecar_dir_for_app());
-        guard.plugin_errors.extend(external_errors);
+        guard.external_plugin_errors.extend(external_errors);
         // external-process 面板也在这里取一次树（之后渲染只读缓存）。
         guard.refresh_adc_panels();
     }
@@ -9931,7 +10107,7 @@ fn main() {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         (
             rows_snapshot(&guard.log, None),
-            guard.plugin_errors.clone(),
+            guard.load_errors(),
             guard.adc_panels.clone(),
         )
     };
@@ -10006,6 +10182,7 @@ fn main() {
                     frame_probe,
                     session_depths,
                     plugin_errors,
+                    sidecar_reload_pending: false,
                     adc_panels,
                 });
                 // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。

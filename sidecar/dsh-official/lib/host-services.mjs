@@ -8,7 +8,7 @@
 //   `request_id` 由本模块生成并在答复回填；迟到答复丢弃并记 `service.late_result` 诊断。
 // - 超时：按方法表/客户端配置的 timeout_ms 结算为 `E_SERVICE_TIMEOUT`，并发
 //   `host.service.cancel`（request_id 相同，payload 可带 method）尽力取消。
-// - 取消：`tool.cancel` 时对同一 `call_id` 的在途服务调用发 `host.service.cancel`，
+// - 取消：`tool.cancel` 时对同一工具请求的在途服务调用发 `host.service.cancel`，
 //   本地以 `E_CANCELLED` 结算（迟到成功结果不会交给插件，spec §8）。
 // - 事件：`event.emit` 只接受白名单 `session.event` / `service.event`，其余拒绝 + 诊断。
 // - storage：把官方 `kv` facet 的 unit 方法翻译成 `storage-kv/v1` 的 host.service.request，
@@ -100,6 +100,7 @@ export function buildHostServiceRequest({
   method,
   args = {},
   sessionId,
+  toolRequestId,
   depth = 0,
   version = PROTOCOL_MAX,
   generation = 'node-0001',
@@ -131,6 +132,7 @@ export function buildHostServiceRequest({
     payload: { method, args },
   }
   if (sessionId) envelope.session_id = sessionId
+  if (toolRequestId) envelope.payload.tool_request_id = toolRequestId
   return envelope
 }
 
@@ -261,6 +263,7 @@ export function createHostServiceClient({
         sessionId,
         depth = 0,
         callId,
+        toolRequestId,
         timeoutMs: overrideTimeout,
         version = PROTOCOL_MAX,
         pluginId,
@@ -276,6 +279,7 @@ export function createHostServiceClient({
           method,
           args,
           sessionId,
+          toolRequestId,
           depth,
           version,
           generation: effectiveGeneration,
@@ -306,6 +310,7 @@ export function createHostServiceClient({
           reject,
           timer,
           callId,
+          toolRequestId,
           serviceKey: envelope.service_key,
           method,
         })
@@ -360,12 +365,13 @@ export function createHostServiceClient({
       })
     },
 
-    /** `tool.cancel` 时取消同一调用链上的全部在途服务调用；返回取消条数。 */
-    cancelForCall(callId, reason = 'tool-cancelled') {
+    /** `tool.cancel` 时取消同一工具请求的在途服务调用；返回取消条数。 */
+    cancelForCall(callId, reason = 'tool-cancelled', toolRequestId) {
       let cancelled = 0
       for (const requestId of [...pending.keys()]) {
         const entry = pending.get(requestId)
         if (entry?.callId !== callId) continue
+        if (toolRequestId && entry.toolRequestId !== toolRequestId) continue
         if (this.cancel(requestId, reason)) cancelled += 1
       }
       return cancelled
@@ -704,7 +710,7 @@ export function createStorageHub({ callService } = {}) {
 
 /**
  * Sidecar 的接线组合：client + event hub + workingDirectory/storage 工厂。
- * `callContext()` 返回当前工具调用上下文 `{callId, sessionId, depth}`（AsyncLocalStorage）。
+ * `callContext()` 通过 AsyncLocalStorage 提供当前工具调用上下文。
  */
 export function createHostServicesRuntime({
   sendEnvelope,
@@ -724,11 +730,17 @@ export function createHostServicesRuntime({
     setTimer,
     clearTimer,
   })
-  const call = (request) =>
-    client.call({
+  const call = (request) => {
+    const active = callContext?.()
+    if (active?.controller?.signal.aborted) {
+      return Promise.reject(new HostServiceError('E_CANCELLED', 'tool request was cancelled'))
+    }
+    return client.call({
       generation: typeof generation === 'function' ? generation() : generation,
       ...request,
+      ...(active?.toolRequestId ? { callId: active.callId, toolRequestId: active.toolRequestId } : {}),
     })
+  }
   // event.subscribe/unsubscribe：白名单事件在首个/最后一个监听者出现时通知宿主。
   let eventSequence = 0
   const sendEventSubscription = (subscribe, eventName) => {
@@ -754,7 +766,8 @@ export function createHostServicesRuntime({
     call,
     eventHub,
     handleResult: (message) => client.handleResult(message),
-    cancelForCall: (callId) => client.cancelForCall(callId),
+    cancelForCall: (callId, toolRequestId) =>
+      client.cancelForCall(callId, 'tool-cancelled', toolRequestId),
     createWorkingDirectory: () => createWorkingDirectoryShim({ callService: call, callContext }),
     createStorage: () => createStorageHub({ callService: call }),
     catalog: HOST_SERVICE_CATALOG,

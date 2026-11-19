@@ -194,6 +194,9 @@ Rust ◄──tool.result──────  Sidecar
 4. 并发上限：默认 4 个 in-flight 调用/插件；超出返回 `E_BACKPRESSURE`，Sidecar 必须暂停发起新调用。
 5. 每个调用都有 `timeout_ms`（Rust 侧裁决，默认 120 s）；超时即 `E_TIMEOUT`，随后发送 `tool.cancel` 兜底。
 6. `tool.result` 载荷为 `{call_id, is_error, content[], value, meta?}`（对齐 DSH `ToolExecutionResult`；字段语义见 [`cpp-v1.md`](cpp-v1.md) §7.3）。Host 只把 `value`/`meta` 落进 Session Log 的事件载荷，卡片由 `presentation` 折叠，不在传输层做渲染。
+7. `call_id` 保留模型提供的原始值。每次 `tool.invoke` 的 `request_id` 唯一，chunk 和终态回显该值。
+   `tool.cancel`、`fs.write.request` 和工具发起的 `host.service.request` 用可选的 `payload.tool_request_id` 指向对应的 `tool.invoke`。
+   宿主拒绝已取消或已结算调用发出的带有该字段的服务请求。
 
 ## 7.5 文件写入回调（`fs.write`）
 
@@ -329,7 +332,7 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
 - **写工具（`write`/`edit`/`apply_patch`）不幂等**：重试会重复审批、重复落盘
   （`edit` 可能第二次找不到 old_string）。它们返回结构化 `tool.result` 错误，
   由模型重读文件后重新决策；宿主不做自动重试。
-- 重试必须重新走 `tool.invoke`（新 `request_id`/`call_id`），不得复用已结算的调用；
+- 重试使用新的 `tool.invoke.request_id`，保留本次模型请求提供的 `call_id`；
   流式已交付部分内容时按 §7 的流式安全规则处理。
 
 ### 9.3 服务错误码的放置位置（v2）

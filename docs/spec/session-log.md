@@ -75,12 +75,13 @@
 | `tool.result.pruned` | durable | `call_id`, `原始大小`, `spill_ref`（见 §5） |
 | `tool.repeat` | durable | `tool`, `count`, `threshold`, `message`（M3：同一工具+参数在本轮第 N 次调用触发软提醒；actor=`system`；**不失败、不改变工具结果**；读取端必须容忍未知 type，UI 可不渲染，用于自激诊断/审计） |
 
-不变量：一个 `call_id` 至多一条 `tool.result`；`tool.aborted` 与 `tool.result` 互斥（先到者胜）。
+新事件保留模型返回的 `call_id`，用可选的 `call_seq`（对应 `tool.call` 的事件序号）配对调用、终态和外部化结果。历史事件按 `call_id` 配对。
+每次调用至多有一个终态（`tool.result` 或 `tool.aborted`）。
 `tool.repeat` 是旁路诊断事件，不参与工具结算，也不影响 `tool.call/tool.result` 的配对。
 
 **并行工具的顺序（M3）**：一个 step 里有多个工具调用且宿主按批并发时，事件序为
 `ToolCall×N → 终态×N`（`tool.result` / `tool.aborted` 按**原调用顺序**发出），不同 `call_id` 的终态
-**不再保证相邻**于自己的 `tool.call`。UI/回放/审计必须按 `call_id` 配对，不能依赖"下一条就是结果"；
+**不再保证相邻**于自己的 `tool.call`。UI/回放按 `call_seq` 或历史 `call_id` 配对；
 `tool.chunk` 仍按各自 `call_id` 归属。
 
 ### 3.4 审批与策略

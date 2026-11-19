@@ -43,8 +43,8 @@ M2 之前 sidecar 的插件列表是写死的两条（workspace-dependencies + �
 - 切换时：
   1. 写 `plugins.json`；
   2. 更新 `DSHR_DSH_PLUGINS`；
-  3. **空闲时重启当前会话的 sidecar**（先撤销旧 generation 再重新注册工具），
-     生成中只保存、下次启动生效；
+  3. **空闲时重载窗口的 sidecar**（先撤销旧 generation 再重新注册工具）。
+     生成中保存配置，在下一轮发送前重载；
 - 面板打开时侧栏自动收起，避免 280+300 把正文挤没（窄窗口尤其重要）。
 
 ## 自检

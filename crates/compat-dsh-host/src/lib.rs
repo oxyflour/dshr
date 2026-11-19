@@ -310,8 +310,15 @@ pub struct SidecarHost {
     negotiated_protocol: u32,
     /// 真正的服务开关：router 存在 && 协商到 2 && sidecar 回声 `service.proxy`。
     host_services_active: bool,
+    /// 按 tool.invoke 的 request_id 追踪，模型给出的 call_id 可在其他调用中重复。
+    active_calls: HashMap<String, ActiveCall>,
     /// sidecar 在启动/装载阶段上报的错误（`log.emit` level=error），供 UI 提示。
     boot_errors: Vec<String>,
+}
+
+struct ActiveCall {
+    call_id: String,
+    cancelled: bool,
 }
 
 /// 侧车进程句柄：普通 spawn 或 Job Object 包裹（Windows 隔离）。
@@ -332,6 +339,13 @@ impl ChildHandle {
         match self {
             Self::Plain(child) => child.wait(),
             Self::Guarded(child) => child.wait(),
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Plain(child) => child.try_wait(),
+            Self::Guarded(child) => child.try_wait(),
         }
     }
 }
@@ -479,6 +493,7 @@ impl SidecarHost {
             host_services: options.host_services.clone(),
             negotiated_protocol: PROTOCOL_VERSION,
             host_services_active: false,
+            active_calls: HashMap::new(),
             boot_errors: Vec::new(),
         };
 
@@ -534,6 +549,10 @@ impl SidecarHost {
 
     pub fn generation(&self) -> &str {
         &self.generation
+    }
+
+    pub fn has_exited(&mut self) -> bool {
+        self.child.try_wait().is_ok_and(|status| status.is_some())
     }
 
     /// 握手协商出的协议版本（v1 缺省；配置了 host_services 且 sidecar 支持时才可能为 2）。
@@ -656,16 +675,35 @@ impl SidecarHost {
         self.seq += 1;
         let call_id = format!("call-{}", self.seq);
         let request_id = format!("req-invoke-{}", self.seq);
+        self.send_invoke(request_id, &call_id, session_id, tool, arguments)?;
+        Ok(call_id)
+    }
+
+    fn send_invoke(
+        &mut self,
+        request_id: String,
+        call_id: &str,
+        session_id: Option<&str>,
+        tool: &str,
+        arguments: Value,
+    ) -> Result<(), HostError> {
         let envelope = Envelope::host(
             "tool.invoke",
-            request_id,
+            &request_id,
             json!({ "name": tool, "arguments": arguments }),
         )
         .with_generation(self.generation.clone())
-        .with_call(call_id.clone())
+        .with_call(call_id)
         .with_session(session_id.unwrap_or("s-probe"));
         self.write(&envelope)?;
-        Ok(call_id)
+        self.active_calls.insert(
+            request_id,
+            ActiveCall {
+                call_id: call_id.to_owned(),
+                cancelled: false,
+            },
+        );
+        Ok(())
     }
 
     /// 用调用方指定的 `call_id` 发起调用：Session Log 与 IPC 必须是同一个身份。
@@ -712,16 +750,8 @@ impl SidecarHost {
     ) -> Result<InvokeOutcome, HostError> {
         self.seq += 1;
         let request_id = format!("req-invoke-{}", self.seq);
-        let envelope = Envelope::host(
-            "tool.invoke",
-            request_id,
-            json!({ "name": tool, "arguments": arguments }),
-        )
-        .with_generation(self.generation.clone())
-        .with_call(call_id.to_owned())
-        .with_session(session_id.unwrap_or("s-probe"));
-        self.write(&envelope)?;
-        self.wait_terminal_cancellable(call_id, timeout, cancel)
+        self.send_invoke(request_id.clone(), call_id, session_id, tool, arguments)?;
+        self.finish_call(&request_id, call_id, timeout, cancel)
     }
 
     /// 单调用 + 显式会话 id 的便捷入口（无取消句柄）。
@@ -737,14 +767,33 @@ impl SidecarHost {
     }
 
     pub fn cancel(&mut self, call_id: &str) -> Result<(), HostError> {
+        let request_id = self.request_for_call(call_id);
+        self.send_cancel(request_id.as_deref(), call_id, "user")
+    }
+
+    fn request_for_call(&self, call_id: &str) -> Option<String> {
+        self.active_calls
+            .iter()
+            .find_map(|(request, call)| (call.call_id == call_id).then(|| request.clone()))
+    }
+
+    fn send_cancel(
+        &mut self,
+        request_id: Option<&str>,
+        call_id: &str,
+        reason: &str,
+    ) -> Result<(), HostError> {
+        let mut payload = json!({ "call_id": call_id, "reason": reason });
+        if let Some(request_id) = request_id {
+            payload["tool_request_id"] = json!(request_id);
+            if let Some(call) = self.active_calls.get_mut(request_id) {
+                call.cancelled = true;
+            }
+        }
         self.seq += 1;
-        let envelope = Envelope::host(
-            "tool.cancel",
-            format!("req-cancel-{}", self.seq),
-            json!({ "call_id": call_id, "reason": "user" }),
-        )
-        .with_generation(self.generation.clone())
-        .with_call(call_id.to_owned());
+        let envelope = Envelope::host("tool.cancel", format!("req-cancel-{}", self.seq), payload)
+            .with_generation(self.generation.clone())
+            .with_call(call_id.to_owned());
         self.write(&envelope)
     }
 
@@ -752,7 +801,7 @@ impl SidecarHost {
     ///
     /// 按 `max_parallel` 分**波次**：每一波先把本波所有 `tool.invoke` 一次写出
     /// （request_id 区分），再在同一读循环里收集各自 `tool.chunk` / `tool.result` /
-    /// `tool.aborted`，按 `call_id` 关联。返回值与 `calls` 一一对应（原顺序），
+    /// `tool.aborted`，按 `request_id` 关联。返回值与 `calls` 一一对应（原顺序），
     /// 单个调用失败/超时不影响其它调用。
     ///
     /// 语义：
@@ -760,7 +809,7 @@ impl SidecarHost {
     ///   并向 sidecar 发 `tool.cancel`，迟到结果被丢弃；
     /// - **取消**：`cancel` 置位时对本波在途调用发一次 `tool.cancel`，随后继续收结果
     ///   （`tool.aborted` 作为该调用的终态返回，聊天层映射为失败）；不再启动后续波次；
-    /// - **迟到/未知结果**：`call_id` 不匹配当前波的终态直接丢弃（不干扰后续调用）；
+    /// - **迟到/未知结果**：丢弃已结算请求的消息，即使后续请求复用同一个 `call_id`；
     /// - **读循环仍服务** `fs.write.request` / `host.service.*` / `log.emit`，不会与
     ///   现有单调用路径互相死锁。
     pub fn invoke_batch(
@@ -770,6 +819,7 @@ impl SidecarHost {
         cancel: Option<&AtomicBool>,
     ) -> Vec<Result<InvokeOutcome, HostError>> {
         struct BatchSlot {
+            request_id: String,
             call_id: String,
             started: Instant,
             deadline: Instant,
@@ -789,45 +839,35 @@ impl SidecarHost {
         'outer: while next < calls.len() {
             let end = (next + parallel).min(calls.len());
             let mut slots: Vec<BatchSlot> = Vec::with_capacity(end - next);
-            let mut by_call: HashMap<String, usize> = HashMap::new();
+            let mut by_request: HashMap<String, usize> = HashMap::new();
 
             // 第一波写：把本波调用的 tool.invoke 全部写出再收结果。
             for (offset, call) in calls[next..end].iter().enumerate() {
                 let started = Instant::now();
                 self.seq += 1;
                 let request_id = format!("req-batch-{}", self.seq);
-                let envelope = Envelope::host(
-                    "tool.invoke",
-                    request_id,
-                    json!({ "name": call.tool, "arguments": call.arguments }),
-                )
-                .with_generation(self.generation.clone())
-                .with_call(call.call_id.clone())
-                .with_session(call.session_id.as_deref().unwrap_or("s-probe"));
-                match self.write(&envelope) {
-                    Ok(()) => {
-                        by_call.insert(call.call_id.clone(), offset);
-                        slots.push(BatchSlot {
-                            call_id: call.call_id.clone(),
-                            started,
-                            deadline: started + call.timeout.max(Duration::from_millis(1)),
-                            cancel_deadline: None,
-                            chunks: Vec::new(),
-                            done: false,
-                        });
-                    }
-                    Err(err) => {
-                        slots.push(BatchSlot {
-                            call_id: call.call_id.clone(),
-                            started,
-                            deadline: started,
-                            cancel_deadline: None,
-                            chunks: Vec::new(),
-                            done: true,
-                        });
-                        results[next + offset] = Some(Err(err));
-                    }
+                let write = self.send_invoke(
+                    request_id.clone(),
+                    &call.call_id,
+                    call.session_id.as_deref(),
+                    &call.tool,
+                    call.arguments.clone(),
+                );
+                let done = write.is_err();
+                if let Err(error) = write {
+                    results[next + offset] = Some(Err(error));
+                } else {
+                    by_request.insert(request_id.clone(), offset);
                 }
+                slots.push(BatchSlot {
+                    request_id,
+                    call_id: call.call_id.clone(),
+                    started,
+                    deadline: started + call.timeout.max(Duration::from_millis(1)),
+                    cancel_deadline: None,
+                    chunks: Vec::new(),
+                    done,
+                });
             }
 
             let mut cancel_sent = false;
@@ -840,7 +880,7 @@ impl SidecarHost {
                     cancel_sent = true;
                     let grace_deadline = Instant::now() + CANCEL_GRACE;
                     for slot in slots.iter_mut().filter(|slot| !slot.done) {
-                        let _ = self.cancel(&slot.call_id);
+                        let _ = self.send_cancel(Some(&slot.request_id), &slot.call_id, "user");
                         slot.cancel_deadline = Some(grace_deadline);
                     }
                 }
@@ -851,6 +891,7 @@ impl SidecarHost {
                     }
                     if slot.cancel_deadline.is_some_and(|deadline| now >= deadline) {
                         slot.done = true;
+                        self.active_calls.remove(&slot.request_id);
                         results[next + offset] = Some(Err(HostError::Cancelled(format!(
                             "tool {} did not settle within {}s of cancellation",
                             slot.call_id,
@@ -862,9 +903,15 @@ impl SidecarHost {
                         continue;
                     }
                     slot.done = true;
-                    let _ = self.cancel(&slot.call_id);
-                    results[next + offset] =
-                        Some(Err(HostError::Timeout(format!("tool {}", slot.call_id))));
+                    if slot.cancel_deadline.is_some() {
+                        results[next + offset] =
+                            Some(Err(HostError::Cancelled(format!("tool {}", slot.call_id))));
+                    } else {
+                        let _ = self.send_cancel(Some(&slot.request_id), &slot.call_id, "timeout");
+                        results[next + offset] =
+                            Some(Err(HostError::Timeout(format!("tool {}", slot.call_id))));
+                    }
+                    self.active_calls.remove(&slot.request_id);
                 }
                 if slots.iter().all(|slot| slot.done) {
                     break;
@@ -904,15 +951,12 @@ impl SidecarHost {
                             self.note_log_emit(&envelope);
                             continue;
                         }
-                        let Some(call_id) = envelope.call_id.clone() else {
-                            continue;
-                        };
-                        let Some(offset) = by_call.get(&call_id).copied() else {
+                        let Some(offset) = by_request.get(&envelope.request_id).copied() else {
                             // 其它调用/上一波超时后的迟到结果：丢弃（与本波无关）。
                             continue;
                         };
                         let slot = &mut slots[offset];
-                        if slot.done {
+                        if slot.done || envelope.call_id.as_deref() != Some(slot.call_id.as_str()) {
                             continue;
                         }
                         match envelope.kind.as_str() {
@@ -927,6 +971,7 @@ impl SidecarHost {
                                 let chunks = std::mem::take(&mut slot.chunks);
                                 let elapsed = slot.started.elapsed();
                                 slot.done = true;
+                                self.active_calls.remove(&slot.request_id);
                                 results[next + offset] = Some(Ok(InvokeOutcome {
                                     chunks,
                                     terminal: envelope,
@@ -951,6 +996,9 @@ impl SidecarHost {
             }
 
             if let Some(message) = fatal {
+                for slot in &slots {
+                    self.active_calls.remove(&slot.request_id);
+                }
                 for slot in results.iter_mut().skip(next).take(calls.len() - next) {
                     if slot.is_none() {
                         *slot = Some(Err(HostError::Protocol(message.clone())));
@@ -990,21 +1038,31 @@ impl SidecarHost {
         call_id: &str,
         timeout: Duration,
     ) -> Result<InvokeOutcome, HostError> {
-        self.wait_terminal_cancellable(call_id, timeout, None)
+        let request_id = self
+            .request_for_call(call_id)
+            .ok_or_else(|| HostError::Protocol(format!("tool {call_id} has no active request")))?;
+        self.finish_call(&request_id, call_id, timeout, None)
     }
 
-    /// [`SidecarHost::wait_terminal`] 的可取消版本。
-    fn wait_terminal_cancellable(
+    fn finish_call(
         &mut self,
+        request_id: &str,
         call_id: &str,
         timeout: Duration,
         cancel: Option<&AtomicBool>,
     ) -> Result<InvokeOutcome, HostError> {
-        /// 取消后给 sidecar 收尾的宽限（它的取消检查周期是 200ms 级）。
-        const CANCEL_GRACE: Duration = Duration::from_secs(2);
-        /// 等待片段：既保证及时检查 cancel，又不让循环空转。
-        const WAIT_SLICE: Duration = Duration::from_millis(100);
+        let result = self.wait_terminal_cancellable(request_id, call_id, timeout, cancel);
+        self.active_calls.remove(request_id);
+        result
+    }
 
+    fn wait_terminal_cancellable(
+        &mut self,
+        request_id: &str,
+        call_id: &str,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<InvokeOutcome, HostError> {
         let started = Instant::now();
         let deadline = started + timeout;
         let mut chunks = Vec::new();
@@ -1014,7 +1072,7 @@ impl SidecarHost {
             if cancel_deadline.is_none()
                 && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
             {
-                self.cancel(call_id)?;
+                self.send_cancel(Some(request_id), call_id, "user")?;
                 cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
             }
             let now = Instant::now();
@@ -1024,6 +1082,7 @@ impl SidecarHost {
                 return if cancel_deadline.is_some() {
                     Err(HostError::Cancelled(format!("tool {call_id}")))
                 } else {
+                    let _ = self.send_cancel(Some(request_id), call_id, "timeout");
                     Err(HostError::Timeout(format!("tool {call_id}")))
                 };
             }
@@ -1049,7 +1108,7 @@ impl SidecarHost {
                 continue;
             }
 
-            if envelope.call_id.as_deref() != Some(call_id) {
+            if envelope.request_id != request_id || envelope.call_id.as_deref() != Some(call_id) {
                 continue;
             }
             match envelope.kind.as_str() {
@@ -1167,6 +1226,19 @@ impl SidecarHost {
         }
     }
 
+    fn callback_from_inactive_call(&self, envelope: &Envelope) -> bool {
+        envelope
+            .payload
+            .get("tool_request_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| {
+                !self
+                    .active_calls
+                    .get(id)
+                    .is_some_and(|call| !call.cancelled)
+            })
+    }
+
     /// 读循环的公共服务点：遇到 sidecar 的写入请求就地裁决并回复。
     ///
     /// 返回 `true` 表示该信封已被消费，调用方继续循环、不再把它当作
@@ -1175,12 +1247,16 @@ impl SidecarHost {
         if envelope.kind != KIND_FS_WRITE_REQUEST {
             return Ok(false);
         }
-        let result = match &self.fs_write {
-            Some(service) => service.handle_payload(&envelope.payload),
-            None => FsWriteResult::error(
-                "E_FS_CAPABILITY",
-                "fs.write.request received but fs.write was not negotiated in runtime.hello",
-            ),
+        let result = if self.callback_from_inactive_call(envelope) {
+            FsWriteResult::error("E_CANCELLED", "tool request is no longer active")
+        } else {
+            match &self.fs_write {
+                Some(service) => service.handle_payload(&envelope.payload),
+                None => FsWriteResult::error(
+                    "E_FS_CAPABILITY",
+                    "fs.write.request received but fs.write was not negotiated in runtime.hello",
+                ),
+            }
         };
         let payload = serde_json::to_value(&result)
             .map_err(|err| HostError::Protocol(format!("serialize fs.write.result: {err}")))?;
@@ -1199,7 +1275,15 @@ impl SidecarHost {
     fn maybe_serve_host_service(&mut self, envelope: &Envelope) -> Result<bool, HostError> {
         match envelope.kind.as_str() {
             KIND_HOST_SERVICE_REQUEST => {
-                let reply = if self.host_services_active {
+                let reply = if self.callback_from_inactive_call(envelope) {
+                    let mut reply = envelope.reply(KIND_HOST_SERVICE_RESULT, json!({}));
+                    reply.error = Some(RpcError {
+                        code: "E_CANCELLED".to_owned(),
+                        message: "tool request is no longer active".to_owned(),
+                        retryable: false,
+                    });
+                    reply
+                } else if self.host_services_active {
                     let router = self.host_services.as_ref().ok_or_else(|| {
                         HostError::Protocol("active host services without router".to_owned())
                     })?;
