@@ -6247,6 +6247,82 @@ fn selftest_crash_recovery() -> i32 {
     }
 }
 
+/// `--selftest-window-recovery`：G2 真窗口端到端。
+///
+/// 1. 用 `--selftest-crash-child` 制造真实崩溃现场：主文件缺失、`.bak` 完整；
+/// 2. 启动 GUI 子进程（`DSHR_RECOVERY_FLOW=1`）：会话索引必须发现孤儿 `.bak`，
+///    启动恢复后显示横幅，并在真实窗口里输入/发送 “after recovery”；
+/// 3. 父进程校验子进程 exit 0，且最终日志同时含 “before crash” 与 “after recovery”。
+fn selftest_window_recovery() -> i32 {
+    let root = std::path::absolute(PathBuf::from(".tmp/m4-window-recovery"))
+        .unwrap_or_else(|_| PathBuf::from(".tmp/m4-window-recovery"));
+    let sessions = root.join("sessions");
+    let _ = std::fs::remove_dir_all(&root);
+    if let Err(error) = std::fs::create_dir_all(&sessions) {
+        eprintln!(
+            "[selftest-window-recovery] FAIL: 创建临时目录 {} 失败: {error}",
+            sessions.display()
+        );
+        return 1;
+    }
+    let path = sessions.join("s-crash.jsonl");
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            println!("[selftest-window-recovery] FAIL: current_exe: {error}");
+            return 1;
+        }
+    };
+
+    // 真实子进程崩溃：退出码非 0，留下 `<path>.bak` 并删掉主文件。
+    let crashed = std::process::Command::new(&exe)
+        .arg("--selftest-crash-child")
+        .arg(&path)
+        .status()
+        .map(|status| !status.success())
+        .unwrap_or(false);
+    let backup = path.with_extension("jsonl.bak");
+    let backup_exists = backup.exists();
+
+    // GUI 子进程：真实窗口 + 恢复后的继续输入/发送。stdout/stderr 继承，CI 日志可见。
+    let child_status = std::process::Command::new(&exe)
+        .arg("--selftest-window-recovery-child")
+        .env("DSHR_HOME", &root)
+        .env("DSHR_SESSIONS_DIR", &sessions)
+        .env("DSHR_PROFILE_DIR", root.join("profile"))
+        .env("DSHR_RECOVERY_FLOW", "1")
+        .env("DSHR_FORCE_MOCK", "1")
+        .status();
+    let child_ok = child_status.map(|status| status.success()).unwrap_or(false);
+
+    let log = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| SessionLog::from_jsonl("s-crash", &text).ok());
+    let before_ok = log.as_ref().is_some_and(|log| {
+        log.events().iter().any(|event| {
+            event.event_type == "message.user"
+                && event.payload["text"].as_str() == Some("before crash")
+        })
+    });
+    let after_ok = log.as_ref().is_some_and(|log| {
+        log.events().iter().any(|event| {
+            event.event_type == "message.user"
+                && event.payload["text"].as_str() == Some("after recovery")
+        })
+    });
+
+    println!(
+        "[selftest-window-recovery] crashed={crashed} backup={backup_exists} child={child_ok} before={before_ok} after={after_ok}"
+    );
+    if crashed && backup_exists && child_ok && before_ok && after_ok {
+        println!("[selftest-window-recovery] PASS");
+        0
+    } else {
+        println!("[selftest-window-recovery] FAIL");
+        1
+    }
+}
+
 /// `--selftest-sidecar-recovery`：G2 的 sidecar 崩溃场景（headless）。
 ///
 /// 先确认 sidecar 可调用，再 kill 子进程；断言会话仍可追加/保存、原生工具仍注册，
@@ -9599,6 +9675,9 @@ fn main() {
     if args.iter().any(|arg| arg == "--selftest-crash-recovery") {
         std::process::exit(selftest_crash_recovery());
     }
+    if args.iter().any(|arg| arg == "--selftest-window-recovery") {
+        std::process::exit(selftest_window_recovery());
+    }
     if args.iter().any(|arg| arg == "--selftest-corrupt-session") {
         std::process::exit(selftest_corrupt_session());
     }
@@ -9822,6 +9901,9 @@ fn main() {
     std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
 
     let path = store.path_for(&active);
+    // G2 真窗口恢复流需要知道恢复目标：`ChatState::open` 会消费 path，
+    // 这里先留一份给 DSHR_RECOVERY_FLOW 的断言/轮询使用。
+    let recovery_path = path.clone();
     let cancel = Arc::new(AtomicBool::new(false));
     let approvals = ApprovalBroker::new();
     let state = Arc::new(Mutex::new(ChatState::new(
@@ -9876,6 +9958,7 @@ fn main() {
         let session_depths = session_depths;
         let plugin_errors = plugin_errors;
         let adc_panels = adc_panels;
+        let recovery_path = recovery_path;
         let window_handle = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -10044,6 +10127,102 @@ fn main() {
             })
             .detach();
         }
+        // G2 真窗口恢复：子进程模拟“崩溃后只剩 .bak”，应用启动时索引到孤儿备份、
+        // 选中并 recover_backup，然后在真实窗口里继续输入/发送。父进程
+        // `--selftest-window-recovery` 负责造崩溃现场并校验最终日志。
+        if std::env::var("DSHR_RECOVERY_FLOW").as_deref() == Ok("1") {
+            let recovery_path = recovery_path.clone();
+            let app_weak = window_handle
+                .entity(cx)
+                .expect("window-recovery app entity")
+                .downgrade();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(600))
+                    .await;
+                let banner = app_weak
+                    .update(cx, |chat, _cx| {
+                        chat.plugin_errors
+                            .iter()
+                            .any(|message| message.starts_with("已恢复："))
+                    })
+                    .unwrap_or(false);
+                if !banner {
+                    eprintln!("[recovery-flow] FAIL: 启动后没有恢复横幅");
+                    cx.update(|cx| cx.quit());
+                    std::process::exit(1);
+                }
+                // 回到输入框，模拟用户在恢复后的会话里继续操作。
+                let _ = window_handle.update(cx, |_app, window, cx| {
+                    window.defer(cx, |window, cx| {
+                        window.dispatch_keystroke(
+                            gpui::Keystroke::parse("cmd-k").expect("focus keystroke"),
+                            cx,
+                        );
+                    });
+                });
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                for ch in "after recovery".chars() {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(30))
+                        .await;
+                    let _ = window_handle.update(cx, |_app, window, cx| {
+                        window.defer(cx, move |window, cx| {
+                            window.dispatch_keystroke(
+                                gpui::Keystroke {
+                                    modifiers: gpui::Modifiers::default(),
+                                    key: ch.to_string(),
+                                    key_char: Some(ch.to_string()),
+                                },
+                                cx,
+                            );
+                        });
+                    });
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let _ = window_handle.update(cx, |_app, window, cx| {
+                    window.defer(cx, |window, cx| {
+                        window.dispatch_keystroke(
+                            gpui::Keystroke::parse("enter").expect("enter"),
+                            cx,
+                        );
+                    });
+                });
+
+                let mut after_ok = false;
+                for _ in 0..50 {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    let Ok(text) = std::fs::read_to_string(&recovery_path) else {
+                        continue;
+                    };
+                    if !text.contains("before crash") || !text.contains("after recovery") {
+                        continue;
+                    }
+                    if SessionLog::from_jsonl("s-crash", &text).is_ok() {
+                        after_ok = true;
+                        break;
+                    }
+                }
+                if after_ok {
+                    println!("[recovery-flow] PASS banner=true before=true after=true");
+                    cx.update(|cx| cx.quit());
+                } else {
+                    eprintln!(
+                        "[recovery-flow] FAIL: 恢复后消息未落盘（{}）",
+                        recovery_path.display()
+                    );
+                    cx.update(|cx| cx.quit());
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        }
         cx.activate(true);
     });
 }
@@ -10079,6 +10258,7 @@ mod tests {
             "--selftest-approval",
             "--selftest-corrupt-session",
             "--selftest-crash-recovery",
+            "--selftest-window-recovery",
             "--selftest-crash-child",
             "--selftest-recovery",
             "--selftest-sidecar-recovery",

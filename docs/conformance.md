@@ -125,7 +125,7 @@ node tools/conformance.mjs --full --json docs/conformance-matrix.json --markdown
 
 ## 6. 当前矩阵摘要
 
-M4 G1（2026-11-17）：注册表 **648 个测试 ID —— implemented 581、pending 18、manual 49、
+M4（2026-11-18）：注册表 **649 个测试 ID —— implemented 581、pending 18、manual 50、
 blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 `node-test` JS 单测），
 539 个 `suite=cargo` 的 implemented ID 记为 SKIP（quick 不构建 Rust）；schema 契约 **76/76**。
 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）。
@@ -134,9 +134,9 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 上一轮 `--full` 实跑（2026-11-15，M3 收尾）：`67 suites / 836 passed / 1 failed / 6 ignored`；
 唯一失败是 `dshr-sidecar-guard` 的 `process::tests::drop_terminates_the_guarded_process`
 （隔离重跑同样失败，属沙箱进程限制；普通终端/Lead 环境同一 workspace 为 **0 failed / 6 ignored**；
-[`m3-status.md`](m3-status.md) §4 已记录）。当前 `--full`（2026-11-16，W1/W2）为
-`71 suites / 907 passed / 0 failed / 8 ignored`，exit 0；8 ignored 仍是 official gate 的
-`RPC-L2-201/501..507`（manual gate，不计为通过）。
+[`m3-status.md`](m3-status.md) §4 已记录）。当前 `--full`（2026-11-18，M4 G2 收尾）为
+`71 suites / 910 passed / 0 failed / 8 ignored`，exit 0；**581/581 implemented 通过**。
+8 ignored 仍是 official gate 的 `RPC-L2-201/501..507`（manual gate，不计为通过）。
 
 主要 groups：
 
@@ -180,6 +180,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-RECOVERY-001` | manual | `chat --selftest-recovery`：损坏会话/`.bak`/插件失败回滚（[m4-status.md](m4-status.md) §4） |
 | `M4-RECOVERY-002` | manual | `chat --selftest-sidecar-recovery`：kill sidecar 后会话/原生工具存活（[m4-status.md](m4-status.md) §4） |
 | `M4-RECOVERY-003` | manual | `chat --selftest-crash-recovery`：子进程 abort → `.bak` 恢复 → 继续追加 + “已恢复”横幅 |
+| `M4-RECOVERY-004` | manual | `chat --selftest-window-recovery`：真实崩溃孤儿 `.bak` → 窗口启动恢复 → 注入键盘继续发送（Windows 本机/CI） |
 | `M4-PERF-001` | manual | `node tools/perf-gate.mjs`：G4 阈值/CI step；本机 PASS（[m4-perf.md](m4-perf.md)） |
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 核心 crate + desktop-build；Linux 本机 build 通过，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |

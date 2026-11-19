@@ -72,7 +72,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 
 **M0：4 项完成、1 项部分、1 项转入 M1。** 工具链已就绪，`cargo build --workspace` 通过，契约校验 20/20、文档互链 0 broken。剩余项见 [`docs/m0-runbook.md`](docs/m0-runbook.md) §5。
 
-**M4 进行中（跨平台 Beta）。** 范围、8 个工作包与四条 gate 口径见
+**M4 四条 gate 已完成（跨平台 Beta；W2/W3/W4/W6/W8 仍在收尾）。** 范围、8 个工作包与四条 gate 口径见
 [`docs/decisions/0013-m4-scope.md`](docs/decisions/0013-m4-scope.md)，证据与未验证项见
 [`docs/m4-status.md`](docs/m4-status.md)。W1（分发与信任生命周期）按离线渠道口径完成：
 `--uninstall-plugin`（目录/profile/审计原子化）、信任密钥吊销/时间窗/轮换与
@@ -80,11 +80,13 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
 （manifest + SHA256SUMS）；`M4-UNINSTALL-001..008` / `M4-KEY-001..010` /
 `M4-SDK-001` / `M4-SIGN-001`。W2 部分完成：全局快捷键（新建/聚焦/侧栏/插件/审批/关闭）、
 按钮 role/aria_label 与 TextInput a11y 元数据已实现（[m4-keyboard.md](docs/m4-keyboard.md)），
-G3 真实窗口无鼠标流程待人工复验。W3 开始接线 ADC 交互：插件面板 Button `onPress` 回到宿主，`copy` 写剪贴板，
-`call`/`command` 经 external-process `ui.action` 到插件后再 render；`openExternal`
-走确认条（取消/Esc 不打开）；工具结果 `meta.ui` 已接到 tool card 附加区；W8 修掉两处"node 缺失时 SKIP 记 pass"的集成测试，
-`onChange` 未做（Checkbox/Switch/Select/Input/Textarea/Slider 步进已接，拖拽未接）（[m4-adc.md](docs/m4-adc.md)）。G2 已有 headless 恢复自检
-（`--selftest-recovery`：损坏会话/`.bak`/插件失败回滚），真实窗口崩溃恢复仍未验证。
+G3 已由 `DSHR_KEYBOARD_FLOW=1` 在真实窗口自动验证；IME、macOS 键位与完整 Tab 焦点环仍未覆盖。
+W3 已接 ADC 交互：插件面板 Button `onPress` 回到宿主，`copy` 写剪贴板，`call`/`command` 经
+external-process `ui.action` 到插件后再 render；`openExternal` 走确认条（取消/Esc 不打开）；
+工具结果 `meta.ui` 已接到 tool card 附加区；Checkbox/Switch/Select/Input/Textarea/Slider 的
+`onChange` 与 Slider 拖拽已接（[m4-adc.md](docs/m4-adc.md)）；真实窗口 copy/openExternal/IME 待手测。
+W8 修掉两处"node 缺失时 SKIP 记 pass"的集成测试。G2 已由三项 headless 自检 +
+`M4-RECOVERY-004`（`--selftest-window-recovery`：真实崩溃留下 `.bak` → 启动恢复 → 窗口内继续发送）覆盖。
 W5 已启用 wasmtime `component-model`，并用 `M4-COMPONENT-001..023` 验证 canonical ABI、
 `cpp-v1.wit`、bindgen、配额、probe、真实 guest、`CppComponentPlugin`/manifest loader、
 `--selftest-cpp-component`/`--selftest-cpp-install`/`--selftest-cpp-cli-install`、并行/共享调用与真实 fuel trap；
@@ -106,7 +108,8 @@ Windows zip（59.7MB）与 Linux tar.gz（197.1MB）；`verify-package.ps1/sh` �
 sidecar/official 自检，双平台 PASS，仍不含签名/安装器。
 官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。
 W3 窗口 draw 在 RDP 下硬预算 PASS（p95 9.40ms / 31.25ms），相对基线受远程环境干扰未通过。
-三平台 CI、性能进 CI 仍未完成，**不得**对外称 Beta 达标。
+**M4 四条 gate 已全部 PASS（G1/G2/G3/G4）**；W4/W6/W8 仍有部分收尾项，registry/CA/自动更新、
+生产签名/公证/安装器未交付，因此不能把整个 M4 范围说成“全部完成”。
 
 **M3 实现完成（插件平台 Preview）。** 范围与 exit gate 见
 [`docs/decisions/0007-m3-scope.md`](docs/decisions/0007-m3-scope.md) 与收尾口径

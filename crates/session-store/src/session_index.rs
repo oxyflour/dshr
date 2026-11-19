@@ -67,6 +67,10 @@ impl SessionIndex {
     }
 
     /// 扫描目录，按更新时间倒序。目录不存在时返回空列表（首次启动）。
+    ///
+    /// 若主文件缺失、只剩 `<id>.jsonl.bak`（Windows 替换窗口崩溃后的形态），
+    /// 也把 `.bak` 作为该会话的读取来源返回；启动路径随后用
+    /// [`recover_backup`] 把主文件恢复出来，用户不会因为一次崩溃丢掉整个会话。
     pub fn scan(&self) -> io::Result<Vec<SessionMeta>> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
@@ -77,17 +81,38 @@ impl SessionIndex {
         let mut sessions = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Some(id) = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(str::to_owned)
-            else {
-                continue;
+            let extension = path.extension().and_then(|ext| ext.to_str());
+            // 主文件缺失时，`.jsonl.bak` 是唯一可读的历史；把它当作会话候选，
+            // 让启动路径能选中并 recover_backup，而不是凭空新建一个空会话。
+            let (id, read_path) = match extension {
+                Some("jsonl") => {
+                    let Some(id) = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(str::to_owned)
+                    else {
+                        continue;
+                    };
+                    (id, path.clone())
+                }
+                Some("bak") => {
+                    let Some(id) = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .and_then(|stem| stem.strip_suffix(".jsonl"))
+                        .map(str::to_owned)
+                    else {
+                        continue;
+                    };
+                    let main = self.path_for(&id);
+                    if main.exists() {
+                        continue;
+                    }
+                    (id, path.clone())
+                }
+                _ => continue,
             };
-            let content = fs::read_to_string(&path).unwrap_or_default();
+            let content = fs::read_to_string(&read_path).unwrap_or_default();
             let Summary {
                 title,
                 events,
@@ -101,8 +126,8 @@ impl SessionIndex {
             sessions.push(SessionMeta {
                 title: renamed.unwrap_or(title),
                 id,
-                updated_at: modified_at(&path),
-                path,
+                updated_at: modified_at(&read_path),
+                path: read_path,
                 events,
                 parent_session_id,
                 spawn_source,
@@ -262,7 +287,11 @@ impl SessionIndex {
     }
 
     pub fn delete(&self, id: &str) -> io::Result<()> {
-        remove_if_exists(&self.path_for(id))?;
+        let path = self.path_for(id);
+        remove_if_exists(&path)?;
+        // 只删主文件会留下 `.bak`，而 scan 会把孤儿 `.bak` 重新当成会话；
+        // 删除必须连备份一起清掉，否则下一次启动会话“复活”。
+        remove_if_exists(&backup_path_for(&path))?;
         remove_if_exists(&self.meta_path(id))
     }
 
@@ -288,7 +317,9 @@ impl SessionIndex {
             .unwrap_or(0);
         let mut candidate = format!("s-{millis}");
         let mut suffix = 1;
-        while self.path_for(&candidate).exists() {
+        while self.path_for(&candidate).exists()
+            || backup_path_for(&self.path_for(&candidate)).exists()
+        {
             candidate = format!("s-{millis}-{suffix}");
             suffix += 1;
         }
@@ -693,6 +724,53 @@ mod tests {
         assert_eq!(index.scan().unwrap().len(), 1);
         index.delete("s-new").unwrap();
         assert!(index.scan().unwrap().is_empty());
+        fs::remove_dir_all(index.dir()).ok();
+    }
+
+    #[test]
+    fn scan_surfaces_orphan_backup_when_main_is_missing() {
+        let index = temp_index("orphan-backup");
+        seed(&index, "s-1", &[&user_event("before crash")]);
+        let main = index.path_for("s-1");
+        let backup = backup_path_for(&main);
+        fs::copy(&main, &backup).unwrap();
+        fs::remove_file(&main).unwrap();
+
+        let sessions = index.scan().unwrap();
+        assert_eq!(sessions.len(), 1, "孤儿 .bak 必须作为可恢复会话出现");
+        assert_eq!(sessions[0].id, "s-1");
+        assert_eq!(sessions[0].title, "before crash");
+        assert_eq!(sessions[0].path, backup, "主文件缺失时从 .bak 读取");
+        assert!(!main.exists(), "scan 只暴露候选，不负责恢复主文件");
+        fs::remove_dir_all(index.dir()).ok();
+    }
+
+    #[test]
+    fn scan_ignores_backup_when_main_exists() {
+        let index = temp_index("backup-with-main");
+        seed(&index, "s-1", &[&user_event("current")]);
+        fs::copy(index.path_for("s-1"), backup_path_for(&index.path_for("s-1"))).unwrap();
+
+        let sessions = index.scan().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].path, index.path_for("s-1"), "主文件优先于 .bak");
+        assert_eq!(sessions[0].title, "current");
+        fs::remove_dir_all(index.dir()).ok();
+    }
+
+    #[test]
+    fn delete_removes_backup_so_a_session_does_not_resurrect() {
+        let index = temp_index("delete-backup");
+        seed(&index, "s-1", &[&user_event("delete me")]);
+        let main = index.path_for("s-1");
+        let backup = backup_path_for(&main);
+        fs::copy(&main, &backup).unwrap();
+
+        index.delete("s-1").unwrap();
+
+        assert!(!main.exists());
+        assert!(!backup.exists(), "删除会话必须同时清掉 .bak");
+        assert!(index.scan().unwrap().is_empty(), "删除后不能让会话从备份复活");
         fs::remove_dir_all(index.dir()).ok();
     }
 

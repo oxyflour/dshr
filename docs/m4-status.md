@@ -1,23 +1,25 @@
 # M4 状态 — 跨平台 Beta
 
-> 更新：2026-11-16（W1 完成；W2 键盘/a11y 基线实现，G3 待真机复验）。
+> 更新：2026-11-18（G2 真窗口恢复闭环；四条 gate 全部 PASS；W2/W3/W4/W6/W8 仍有部分收尾项）。
 > 范围与顺序见 [ADR-0013](decisions/0013-m4-scope.md)；PLAN 基线见 [`PLAN.md`](PLAN.md) §8 M4 / §9.2；
 > M3 收尾口径见 [ADR-0012](decisions/0012-m3-gate-closure.md)。
 > 本文是**活文档**：只写已实测的证据，未跑/未接 runner 的项显式标"未验证"。
 
 ## 1. 当前结论
 
-M4 已启动，W1（分发与信任生命周期）按**离线渠道口径完成**：卸载、密钥吊销/时间窗/轮换、
-作者签名安装、SDK 离线发布包与消费链路均有自动化/脚本证据。
-M4 整体**未完成**：W2–W8 与三平台 CI（G1）、键盘全流程（G3）、性能进 CI（G4）仍未开始；
-registry/CA 证书体系按 ADR-0013 归入 W7。
+M4 的**四条 gate 已全部有证据**：G1/G3/G4 PASS；G2 于 2026-11-18 由
+`M4-RECOVERY-004`（`chat --selftest-window-recovery`）在真实窗口闭环——真实子进程 abort
+留下孤儿 `.bak`，应用启动时从备份恢复并显示横幅，再注入键盘继续输入/发送。
+按 [ADR-0013](decisions/0013-m4-scope.md) §4 的 gate 条件，可以判定 **M4 gate 完成**；但
+W2/W3/W4/W6/W8 仍有部分收尾项，registry/CA/自动更新也未交付，因此不能把整个 M4 范围
+说成“全部完成”。
 
 ## 2. 工作包进度
 
 | # | 工作包 | 状态 | 证据 / 缺口 |
 |---|---|---|---|
 | W1 | 分发与信任生命周期 | **完成（离线渠道口径）** | `M4-UNINSTALL-001..008`、`M4-KEY-001..010`（cargo，dshr-profile 81 passed）；`M4-SDK-001`（SDK 离线包/校验/篡改拒绝）、`M4-SIGN-001`（签名安装/轮换）、`M4-LIFECYCLE-001`；registry/CA 证书体系归 W7 |
-| W2 | 键盘与无障碍 | **部分完成（真实窗口 smoke + 待 G3 全流程）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；`--selftest-window` 真实开窗 PASS；G3 人工流程 `M4-KEYBOARD-001` 未跑。见 [m4-keyboard.md](m4-keyboard.md) |
+| W2 | 键盘与无障碍 | **部分完成（G3 自动全流程 PASS）** | 全局键位（新建/聚焦/侧栏/插件/审批/关闭）+ 按钮 role/aria_label + TextInput role；`M4-A11Y-001` cargo；`--selftest-window` 与 `DSHR_KEYBOARD_FLOW=1` 真实窗口 PASS；IME/macOS 键位、完整 Tab 焦点环仍未覆盖。见 [m4-keyboard.md](m4-keyboard.md) |
 | W3 | ADC 交互与工具卡 | **部分完成（onPress/openExternal/tool card/adc 表单 + 真实窗口/剪贴板 CI）** | copy/call/command、openExternal 确认条、ToolCard.extra、Checkbox/Switch/Select/Input/Textarea/Slider/Tabs、`M4-ADC-009..025`；window/clipboard smoke 本机 + GitHub Windows runner PASS；真实 IME 与 `100/101` 真机待跑 |
 | W4 | native/MCP 并发 + trait 冻结 | **部分完成（native 跨插件并行 + 协作式取消 + trait object-safe 冻结）** | `call_approved_batch_cancellable` 按插件分组并行、同插件串行、调用前检查取消位；`Plugin::id/version` 借用且 `M4-TRAIT-001` 增加 `Box<dyn Plugin>` object-safe 断言；MCP、运行中抢占、异步 trait 仍待 |
 | W5 | WASM Component/WIT | **完成（真实 guest + 安装/CLI/装载 + 作者模板 + 并行/共享/配额）** | 001 ABI；002 WIT；003 bindgen；004-006 配额；007 probe；008-011 probe 配额；012/013 probe 装载；014/015 真实 guest；016-019 CppComponentPlugin/manifest/产品自检/直接安装；020 并行实例；021 真实 fuel trap；022 call_shared；023 信任安装 CLI；作者模板 74KB；`Plugin` trait 的 `&mut self` 仍按实例串行（设计如此） |
@@ -58,6 +60,10 @@ target\debug\chat.exe --selftest-sidecar-recovery
 target\debug\chat.exe --selftest-crash-recovery
   → crashed/backup/before/after/notice 全 true，PASS（exit 0）
 
+target\debug\chat.exe --selftest-window-recovery
+  → [recovery-flow] PASS banner=true before=true after=true
+  → [selftest-window-recovery] crashed=true backup=true child=true before=true after=true，PASS（exit 0）
+
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-l2-gate.ps1
   → PASS（8/8；RPC-L2-201 todo execute、502 working_directory execute、506 fs read、507 fs write）
 
@@ -65,7 +71,7 @@ node tools\perf-gate.mjs --json docs\perf-baseline.json
   → PASS（worst_total_p95=10.799ms / limit 50ms；max_quota_total_p95=4.033ms / limit 16.7ms）
 
 python -c "import yaml; yaml.safe_load(open('.github/workflows/cross-platform.yml',encoding='utf-8'))"
-  → YAML 解析 OK（contract 5 steps / core-rust 6 steps；Actions 未实跑）
+  → YAML 解析 OK（contract 5 steps / core-rust 6 steps；Actions 后续实跑见 §4）
 
 WSL Ubuntu 22.04 + Rust 1.99.1:
   cargo check -p dshr-tool-runtime ... -p dshr-compat-dsh-host
@@ -100,8 +106,8 @@ node schema\check.mjs
   → 76/76 cases passed
 
 node tools\conformance.mjs --full --compact
-  → 71 suites / 904 passed / 0 failed / 8 ignored；exit 0
-    （6 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
+  → 71 suites / 910 passed / 0 failed / 8 ignored；exit 0
+    （8 ignored = official gate manual；矩阵落盘 docs/conformance-matrix.*）
 ```
 
 **已知边界**：
@@ -116,9 +122,9 @@ node tools\conformance.mjs --full --compact
 - 私钥只存在于作者本机；`--generate-key` 生成的 `private.pem` 不得进包/提交。
 - **flaky 观察**：2026-11-16 的一次 `--full` 中 `dshr-ui-gpui` 出现 1 个失败（并行负载下
   ADC 构造预算），隔离子跑与随后 `--full` 均 0 failed；归入 W8 flaky 治理，不作为通过证据。
-- **G3 未自动验证**：快捷键表有单测，但真实窗口的按键分发/焦点链/IME 仍需按
-  [m4-keyboard.md](m4-keyboard.md) §3 人工复验。本机 `SendKeys` 自动化尝试被 Windows 前台锁
-  拦住（窗口能启动，`SetForegroundWindow` 失败，无 `[keyboard]` 行），不改判 G3。
+- **G3 已由自动注入验证**：`DSHR_KEYBOARD_FLOW=1` 在真实窗口走完新建→输入→发送→审批→
+  面板→关闭，本机与 Windows CI 均 exit 0；但 IME 组合输入、macOS Cmd 键位和完整 Tab 焦点环
+  仍未覆盖，见 [m4-keyboard.md](m4-keyboard.md) §4。
 - **W4 只去掉 id/version leak**：`Plugin::id/version` 已改为借用 `&str`，外部/WASM 插件不再
   `Box::leak`；但 `Plugin::call` 仍是同步接口，native/MCP 批内仍串行，trait 冻结（异步/取消）
   未完成，W4 不标"完成"。
@@ -131,17 +137,16 @@ node tools\conformance.mjs --full --compact
 - **W3 窗口 draw 只硬预算通过**：`frame-probe` 在 RDP 32Hz 下 missed_ratio=0、
   draw_p95=9.40ms < 31.25ms；同主机相对基线 avg_fps 19.2 < 22.42 未通过，属远程合成器
   干扰，不判回归，也不标"窗口 draw 稳定达标"。
-- **G1 Linux 构建/自检/打包已本机过**：WSL 构建+ADC/recovery/crash 自检通过；
-  `package-desktop.ps1`/`.sh` 生成自带 `runtime/node` + probe + `dsh-official`（含
-  node_modules）的 zip/tar 与 `.sha256`；`verify-package.ps1/.sh` 校验 sha256、解压并跑
-  `--selftest-sidecar-recovery` / `--selftest-official`，Windows/Linux 均 PASS。
-  CI 的 `desktop-build` 已加 `verify-package` 步骤。仍缺 `.tmp/dsh-tools-all`、安装器/签名；
-  Actions 未实跑，macOS/Windows runner 未验证；G1 不标"完成"。
-- **G4 门禁已落地，CI 未实跑**：`tools/perf-gate.mjs` 与 conformance.yml step 已提交，
-  本机 PASS；GitHub Actions 尚未真实执行，三平台 runner 也未加，所以 G4 不标"完成"。
-- **G2 只到 headless/进程级 + 恢复横幅**：三个 selftest 覆盖损坏/备份/插件回滚、kill sidecar、
-  子进程 abort；恢复后会显示“已恢复：会话从备份恢复”横幅，但没有真实窗口内崩溃后继续操作的
-  端到端 UI 场景；G2 不标"完成"。
+- **G1 已由 Actions 实跑通过**：`cross-platform` 的 Windows/Ubuntu/macOS contract、core-rust、
+  desktop-build 全绿；WSL 构建+ADC/recovery/crash 自检、自带 runtime/node 的 zip/tar 打包与
+  `verify-package` 也通过。仍不包含安装器、生产签名与 macOS notarization。
+- **G4 已进 CI 并通过**：`tools/perf-gate.mjs` 在 conformance/cross-platform 的 Actions 成功，
+  本机同命令 PASS；G4 不再有 gate 缺口。
+- **G2 已补真窗口端到端**：`M4-RECOVERY-004` 的 `chat --selftest-window-recovery` 用真实子进程
+  abort 造出孤儿 `.bak`，GUI 子进程启动时经 `SessionIndex::scan` 发现备份、`recover_backup`
+  恢复并显示“已恢复”横幅，再注入 `cmd-k` + 文本 + `Enter`，父进程校验日志同时含
+  “before crash”/“after recovery”。Windows 本机 PASS；Windows CI desktop job 已加该步骤。
+  macOS/Linux 的真实窗口恢复仍未跑（三平台 headless 恢复保留）。
 - **SKIP-as-pass 已修（W8）**：`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs`
   在 node 缺失时 panic。实测把 `PATH` 限制为 `C:\Windows\System32;C:\Windows` 后两个测试二进制
   exit 101（此前是 SKIP + return 记 passed）；普通环境仍全绿（parallel 10、l2 10）。
@@ -152,16 +157,18 @@ node tools\conformance.mjs --full --compact
 | Gate | 判定 | 当前状态 | 缺口 |
 |---|---|---|---|
 | G1 三平台 + 两类插件 | 三平台 CI 全绿；两类来源插件回归 | **PASS** | run 44122517682（9/9）与 44127414363（Windows 自检追加，rerun 后 9/9）：Windows/Ubuntu/macOS 的 contract、core-rust、desktop-build 全部 success；desktop 包解压后 5 项自检；cpp-v1 component + external/official 两类来源覆盖。签名/公证可选，未配证书，不影响本 gate |
-| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **部分（三平台 headless + UI 提示）**：Windows/Linux/macOS CI 均跑 `--selftest-recovery` / `--selftest-crash-recovery`，`--selftest-sidecar-recovery` 覆盖 kill sidecar；恢复后 `plugin_errors` 生成“已恢复”横幅 | 真实窗口内崩溃/重启后点击继续的端到端 UI 未覆盖 |
+| G2 崩溃/插件失败恢复 | 数据可恢复、可继续操作 | **PASS（Windows 真窗口 + 三平台 headless）**：`M4-RECOVERY-004` = `chat --selftest-window-recovery`，真实子进程 abort → 孤儿 `.bak` → `SessionIndex::scan` 发现 → 启动恢复横幅 → 真实窗口注入 `cmd-k`/文本/`Enter` 继续发送；父进程校验日志含 before/after。三平台 CI 仍跑 `--selftest-recovery` / `--selftest-crash-recovery`，`--selftest-sidecar-recovery` 覆盖 kill sidecar | macOS/Linux 真窗口恢复未跑；`--selftest-window-recovery` 的 Windows CI step 已加、待下一次 Actions 实跑 |
 | G3 键盘全流程 | 无鼠标完成主流程 | **PASS（自动注入真实窗口）** | `DSHR_KEYBOARD_FLOW=1`：真实窗口 `cmd-n`→输入 `hello keyboard`→`Enter` 发送→synthetic 审批 + `cmd-shift-a`→`cmd-j`→`cmd-w`，本机 Windows exit 0、会话含消息、审批 AllowOnce；Windows CI desktop job 执行。审批请求是 synthetic，IME/macOS 键位仍另测 |
 | G4 性能基线进 CI | 基线 + 阈值由 CI 执行 | **PASS** | `cross-platform`/`conformance` 的 `tools/perf-gate.mjs --json artifacts/perf-baseline.json` 在 Actions 成功；本机同命令 PASS |
 
 ## 5. 下一步（按依赖排序）
 
-1. **W2/W3 真机复验**：按 [m4-keyboard.md](m4-keyboard.md) §3 跑 G3；按 [m4-adc.md](m4-adc.md) §3
-   点击 copy。两者都需要真实窗口，当前本机前台锁限制见 §4。
-2. **W3 剩余**：Input/Select `onChange`、tool card extra、draw 预算；`openExternal` 确认条待真机复验。
-3. **W7**：三平台 CI matrix、官方包 vendor 来源校验、性能基线进 CI（G1/G4 的前置）。
+1. **W4/W6 收尾**：MCP 接线、运行中抢占/异步 trait 冻结；官方 bash/pwsh 等 shell 工具 execute。
+2. **W2/W3 真机复验**：按 [m4-adc.md](m4-adc.md) §3 点击 copy/openExternal；IME、macOS 键位与
+   完整 Tab 焦点环；W3 draw 相对基线与真实工具 `meta.ui`。
+3. **W8**：矩阵元数据/事件顺序/`session_id` 接线/flaky 治理。
+4. **W7 范围外剩余**：registry/CA/自动更新、生产签名/公证、安装器（不阻塞四条 gate，但仍是
+   PLAN M4 清单项）。
 
 ## 6. 复现命令
 
@@ -172,5 +179,6 @@ node tools/conformance.mjs --quick
 tools\build-env.cmd cargo test --offline -p dshr-profile
 tools\build-env.cmd cargo test --offline -p dshr-desktop-gpui --bin chat
 tools\build-env.cmd cargo run --offline -p dshr-desktop-gpui --bin chat -- --selftest-recovery
+tools\build-env.cmd cargo run --offline -p dshr-desktop-gpui --bin chat -- --selftest-window-recovery
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\authoring-check.ps1 -SkipBuild
 ```

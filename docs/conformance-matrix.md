@@ -8,25 +8,25 @@
 
 | 字段 | 值 |
 |---|---|
-| generated_at | 2026-11-17T19:26:08.339Z |
-| git HEAD | 9c7fd10bf7ce409c499a372dbf63e596abc8a303（clean） |
+| generated_at | 2026-11-18T16:24:29.254Z |
+| git HEAD | cd192debc67e27b5bb345d1d635101ee3a76e325（dirty，9 个文件未提交） |
 | git branch | master |
 | platform | win32 10.0.26200 x64 |
 | node | v24.14.0 |
 | invocation | full — `node tools/conformance.mjs --full --compact --json docs/conformance-matrix.json --markdown docs/conformance-matrix.md` |
-| registry | docs/conformance.d/registry.json（schema_version=1，648 条测试） |
+| registry | docs/conformance.d/registry.json（schema_version=1，649 条测试） |
 
 ## 统计
 
 | 指标 | 数量 |
 |---|---:|
-| 总测试 ID | 648 |
+| 总测试 ID | 649 |
 | implemented | 581 |
 | implemented passed | 581 |
 | implemented failed | 0 |
 | implemented skipped | 0 |
 | pending | 18 |
-| manual | 49 |
+| manual | 50 |
 | blocked | 0 |
 | **failed（导致退出码 1）** | **0** |
 
@@ -34,10 +34,10 @@
 
 | suite | 状态 | 退出码 | 耗时 | 命令 | 摘要 |
 |---|---|---:|---:|---|---|
-| schema | pass | 0 | 0.23s | `node schema/check.mjs` | 76/76 cases passed |
-| links | pass | 0 | 0.25s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
-| node-test | pass | 0 | 0.30s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
-| cargo | pass | 0 | 56.14s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 907 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
+| schema | pass | 0 | 0.07s | `node schema/check.mjs` | 76/76 cases passed |
+| links | pass | 0 | 0.10s | `node tools/check-links.mjs` | 417 link(s) checked, 0 broken, 81 file(s) scanned |
+| node-test | pass | 0 | 0.18s | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 21/21 node tests passed |
+| cargo | pass | 0 | 53.94s | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast` | 71 suite(s), 910 passed, 0 failed, 8 ignored；未执行: official_packages(8 ignored) |
 
 ## 测试矩阵
 
@@ -90,6 +90,7 @@
 | M4-RECOVERY-001 | M4 | manual | MANUAL | — | chat --selftest-recovery：损坏会话隔离+干净重建、删主文件后 .bak 恢复并可继续追加、失败插件注册回滚+健康插件装载/调用。headless PASS；真实窗口崩溃恢复未覆盖。 |
 | M4-RECOVERY-002 | M4 | manual | MANUAL | — | chat --selftest-sidecar-recovery：先 probe_echo 成功，再 kill sidecar；已死调用返回错误、会话仍可追加/保存、probe_native 仍注册。headless PASS；真实窗口内 sidecar 崩溃/重启未覆盖。 |
 | M4-RECOVERY-003 | M4 | manual | MANUAL | — | chat --selftest-crash-recovery：子进程 save_atomic 两次后删主文件并 abort；父进程恢复 .bak、校验 before crash、追加 after crash 并保存；恢复后 plugin_errors 含“已恢复”横幅。PASS（crashed/backup/before/after/notice 全 true）。 |
+| M4-RECOVERY-004 | M4 | manual | MANUAL | — | chat --selftest-window-recovery：子进程真实 abort 留下孤儿 .bak；GUI 子进程经 SessionIndex::scan 发现备份、启动 recover_backup 显示横幅，注入 cmd-k + 文本 + Enter；父进程校验子进程 exit 0 且日志含 before crash / after recovery。本机 Windows PASS（crashed/backup/child/before/after 全 true）；Windows CI desktop job 执行。 |
 | M4-SDK-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 的 0d 步：sdk-pack 生成 sdk-manifest.json + SHA256SUMS，--verify 通过；篡改 SDK 后 verify 非零；--force 重建后恢复；new-plugin --sdk 消费离线包构建。需 node + 已构建 chat.exe。 |
 | M4-SIGN-001 | M4 | manual | MANUAL | — | tools/authoring-check.ps1 第 10 步：--generate-key → --trust-key add → plugin-pack --key/--key-id → chat --install-plugin 免 --yes-install → --trust-key rotate → 旧钥包 E_TRUST_KEY_REVOKED → 新钥重签安装；需构建 chat.exe。 |
 | M4-UNINSTALL-100 | M4 | manual | MANUAL | — | apps/desktop-gpui/src/bin/chat.rs 的 --uninstall-plugin：目录原子移除 + profile 条目 + install-audit 的 action=uninstall；需构建 chat 二进制，harness 无 selftest suite，人工/脚本判定。 |
@@ -706,13 +707,13 @@
 - P1-6 ignored 检测：cargo suite 按 `Running ...(<binary>-<hash>.exe)` + 紧随 `test result:` 建 binary→counts 映射（stdout/stderr 合并同一文件以保顺序）；integration test 二进制用 `crates/<pkg>/tests/<binary>.rs` 反查归属。`passed=0 && ignored>0` 的整文件忽略二进制会列入 suite summary（实测：`未执行: official_packages(6 ignored)`），该包若无其它已执行用例则判 FAIL；所有依赖 official fixture 的 ID 已改 manual，不会把 ignored 算 pass。
 - W8/P0 证据：CPP-WASM-021..027、CPP-ISO-018/019/026..031、M3-INSTALL-001..003、M3-DIGEST-001/002、CPP-PANEL-002、CPP-WASM-033、RPC-L2-202..208、L2JS-021..028、M3-PARALLEL-108..110 为 cargo/node-test implemented；CPP-PROC-024..027 由既有 plugin-sdk 组覆盖（源码 session.rs/tool_result.rs 有同 ID 重复，注册表按唯一 ID 登记）；RPC-L2-201/501..507 与 chat --selftest-wasm（CPP-WASM-100）为 manual。
 - ID 兼容说明：MCP 源码两段式 MCP-001..017 / JS L2JS-001..028 按 spec/README §3 三段式登记为 MCP-CLIENT-001..017 / JS-L2SVC-001..028，title/notes 保留源码 ID。
-- manual 证据：official gate（RPC-L2-201/501..507）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 8 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100/M4-LIFECYCLE-001（需构建 chat 二进制，部分需 vendored sidecar）；M4 CLI：M4-UNINSTALL-100（--uninstall-plugin）、M4-KEY-100（--trust-key）、M4-SDK-001/M4-SIGN-001（tools/authoring-check.ps1 的 SDK 离线包与签名/轮换步骤）、M4-KEYBOARD-001（真实窗口无鼠标流程，见 docs/m4-keyboard.md）、M4-ADC-100（插件面板 Button copy/call 真实点击）、M4-ADC-101（openExternal 确认条）、M4-P2-001（node 缺失时测试失败而非 SKIP）、M4-RECOVERY-001/002/003（chat --selftest-recovery、--selftest-sidecar-recovery、--selftest-crash-recovery）、M4-PERF-001（node tools/perf-gate.mjs）、M4-CI-001（cross-platform.yml）、M4-CI-002（node tools/official-provenance.mjs --check）、M4-CI-003（WSL Linux 核心/桌面/自检）、M4-CI-004（package-desktop.ps1/sh）、M4-CI-005（verify-package.ps1/sh）、M4-CI-006（macOS 交叉类型检查）、M4-COMPONENT-AUTHOR-001（component 模板/生成器）、M4-COMPONENT-018（chat --selftest-cpp-component）、M4-COMPONENT-023（CLI 安装）、M4-CI-007（Authenticode 管线）、M4-CI-008（CI 签名接线）、M4-CI-009（macOS .app 布局）、M4-CI-010（Actions 三平台全绿）、M4-WINDOW-001（真实 GPUI 窗口）、M4-KEYBOARD-002（ChatApp 快捷键）、M4-CLIPBOARD-001（真实剪贴板）、M4-OFFICIAL-001（chat --selftest-official）、M4-DRAW-001（tools/frame-probe.ps1）、RPC-L2-506/507（official fs read/write）、M4-COMPONENT-AUTHOR-001（component 模板/生成器）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。
+- manual 证据：official gate（RPC-L2-201/501..507）= `powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-l2-gate.ps1`（缺 .tmp/dsh-tools-all 时 exit 1；默认 cargo 8 ignored/0 passed）；chat selftests：CPP-TRUST-019/CPP-ISO-022/RPC-L2-411/ADC-PANEL-001/M3-DEFAULT-070/M3-PARALLEL-201/CPP-WASM-100/M4-LIFECYCLE-001（需构建 chat 二进制，部分需 vendored sidecar）；M4 CLI：M4-UNINSTALL-100（--uninstall-plugin）、M4-KEY-100（--trust-key）、M4-SDK-001/M4-SIGN-001（tools/authoring-check.ps1 的 SDK 离线包与签名/轮换步骤）、M4-KEYBOARD-001（真实窗口无鼠标流程，见 docs/m4-keyboard.md）、M4-ADC-100（插件面板 Button copy/call 真实点击）、M4-ADC-101（openExternal 确认条）、M4-P2-001（node 缺失时测试失败而非 SKIP）、M4-RECOVERY-001/002/003（chat --selftest-recovery、--selftest-sidecar-recovery、--selftest-crash-recovery）、M4-RECOVERY-004（chat --selftest-window-recovery，真实窗口恢复后继续输入）、M4-PERF-001（node tools/perf-gate.mjs）、M4-CI-001（cross-platform.yml）、M4-CI-002（node tools/official-provenance.mjs --check）、M4-CI-003（WSL Linux 核心/桌面/自检）、M4-CI-004（package-desktop.ps1/sh）、M4-CI-005（verify-package.ps1/sh）、M4-CI-006（macOS 交叉类型检查）、M4-COMPONENT-AUTHOR-001（component 模板/生成器）、M4-COMPONENT-018（chat --selftest-cpp-component）、M4-COMPONENT-023（CLI 安装）、M4-CI-007（Authenticode 管线）、M4-CI-008（CI 签名接线）、M4-CI-009（macOS .app 布局）、M4-CI-010（Actions 三平台全绿）、M4-WINDOW-001（真实 GPUI 窗口）、M4-KEYBOARD-002（ChatApp 快捷键）、M4-CLIPBOARD-001（真实剪贴板）、M4-OFFICIAL-001（chat --selftest-official）、M4-DRAW-001（tools/frame-probe.ps1）、RPC-L2-506/507（official fs read/write）、M4-COMPONENT-AUTHOR-001（component 模板/生成器）；CPP-AUTHOR-001 = tools/authoring-check.ps1；GATE-G2-001 = 仓库外实验 checklist。
 - 提交矩阵由 `--full --compact` 生成（cargo 结果真实、不是 SKIP）；quick 门禁仍用 `--quick`。cargo suite 会把 #[ignore] 计入 ignored、绝不当作 passed：包级 selector 遇 ignored>0 判 FAIL，all 通过时也在消息中标注 ignored 数。compact markdown 的 PASS 行只列 ID+结果，非 PASS（FAIL/SKIP/PENDING/MANUAL）保留完整 6 列；JSON tests.rows 为 [id, area, result]。
 - .github/workflows/conformance.yml 未在 GitHub Actions 实跑，矩阵由本机命令生成。
 - M4 W1（2026-11-16）：`M4-UNINSTALL-001..008`（crates/profile/src/uninstall.rs + lib.rs）与 `M4-KEY-001..010`（crates/profile/src/trust.rs）为 cargo implemented（selector=dshr-profile）；`M4-UNINSTALL-100`/`M4-KEY-100`/`M4-LIFECYCLE-001`/`M4-SDK-001`/`M4-SIGN-001` 是 chat/工具链产品路径 manual 证据。三平台 CI 与 macOS/Linux 行为仍未验证（[m4-status.md](m4-status.md) §3）。
 - M4 W3（2026-11-16）：`M4-ADC-001`（ui-gpui handler 穿透）、`M4-ADC-002`（PluginHost 路由）、`M4-ADC-003`（external-process ui.action→render）、`M4-ADC-004`（tool.result.meta.ui→ToolCard.extra）、`M4-ADC-005`（Checkbox/Switch onChange 渲染）、`M4-ADC-006`（Select onChange 注入 value）为 cargo implemented；`CPP-PROC-033` 覆盖 SDK ActionHandler；`M4-ADC-100/101` 为真实点击/确认条 manual。Input/Textarea/Slider onChange 与 draw 预算仍未接。
 - M4 W8（2026-11-16）：`M4-P2-001` 记录 SKIP-as-pass 修复——`crates/compat-dsh-host/tests/{parallel_batch,l2_host_services}.rs` 在 node 缺失时 panic/exit 101（实测限 PATH 后），不再 eprintln SKIP+return 记 passed；普通环境仍全绿。
-- M4 G2（2026-11-16）：`M4-RECOVERY-001` = `chat --selftest-recovery`，覆盖损坏会话隔离+重建、删除主文件后 `.bak` 恢复并继续追加、失败插件回滚+健康插件装载/调用；`M4-RECOVERY-002` = `--selftest-sidecar-recovery`，kill sidecar 后会话仍可追加、原生工具仍注册、已死调用返回错误；`M4-RECOVERY-003` = `--selftest-crash-recovery`，子进程删主文件并 abort 后父进程从 `.bak` 恢复并继续追加。headless PASS，真实窗口崩溃恢复未覆盖。
+- M4 G2（2026-11-16）：`M4-RECOVERY-001` = `chat --selftest-recovery`，覆盖损坏会话隔离+重建、删除主文件后 `.bak` 恢复并继续追加、失败插件回滚+健康插件装载/调用；`M4-RECOVERY-002` = `--selftest-sidecar-recovery`，kill sidecar 后会话仍可追加、原生工具仍注册、已死调用返回错误；`M4-RECOVERY-003` = `--selftest-crash-recovery`，子进程删主文件并 abort 后父进程从 `.bak` 恢复并继续追加；`M4-RECOVERY-004` = `--selftest-window-recovery`，真实崩溃留下孤儿 `.bak` 后打开真实窗口、显示恢复横幅并注入键盘继续发送。headless 与真实窗口（Windows）均 PASS。
 - M4 W6（2026-11-16）：`RPC-L2-228` 覆盖 `session-log/v1 events.append`（projections 仍只读）；sidecar 最小 `exec.agent.session.append` → 该写通道。`official-l2-gate.ps1` 8/8 PASS：官方 `dsh-tool-todo` execute 写入 `todo/write`，官方 `working_directory` execute 真实返回 cwd，官方 `dsh-tool-fs` read/write execute 真实读取/落盘；bash/pwsh 等 shell 工具仍未闭环。
 - M4 G4（2026-11-16）：`M4-PERF-001` = `node tools/perf-gate.mjs`（阈值 50ms / 满配额 16.7ms / a11y 0），CI conformance.yml 已加 step 与 perf-baseline artifact；本机 PASS（worst 10.799ms、max_quota 4.033ms），Actions 未实跑。
 - M4 W4（2026-11-16）：`M4-TRAIT-001` 覆盖 `Plugin::id/version` 返回借用 `&str`，external/WASM 插件删除 `Box::leak`；native/MCP 并发与 `Plugin::call` 异步/取消仍未做。

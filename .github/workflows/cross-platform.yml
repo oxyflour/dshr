@@ -157,6 +157,8 @@ jobs:
           target\debug\chat.exe --selftest-adc-panel
           target\debug\chat.exe --selftest-recovery
           target\debug\chat.exe --selftest-crash-recovery
+          target\debug\chat.exe --selftest-window-recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           target\debug\chat.exe --selftest-window
           target\debug\chat.exe --selftest-clipboard
           $env:DSHR_KEYBOARD_FLOW = '1'
