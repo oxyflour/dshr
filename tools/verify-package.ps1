@@ -2,7 +2,7 @@ param(
     [string]$Archive = "dist/dshr-debug-windows-x64.zip"
 )
 
-# M4 G1：校验归档 SHA-256、解压、跑包内 sidecar/official 自检，再清理临时目录。
+# M4 G1：校验归档 SHA-256、解压、跑包内真实窗口和运行时自检，再清理临时目录。
 $ErrorActionPreference = "Stop"
 $archivePath = (Resolve-Path $Archive).Path
 $hashFile = "$archivePath.sha256"
@@ -21,6 +21,8 @@ try {
     $env:DSHR_HOME = Join-Path $tmp ".home"
     Push-Location $tmp
     try {
+        & .\chat.exe --selftest-window
+        if ($LASTEXITCODE -ne 0) { throw "window selftest failed: $LASTEXITCODE" }
         & .\chat.exe --selftest-sidecar-recovery
         if ($LASTEXITCODE -ne 0) { throw "sidecar selftest failed: $LASTEXITCODE" }
         & .\chat.exe --selftest-official

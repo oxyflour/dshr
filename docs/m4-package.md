@@ -19,11 +19,14 @@ bash tools/package-desktop.sh debug
 Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本可用
 `CARGO=/path/to/cargo` 指定工具链。
 
+Windows 的 debug 和 release 构建都用 Windows SDK 的 `fxc.exe` 预编译并嵌入 GPUI 的 DirectX shader。
+构建时可用 `GPUI_FXC_PATH` 指定 `fxc.exe`。解压后的应用可以脱离构建机的 Cargo 缓存启动。
+
 ## 2. 本机实测
 
 | 平台 | 产物 | 大小 | SHA-256 |
 |---|---|---|---|
-| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 62,724,028 B | `345140f8…60fe` |
+| Windows x64（debug） | `dist/dshr-debug-windows-x64.zip` | 65,240,414 B | `39a53cf2…c1a` |
 | Linux x86_64（debug） | `dist/dshr-debug-linux-x86_64.tar.gz` | 213,630,798 B | `f897422d…10a2` |
 
 归档内含 `runtime/node`、`sidecar/probe-*.mjs`、完整 `sidecar/dsh-official`（含
@@ -81,9 +84,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Ar
 bash tools/verify-package.sh dist/dshr-debug-linux-x86_64.tar.gz
 ```
 
-脚本会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery`、
+两个平台的脚本都会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery`、
 `--selftest-official`、`--selftest-cpp-component`、`--selftest-cpp-install` 与
-`--selftest-cpp-cli-install`，最后清理。Windows/Linux 本机均 **PASS**。
+`--selftest-cpp-cli-install`，最后清理。Windows 还会对解压出的 `chat.exe` 跑
+`--selftest-window`，验证 DirectX 初始化和窗口首帧。Windows/Linux 本机均 **PASS**。
 
 ## 5. 明确未做
 
