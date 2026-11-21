@@ -3,7 +3,7 @@ use super::{
     workspace_name, ChatApp, Theme,
 };
 use gpui::prelude::*;
-use gpui::{div, px, Anchor, AnyElement, Context, PathPromptOptions, Role, Window};
+use gpui::{div, px, Anchor, AnyElement, Context, PathPromptOptions, Pixels, Role, Window};
 use std::path::PathBuf;
 
 impl ChatApp {
@@ -76,15 +76,27 @@ impl ChatApp {
         self.open_session(id, window, cx);
     }
 
-    pub(super) fn workspace_picker(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn workspace_picker(
+        &self,
+        t: &Theme,
+        available_width: Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = t.palette;
         let active = self.active_workspace.to_string_lossy();
         let button = chrome_button("workspace-picker", "", t)
             .aria_label(format!("当前工作区 {}", workspace_name(&active)))
             .aria_expanded(self.workspace_picker_open)
-            .gap(px(6.0))
-            .max_w(px(256.0))
-            .child(desktop_icon("\u{e8b7}", "▱"))
+            .flex_shrink_1()
+            .min_w(px(0.0))
+            .max_w(px(360.0))
+            .gap(px(4.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(p.color(p.label_primary))
+            .when(self.workspace_picker_open, |button| {
+                button.bg(p.color(p.interactive_hover))
+            })
+            .child(desktop_icon("\u{e8b7}", "▱").text_size(px(16.0)))
             .child(
                 div()
                     .min_w(px(0.0))
@@ -92,7 +104,11 @@ impl ChatApp {
                     .text_ellipsis()
                     .child(workspace_name(&active).to_owned()),
             )
-            .child(desktop_icon("\u{e70d}", "▾").text_size(px(10.0)))
+            .child(
+                desktop_icon("\u{e70d}", "▾")
+                    .text_size(px(12.0))
+                    .text_color(p.color(p.label_caption)),
+            )
             .focusable()
             .on_click(cx.listener(|chat, _, _, cx| {
                 chat.composer_menu = None;
@@ -113,7 +129,7 @@ impl ChatApp {
                 .occlude()
                 .flex()
                 .flex_col()
-                .w(px(272.0))
+                .w(px(272.0).min(available_width))
                 .max_h(px(240.0))
                 .overflow_y_scroll()
                 .p(px(5.0))
@@ -164,9 +180,17 @@ impl ChatApp {
                             chat.choose_workspace_folder(window, cx)
                         })),
                 )
-                .into_any_element()
         });
-        popover::attach(button, menu, Anchor::TopLeft, Anchor::BottomLeft)
+        popover::attach_dismissible(
+            button,
+            menu,
+            Anchor::BottomLeft,
+            Anchor::TopLeft,
+            cx.listener(|chat, _, _, cx| {
+                chat.workspace_picker_open = false;
+                cx.notify();
+            }),
+        )
     }
 
     pub(super) fn workspace_add_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {

@@ -110,6 +110,7 @@ impl ChatApp {
         self.settings_tab = Some(SettingsTab::General);
         self.turn_menu_open = false;
         self.composer_menu = None;
+        self.session_menu = None;
         self.workspace_picker_open = false;
         #[cfg(windows)]
         self.close_window_menu(cx);

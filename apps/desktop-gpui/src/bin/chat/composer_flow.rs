@@ -1,11 +1,34 @@
 use std::time::Duration;
 
 use gpui::{
-    point, px, App, EntityInputHandler, Keystroke, MouseButton, MouseDownEvent, MouseUpEvent,
-    PlatformInput, WindowHandle,
+    point, px, App, EntityInputHandler, Focusable, Keystroke, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, PlatformInput, Point, Window, WindowHandle,
 };
 
 use super::{ChatApp, ComposerMenu, Row};
+
+fn click(window: &mut Window, cx: &mut App, position: Point<Pixels>) {
+    window.defer(cx, move |window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                click_count: 1,
+                ..Default::default()
+            }),
+            cx,
+        );
+    });
+}
 
 pub(super) fn run(handle: WindowHandle<ChatApp>, cx: &mut App) {
     cx.spawn(async move |cx| {
@@ -17,27 +40,7 @@ pub(super) fn run(handle: WindowHandle<ChatApp>, cx: &mut App) {
                 let centered = chat.rows.is_empty()
                     && bounds.top() > window.viewport_size().height * 0.25
                     && bounds.top() < window.viewport_size().height * 0.75;
-                let position = point(bounds.left() + px(9.0), bounds.top() + px(79.0));
-                window.defer(cx, move |window, cx| {
-                    window.dispatch_event(
-                        PlatformInput::MouseDown(MouseDownEvent {
-                            button: MouseButton::Left,
-                            position,
-                            click_count: 1,
-                            ..Default::default()
-                        }),
-                        cx,
-                    );
-                    window.dispatch_event(
-                        PlatformInput::MouseUp(MouseUpEvent {
-                            button: MouseButton::Left,
-                            position,
-                            click_count: 1,
-                            ..Default::default()
-                        }),
-                        cx,
-                    );
-                });
+                click(window, cx, point(bounds.left() + px(9.0), bounds.top() + px(79.0)));
                 (centered, bounds.size.height)
             })
             .expect("composer flow window");
@@ -45,12 +48,20 @@ pub(super) fn run(handle: WindowHandle<ChatApp>, cx: &mut App) {
         let add_open = handle
             .update(cx, |chat, window, cx| {
                 let open = chat.composer_menu == Some(ComposerMenu::Add);
-                chat.composer_menu = None;
-                chat.focus_composer(window, cx);
+                let bounds = chat.input.read(cx).bounds().expect("draft is laid out");
+                click(window, cx, point(bounds.left() + px(16.0), bounds.top() + px(4.0)));
+                open
+            })
+            .unwrap_or(false);
+        cx.background_executor().timer(delay).await;
+        let add_dismissed = handle
+            .update(cx, |chat, window, cx| {
+                let dismissed = chat.composer_menu.is_none()
+                    && chat.input.read(cx).focus_handle(cx).is_focused(window);
                 chat.input.update(cx, |input, cx| {
                     input.set_content("这是需要自动换行的草稿。".repeat(30), window, cx);
                 });
-                open
+                dismissed
             })
             .unwrap_or(false);
         cx.background_executor().timer(delay).await;
@@ -106,10 +117,10 @@ pub(super) fn run(handle: WindowHandle<ChatApp>, cx: &mut App) {
             })
             .unwrap_or(false);
         println!(
-            "[composer-flow] centered={centered} add_menu={add_open} wraps={wraps} \
+            "[composer-flow] centered={centered} add_menu={add_open} dismissed={add_dismissed} wraps={wraps} \
              newline={newline} selection={selection} docked={docked}"
         );
-        if !(centered && add_open && wraps && newline && selection && docked) {
+        if !(centered && add_open && add_dismissed && wraps && newline && selection && docked) {
             std::process::exit(1);
         }
         cx.update(|cx| cx.quit());

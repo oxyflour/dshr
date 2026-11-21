@@ -9,7 +9,7 @@ use gpui::{
 };
 use std::time::Duration;
 
-const HEIGHT: f32 = 38.0;
+pub(super) const HEIGHT: f32 = 38.0;
 const MENU_TRIGGER_WIDTH: f32 = 48.0;
 const MENU_ROW_HEIGHT: f32 = 28.0;
 

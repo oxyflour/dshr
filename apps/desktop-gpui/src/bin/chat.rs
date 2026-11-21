@@ -37,9 +37,10 @@ use gpui::prelude::*;
 use gpui::profiler::{set_trace_enabled, FrameEvent, FrameTimingCollector};
 use gpui::{
     actions, div, img, point, px, rgba, size, AnyElement, App, Bounds, ClipboardEntry,
-    ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths, FocusHandle, Focusable, Font,
-    FontWeight, KeyBinding, ObjectFit, PathPromptOptions, RenderImage, Role, ScrollHandle,
-    Stateful, StyledImage, TextOverflow, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    ClipboardItem, Context, Div, ElementId, Entity, EntityInputHandler, ExternalPaths, FocusHandle,
+    Focusable, Font, FontWeight, KeyBinding, ObjectFit, PathPromptOptions, RenderImage, Role,
+    ScrollHandle, Stateful, StyledImage, TextOverflow, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
@@ -3560,6 +3561,11 @@ enum ComposerMenu {
     Add,
 }
 
+struct SessionMenu {
+    session_id: String,
+    position: Option<gpui::Point<gpui::Pixels>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommand {
     New,
@@ -3679,6 +3685,7 @@ struct ChatApp {
     sessions: Vec<SessionMeta>,
     session_search: Entity<TextInput>,
     session_search_open: bool,
+    session_menu: Option<SessionMenu>,
     session_id: String,
     active_workspace: PathBuf,
     folded_workspaces: std::collections::HashSet<String>,
@@ -3782,6 +3789,7 @@ impl ChatApp {
         }
         self.activity_open = false;
         self.composer_menu = None;
+        self.session_menu = None;
         self.turn_menu_open = false;
         self.turn_jump = None;
         self.turn_focus = None;
@@ -3900,6 +3908,7 @@ impl ChatApp {
             self.slash_text = slash_text.map(str::to_owned);
             self.selected_command = 0;
             if slash_text.is_some() {
+                self.session_menu = None;
                 self.turn_menu_open = false;
                 self.composer_menu = Some(ComposerMenu::Commands);
             } else if self.composer_menu == Some(ComposerMenu::Commands) {
@@ -3972,6 +3981,10 @@ impl ChatApp {
         Theme::new(self.theme_kind)
     }
 
+    fn show_empty_composer(&self) -> bool {
+        self.rows.is_empty() && !self.busy && !self.activity_open
+    }
+
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         self.set_theme(self.theme_kind.toggled(), cx);
     }
@@ -3990,6 +4003,7 @@ impl ChatApp {
 
     fn toggle_sidebar(&mut self, window: &Window, cx: &mut Context<Self>) {
         let collapsed = self.sidebar_is_collapsed(window);
+        self.session_menu = None;
         self.sidebar_collapsed = Some(!collapsed);
         cx.notify();
     }
@@ -4003,6 +4017,7 @@ impl ChatApp {
         self.plugin_notice = None;
         self.workspace_picker_open = false;
         self.composer_menu = None;
+        self.session_menu = None;
         self.turn_menu_open = false;
         if self.plugins_open {
             // 与点击入口一致：用 try_lock，工作线程持锁时不阻塞 UI 渲染。
@@ -4372,6 +4387,10 @@ impl ChatApp {
         if self.close_settings(window, cx) {
             return;
         }
+        if self.session_menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self.workspace_picker_open {
             self.workspace_picker_open = false;
             self.focus_composer(window, cx);
@@ -4451,6 +4470,7 @@ impl ChatApp {
         if self.sidebar_is_collapsed(window) {
             self.toggle_sidebar(window, cx);
         }
+        self.session_menu = None;
         self.session_search_open = true;
         window.focus(&self.session_search.read(cx).focus_handle(cx), cx);
         cx.notify();
@@ -4468,6 +4488,9 @@ impl ChatApp {
     ///
     /// 生成中不允许切换——工作线程还在往旧 state 写，切走会让 UI 与日志分叉。
     fn open_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session_menu.take().is_some() {
+            cx.notify();
+        }
         if id == self.session_id {
             self.focus_composer(window, cx);
             return;
@@ -4528,6 +4551,7 @@ impl ChatApp {
     }
 
     fn delete_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu = None;
         if self.pending_delete.as_deref() != Some(id.as_str()) {
             self.pending_delete = Some(id);
             cx.notify();
@@ -4555,6 +4579,7 @@ impl ChatApp {
     }
 
     fn start_rename(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_menu = None;
         let title = self
             .sessions
             .iter()
@@ -4562,7 +4587,10 @@ impl ChatApp {
             .map(|session| session.title.clone())
             .unwrap_or_default();
         let input = cx.new(|cx| TextInput::new("会话名称", cx));
-        input.update(cx, |input, cx| input.set_content(&title, window, cx));
+        input.update(cx, |input, cx| {
+            input.set_content(&title, window, cx);
+            input.set_selected_text_range(0..title.encode_utf16().count(), window, cx);
+        });
         let handle = input.read(cx).focus_handle(cx);
         self.renaming = Some(id);
         self.rename_input = Some(input);
@@ -4796,13 +4824,6 @@ impl ChatApp {
                             .h(px(34.0))
                             .justify_start()
                             .gap(px(6.0))
-                            .child(
-                                desktop_icon(
-                                    if folded { "\u{e76c}" } else { "\u{e70d}" },
-                                    if folded { "›" } else { "▾" },
-                                )
-                                .text_size(px(10.0)),
-                            )
                             .child(desktop_icon(
                                 if folded { "\u{e8b7}" } else { "\u{e838}" },
                                 "▱",
@@ -4855,6 +4876,108 @@ impl ChatApp {
         list.into_any_element()
     }
 
+    fn session_menu_trigger(
+        &self,
+        index: usize,
+        session: &SessionMeta,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        let open = self
+            .session_menu
+            .as_ref()
+            .filter(|menu| menu.session_id == session.id);
+        let id = session.id.clone();
+        let trigger = chrome_button(("session-actions", index), "", t)
+            .aria_label("会话操作")
+            .focusable()
+            .size(px(24.0))
+            .px(px(0.0))
+            .child(desktop_icon("\u{e712}", "⋯"))
+            .aria_expanded(open.is_some())
+            .when(open.is_none(), |button| {
+                button
+                    .invisible()
+                    .group_hover("session-row", |style| style.visible())
+                    .focus_visible(|style| style.visible())
+            })
+            .on_click(cx.listener(move |chat, _, _, cx| {
+                cx.stop_propagation();
+                let same_button = chat
+                    .session_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.session_id == id && menu.position.is_none());
+                chat.session_menu = (!same_button).then(|| SessionMenu {
+                    session_id: id.clone(),
+                    position: None,
+                });
+                cx.notify();
+            }));
+        let Some(open) = open else {
+            return trigger.into_any_element();
+        };
+
+        let rename_id = session.id.clone();
+        let delete_id = session.id.clone();
+        let menu = div()
+            .id("session-menu")
+            .role(Role::Menu)
+            .aria_label("会话操作")
+            .occlude()
+            .flex()
+            .flex_col()
+            .w(px(152.0))
+            .p(px(4.0))
+            .rounded(t.radii.md)
+            .border_1()
+            .border_color(p.color(p.border_l2))
+            .bg(p.color(p.bg_layer_1))
+            .shadow_sm()
+            .child(
+                chrome_button("session-menu-rename", "重命名", t)
+                    .role(Role::MenuItem)
+                    .justify_start()
+                    .focusable()
+                    .on_click(cx.listener(move |chat, _, window, cx| {
+                        cx.stop_propagation();
+                        chat.start_rename(rename_id.clone(), window, cx);
+                    })),
+            )
+            .child(
+                chrome_button("session-menu-delete", "删除", t)
+                    .role(Role::MenuItem)
+                    .justify_start()
+                    .text_color(p.color(p.state_error))
+                    .focusable()
+                    .on_click(cx.listener(move |chat, _, window, cx| {
+                        cx.stop_propagation();
+                        chat.delete_session(delete_id.clone(), window, cx);
+                    })),
+            );
+        let dismiss = cx.listener(|chat, _: &gpui::MouseDownEvent, _, cx| {
+            chat.session_menu = None;
+            cx.notify();
+        });
+        if let Some(position) = open.position {
+            div()
+                .child(trigger)
+                .child(popover::at_point(
+                    position,
+                    popover::dismiss_on_outside(menu, |_| false, dismiss),
+                ))
+                .into_any_element()
+        } else {
+            popover::attach_dismissible(
+                trigger,
+                Some(menu),
+                gpui::Anchor::BottomLeft,
+                gpui::Anchor::TopLeft,
+                dismiss,
+            )
+        }
+    }
+
     fn session_row(
         &self,
         index: usize,
@@ -4889,6 +5012,7 @@ impl ChatApp {
                     div()
                         .flex_1()
                         .min_w(px(0.0))
+                        .overflow_hidden()
                         .text_size(t.type_scale.small)
                         .text_color(p.color(p.label_primary))
                         .children(input),
@@ -4897,6 +5021,7 @@ impl ChatApp {
                     div()
                         .id(("rename-ok", index))
                         .role(Role::Button)
+                        .flex_none()
                         .aria_label("保存会话名称")
                         .px(px(4.0))
                         .cursor_pointer()
@@ -4912,6 +5037,7 @@ impl ChatApp {
                     div()
                         .id(("rename-cancel", index))
                         .role(Role::Button)
+                        .flex_none()
                         .aria_label("取消重命名")
                         .px(px(4.0))
                         .cursor_pointer()
@@ -4927,10 +5053,14 @@ impl ChatApp {
         }
 
         let open_id = session.id.clone();
+        let menu_id = session.id.clone();
+        let is_menu_open = self
+            .session_menu
+            .as_ref()
+            .is_some_and(|menu| menu.session_id == session.id);
         let is_pending_delete = self.pending_delete.as_deref() == Some(session.id.as_str());
         let actions: AnyElement = if is_pending_delete {
             let confirm_id = session.id.clone();
-            let cancel_id = session.id.clone();
             div()
                 .flex()
                 .items_center()
@@ -4963,57 +5093,13 @@ impl ChatApp {
                         .child("取消")
                         .on_click(cx.listener(move |this, _, _window, cx| {
                             cx.stop_propagation();
-                            let _ = cancel_id;
                             this.pending_delete = None;
                             cx.notify();
                         })),
                 )
                 .into_any_element()
         } else {
-            let rename_id = session.id.clone();
-            let delete_id = session.id.clone();
-            div()
-                .id(("session-actions", index))
-                .absolute()
-                .right_0()
-                .top_0()
-                .bottom_0()
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .invisible()
-                .group_hover("session-row", |style| style.visible())
-                .child(
-                    div()
-                        .id(("rename", index))
-                        .role(Role::Button)
-                        .aria_label("重命名会话")
-                        .px(px(3.0))
-                        .cursor_pointer()
-                        .text_size(t.type_scale.small)
-                        .text_color(p.color(p.label_tertiary))
-                        .child("✎")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.start_rename(rename_id.clone(), window, cx);
-                        })),
-                )
-                .child(
-                    div()
-                        .id(("delete", index))
-                        .role(Role::Button)
-                        .aria_label("删除会话")
-                        .px(px(3.0))
-                        .cursor_pointer()
-                        .text_size(t.type_scale.small)
-                        .text_color(p.color(p.label_tertiary))
-                        .child("×")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.delete_session(delete_id.clone(), window, cx);
-                        })),
-                )
-                .into_any_element()
+            self.session_menu_trigger(index, session, t, cx)
         };
         div()
             .id(("session-row", index))
@@ -5033,6 +5119,9 @@ impl ChatApp {
             .cursor_pointer()
             .when(is_active, |row| row.bg(p.color(p.business_tertiary)))
             .hover(|style| style.bg(p.color(p.interactive_hover_solid)))
+            .when(is_menu_open && !is_active, |row| {
+                row.bg(p.color(p.interactive_hover_solid))
+            })
             .child(
                 div()
                     .flex_1()
@@ -5065,15 +5154,28 @@ impl ChatApp {
                             .text_size(px(11.0))
                             .line_height(px(18.0))
                             .text_color(p.color(p.label_secondary))
+                            .when(is_menu_open, |time| time.invisible())
                             .group_hover("session-row", |style| style.invisible())
                             .child(relative_time(session.updated_at)),
                     )
-                    .child(actions)
+                    .child(div().absolute().right_0().top(px(-3.0)).child(actions))
                     .into_any_element()
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_session(open_id.clone(), window, cx);
             }))
+            .when(!is_pending_delete, |row| {
+                row.on_aux_click(cx.listener(move |chat, event, _, cx| {
+                    if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.button == gpui::MouseButton::Right) {
+                        cx.stop_propagation();
+                        chat.session_menu = Some(SessionMenu {
+                            session_id: menu_id.clone(),
+                            position: Some(event.position()),
+                        });
+                        cx.notify();
+                    }
+                }))
+            })
             .into_any_element()
     }
 
@@ -5236,6 +5338,11 @@ impl ChatApp {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
+                    .on_scroll(cx.listener(|chat, _: &gpui::ScrollEvent, _, cx| {
+                        if chat.session_menu.take().is_some() {
+                            cx.notify();
+                        }
+                    }))
                     .child(self.session_list(t, cx)),
             )
             .when_some(self.workspace_notice.as_ref(), |sidebar, notice| {
@@ -5475,6 +5582,7 @@ impl ChatApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = t.palette;
+        let hero = self.show_empty_composer();
         let (theme_label, theme_glyph) = match self.theme_kind {
             ThemeKind::Light => ("切换到深色主题", "\u{e708}"),
             ThemeKind::Dark => ("切换到浅色主题", "\u{e706}"),
@@ -5491,7 +5599,6 @@ impl ChatApp {
         };
         div()
             .relative()
-            .min_h(t.layout.header_height)
             .flex()
             .flex_none()
             .flex_col()
@@ -5499,8 +5606,12 @@ impl ChatApp {
             .gap(px(4.0))
             .px(if compact { px(12.0) } else { px(20.0) })
             .pt(px(6.0))
-            .border_b_1()
-            .border_color(p.color(p.border_l2))
+            .when(!hero, |header| {
+                header
+                    .min_h(t.layout.header_height)
+                    .border_b_1()
+                    .border_color(p.color(p.border_l2))
+            })
             .child(
                 div()
                     .flex()
@@ -5524,15 +5635,15 @@ impl ChatApp {
                         )
                     })
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .overflow_hidden()
-                            .text_size(t.type_scale.body)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.color(p.label_primary))
-                            .text_overflow(TextOverflow::Truncate("…".into()))
-                            .child(self.active_title()),
+                        div().flex_1().min_w(px(0.0)).when(!hero, |title| {
+                            title
+                                .overflow_hidden()
+                                .text_size(t.type_scale.body)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.color(p.label_primary))
+                                .text_overflow(TextOverflow::Truncate("…".into()))
+                                .child(self.active_title())
+                        }),
                     )
                     .when(self.busy && !compact, |header| {
                         header.child(
@@ -5574,7 +5685,7 @@ impl ChatApp {
                         ),
                     ),
             )
-            .child(
+            .children((!hero).then(|| {
                 div()
                     .flex()
                     .items_center()
@@ -5620,8 +5731,8 @@ impl ChatApp {
                                     ),
                             )
                         },
-                    ),
-            )
+                    )
+            }))
             .when(self.turn_menu_open, |header| {
                 header.child(self.turn_navigator(t, cx))
             })
@@ -5637,6 +5748,9 @@ impl ChatApp {
         let text = text.to_owned();
         toolbar_icon_button(("copy-message", index), "复制消息", "\u{e8c8}", "⧉", t)
             .size(px(24.0))
+            .opacity(0.0)
+            .group_hover("message-row", |style| style.opacity(1.0))
+            .focus_visible(|style| style.opacity(1.0))
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
             }))
@@ -5914,6 +6028,7 @@ impl ChatApp {
         let p = t.palette;
         match row {
             Row::User { text, attachments } => div()
+                .group("message-row")
                 .flex()
                 .flex_col()
                 .items_end()
@@ -5947,6 +6062,7 @@ impl ChatApp {
             Row::Assistant(text) => {
                 let streaming = text.ends_with('▌');
                 div()
+                    .group("message-row")
                     .flex()
                     .flex_col()
                     .min_w(px(0.0))
@@ -6408,6 +6524,16 @@ impl ChatApp {
         }
     }
 
+    fn dismiss_composer_menu(
+        &mut self,
+        _: &gpui::MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_menu = None;
+        cx.notify();
+    }
+
     fn choose_model(
         &mut self,
         model: Arc<DesktopModel>,
@@ -6458,7 +6584,7 @@ impl ChatApp {
         max_width: gpui::Pixels,
         max_height: gpui::Pixels,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> Option<Stateful<Div>> {
         if self.composer_menu != Some(menu) {
             return None;
         }
@@ -6570,7 +6696,7 @@ impl ChatApp {
                 }
             }
         }
-        Some(options.into_any_element())
+        Some(options)
     }
 
     fn paste_attachments(&mut self, item: &mut ClipboardItem, cx: &mut Context<Self>) -> bool {
@@ -6772,6 +6898,7 @@ impl ChatApp {
         hero: bool,
         body_width: gpui::Pixels,
         viewport_height: gpui::Pixels,
+        menu_top: gpui::Pixels,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = t.palette;
@@ -6909,6 +7036,32 @@ impl ChatApp {
         let menu = |kind, cx: &mut Context<Self>| {
             self.composer_options(kind, t, menu_max_width, menu_max_height, cx)
         };
+        let add_button =
+            toolbar_icon_button("composer-add", "添加附件或调用指令", "\u{e710}", "+", t)
+                .rounded_full()
+                .bg(p.color(if add_open {
+                    p.interactive_hover_solid
+                } else {
+                    p.tag
+                }))
+                .aria_expanded(add_open)
+                .when(can_add, |button| {
+                    button.on_click(cx.listener(|chat, _, _, cx| {
+                        chat.toggle_composer_menu(ComposerMenu::Add, cx);
+                    }))
+                })
+                .when(!can_add, |button| button.opacity(0.5).cursor_default());
+        // 「+」菜单定位在输入卡顶部，但再次点击工具栏里的按钮仍应关闭它。
+        let add_bounds = add_open.then(|| std::rc::Rc::new(std::cell::Cell::new(None)));
+        let add_button = if let Some(bounds) = add_bounds.clone() {
+            div()
+                .flex_none()
+                .child(add_button)
+                .on_children_prepainted(move |children, _, _| bounds.set(children.first().copied()))
+                .into_any_element()
+        } else {
+            add_button.into_any_element()
+        };
         let toolbar = div()
             .flex()
             .items_center()
@@ -6916,34 +7069,21 @@ impl ChatApp {
             .pt(px(2.0))
             .px(px(8.0))
             .pb(px(6.0))
-            .child(
-                toolbar_icon_button("composer-add", "添加附件或调用指令", "\u{e710}", "+", t)
-                    .rounded_full()
-                    .bg(p.color(if add_open {
-                        p.interactive_hover_solid
-                    } else {
-                        p.tag
-                    }))
-                    .aria_expanded(add_open)
-                    .when(can_add, |button| {
-                        button.on_click(cx.listener(|chat, _, _, cx| {
-                            chat.toggle_composer_menu(ComposerMenu::Add, cx);
-                        }))
-                    })
-                    .when(!can_add, |button| button.opacity(0.5).cursor_default()),
-            )
-            .child(popover::attach(
+            .child(add_button)
+            .child(popover::attach_dismissible(
                 permission_picker,
                 menu(ComposerMenu::Permission, cx),
                 gpui::Anchor::TopLeft,
                 gpui::Anchor::BottomLeft,
+                cx.listener(Self::dismiss_composer_menu),
             ))
             .child(div().flex_1().min_w(px(0.0)))
-            .child(popover::attach(
+            .child(popover::attach_dismissible(
                 model_picker,
                 menu(ComposerMenu::Model, cx),
                 gpui::Anchor::TopRight,
                 gpui::Anchor::BottomRight,
+                cx.listener(Self::dismiss_composer_menu),
             ))
             .child(
                 div()
@@ -7028,9 +7168,25 @@ impl ChatApp {
                 } else {
                     ComposerMenu::Commands
                 };
-                card.child(div().absolute().top_0().left_0().child(popover::attach(
+                let dismiss = cx.listener(Self::dismiss_composer_menu);
+                card.child(div().absolute().top_0().left_0().child(popover::attach_to(
                     div().size(px(0.0)),
-                    menu(kind, cx),
+                    menu(kind, cx).map(|menu| {
+                        move |anchor: Bounds<gpui::Pixels>| {
+                            // 为标题栏和输入卡各留 8 px，避免菜单覆盖窗口控制按钮或输入框。
+                            let room_above = (anchor.top() - menu_top - px(16.0)).max(px(0.0));
+                            popover::dismiss_on_outside(
+                                menu.max_h(menu_max_height.min(room_above)),
+                                move |position| {
+                                    add_bounds
+                                        .as_ref()
+                                        .and_then(|bounds| bounds.get())
+                                        .is_some_and(|bounds| bounds.contains(&position))
+                                },
+                                dismiss,
+                            )
+                        }
+                    }),
                     gpui::Anchor::TopLeft,
                     gpui::Anchor::BottomLeft,
                 )))
@@ -7043,6 +7199,18 @@ impl ChatApp {
             .items_center()
             .px(t.layout.composer_clearance)
             .pb(px(if hero { 0.0 } else { 4.0 }))
+            .when(hero, |composer| {
+                composer.child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .max_w(t.layout.composer_max_width)
+                        .pl(px(20.0))
+                        .pr(px(16.0))
+                        .mb(px(8.0))
+                        .child(self.workspace_picker(t, menu_max_width, cx)),
+                )
+            })
             .child(card)
             .when_some(self.attachment_error.as_ref(), |composer, error| {
                 composer.child(
@@ -7094,12 +7262,7 @@ impl ChatApp {
             .into_any_element()
     }
 
-    fn empty_composer(
-        &self,
-        composer: AnyElement,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn empty_composer(&self, composer: AnyElement, t: &Theme) -> AnyElement {
         let p = t.palette;
         div()
             .id("empty-composer")
@@ -7108,48 +7271,42 @@ impl ChatApp {
             .flex_1()
             .min_h(px(0.0))
             .overflow_y_scroll()
+            .pb(px(32.0))
             .child(div().flex_1().min_h(px(12.0)))
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_wrap()
                     .flex_none()
                     .items_center()
-                    .gap(px(8.0))
-                    .mb(px(18.0))
+                    .justify_center()
+                    .gap(px(10.0))
+                    .mb(px(12.0))
                     .child(
                         div()
-                            .size(px(48.0))
-                            .rounded(t.radii.lg)
+                            .size(px(34.0))
+                            .flex_none()
+                            .rounded(t.radii.md)
                             .bg(p.color(p.business_tertiary))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(20.0))
+                            .text_size(px(16.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.color(p.link))
                             .child("D"),
                     )
                     .child(
                         div()
-                            .text_size(t.type_scale.h2)
-                            .line_height(t.type_scale.h2_line)
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(24.0))
+                            .line_height(px(32.0))
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(p.color(p.label_primary))
                             .child("开始对话"),
                     ),
             )
             .child(composer)
-            .child(
-                div()
-                    .w_full()
-                    .flex_none()
-                    .flex()
-                    .justify_center()
-                    .pt(px(8.0))
-                    .child(self.workspace_picker(t, cx)),
-            )
-            .child(div().flex_1().min_h(px(32.0)))
+            .child(div().flex_1().min_h(px(12.0)))
             .into_any_element()
     }
 }
@@ -7461,6 +7618,9 @@ impl Render for ChatApp {
             }
         }
         let collapsed = self.sidebar_is_collapsed(window);
+        if collapsed {
+            self.session_menu = None;
+        }
         let width = window.bounds().size.width;
         let sidebar_width = if collapsed {
             px(48.0)
@@ -7471,7 +7631,7 @@ impl Render for ChatApp {
         let compact = body_width < px(480.0);
         theme.layout.composer_max_width =
             (body_width * 0.64).clamp(px(680.0), px(920.0)) + px(32.0);
-        let hero = self.rows.is_empty() && !self.busy && !self.activity_open;
+        let hero = self.show_empty_composer();
         let show_turn_rail =
             !compact && !self.activity_open && window.viewport_size().height >= px(388.0);
         let show_window_bar = cfg!(target_os = "windows") && !window.is_fullscreen();
@@ -7510,8 +7670,21 @@ impl Render for ChatApp {
             })
             .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
         } else {
-            let composer =
-                self.composer(&theme, hero, body_width, window.viewport_size().height, cx);
+            let menu_top = px(0.0);
+            #[cfg(target_os = "windows")]
+            let menu_top = if show_window_bar {
+                px(window_bar::HEIGHT)
+            } else {
+                menu_top
+            };
+            let composer = self.composer(
+                &theme,
+                hero,
+                body_width,
+                window.viewport_size().height,
+                menu_top,
+                cx,
+            );
             body.child(self.header(
                 &theme,
                 collapsed,
@@ -7533,7 +7706,7 @@ impl Render for ChatApp {
             })
             .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
             .child(if hero {
-                self.empty_composer(composer, &theme, cx)
+                self.empty_composer(composer, &theme)
             } else {
                 composer
             })
@@ -12675,6 +12848,7 @@ fn main() {
                             sessions,
                             session_search,
                             session_search_open: false,
+                            session_menu: None,
                             session_id: active,
                             active_workspace,
                             folded_workspaces: Default::default(),
