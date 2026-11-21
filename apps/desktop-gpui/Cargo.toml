@@ -3,11 +3,17 @@ name = "dshr-desktop-gpui"
 description = "GPUI desktop shell entry point"
 version.workspace = true
 edition.workspace = true
+default-run = "dshr"
+
+[[bin]]
+name = "dshr"
+path = "src/bin/chat.rs"
 
 [dependencies]
 # Pinned per docs/decisions/0001-gpui-pin.md. Do not bump without a migration note.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
+image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 
 [dependencies.dshr-conversation-model]
 path = "../../crates/conversation-model"

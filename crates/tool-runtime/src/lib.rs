@@ -424,6 +424,10 @@ impl ToolRegistry {
         }
     }
 
+    pub fn set_policy(&mut self, policy: impl ToolPolicy + 'static) {
+        self.policy = Box::new(policy);
+    }
+
     pub fn register(&mut self, definition: ToolDefinition) -> Result<(), RegistryError> {
         if self.tools.contains_key(&definition.name) {
             return Err(RegistryError::Duplicate(definition.name));

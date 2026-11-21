@@ -19,7 +19,7 @@
 1. **Tool**：模型可调用的工具（名字/描述/JSON Schema/结果），会被注册进工具表。
 2. **Panel**：挂在 ADC-v1 slot 上的只读面板（例如 `workspace.panel`），元素树由 `ui.render` 提供。
 
-> **M4 W3 边界**：`chat --install-plugin` 安装链路已可跑；external-process 的**装载/调用/卸载**
+> **M4 W3 边界**：`dshr --install-plugin` 安装链路已可跑；external-process 的**装载/调用/卸载**
 > 已接进 chat 产品路径；**Panel 的产品渲染**（`ui.render` → GPUI 右栏）已接，Button 的
 > `copy` 与 `call`/`command`（`ui.action`）已接线；`openExternal` 确认、`onChange`、
 > tool card extra 仍属后续。工具调用链路可用。
@@ -41,7 +41,7 @@ Copy-Item "$env:CARGO_TARGET_DIR\release\demo-echo.exe" "bin\demo-echo.exe"
 node "<repo>\tools\plugin-pack.mjs" --plugin . --out ..\pkg-demo-echo
 
 # 4) 安装（未签名包首次安装需确认；预览会展示权限）
-"<repo>\target\debug\chat.exe" --install-plugin ..\pkg-demo-echo --yes-install
+"<repo>\target\debug\dshr.exe" --install-plugin ..\pkg-demo-echo --yes-install
 
 # 5) 看审计
 Get-Content "<profile>\install-audit.jsonl"
@@ -364,7 +364,7 @@ node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录> --key
 node tools/plugin-pack.mjs --generate-key .tmp/author-keys --key-id author-2026
 
 # 2) 把公钥登记到本机信任库（宿主的 trust-keys.json）
-target\debug\chat.exe --trust-key add author-2026 <public_key_hex>
+target\debug\dshr.exe --trust-key add author-2026 <public_key_hex>
 
 # 3) 打包时签名；公钥会打印出来，与 trust-key.json 核对
 node tools/plugin-pack.mjs --plugin <插件目录> --out <输出包目录> --key .tmp/author-keys/private.pem --key-id author-2026
@@ -380,7 +380,7 @@ ed25519 签名的 `value_hex`（128 位小写 hex）与 `key_id` 写进 `signatu
 
 ```powershell
 # 安装（未签名包必须 --yes-install 确认；预览展示包名/版本/来源/摘要/签名状态/权限）
-target\debug\chat.exe --install-plugin <包目录> --yes-install
+target\debug\dshr.exe --install-plugin <包目录> --yes-install
 
 # 可选环境变量（测试/多 profile）
 $env:DSHR_PROFILE_DIR = "<profile>"     # 默认 .tmp/profile
@@ -393,16 +393,16 @@ $env:DSHR_SIDECAR_DIR = "<sidecar>"     # 默认 <app_root>/sidecar/dsh-official
 - **降级拒绝**：候选版本低于已安装版本 → `E_TRUST_DOWNGRADE`（退出码 1）；显式 `--allow-downgrade` 才允许，且审计 `downgrade: true`。
 - **篡改拒绝**：摘要不匹配 → `E_INTEGRITY_MISMATCH`（退出码 1）。
 - **未确认**：不带 `--yes-install` 且需要确认 → 退出码 2，不安装。
-- **卸载（M4 W1）**：`target\debug\chat.exe --uninstall-plugin <包名>`。先 rename 插件目录到同父目录的 `.dshr-remove-*` 再删除（失败恢复原名），随后移除 `<profile>/plugins.json` 同名条目并写 `install-audit.jsonl`（`action: "uninstall"`）。目录已删但 profile 落盘失败时返回错误，重跑即可收敛。
+- **卸载（M4 W1）**：`target\debug\dshr.exe --uninstall-plugin <包名>`。先 rename 插件目录到同父目录的 `.dshr-remove-*` 再删除（失败恢复原名），随后移除 `<profile>/plugins.json` 同名条目并写 `install-audit.jsonl`（`action: "uninstall"`）。目录已删但 profile 落盘失败时返回错误，重跑即可收敛。
 
 **信任密钥库管理**（`<profile>/trust-keys.json`，变更写 `trust-key-audit.jsonl`）：
 
 ```powershell
-target\debug\chat.exe --trust-key list
-target\debug\chat.exe --trust-key add <key_id> <public_key_hex> [--note "作者 2026"]
-target\debug\chat.exe --trust-key revoke <key_id>
-target\debug\chat.exe --trust-key remove <key_id>
-target\debug\chat.exe --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>
+target\debug\dshr.exe --trust-key list
+target\debug\dshr.exe --trust-key add <key_id> <public_key_hex> [--note "作者 2026"]
+target\debug\dshr.exe --trust-key revoke <key_id>
+target\debug\dshr.exe --trust-key remove <key_id>
+target\debug\dshr.exe --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>
 ```
 
 - `revoke` 保留公钥与吊销时间，旧钥签名的包立即被 `E_TRUST_KEY_REVOKED` 拒绝；`remove` 硬删除（`E_TRUST_UNKNOWN_KEY`）。
@@ -427,10 +427,10 @@ target\debug\chat.exe --trust-key rotate <old_key_id> <new_key_id> <public_key_h
 ```powershell
 node tools/plugin-pack.mjs --verify <包目录> --digest <hex>   # 摘要可复现
 node tools/sdk-pack.mjs --out dist/sdk && node tools/sdk-pack.mjs --verify dist/sdk  # SDK 离线包
-target\debug\chat.exe --install-plugin <包目录> --yes-install  # 未签名安装链路
-target\debug\chat.exe --install-plugin <签名包目录>            # 已验证签名免确认
-target\debug\chat.exe --uninstall-plugin <包名>                # 卸载 + 审计
-target\debug\chat.exe --selftest-plugin-lifecycle              # 安装→卸载→密钥轮换产品路径
+target\debug\dshr.exe --install-plugin <包目录> --yes-install  # 未签名安装链路
+target\debug\dshr.exe --install-plugin <签名包目录>            # 已验证签名免确认
+target\debug\dshr.exe --uninstall-plugin <包名>                # 卸载 + 审计
+target\debug\dshr.exe --selftest-plugin-lifecycle              # 安装→卸载→密钥轮换产品路径
 ```
 
 手工看握手（把一行 `process.hello` 喂给 stdin，stdout 应回一行 `process.ready`；进程读到 EOF 即退出）：
@@ -460,8 +460,8 @@ host → process.shutdown → child → process.bye → exit
 - [ ] `cargo build --release` 通过，`bin/<name>.exe` 存在；
 - [ ] `plugin.toml` 与 `package.json` 的 id/version 一致；
 - [ ] `node tools/plugin-pack.mjs` 成功并打印 64 位摘要；
-- [ ] `--generate-key` + `--key/--key-id` 产出 `signature`，`chat --install-plugin` 免 `--yes-install` 安装且元数据 `signature.status=verified`；
-- [ ] `chat --install-plugin <pkg> --yes-install` 成功，`<sidecar>/node_modules/<name>` 与 `<profile>/plugins.json` 有包；
+- [ ] `--generate-key` + `--key/--key-id` 产出 `signature`，`dshr --install-plugin` 免 `--yes-install` 安装且元数据 `signature.status=verified`；
+- [ ] `dshr --install-plugin <pkg> --yes-install` 成功，`<sidecar>/node_modules/<name>` 与 `<profile>/plugins.json` 有包；
 - [ ] `<profile>/install-audit.jsonl` 有 `decision: "accepted"`；
 - [ ] 工具可被调用并返回符合 §7.3 的结果；
 - [ ] panel 的 `ui.render` 元素树通过 ADC-v1 schema，交互元素带 `a11yLabel`；
@@ -469,7 +469,7 @@ host → process.shutdown → child → process.bye → exit
 - [ ] 篡改包内容后重装被 `E_INTEGRITY_MISMATCH` 拒绝；
 - [ ] 降级安装被 `E_TRUST_DOWNGRADE` 拒绝；
 - [ ] 升级安装成功，审计新增 accepted；
-- [ ] `chat --uninstall-plugin <name>` 后包目录与 profile 条目被移除，审计新增 `action: "uninstall"`；
+- [ ] `dshr --uninstall-plugin <name>` 后包目录与 profile 条目被移除，审计新增 `action: "uninstall"`；
 - [ ] 密钥轮换后旧钥签名的包被 `E_TRUST_KEY_REVOKED` 拒绝，新钥重签可安装。
 
 ## 9. 参考

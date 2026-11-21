@@ -19,7 +19,7 @@
 [selftest-dsh] PASS
 ```
 
-真实 DeepSeek 经官方 `read` 工具读文件（`DSHR_SIDECAR=dsh`，`chat --live-chat`）：
+真实 DeepSeek 经官方 `read` 工具读文件（`DSHR_SIDECAR=dsh`，`dshr --live-chat`）：
 
 ```text
 [live-chat] turn=1 ms=1916 stream_updates=16
@@ -81,11 +81,11 @@ Rust SidecarHost → ToolRegistry（origin=sidecar）→ Agent → GPUI
 node tools/dsh-vendor.mjs
 
 # 2. 官方插件自检（不需要 API key）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-dsh
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh
 
 # 3. 真实模型 + 官方 read 工具
 $env:DSHR_SIDECAR = 'dsh'
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live-chat "用 read 工具读 README.md 前 3 行"
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --live-chat "用 read 工具读 README.md 前 3 行"
 ```
 
 查看/抽取安装包里的其它文件：

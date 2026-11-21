@@ -201,7 +201,7 @@ tools\build-env.cmd cargo test -p dshr-compat-dsh-host -p dshr-compat-dsh-protoc
 node --check sidecar/dsh-official/sidecar-dsh.mjs
 
 # Lead 的最终 E2E（chat.rs）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-dsh-write
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh-write
 ```
 
 ## 8. 边界与风险

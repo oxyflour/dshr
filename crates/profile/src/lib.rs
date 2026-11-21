@@ -168,6 +168,17 @@ impl Profile {
         }
     }
 
+    pub fn set_config(&mut self, name: &str, config: Value) -> bool {
+        if !self.can_edit() {
+            return false;
+        }
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) else {
+            return false;
+        };
+        entry.config = config;
+        true
+    }
+
     pub fn save(&self) -> Result<(), String> {
         if self.source == ProfileSource::Loader {
             return Err(String::from(

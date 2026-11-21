@@ -14,12 +14,12 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 tar -xzf "$ARCHIVE" -C "$TMP"
-[[ -x "$TMP/chat" ]] || { echo "missing chat in archive" >&2; exit 1; }
+[[ -x "$TMP/dshr" ]] || { echo "missing dshr in archive" >&2; exit 1; }
 cd "$TMP"
 export DSHR_HOME="$TMP/.home"
-./chat --selftest-sidecar-recovery
-./chat --selftest-official
-./chat --selftest-cpp-component
-./chat --selftest-cpp-install
-./chat --selftest-cpp-cli-install
+./dshr --selftest-sidecar-recovery
+./dshr --selftest-official
+./dshr --selftest-cpp-component
+./dshr --selftest-cpp-install
+./dshr --selftest-cpp-cli-install
 echo "[verify-package] PASS $ARCHIVE"

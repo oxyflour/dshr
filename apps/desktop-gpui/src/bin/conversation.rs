@@ -30,7 +30,13 @@ struct ConversationApp {
 
 fn describe(item: &Item) -> Row {
     match item {
-        Item::User { text } => (SharedString::from(format!("USER    · {text}")), None),
+        Item::User { text, attachments } => (
+            SharedString::from(format!("USER    · {text}")),
+            (!attachments.is_empty()).then(|| {
+                let names: Vec<_> = attachments.iter().map(|file| file.name.as_str()).collect();
+                SharedString::from(names.join(" · "))
+            }),
+        ),
         Item::Assistant { text } => (SharedString::from(format!("AGENT   · {text}")), None),
         Item::Tool(tool) => {
             let state = match &tool.state {

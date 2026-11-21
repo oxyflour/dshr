@@ -18,7 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dshr_agent_core::{
-    ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort,
+    AttachmentFormat, ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall,
+    ReasoningEffort,
 };
 use serde_json::{json, Value};
 
@@ -32,6 +33,7 @@ const SYSTEM_PROMPT: &str = "你是一个桌面 Agent。回答简洁；需要外
 /// 这里按 DSH 映射原样发送（兼容端点可能扩展支持），非法/不被接受由服务端报错。
 pub const SUPPORTS_REASONING_EFFORT: bool = true;
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     api_key: String,
     base_url: String,
@@ -209,6 +211,28 @@ fn message_json(message: &ChatMessage) -> Value {
     match message {
         ChatMessage::System(text) => json!({ "role": "system", "content": text }),
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+        ChatMessage::UserWithAttachments { text, attachments } => {
+            let mut content = Vec::new();
+            if !text.is_empty() {
+                content.push(json!({ "type": "text", "text": text }));
+            }
+            for attachment in attachments {
+                match attachment.data_url() {
+                    Some(data) if attachment.format == AttachmentFormat::Pdf => {
+                        content.push(json!({ "type": "file", "file": {
+                            "filename": attachment.name,
+                            "file_data": data,
+                        } }));
+                    }
+                    Some(data) => {
+                        content.push(json!({ "type": "text", "text": format!("图片：{}", attachment.name) }));
+                        content.push(json!({ "type": "image_url", "image_url": { "url": data } }));
+                    }
+                    None => content.push(json!({ "type": "text", "text": format!("附件 {}（未加载）", attachment.name) })),
+                }
+            }
+            json!({ "role": "user", "content": content })
+        }
         ChatMessage::Assistant { text, tool_calls } => {
             let mut object = json!({ "role": "assistant", "content": text });
             if !tool_calls.is_empty() {
@@ -320,6 +344,42 @@ mod tests {
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "c1");
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn request_body_sends_image_and_pdf_parts() {
+        use dshr_agent_core::MediaAttachment;
+
+        let body = OpenAiProvider::new("k").request_body(&request(vec![
+            ChatMessage::UserWithAttachments {
+                text: "compare".into(),
+                attachments: vec![
+                    MediaAttachment {
+                        name: "photo.png".into(),
+                        format: AttachmentFormat::Png,
+                        reference: "photo".into(),
+                        bytes: Some(b"\x89PNG\r\n\x1a\n".as_slice().into()),
+                    },
+                    MediaAttachment {
+                        name: "report.pdf".into(),
+                        format: AttachmentFormat::Pdf,
+                        reference: "report".into(),
+                        bytes: Some(b"%PDF".as_slice().into()),
+                    },
+                ],
+            },
+        ]));
+        assert_eq!(
+            body["messages"][1]["content"],
+            json!([
+                { "type": "text", "text": "compare" },
+                { "type": "text", "text": "图片：photo.png" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } },
+                { "type": "file", "file": {
+                    "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERg=="
+                } }
+            ])
+        );
     }
 
     #[test]

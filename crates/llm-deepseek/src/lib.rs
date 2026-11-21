@@ -18,14 +18,15 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dshr_agent_core::{
-    ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort,
+    AttachmentFormat, ChatMessage, CompletionRequest, MediaAttachment, ModelProvider, ModelReply,
+    ModelToolCall, ReasoningEffort,
 };
 use serde_json::{json, Value};
 
@@ -42,6 +43,7 @@ pub const SUPPORTS_REASONING_EFFORT: bool = false;
 
 const SYSTEM_PROMPT: &str = "你是一个桌面 Agent。回答简洁；需要外部能力时调用提供的工具。";
 
+#[derive(Clone)]
 pub struct DeepSeekProvider {
     api_key: String,
     base_url: String,
@@ -60,6 +62,13 @@ pub struct DeepSeekProvider {
     /// 若 provider 在请求开头清零，"工具执行期间按停止"会被下一次请求悄悄丢弃
     /// （M2 review P1-2）。
     cancel: Option<Arc<AtomicBool>>,
+    uploaded_pdfs: HashMap<String, UploadedPdf>,
+}
+
+#[derive(Clone)]
+struct UploadedPdf {
+    id: String,
+    usable_until: Instant,
 }
 
 impl DeepSeekProvider {
@@ -74,6 +83,7 @@ impl DeepSeekProvider {
             reasoning_effort: ReasoningEffort::from_env(),
             timeout: Duration::from_secs(60),
             cancel: None,
+            uploaded_pdfs: HashMap::new(),
         }
     }
 
@@ -122,6 +132,17 @@ impl DeepSeekProvider {
         &self.model
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn supports_attachments(&self) -> bool {
+        matches!(
+            self.model(),
+            "deepseek-flash" | "deepseek-v4-flash-vision-exp"
+        )
+    }
+
     /// 优先环境变量，其次 `~/.dsh/.env`（DSH 自己的配置目录，只读）。
     pub fn from_env() -> Option<Self> {
         let key = std::env::var("DEEPSEEK_API_KEY")
@@ -143,7 +164,9 @@ impl DeepSeekProvider {
         if !has_system {
             messages.push(json!({ "role": "system", "content": SYSTEM_PROMPT }));
         }
-        messages.extend(request.messages.iter().map(message_json));
+        messages.extend(request.messages.iter().map(|message| {
+            message_json(message, self.supports_attachments(), &self.uploaded_pdfs)
+        }));
 
         let tools: Vec<Value> = request
             .tool_specs
@@ -184,6 +207,68 @@ impl DeepSeekProvider {
         body
     }
 
+    fn prepare_pdf_uploads(&mut self, request: &CompletionRequest) -> Result<(), String> {
+        if !self.supports_attachments() {
+            return Ok(());
+        }
+        self.uploaded_pdfs
+            .retain(|_, file| file.usable_until > Instant::now());
+        for message in &request.messages {
+            let ChatMessage::UserWithAttachments { attachments, .. } = message else {
+                continue;
+            };
+            for attachment in attachments {
+                if attachment.format != AttachmentFormat::Pdf
+                    || attachment.bytes.is_none()
+                    || self.uploaded_pdfs.contains_key(&attachment.reference)
+                {
+                    continue;
+                }
+                if is_cancelled(self.cancel.as_deref()) {
+                    return Err("cancelled".to_owned());
+                }
+                let file = self.upload_pdf(attachment)?;
+                self.uploaded_pdfs
+                    .insert(attachment.reference.clone(), file);
+            }
+        }
+        Ok(())
+    }
+
+    fn upload_pdf(&self, attachment: &MediaAttachment) -> Result<UploadedPdf, String> {
+        use ureq::unversioned::multipart::{Form, Part};
+        let bytes = attachment.bytes.as_deref().ok_or("PDF bytes are missing")?;
+        let part = Part::bytes(bytes)
+            .file_name("attachment.pdf")
+            .mime_str("application/pdf")
+            .map_err(|err| err.to_string())?;
+        let form = Form::new()
+            .text("purpose", "rich_layout_recognition")
+            .text("expires_after[anchor]", "created_at")
+            .text("expires_after[seconds]", "3600")
+            .part("file", part);
+        let started = Instant::now();
+        let url = format!("{}/files", self.base_url.trim_end_matches('/'));
+        let response: Value = ureq::post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .config()
+            .timeout_global(Some(Duration::from_secs(245)))
+            .build()
+            .send(form)
+            .map_err(|err| format!("DeepSeek PDF 上传失败（{}）：{err}", attachment.name))?
+            .body_mut()
+            .read_json()
+            .map_err(|err| format!("DeepSeek PDF 上传响应无法读取：{err}"))?;
+        let id = response["id"]
+            .as_str()
+            .filter(|id| id.starts_with("file-api-") && id.len() > "file-api-".len())
+            .ok_or("DeepSeek PDF 上传响应缺少文件 ID")?;
+        Ok(UploadedPdf {
+            id: id.to_owned(),
+            usable_until: started + Duration::from_secs(55 * 60),
+        })
+    }
+
     fn post(&self, body: &Value) -> Result<ureq::Body, String> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let response = ureq::post(&url)
@@ -199,10 +284,43 @@ impl DeepSeekProvider {
 }
 
 /// 把内部消息映射成 OpenAI Chat Completions 的 `messages[]`。
-fn message_json(message: &ChatMessage) -> Value {
+fn message_json(
+    message: &ChatMessage,
+    supports_attachments: bool,
+    uploaded_pdfs: &HashMap<String, UploadedPdf>,
+) -> Value {
     match message {
         ChatMessage::System(text) => json!({ "role": "system", "content": text }),
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
+        ChatMessage::UserWithAttachments { text, attachments } if !supports_attachments => {
+            let mut content = text.clone();
+            for attachment in attachments {
+                content.push_str(&format!("\n附件 {}（当前模型不支持）", attachment.name));
+            }
+            json!({ "role": "user", "content": content })
+        }
+        ChatMessage::UserWithAttachments { text, attachments } => {
+            let mut content = Vec::new();
+            if !text.is_empty() {
+                content.push(json!({ "type": "text", "text": text }));
+            }
+            for attachment in attachments {
+                content
+                    .push(json!({ "type": "text", "text": format!("附件：{}", attachment.name) }));
+                let part = if attachment.format == AttachmentFormat::Pdf {
+                    uploaded_pdfs
+                        .get(&attachment.reference)
+                        .map(|file| json!({ "type": "file", "file_id": file.id }))
+                } else {
+                    attachment
+                        .data_url()
+                        .map(|url| json!({ "type": "image_url", "image_url": { "url": url } }))
+                };
+                content
+                    .push(part.unwrap_or_else(|| json!({ "type": "text", "text": "文件未加载" })));
+            }
+            json!({ "role": "user", "content": content })
+        }
         ChatMessage::Assistant { text, tool_calls } if tool_calls.is_empty() => {
             json!({ "role": "assistant", "content": text })
         }
@@ -304,6 +422,10 @@ impl ModelProvider for DeepSeekProvider {
     }
 
     fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+        self.prepare_pdf_uploads(request)?;
+        if is_cancelled(self.cancel.as_deref()) {
+            return Err("cancelled".to_owned());
+        }
         let body = self.request_body(request, false);
         let mut response = self.post(&body)?;
         let text = response
@@ -326,6 +448,10 @@ impl ModelProvider for DeepSeekProvider {
                 text: String::new(),
                 tool_calls: Vec::new(),
             });
+        }
+        self.prepare_pdf_uploads(request)?;
+        if is_cancelled(self.cancel.as_deref()) {
+            return Ok(ModelReply::text_only(""));
         }
         let body = self.request_body(request, true);
         let response = self.post(&body)?;
@@ -528,6 +654,114 @@ impl SseDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flash_uploads_pdf_once_and_sends_it_with_inline_image() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let responses = [
+            ("application/json", r#"{"id":"file-api-test"}"#),
+            (
+                "text/event-stream",
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                    "data: [DONE]\n\n",
+                ),
+            ),
+            (
+                "application/json",
+                r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+            ),
+        ];
+        let server = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            for (mime, response) in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut target = String::new();
+                reader.read_line(&mut target).unwrap();
+                let mut headers = HashMap::new();
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let (name, value) = line.split_once(':').unwrap();
+                    headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+                }
+                let mut body = vec![0; headers["content-length"].parse().unwrap()];
+                reader.read_exact(&mut body).unwrap();
+                write!(socket, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\nContent-Type: {mime}\r\n\r\n{response}", response.len()).unwrap();
+                captured.push((target, headers, body));
+            }
+            captured
+        });
+
+        let mut provider = DeepSeekProvider::new("fixture").with_model("deepseek-flash");
+        provider.base_url = url;
+        provider.timeout = Duration::from_secs(5);
+        let request = CompletionRequest {
+            messages: vec![ChatMessage::UserWithAttachments {
+                text: "read".into(),
+                attachments: vec![
+                    MediaAttachment {
+                        name: "test.pdf".into(),
+                        format: AttachmentFormat::Pdf,
+                        reference: "pdf".into(),
+                        bytes: Some(b"%PDF-fixture".as_slice().into()),
+                    },
+                    MediaAttachment {
+                        name: "test.png".into(),
+                        format: AttachmentFormat::Png,
+                        reference: "png".into(),
+                        bytes: Some(b"\x89PNG\r\n\x1a\n".as_slice().into()),
+                    },
+                ],
+            }],
+            tool_specs: Vec::new(),
+        };
+        let mut output = String::new();
+        assert_eq!(
+            provider
+                .complete_streaming(&request, &mut |delta| output.push_str(delta))
+                .unwrap()
+                .text,
+            "ok"
+        );
+        assert_eq!(output, "ok");
+        assert_eq!(provider.complete(&request).unwrap().text, "ok");
+        let captured = server.join().unwrap();
+        let (target, headers, body) = &captured[0];
+        assert_eq!(target.trim(), "POST /files HTTP/1.1");
+        assert_eq!(headers["authorization"], "Bearer fixture");
+        assert!(headers["content-type"].starts_with("multipart/form-data; boundary="));
+        let form = std::str::from_utf8(body).unwrap();
+        assert!(form.find("name=\"purpose\"").unwrap() < form.find("name=\"file\"").unwrap());
+        assert!(form.contains("rich_layout_recognition"));
+        assert!(form.contains("name=\"expires_after[seconds]\"\r\n\r\n3600"));
+        assert!(form.contains("%PDF-fixture"));
+        for (target, _, body) in &captured[1..] {
+            assert_eq!(target.trim(), "POST /chat/completions HTTP/1.1");
+            let body: Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(
+                body["messages"][1]["content"],
+                json!([
+                    { "type": "text", "text": "read" },
+                    { "type": "text", "text": "附件：test.pdf" },
+                    { "type": "file", "file_id": "file-api-test" },
+                    { "type": "text", "text": "附件：test.png" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                ])
+            );
+        }
+    }
 
     #[test]
     fn parses_plain_text_reply() {

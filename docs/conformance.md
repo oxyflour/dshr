@@ -157,7 +157,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `CPP-TRUST-001..018` | implemented | `dshr-profile`（摘要/签名/首装确认/降级） |
 | `M4-UNINSTALL-001..008` | implemented | `dshr-profile`（原子卸载/目录恢复/profile/审计；CLI `--uninstall-plugin` 为 manual `M4-UNINSTALL-100`） |
 | `M4-KEY-001..010` | implemented | `dshr-profile`（密钥吊销/时间窗/轮换/密钥库持久化/密钥审计；CLI `--trust-key` 为 manual `M4-KEY-100`） |
-| `M4-LIFECYCLE-001` | manual | `chat --selftest-plugin-lifecycle`（安装→卸载→轮换→新钥安装） |
+| `M4-LIFECYCLE-001` | manual | `dshr --selftest-plugin-lifecycle`（安装→卸载→轮换→新钥安装） |
 | `M4-SDK-001` | manual | `tools/authoring-check.ps1` 0d：`sdk-pack` 生成/校验/篡改拒绝/离线消费 |
 | `M4-SIGN-001` | manual | `tools/authoring-check.ps1` 10：签名安装、密钥轮换、旧钥拒绝、新钥重签 |
 | `M4-A11Y-001` | implemented | `dshr-desktop-gpui`：快捷键表/绑定数量/G3 键位覆盖（chat 单测） |
@@ -177,10 +177,10 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-ADC-100` | manual | 插件面板 Button `onPress` click → 剪贴板/`ui.action`（[m4-adc.md](m4-adc.md) §3） |
 | `M4-ADC-101` | manual | ADC `openExternal` 确认条：取消/Esc/打开（[m4-adc.md](m4-adc.md) §3） |
 | `M4-P2-001` | manual | node 缺失时 parallel/l2 测试 exit 101，不再 SKIP 记 pass（[m4-status.md](m4-status.md) §4） |
-| `M4-RECOVERY-001` | manual | `chat --selftest-recovery`：损坏会话/`.bak`/插件失败回滚（[m4-status.md](m4-status.md) §4） |
-| `M4-RECOVERY-002` | manual | `chat --selftest-sidecar-recovery`：kill sidecar 后会话/原生工具存活（[m4-status.md](m4-status.md) §4） |
-| `M4-RECOVERY-003` | manual | `chat --selftest-crash-recovery`：子进程 abort → `.bak` 恢复 → 继续追加 + “已恢复”横幅 |
-| `M4-RECOVERY-004` | manual | `chat --selftest-window-recovery`：真实崩溃孤儿 `.bak` → 窗口启动恢复 → 注入键盘继续发送（Windows 本机/CI） |
+| `M4-RECOVERY-001` | manual | `dshr --selftest-recovery`：损坏会话/`.bak`/插件失败回滚（[m4-status.md](m4-status.md) §4） |
+| `M4-RECOVERY-002` | manual | `dshr --selftest-sidecar-recovery`：kill sidecar 后会话/原生工具存活（[m4-status.md](m4-status.md) §4） |
+| `M4-RECOVERY-003` | manual | `dshr --selftest-crash-recovery`：子进程 abort → `.bak` 恢复 → 继续追加 + “已恢复”横幅 |
+| `M4-RECOVERY-004` | manual | `dshr --selftest-window-recovery`：真实崩溃孤儿 `.bak` → 窗口启动恢复 → 注入键盘继续发送（Windows 本机/CI） |
 | `M4-PERF-001` | manual | `node tools/perf-gate.mjs`：G4 阈值/CI step；本机 PASS（[m4-perf.md](m4-perf.md)） |
 | `M4-CI-001` | manual | `cross-platform.yml`：三平台 contract + 核心 crate + desktop-build；Linux 本机 build 通过，Actions 未跑（[m4-ci.md](m4-ci.md)） |
 | `M4-CI-002` | manual | `official-provenance.mjs --check`：3 个官方包版本/SHA-256 lock；gate 测试前强制 |
@@ -191,17 +191,17 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M4-CI-005` | manual | `verify-package.ps1/sh`：校验 sha256 + 解压 + sidecar/official 自检，Windows/Linux 均 PASS |
 | `M4-CI-006` | manual | macOS target 交叉检查：`dshr-ui-gpui` PASS；桌面在 C 依赖/SDK 处失败（[m4-macos.md](m4-macos.md)） |
 | `M4-COMPONENT-AUTHOR-001` | manual | 组件模板/生成器：`demo.echo` wasm32-wasip2 release 74KB 构建通过（[m4-component-authoring.md](m4-component-authoring.md)） |
-| `M4-COMPONENT-018` | manual | `chat --selftest-cpp-component`：临时包装载真实 guest，注册/调用 `echo` PASS |
-| `M4-COMPONENT-019` | manual | `chat --selftest-cpp-install`：真实 `install_package`→profile→loader→`echo` PASS |
-| `M4-COMPONENT-023` | manual | `chat --selftest-cpp-cli-install`：信任安装 CLI→profile→loader→`echo` PASS |
+| `M4-COMPONENT-018` | manual | `dshr --selftest-cpp-component`：临时包装载真实 guest，注册/调用 `echo` PASS |
+| `M4-COMPONENT-019` | manual | `dshr --selftest-cpp-install`：真实 `install_package`→profile→loader→`echo` PASS |
+| `M4-COMPONENT-023` | manual | `dshr --selftest-cpp-cli-install`：信任安装 CLI→profile→loader→`echo` PASS |
 | `M4-CI-007` | manual | `sign-windows.ps1 -SelfSignedTest`：Authenticode 写入/签名者一致；status=UnknownError（未受信任根） |
 | `M4-CI-008` | manual | CI 可选签名步骤（Windows PFX / macOS codesign），仅 secrets 存在时执行；未实跑 |
 | `M4-CI-009` | manual | `OS_OVERRIDE=darwin` 生成 `dshr.app` 布局；未在 macOS 打开/codesign |
 | `M4-CI-010` | manual | Actions 三平台全绿：conformance 44122517731 / cross-platform 44122517682（9/9 jobs） |
-| `M4-WINDOW-001` | manual | `chat --selftest-window`：真实 GPUI 窗口打开/首帧/键盘路由 PASS |
+| `M4-WINDOW-001` | manual | `dshr --selftest-window`：真实 GPUI 窗口打开/首帧/键盘路由 PASS |
 | `M4-KEYBOARD-002` | manual | `DSHR_KEYBOARD_FLOW=1`：真实 ChatApp 注入 cmd-n/cmd-j/cmd-w，exit 0 |
-| `M4-CLIPBOARD-001` | manual | `chat --selftest-clipboard`：真实系统剪贴板写入/读回中文 UTF-8 PASS |
-| `M4-OFFICIAL-001` | manual | `chat --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
+| `M4-CLIPBOARD-001` | manual | `dshr --selftest-clipboard`：真实系统剪贴板写入/读回中文 UTF-8 PASS |
+| `M4-OFFICIAL-001` | manual | `dshr --selftest-official`：打包 sidecar 启动 v2，`protocol=2 active=true host_services=3`（Windows/Linux 包均 PASS） |
 | `RPC-L2-506` | manual | 官方 `dsh-tool-fs` read execute 经 sidecar fs/systemPrompt 真实读取（official gate 8/8） |
 | `RPC-L2-507` | manual | 官方 `dsh-tool-fs` write execute 经 FsWriteService 审批落盘（official gate 8/8） |
 | `M4-DRAW-001` | manual | `frame-probe` 窗口 draw：RDP 下硬预算 PASS，相对基线受环境干扰未判回归（[m4-draw-budget.md](m4-draw-budget.md)） |
@@ -218,7 +218,7 @@ blocked 0**。`--quick` 下 42 通过（20 schema fixture + 1 doc link + 21 个 
 | `M3-DEFAULT-001..004,010..015,020..025,030..032,035..037,040..045,050..056,060..063` | implemented | agent-core / llm-retry / llm-deepseek / llm-openai / agent-context / tool-runtime（DSH 默认对齐） |
 | `M3-PARALLEL-001..007,101..110` | implemented | `dshr-agent-core` batch 调度 + `dshr-compat-dsh-host` `tests/parallel_batch.rs`（sidecar 批 invoke/取消宽限/session_id 透传） |
 | `ADC-BIND-001` | pending | 绑定权限尚未实现（WASM 配额/隔离已由 CPP-WASM 覆盖） |
-| `SELF-CHAT-001..017` | pending | 现有 17 个 `chat --selftest*`，尚未纳入 harness |
+| `SELF-CHAT-001..017` | pending | 现有 17 个 `dshr --selftest*`，尚未纳入 harness |
 | `RPC-L2-201` / `RPC-L2-501..507` | manual（official gate） | `tools/official-l2-gate.ps1`：8/8 PASS（201/502/506/507 的官方 execute 已闭环；缺 fixture exit 1；默认 cargo 8 ignored/0 passed） |
 | `CPP-TRUST-019` / `CPP-ISO-022` / `RPC-L2-411` / `ADC-PANEL-001` / `M3-DEFAULT-070` / `M3-PARALLEL-201` / `CPP-WASM-100` / `CPP-AUTHOR-001` / `GATE-G2-001` | manual | chat selftest（信任链/外部插件/L2/ADC panel/defaults/工具并行/WASM）、authoring 门禁、外部作者实验需人工判定 |
 
@@ -257,7 +257,7 @@ manual 证据落盘。
 
 1. **17 个 chat selftest 未纳入**：`SELF-CHAT-001..017` 已登记为 pending。未来入口：新增
    `selftest-chat` suite（harness 内置 runner + 注册表 `suites` 同步），执行
-   `tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest*`，按输出
+   `tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest*`，按输出
    `[selftest] PASS` 判定。注意其中 `--selftest-dsh*` / `--selftest-cordis` 依赖本机 DSH 安装副本，
    CI 环境不可用，需要标 manual 或加能力探测后 SKIP。
 2. **cargo 不在 quick**：避免每次门禁都构建 Rust；`suite=cargo` 的 implemented ID 只有

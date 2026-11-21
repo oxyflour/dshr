@@ -16,22 +16,22 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("dshr-verify-" + [guid]::New
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
     Expand-Archive -LiteralPath $archivePath -DestinationPath $tmp -Force
-    $exe = Join-Path $tmp "chat.exe"
-    if (-not (Test-Path -LiteralPath $exe)) { throw "missing chat.exe in archive" }
+    $exe = Join-Path $tmp "dshr.exe"
+    if (-not (Test-Path -LiteralPath $exe)) { throw "missing dshr.exe in archive" }
     $env:DSHR_HOME = Join-Path $tmp ".home"
     Push-Location $tmp
     try {
-        & .\chat.exe --selftest-window
+        & $exe --selftest-window
         if ($LASTEXITCODE -ne 0) { throw "window selftest failed: $LASTEXITCODE" }
-        & .\chat.exe --selftest-sidecar-recovery
+        & $exe --selftest-sidecar-recovery
         if ($LASTEXITCODE -ne 0) { throw "sidecar selftest failed: $LASTEXITCODE" }
-        & .\chat.exe --selftest-official
+        & $exe --selftest-official
         if ($LASTEXITCODE -ne 0) { throw "official selftest failed: $LASTEXITCODE" }
-        & .\chat.exe --selftest-cpp-component
+        & $exe --selftest-cpp-component
         if ($LASTEXITCODE -ne 0) { throw "cpp component selftest failed: $LASTEXITCODE" }
-        & .\chat.exe --selftest-cpp-install
+        & $exe --selftest-cpp-install
         if ($LASTEXITCODE -ne 0) { throw "cpp install selftest failed: $LASTEXITCODE" }
-        & .\chat.exe --selftest-cpp-cli-install
+        & $exe --selftest-cpp-cli-install
         if ($LASTEXITCODE -ne 0) { throw "cpp cli install selftest failed: $LASTEXITCODE" }
     } finally {
         Pop-Location

@@ -59,10 +59,10 @@ M1 遗留的"只有 `s-chat` 一个会话"到这里补上：侧栏列出目录�
 
 ```powershell
 # 导出：JSONL + 外部化附件 + manifest（sha256），导出后自动 verify
-chat --export-session <会话 id> --export-dir .tmp\exports
+dshr --export-session <会话 id> --export-dir .tmp\exports
 
 # 保留计划：只计算不删除（默认 2GiB / 90 天 / 保护最新 1 段）
-chat --retention-plan
+dshr --retention-plan
 ```
 
 - 导出走 `crates/session-export`：先写 JSONL，再复制 spill 对象为附件，manifest 记录

@@ -58,11 +58,11 @@ prepaint 125 ms（debug），滚动只有 ~6 fps。现在：
 （`ScrollHandle::set_offset` 在 0..1 之间往返）。
 
 ```powershell
-# 0. 构建 release（若 target\release\chat.exe 不存在）
-tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin chat
+# 0. 构建 release（若 target\release\dshr.exe 不存在）
+tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin dshr
 
 # 1. 造 10k 事件会话（只需一次；frame-probe 脚本也会自动做）
-.\target\release\chat.exe --seed-perf-session .tmp\perf-sessions
+.\target\release\dshr.exe --seed-perf-session .tmp\perf-sessions
 
 # 2. 自动化测量（采集环境元数据 + 按下面的口径判定）
 tools\frame-probe.ps1 -Frames 240

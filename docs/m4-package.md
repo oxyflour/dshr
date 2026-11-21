@@ -11,8 +11,8 @@ bash tools/package-desktop.sh debug
 
 `-Configuration release` / `release` 走 release 构建。脚本会：
 
-1. `cargo build -p dshr-desktop-gpui --bin chat`；
-2. 把 `chat`/`chat.exe`、`runtime/node`、`sidecar/probe-*`、`sidecar/dsh-official`（含
+1. `cargo build -p dshr-desktop-gpui --bin dshr`；
+2. 把 `dshr`/`dshr.exe`、`runtime/node`、`sidecar/probe-*`、`sidecar/dsh-official`（含
    node_modules）与 `README.txt` 放到 `dist/dshr-<config>-<os>-<arch>/`；
 3. 压成 zip（Windows）或 tar.gz（Linux/macOS），并生成同名 `.sha256` 校验文件。
 
@@ -40,22 +40,22 @@ Windows 归档解压后，**不再设置 `DSHR_NODE`**，直接运行：
 
 ```powershell
 cd dist/dshr-debug-windows-x64
-.\chat.exe --selftest-sidecar-recovery
+.\dshr.exe --selftest-sidecar-recovery
 ```
 
 实测 `live=true killed=true dead_call=true native=true replayed=3`，PASS；日志显示
 `sidecar node=...\runtime\node\node.exe（Vendored）`。再跑官方 sidecar 自检：
 
 ```powershell
-.\chat.exe --selftest-official
+.\dshr.exe --selftest-official
 ```
 
 实测 `[selftest-official] PASS protocol=2 active=true host_services=3`。再跑组件自检：
 
 ```powershell
-.\chat.exe --selftest-cpp-component
-.\chat.exe --selftest-cpp-install
-.\chat.exe --selftest-cpp-cli-install
+.\dshr.exe --selftest-cpp-component
+.\dshr.exe --selftest-cpp-install
+.\dshr.exe --selftest-cpp-cli-install
 ```
 
 实测三条都 PASS：`registry=echo`，并返回 guest 的 args；`--selftest-cpp-install` 走
@@ -66,11 +66,11 @@ Linux 归档解压后同样直接运行：
 
 ```bash
 cd dist/dshr-debug-linux-x86_64
-./chat --selftest-sidecar-recovery
-./chat --selftest-official
-./chat --selftest-cpp-component
-./chat --selftest-cpp-install
-./chat --selftest-cpp-cli-install
+./dshr --selftest-sidecar-recovery
+./dshr --selftest-official
+./dshr --selftest-cpp-component
+./dshr --selftest-cpp-install
+./dshr --selftest-cpp-cli-install
 ```
 
 五项均 PASS，日志显示 `runtime/node/node（Vendored）` 与 `protocol=2 active=true
@@ -86,13 +86,13 @@ bash tools/verify-package.sh dist/dshr-debug-linux-x86_64.tar.gz
 
 两个平台的脚本都会校验 `.sha256`、解压到临时目录、跑 `--selftest-sidecar-recovery`、
 `--selftest-official`、`--selftest-cpp-component`、`--selftest-cpp-install` 与
-`--selftest-cpp-cli-install`，最后清理。Windows 还会对解压出的 `chat.exe` 跑
+`--selftest-cpp-cli-install`，最后清理。Windows 还会对解压出的 `dshr.exe` 跑
 `--selftest-window`，验证 DirectX 初始化和窗口首帧。Windows/Linux 本机均 **PASS**。
 
 ## 5. 明确未做
 
 - 没有 macOS `.app`/签名/公证；Windows 没有 MSI/NSIS 或 Authenticode；Linux 没有 deb/AppImage。
-- 归档含 `chat`、`runtime/node`、probe sidecar、`dsh-official`（含 node_modules）与
+- 归档含 `dshr`、`runtime/node`、probe sidecar、`dsh-official`（含 node_modules）与
   `components/cpp-component`；但 `.tmp/dsh-tools-all` 等本机工具包不随包，官方工具全量
   仍依赖这些 fixture。
 - 没有安装器/签名/自动更新/差分回滚；G1 仍不能因归档可运行标完成。

@@ -16,7 +16,7 @@ macOS target 上类型检查通过。这覆盖 GPUI/ADC 渲染器的 `cfg(target
 ## 2. 桌面二进制
 
 ```text
-cargo check --target x86_64-apple-darwin -p dshr-desktop-gpui --bin chat
+cargo check --target x86_64-apple-darwin -p dshr-desktop-gpui --bin dshr
 ```
 
 结果：**FAIL**，但失败在 C 依赖的交叉编译，不是 Rust 代码：
@@ -34,8 +34,8 @@ cargo check --target x86_64-apple-darwin -p dshr-desktop-gpui --bin chat
 
 ```text
 dist/dshr-debug-darwin-x86_64/
-  chat
-  dshr.app/Contents/MacOS/chat
+  dshr
+  dshr.app/Contents/MacOS/dshr
   dshr.app/Contents/Info.plist
 ```
 

@@ -46,7 +46,7 @@ Registry 的 `authorize` 原本就会把 `Ask` 变成 `RegistryError::NeedsAppro
 
 - `tool-runtime` 16 个测试：策略顺序（deny > ask > presentation > allow）、
   broker 跨线程 resolve、超时视为拒绝、env 自动 allow/deny；
-- `chat --selftest-approval`：`ask-all` + deny 时工具不执行、落 approval 事件、
+- `dshr --selftest-approval`：`ask-all` + deny 时工具不执行、落 approval 事件、
   工具结果是错误；allow 时工具真正执行；
 - 截图核对：审批卡片（工具名/参数/两个按钮）、点"允许一次"后工具完成、
   `probe_echo` 结果卡片出现；

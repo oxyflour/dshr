@@ -16,11 +16,12 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dshr_session_store::{EventSpec, LogError, SessionLog, ToolCallKey};
+use dshr_agent_core::{AttachmentFormat, ChatMessage};
+use dshr_session_store::{Durability, EventSpec, LogError, SessionLog, ToolCallKey};
 use serde_json::{json, Value};
 
 use crate::sha256::digest_hex;
@@ -41,7 +42,7 @@ pub const EVENT_SPILL_CREATED: &str = "spill.created";
 pub const EVENT_TOOL_RESULT_PRUNED: &str = "tool.result.pruned";
 
 /// 附件保留期。`Session` 表示随会话删除；`Days(n)` 表示事故后可保留 n 天。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Retention {
     Session,
     Days(u32),
@@ -150,7 +151,7 @@ impl SpillPolicy {
 }
 
 /// 内容寻址引用。`id` 是 `$attachment` 引用目标，`hash` 是完整 sha256。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SpillRef {
     pub id: String,
     pub hash: String,
@@ -195,6 +196,17 @@ impl SpillRef {
             "preview_chars": preview_chars,
             "call_id": call_id,
             "kind": "tool.result",
+        })
+    }
+
+    pub fn user_attachment_payload(&self) -> Value {
+        json!({
+            "id": self.id,
+            "hash": self.hash,
+            "size": self.size,
+            "mime": self.mime,
+            "retention": self.retention.as_str(),
+            "kind": "message.user",
         })
     }
 
@@ -476,7 +488,10 @@ impl SpillStore {
 
     /// 按引用读取对象并校验大小。
     pub fn get(&self, spill: &SpillRef) -> io::Result<Vec<u8>> {
-        let bytes = fs::read(self.object_path(spill))?;
+        let file = fs::File::open(self.object_path(spill))?;
+        let mut bytes = Vec::new();
+        file.take(spill.size.saturating_add(1))
+            .read_to_end(&mut bytes)?;
         if bytes.len() as u64 != spill.size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -516,6 +531,78 @@ impl SpillStore {
                 format!("spill {} 不是合法 JSON: {err}", spill.id),
             )
         })
+    }
+}
+
+/// Durable attachment records keyed by the reference used by user messages.
+pub fn user_attachment_refs(log: &SessionLog) -> HashMap<String, SpillRef> {
+    log.events()
+        .iter()
+        .filter(|event| {
+            event.event_type == EVENT_SPILL_CREATED
+                && event.durability == Durability::Durable
+                && event.payload["kind"] == "message.user"
+        })
+        .filter_map(|event| SpillRef::from_event_payload(&event.payload))
+        .map(|spill| (spill.id.clone(), spill))
+        .collect()
+}
+
+/// Resolve retained user attachments newest-first using the same objects as session export.
+pub fn restore_user_attachments(
+    store: &SpillStore,
+    log: &SessionLog,
+    messages: &mut [ChatMessage],
+    supports: impl Fn(AttachmentFormat) -> bool,
+) {
+    if !messages
+        .iter()
+        .any(|message| matches!(message, ChatMessage::UserWithAttachments { .. }))
+    {
+        return;
+    }
+    let refs = user_attachment_refs(log);
+    let mut remaining = 24 * 1024 * 1024u64;
+    let mut count = 20;
+    for message in messages.iter_mut().rev() {
+        let ChatMessage::UserWithAttachments { text, attachments } = message else {
+            continue;
+        };
+        attachments.retain_mut(|attachment| {
+            let result = if !supports(attachment.format) {
+                Err("当前模型不支持")
+            } else if let Some(spill) = refs
+                .get(&attachment.reference)
+                .filter(|spill| spill.mime == attachment.format.mime())
+            {
+                if count == 0 || spill.size > remaining {
+                    Err("超出历史附件预算")
+                } else {
+                    store
+                        .get_verified(spill)
+                        .map(|bytes| {
+                            remaining -= spill.size;
+                            count -= 1;
+                            attachment.bytes = Some(bytes.into());
+                        })
+                        .map_err(|_| "本地文件缺失或已损坏")
+                }
+            } else {
+                Err("文件引用无效")
+            };
+            if let Err(reason) = result {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&format!("附件 {}（{reason}）", attachment.name));
+                false
+            } else {
+                true
+            }
+        });
+        if attachments.is_empty() {
+            *message = ChatMessage::User(std::mem::take(text));
+        }
     }
 }
 

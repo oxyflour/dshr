@@ -1,12 +1,12 @@
 # M4 真实窗口 smoke test
 
-`chat --selftest-window` 真正创建 GPUI 窗口、等 500ms 后通过 `window.defer` 注入
+`dshr --selftest-window` 真正创建 GPUI 窗口、等 500ms 后通过 `window.defer` 注入
 一个 `Enter` 键，再等 500ms 校验 key handler 被调用，然后自动退出。
 
 ## 实测
 
 ```text
-.\target\debug\chat.exe --selftest-window
+.\target\debug\dshr.exe --selftest-window
 [selftest-window] PASS window+keyboard
 exit 0
 ```

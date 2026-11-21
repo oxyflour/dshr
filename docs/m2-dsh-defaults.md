@@ -23,7 +23,7 @@ temperature / max_tokens / retry / context window 的默认值。压缩、裁剪
 
 ## 用户现场（修复前）
 
-release 版 `chat.exe`（默认 probe sidecar）输入"从 1 数到 10，间隔 2 s"，模型在
+release 版 `dshr.exe`（默认 probe sidecar）输入"从 1 数到 10，间隔 2 s"，模型在
 **一个 step 里发起 9 个 `probe_slow` 调用**：
 
 ```text
@@ -120,7 +120,7 @@ pub struct ToolBudget {
   `jittered_delay_for(attempt, unit)` 做 ±10% 抖动并再次封顶，`unit` 可注入以便断言上下界。
 - `DSHR_RETRY_ATTEMPTS`（1–10）/`DSHR_RETRY_BASE_MS`/`DSHR_RETRY_MAX_MS` 继续可覆盖，
   新增 `DSHR_RETRY_JITTER`（0–1）。`RetryPolicy::immediate(n)` 保留
-  （`chat --selftest-retry` 用的就是它，语义不变）。
+  （`dshr --selftest-retry` 用的就是它，语义不变）。
 - 已知差异：DSH 还会重试 `EMPTY_RESPONSE`，dshr provider 目前不产生该错误码（M3）。
 
 ### 4. 上下文窗口（`crates/agent-context`）
@@ -159,9 +159,9 @@ pub struct ToolBudget {
 tools\build-env.cmd cargo test -p dshr-agent-core -p dshr-agent-context -p dshr-llm-retry -p dshr-llm-deepseek -p dshr-llm-openai
 tools\build-env.cmd cargo clippy -p dshr-agent-core -p dshr-agent-context -p dshr-llm-retry -p dshr-llm-deepseek -p dshr-llm-openai --all-targets -- -D warnings
 tools\build-env.cmd cargo fmt --all -- --check
-tools\build-env.cmd cargo build -p dshr-desktop-gpui --bin chat
-.\target\debug\chat.exe --selftest
-.\target\debug\chat.exe --selftest-retry
+tools\build-env.cmd cargo build -p dshr-desktop-gpui --bin dshr
+.\target\debug\dshr.exe --selftest
+.\target\debug\dshr.exe --selftest-retry
 ```
 
 真实回归口径：默认预算下，一个 step 发 ≥9 个工具调用不再出现

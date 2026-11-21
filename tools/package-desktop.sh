@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M4 G1 最小 Linux/macOS 打包：编译 chat，连同 README/版本信息压成 tar.gz。
+# M4 G1 最小 Linux/macOS 打包：编译 dshr，连同 README/版本信息压成 tar.gz。
 # 不包含安装器、签名、自动更新；这些仍属后续发布工作。
 set -euo pipefail
 
@@ -11,13 +11,13 @@ if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" ]]; then
   exit 2
 fi
 
-ARGS=(build -p dshr-desktop-gpui --bin chat)
+ARGS=(build -p dshr-desktop-gpui --bin dshr)
 if [[ "$CONFIG" == "release" ]]; then ARGS+=(--release); fi
 CARGO_BIN="${CARGO:-cargo}"
 "$CARGO_BIN" "${ARGS[@]}"
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
-BIN="$TARGET_DIR/$CONFIG/chat"
+BIN="$TARGET_DIR/$CONFIG/dshr"
 if [[ ! -x "$BIN" ]]; then echo "missing $BIN" >&2; exit 1; fi
 
 OS="${OS_OVERRIDE:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
@@ -25,12 +25,12 @@ ARCH="$(uname -m)"
 STAGE="$ROOT/dist/dshr-$CONFIG-$OS-$ARCH"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-cp "$BIN" "$STAGE/chat"
+cp "$BIN" "$STAGE/dshr"
 
 if [[ "$OS" == "darwin" ]]; then
   APP="$STAGE/dshr.app"
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-  cp "$BIN" "$APP/Contents/MacOS/chat"
+  cp "$BIN" "$APP/Contents/MacOS/dshr"
   cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,7 +39,7 @@ if [[ "$OS" == "darwin" ]]; then
   <key>CFBundleIdentifier</key><string>com.dshr.desktop</string>
   <key>CFBundleName</key><string>dshr</string>
   <key>CFBundleDisplayName</key><string>dshr</string>
-  <key>CFBundleExecutable</key><string>chat</string>
+  <key>CFBundleExecutable</key><string>dshr</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -102,7 +102,7 @@ configuration: $CONFIG
 commit: $COMMIT
 built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-Run chat --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery / --selftest-cpp-component.
+Run dshr --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery / --selftest-cpp-component.
 Includes runtime/node, probe sidecar, vendored dsh-official sidecar, and components/cpp-component.
 No installer, code signing, or auto-update in this package.
 EOF

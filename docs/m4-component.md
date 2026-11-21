@@ -46,13 +46,13 @@
 - 产品路径（[chat.rs](../apps/desktop-gpui/src/bin/chat.rs)）：`wasm-component`
   安装包读取 `runtime.entry`，按 wasm header 的 component 版本位（`0x0d 00 01 00`）
   选择 `CppComponentPlugin`；旧 core-module 包仍走 `WasmPlugin`，避免破坏 W5 前的包。
-- `M4-COMPONENT-018`：`chat --selftest-cpp-component` 把 guest 写成临时包，经
+- `M4-COMPONENT-018`：`dshr --selftest-cpp-component` 把 guest 写成临时包，经
   `load_cpp_component_plugin_from_manifest` 注册 `echo` 并 `call_approved` 返回 args，
   本机 **PASS**（仍需真实窗口安装验收）。
-- `M4-COMPONENT-019`：`chat --selftest-cpp-install` 写 `plugin.toml`/`package.json`/`plugin.wasm`，
+- `M4-COMPONENT-019`：`dshr --selftest-cpp-install` 写 `plugin.toml`/`package.json`/`plugin.wasm`，
   走真实 `install_package` → `Profile::load` → `load_enabled_external_plugins`，
   注册 `echo` 并调用返回 `installed`，本机 **PASS**。
-- `M4-COMPONENT-023`：`chat --selftest-cpp-cli-install` 走真实 `install_plugin_with_options`
+- `M4-COMPONENT-023`：`dshr --selftest-cpp-cli-install` 走真实 `install_plugin_with_options`
   （`TrustStore`/预览/`--yes-install`/profile 写入/审计），再从 profile 装载并调用 `echo`；
   本机 **PASS**（`signature=missing`，仍未做签名包）。
 - `M4-COMPONENT-020`：两个独立 `CppComponentPlugin` 实例在两个线程并行调用 guest，

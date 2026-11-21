@@ -30,7 +30,7 @@ pub use spill::{PendingSpill, RecordedSpill, Retention, SpillPolicy, SpillRef, S
 
 use std::collections::{HashMap, HashSet};
 
-use dshr_agent_core::{ChatMessage, ModelToolCall};
+use dshr_agent_core::{AttachmentFormat, ChatMessage, MediaAttachment, ModelToolCall};
 use dshr_session_store::{Durability, SessionLog, ToolCallKey};
 use serde_json::Value;
 
@@ -178,6 +178,21 @@ pub fn estimate_history_tokens(messages: &[ChatMessage]) -> usize {
         .iter()
         .map(|message| match message {
             ChatMessage::System(text) | ChatMessage::User(text) => estimate_tokens(text) + 4,
+            ChatMessage::UserWithAttachments { text, attachments } => {
+                estimate_tokens(text)
+                    + 4
+                    + attachments
+                        .iter()
+                        .map(|attachment| {
+                            estimate_tokens(&attachment.name)
+                                + if attachment.format == AttachmentFormat::Pdf {
+                                    16_384
+                                } else {
+                                    1_536
+                                }
+                        })
+                        .sum::<usize>()
+            }
             ChatMessage::Assistant { text, tool_calls } => {
                 estimate_tokens(text)
                     + tool_calls
@@ -449,7 +464,7 @@ fn trim_to_budget(
     // 尽量从 User 开始，避免历史以孤立的 assistant 开头。
     if let Some(user_index) = messages[start..]
         .iter()
-        .position(|wrapped| matches!(wrapped.message, ChatMessage::User(_)))
+        .position(|wrapped| wrapped.message.user_text().is_some())
     {
         start += user_index;
     }
@@ -533,12 +548,11 @@ fn history_with_seqs_spilled(
         }
         match event.event_type.as_str() {
             "message.user" => {
-                let text = text_of(&event.payload);
-                if !text.is_empty() {
+                if let Some(message) = user_message_from_payload(&event.payload) {
                     messages.push(SeqMessage {
                         start_seq: event.seq,
                         end_seq: event.seq,
-                        message: ChatMessage::user(text),
+                        message,
                     });
                 }
             }
@@ -758,6 +772,29 @@ fn text_of(payload: &Value) -> String {
         return text.to_owned();
     }
     content_text(&payload.get("content").cloned().unwrap_or(Value::Null))
+}
+
+pub fn user_message_from_payload(payload: &Value) -> Option<ChatMessage> {
+    let text = text_of(payload);
+    let attachments: Vec<_> = payload["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| part["type"] == "attachment")
+        .filter_map(|part| {
+            Some(MediaAttachment {
+                name: part["attachment_name"].as_str()?.to_owned(),
+                format: AttachmentFormat::from_mime(part["mime"].as_str()?)?,
+                reference: part["$attachment"].as_str()?.to_owned(),
+                bytes: None,
+            })
+        })
+        .collect();
+    if !attachments.is_empty() {
+        Some(ChatMessage::UserWithAttachments { text, attachments })
+    } else {
+        (!text.is_empty()).then_some(ChatMessage::User(text))
+    }
 }
 
 fn content_text(content: &Value) -> String {

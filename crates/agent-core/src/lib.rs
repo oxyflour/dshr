@@ -291,6 +291,10 @@ pub struct ModelToolCall {
 pub enum ChatMessage {
     System(String),
     User(String),
+    UserWithAttachments {
+        text: String,
+        attachments: Vec<MediaAttachment>,
+    },
     Assistant {
         text: String,
         tool_calls: Vec<ModelToolCall>,
@@ -305,6 +309,78 @@ pub enum ChatMessage {
 impl ChatMessage {
     pub fn user(text: impl Into<String>) -> Self {
         Self::User(text.into())
+    }
+
+    pub fn user_text(&self) -> Option<&str> {
+        match self {
+            Self::User(text) | Self::UserWithAttachments { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentFormat {
+    Png,
+    Jpeg,
+    Gif,
+    Webp,
+    Pdf,
+}
+
+impl AttachmentFormat {
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+            Self::Pdf => "application/pdf",
+        }
+    }
+
+    pub fn from_mime(mime: &str) -> Option<Self> {
+        match mime {
+            "image/png" => Some(Self::Png),
+            "image/jpeg" => Some(Self::Jpeg),
+            "image/gif" => Some(Self::Gif),
+            "image/webp" => Some(Self::Webp),
+            "application/pdf" => Some(Self::Pdf),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct MediaAttachment {
+    pub name: String,
+    pub format: AttachmentFormat,
+    /// ID of the durable attachment. Bytes are restored only for the retained conversation.
+    pub reference: String,
+    pub bytes: Option<Arc<[u8]>>,
+}
+
+impl std::fmt::Debug for MediaAttachment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MediaAttachment")
+            .field("name", &self.name)
+            .field("format", &self.format)
+            .field("reference", &self.reference)
+            .field("bytes_len", &self.bytes.as_ref().map(|bytes| bytes.len()))
+            .finish()
+    }
+}
+
+impl MediaAttachment {
+    pub fn data_url(&self) -> Option<String> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let bytes = self.bytes.as_ref()?;
+        Some(format!(
+            "data:{};base64,{}",
+            self.format.mime(),
+            STANDARD.encode(bytes)
+        ))
     }
 }
 
@@ -379,10 +455,7 @@ impl CompletionRequest {
         self.messages
             .iter()
             .rev()
-            .find_map(|message| match message {
-                ChatMessage::User(text) => Some(text.as_str()),
-                _ => None,
-            })
+            .find_map(ChatMessage::user_text)
             .unwrap_or_default()
     }
 
@@ -393,7 +466,7 @@ impl CompletionRequest {
         self.messages
             .iter()
             .rev()
-            .take_while(|message| !matches!(message, ChatMessage::User(_)))
+            .take_while(|message| message.user_text().is_none())
             .find_map(|message| match message {
                 ChatMessage::Tool { content, .. } => Some(content.as_str()),
                 _ => None,
@@ -635,6 +708,17 @@ impl<P: ModelProvider> Agent<P> {
         executor: &mut dyn ToolExecutor,
         on_event: &mut dyn FnMut(&AgentEvent),
     ) {
+        self.run_turn_streaming_message(history, ChatMessage::user(user_text), executor, on_event);
+    }
+
+    pub fn run_turn_streaming_message(
+        &mut self,
+        history: &[ChatMessage],
+        user_message: ChatMessage,
+        executor: &mut dyn ToolExecutor,
+        on_event: &mut dyn FnMut(&AgentEvent),
+    ) {
+        debug_assert!(user_message.user_text().is_some());
         self.turn += 1;
         let turn_id = self.turn;
         on_event(&AgentEvent::TurnStarted { turn_id });
@@ -644,7 +728,7 @@ impl<P: ModelProvider> Agent<P> {
         let cancel = self.provider.cancel_token();
 
         let mut messages: Vec<ChatMessage> = history.to_vec();
-        messages.push(ChatMessage::User(user_text.to_owned()));
+        messages.push(user_message);
 
         let mut step: u32 = 1;
         let mut calls = 0usize;

@@ -379,13 +379,66 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
 /// `base_font` / `base_color` 来自当前文本样式（`window.text_style()`），
 /// 这样正文字体与页面其它文本一致，只有行内强调/代码/链接会覆盖。
 pub fn markdown_view(text: &str, theme: &Theme, base_font: &Font, base_color: Rgba) -> AnyElement {
+    render_markdown(
+        text,
+        theme,
+        base_font,
+        base_color,
+        &TextFragments::default(),
+    )
+}
+
+pub fn selectable_markdown_view(
+    text: &str,
+    theme: &Theme,
+    base_font: &Font,
+    base_color: Rgba,
+    selection: &crate::MessageSelection,
+    row: usize,
+) -> AnyElement {
+    let fragments = TextFragments {
+        selection: Some((selection, row)),
+        index: std::cell::Cell::new(0),
+    };
+    render_markdown(text, theme, base_font, base_color, &fragments)
+}
+
+#[derive(Default)]
+struct TextFragments<'a> {
+    selection: Option<(&'a crate::MessageSelection, usize)>,
+    index: std::cell::Cell<usize>,
+}
+
+impl TextFragments<'_> {
+    fn element(&self, text: String, runs: Vec<TextRun>, theme: &Theme) -> AnyElement {
+        let text = SharedString::from(text);
+        let styled = StyledText::new(text.clone()).with_runs(runs);
+        match self.selection {
+            Some((selection, row)) => {
+                let index = self.index.get();
+                self.index.set(index + 1);
+                let color = theme.palette.color(theme.palette.business_primary);
+                selection.fragment(row, index, text, styled, color.into())
+            }
+            None => styled.into_any_element(),
+        }
+    }
+}
+
+fn render_markdown(
+    text: &str,
+    theme: &Theme,
+    base_font: &Font,
+    base_color: Rgba,
+    fragments: &TextFragments<'_>,
+) -> AnyElement {
     let blocks = parse(text);
     let mut column = div().flex().flex_col().gap(px(10.0)).w_full();
     for block in &blocks {
         if matches!(block, Block::Blank) {
             continue;
         }
-        column = column.child(render_block(block, theme, base_font, base_color));
+        column = column.child(render_block(block, theme, base_font, base_color, fragments));
     }
     if blocks.is_empty() {
         column = column.child(
@@ -398,7 +451,13 @@ pub fn markdown_view(text: &str, theme: &Theme, base_font: &Font, base_color: Rg
     column.into_any_element()
 }
 
-fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba) -> AnyElement {
+fn render_block(
+    block: &Block,
+    theme: &Theme,
+    base_font: &Font,
+    base_color: Rgba,
+    fragments: &TextFragments<'_>,
+) -> AnyElement {
     let t = theme.type_scale;
     let p = theme.palette;
     match block {
@@ -418,6 +477,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
                 line,
                 weight,
                 p.label_primary,
+                fragments,
             )
             .into_any_element()
         }
@@ -430,6 +490,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
             t.body_line,
             FontWeight::NORMAL,
             p.label_primary,
+            fragments,
         )
         .into_any_element(),
         Block::Code { lang, text } => {
@@ -472,7 +533,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
                         .text_size(t.small)
                         .line_height(t.small_line)
                         .text_color(p.color(p.label_primary))
-                        .child(StyledText::new(SharedString::from(code_text)).with_runs(runs)),
+                        .child(fragments.element(code_text, runs, theme)),
                 )
                 .into_any_element()
         }
@@ -518,9 +579,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
                                 .text_size(t.body)
                                 .line_height(t.body_line)
                                 .text_color(p.color(p.label_primary))
-                                .child(
-                                    StyledText::new(SharedString::from(row_text)).with_runs(runs),
-                                ),
+                                .child(fragments.element(row_text, runs, theme)),
                         ),
                 );
             }
@@ -539,7 +598,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
                 if matches!(block, Block::Blank) {
                     continue;
                 }
-                quoted = quoted.child(render_block(block, theme, base_font, base_color));
+                quoted = quoted.child(render_block(block, theme, base_font, base_color, fragments));
             }
             quoted.into_any_element()
         }
@@ -565,6 +624,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
                     base_font,
                     base_color,
                     FontWeight::SEMIBOLD,
+                    fragments,
                 ));
             }
             table = table.child(header_row);
@@ -581,6 +641,7 @@ fn render_block(block: &Block, theme: &Theme, base_font: &Font, base_color: Rgba
                         base_font,
                         base_color,
                         FontWeight::NORMAL,
+                        fragments,
                     ));
                 }
                 table = table.child(row_element);
@@ -602,6 +663,7 @@ fn cell_element(
     base_font: &Font,
     base_color: Rgba,
     weight: FontWeight,
+    fragments: &TextFragments<'_>,
 ) -> AnyElement {
     let t = theme.type_scale;
     let p = theme.palette;
@@ -614,7 +676,7 @@ fn cell_element(
         .text_size(t.small)
         .line_height(t.small_line)
         .text_color(p.color(p.label_primary))
-        .child(StyledText::new(SharedString::from(text)).with_runs(runs))
+        .child(fragments.element(text, runs, theme))
         .into_any_element()
 }
 
@@ -628,6 +690,7 @@ fn text_element(
     line: gpui::Pixels,
     weight: FontWeight,
     color: u32,
+    fragments: &TextFragments<'_>,
 ) -> impl IntoElement {
     let (text, runs) = inline_runs(spans, theme, base_font, base_color, weight);
     div()
@@ -635,7 +698,7 @@ fn text_element(
         .text_size(size)
         .line_height(line)
         .text_color(theme.palette.color(color))
-        .child(StyledText::new(SharedString::from(text)).with_runs(runs))
+        .child(fragments.element(text, runs, theme))
 }
 
 /// 把行内片段编译成 `(纯文本, TextRun 序列)`；`len` 是 UTF-8 字节数。

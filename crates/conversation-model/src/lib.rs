@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use dshr_agent_context::spill::{user_attachment_refs, SpillRef};
 use dshr_session_store::{Durability, LogError, SessionLog, ToolCallKey, ToolState};
 use dshr_tool_runtime::Presentation;
 use serde_json::Value;
@@ -37,11 +38,26 @@ pub struct ToolItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserAttachment {
+    pub name: String,
+    /// Populated only for a matching durable file record. Text attachments have no blob.
+    pub file: Option<SpillRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    User { text: String },
-    Assistant { text: String },
+    User {
+        text: String,
+        attachments: Vec<UserAttachment>,
+    },
+    Assistant {
+        text: String,
+    },
     Tool(ToolItem),
-    Compaction { from_seq: u64, to_seq: u64 },
+    Compaction {
+        from_seq: u64,
+        to_seq: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -82,6 +98,7 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
         }
     }
     let in_range = |seq: u64| ranges.iter().any(|(from, to)| seq >= *from && seq <= *to);
+    let mut file_refs = None;
 
     for event in log.events() {
         if event.durability == Durability::Ephemeral || in_range(event.seq) {
@@ -90,9 +107,29 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
         match event.event_type.as_str() {
             "message.user" => items.push(Item::User {
                 text: text_of(&event.payload),
+                attachments: event.payload["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|block| {
+                        let name = block["attachment_name"].as_str()?.to_owned();
+                        let file = block["$attachment"]
+                            .as_str()
+                            .filter(|_| block["type"] == "attachment")
+                            .and_then(|reference| {
+                                file_refs
+                                    .get_or_insert_with(|| user_attachment_refs(log))
+                                    .get(reference)
+                                    .filter(|file| block["mime"] == file.mime)
+                                    .cloned()
+                            });
+                        Some(UserAttachment { name, file })
+                    })
+                    .collect(),
             }),
             "message.assistant.settled" => {
-                if summary_ids.contains(&str_of(&event.payload, "message_id")) {
+                let message_id = str_of(&event.payload, "message_id");
+                if summary_ids.contains(&message_id) {
                     continue;
                 }
                 items.push(Item::Assistant {

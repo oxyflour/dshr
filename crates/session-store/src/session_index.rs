@@ -27,6 +27,8 @@ pub struct SessionMeta {
     pub path: PathBuf,
     /// 事件条数（用于展示"多少条"）。
     pub events: usize,
+    /// 来自 `session.created.workspace_id`；早期会话可能没有该事件。
+    pub workspace_id: Option<String>,
     /// 来自 `session.created.parent_session_id`；根会话（或旧日志）为 None。
     pub parent_session_id: Option<String>,
     /// 来自 `session.created.spawn_source`；根会话（或旧日志）为 None。
@@ -123,12 +125,14 @@ impl SessionIndex {
                 .as_ref()
                 .and_then(|created| created.parent_session_id.clone());
             let spawn_source = created.as_ref().and_then(|created| created.spawn_source);
+            let workspace_id = created.map(|created| created.workspace_id);
             sessions.push(SessionMeta {
                 title: renamed.unwrap_or(title),
                 id,
                 updated_at: modified_at(&read_path),
                 path: read_path,
                 events,
+                workspace_id,
                 parent_session_id,
                 spawn_source,
             });
@@ -151,6 +155,7 @@ impl SessionIndex {
             updated_at: modified_at(&path),
             path,
             events: 0,
+            workspace_id: None,
             parent_session_id: None,
             spawn_source: None,
         })
@@ -209,6 +214,7 @@ impl SessionIndex {
             updated_at: modified_at(&path),
             path,
             events: summary.events,
+            workspace_id: Some(created.workspace_id.clone()),
             parent_session_id: created.parent_session_id.clone(),
             spawn_source: created.spawn_source,
         })
@@ -592,12 +598,19 @@ fn summarize(content: &str) -> Summary {
             }
         }
         if summary.title.is_empty() && event_type == Some("message.user") {
-            if let Some(text) = value
-                .get("payload")
-                .and_then(|payload| payload.get("text"))
-                .and_then(|text| text.as_str())
-            {
-                summary.title = truncate(text, 40);
+            let payload = &value["payload"];
+            let blocks = payload["content"].as_array();
+            let title = payload["text"]
+                .as_str()
+                .or_else(|| blocks?.first()?["text"].as_str())
+                .filter(|text| !text.trim().is_empty())
+                .or_else(|| {
+                    blocks?
+                        .iter()
+                        .find_map(|block| block["attachment_name"].as_str())
+                });
+            if let Some(title) = title {
+                summary.title = truncate(title, 40);
             }
         }
     }
@@ -692,6 +705,7 @@ mod tests {
         assert_eq!(sessions[0].id, "s-1");
         assert_eq!(sessions[0].title, "帮我修一下窗口尺寸");
         assert_eq!(sessions[0].events, 2);
+        assert_eq!(sessions[0].workspace_id, None);
         fs::remove_dir_all(index.dir()).ok();
     }
 
@@ -852,13 +866,20 @@ mod tests {
     #[test]
     fn create_child_writes_created_event_and_tree_queries_work() {
         let index = temp_index("tree-create");
-        index.create_root("s-root", "ws-1", "t0").unwrap();
-        index
+        let root = index.create_root("s-root", "ws-1", "t0").unwrap();
+        assert_eq!(root.workspace_id.as_deref(), Some("ws-1"));
+        let child = index
             .create_child("s-child", "s-root", "ws-1", "t1")
             .unwrap();
+        assert_eq!(child.workspace_id.as_deref(), Some("ws-1"));
         index
             .create_child("s-grand", "s-child", "ws-1", "t2")
             .unwrap();
+        assert!(index
+            .scan()
+            .unwrap()
+            .iter()
+            .all(|session| session.workspace_id.as_deref() == Some("ws-1")));
 
         // 子会话的日志第一条事件必须是 session.created，且父链接可回放。
         let child_text = fs::read_to_string(index.path_for("s-child")).unwrap();

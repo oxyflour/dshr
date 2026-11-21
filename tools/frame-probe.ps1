@@ -3,7 +3,7 @@
   滚动帧率探针：用 GPUI profiler 的 FrameTiming 测量 10k 事件会话的滚动帧率与帧耗时。
 
 .DESCRIPTION
-  1. 用 chat --seed-perf-session 造一个 10k 事件会话；
+  1. 用 dshr --seed-perf-session 造一个 10k 事件会话；
   2. 以 DSHR_FRAME_PROBE 打开窗口，探针每帧推进滚动并请求下一帧，达到目标帧数后
      自己写报告并退出（时间戳来自渲染管线，不是脚本 sleep）；
   3. 记录并输出完整测量元数据（host / 会话名 / GPU / 二进制路径 / git commit 等），
@@ -98,12 +98,12 @@ function Get-PhaseMetrics([string]$text, [string]$name) {
 
 Push-Location $root
 try {
-    $exe = Join-Path $root "target\release\chat.exe"
+    $exe = Join-Path $root "target\release\dshr.exe"
     if (-not (Test-Path $exe)) {
-        $exe = Join-Path $root "target\debug\chat.exe"
+        $exe = Join-Path $root "target\debug\dshr.exe"
     }
     if (-not (Test-Path $exe)) {
-        throw "找不到 chat.exe；先构建：tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin chat"
+        throw "找不到 dshr.exe；先构建：tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin dshr"
     }
 
     # ---- 测量环境元数据：每次运行自动采集，随 baseline 落盘 ----
@@ -158,7 +158,7 @@ try {
     $startInfo.UseShellExecute = $false
     $proc = [System.Diagnostics.Process]::Start($startInfo)
     if ($null -eq $proc) {
-        throw "无法启动 chat.exe：$exe"
+        throw "无法启动 dshr.exe：$exe"
     }
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {

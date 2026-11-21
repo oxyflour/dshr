@@ -13,7 +13,7 @@ cp target/wasm32-wasip2/release/__CRATE_NAME__.wasm plugin.wasm
 ## 安装
 
 ```text
-dshr chat --install-plugin <this-dir>
+dshr --install-plugin <this-dir>
 ```
 
 安装时宿主读取 `plugin.toml`，把 `plugin.wasm` 交给 `CppComponentPlugin`；

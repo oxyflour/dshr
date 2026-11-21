@@ -194,7 +194,7 @@ tools\build-env.cmd cargo clippy -p dshr-ui-gpui --all-targets -- -D warnings
 组件本身没有独立窗口，截图需要 Lead 在 `chat` 里接上工具卡片后抓窗口：
 
 ```powershell
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
 # 另开终端：
 $env:TMP='C:\Projects\dshr\.tmp'; $env:TEMP=$env:TMP
 powershell -ExecutionPolicy Bypass -File tools\screen.ps1 windows -ProcessId <pid>

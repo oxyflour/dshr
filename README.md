@@ -44,18 +44,19 @@ node tools/check-links.mjs
 # 构建。Windows 上必须走 build-env：本机 %TEMP% 不能让链接器写入
 tools\build-env.cmd cargo build --workspace
 
+# Windows 主程序为 target\debug\dshr.exe，release 构建输出到 target\release\dshr.exe
 # 基本对话（输入框 + 会话流 + 真实 sidecar 工具 + 落盘恢复 + SSE 流式）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest          # 无窗口自检
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-stream   # 流式自检
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live "一句话"      # 真实 LLM（需 key）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --live-chat "第一句" "第二句"  # 多轮记忆验证
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest          # 无窗口自检
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-stream   # 流式自检
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --live "一句话"      # 真实 LLM（需 key）
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --live-chat "第一句" "第二句"  # 多轮记忆验证
 
 # 官方 DSH 插件（需要本机安装 DeepSeek Harness 桌面版）
 node tools/dsh-vendor.mjs                     # 从本机 app.asar 抽取官方插件依赖（gitignored）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-dsh
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh
 $env:DSHR_SIDECAR = 'dsh'                       # 用官方插件运行时（tools + 只读 fs + 官方 read 工具）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
 ```
 
 ## 已固定的版本
@@ -126,7 +127,7 @@ conformance 544 ID / `--full` 在 Lead 环境 exit 0（67 suites/837 passed/0 fa
 **接受**（按 [ADR-0012](docs/decisions/0012-m3-gate-closure.md) 修正后的口径）；未确认的 P2/后续项
 列入 M4。
 
-**M1 完成（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `chat --selftest*` + `conversation --check` + `chat --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
+**M1 完成（核心闭环已打通）。** 已完成：A1 虚拟化、A1b 启动拆解、A1c 帧预算、B Cordis 选型、A3 WebView2 引擎自检、A5 端到端回放、A5b 真实调用闭环、C Sidecar 协议往返（纯协议 p50 148 µs）、A6 基本对话、A7 Native Plugin、A7b 统一 Registry、A8 真实 Cordis 插件、A9 流式消息、**A10 Agent 接口**、**A11 真实 LLM**（`DeepSeekProvider`，从 `~/.dsh/.env` 读 key）、A12/A13 协议对齐与结果卡片、A14 真 SSE 流式（首字 ~0.7–0.85 s）、**A15 多轮上下文 + 严格工具协议**（`role: tool` + `tool_call_id`，真实多轮记忆与多工具已验证）、**A16 真实输入组件**（`ui-gpui::TextInput`，实现 `EntityInputHandler`，中文 IME 可组合输入）。共 98 个测试 + 四个 `dshr --selftest*` + `conversation --check` + `dshr --live/--live-chat`。A2 IME 有已知缺陷（[issues/0001](docs/issues/0001-ime-candidate-first-composition.md)，产品界面待人工复验）。未做：中文 IME 的人工复验、并行工具调用、多行输入。详见 [`docs/m1-log.md`](docs/m1-log.md)。
 
 **M2 收尾：四条 exit gate 已达标（2026-11-11）。** 官方 DSH 插件不改一行源码装载：
 `@deepseek-ai/dsh-tool-workspace-dependencies` 与 `@deepseek-ai/dsh-tool-fs`（`read`）
@@ -162,12 +163,12 @@ draw p95 ≈ 3 ms、0 次超预算；进程 RSS ≈ 80 MB + sidecar 37 MB
 
 **插件与稳定性。** profile（`plugins.json`）可持久化启停，侧栏插件面板切换后重启 sidecar，
 装载失败的错误会显示在面板顶部；支持 `cordis.yml` + `cordis.patch.yml` 只读派生
-（[`docs/m2-loader.md`](docs/m2-loader.md)）；`chat --install-plugin <目录|.tgz>` 离线安装
+（[`docs/m2-loader.md`](docs/m2-loader.md)）；`dshr --install-plugin <目录|.tgz>` 离线安装
 并写安装审计日志（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
 provider 已有 DeepSeek 与 OpenAI 兼容两家，统一重试/退避；真实网络 20 步工具调用
 成功率 20/20（[`docs/m2-stability.md`](docs/m2-stability.md)）。
 会话可导出（JSONL + 外部化附件 + manifest sha256 自校验）并查看保留计划：
-`chat --export-session <id>` / `chat --retention-plan`；panic 会写入
+`dshr --export-session <id>` / `dshr --retention-plan`；panic 会写入
 `DSHR_CRASH_LOG`（默认 `.tmp/crash.log`）——[`docs/m2-sessions.md`](docs/m2-sessions.md)、
 [`docs/m2-spill.md`](docs/m2-spill.md)。
 M2 四条 gate 的对账与 17 个自检命令见 [`docs/m2-status.md`](docs/m2-status.md)；

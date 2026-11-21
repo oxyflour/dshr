@@ -12,20 +12,22 @@
 //! 网络等待不会卡住界面，这正是把 `ModelProvider` 做成流式的目的。
 //!
 //! 四种模式：
-//!   cargo run -p dshr-desktop-gpui --bin chat                 # 交互界面
-//!   cargo run ... --bin chat -- --selftest                   # 无窗口自检
-//!   cargo run ... --bin chat -- --selftest-stream            # 流式自检
-//!   cargo run ... --bin chat -- --selftest-dsh               # 官方 DSH 插件自检
-//!   cargo run ... --bin chat -- --selftest-adc-panel         # ADC 插件面板链路自检
-//!   cargo run ... --bin chat -- --selftest-wasm              # WASM 插件链路自检（安装→装载→调用→trap→卸载）
-//!   cargo run ... --bin chat -- --selftest-defaults          # M3 默认差异接线自检
-//!   cargo run ... --bin chat -- --selftest-plugin-lifecycle  # M4：安装→卸载→密钥轮换自检
-//!   cargo run ... --bin chat -- --uninstall-plugin <name>    # 卸载插件（目录/profile/审计）
-//!   cargo run ... --bin chat -- --trust-key <action> ...     # 信任密钥库管理
-//!   cargo run ... --bin chat -- --live "一句话"               # 真实 LLM 单轮（需 API key）
+//!   cargo run -p dshr-desktop-gpui --bin dshr                 # 交互界面
+//!   cargo run ... --bin dshr -- --selftest                   # 无窗口自检
+//!   cargo run ... --bin dshr -- --selftest-stream            # 流式自检
+//!   cargo run ... --bin dshr -- --selftest-dsh               # 官方 DSH 插件自检
+//!   cargo run ... --bin dshr -- --selftest-adc-panel         # ADC 插件面板链路自检
+//!   cargo run ... --bin dshr -- --selftest-wasm              # WASM 插件链路自检（安装→装载→调用→trap→卸载）
+//!   cargo run ... --bin dshr -- --selftest-defaults          # M3 默认差异接线自检
+//!   cargo run ... --bin dshr -- --selftest-plugin-lifecycle  # M4：安装→卸载→密钥轮换自检
+//!   cargo run ... --bin dshr -- --uninstall-plugin <name>    # 卸载插件（目录/profile/审计）
+//!   cargo run ... --bin dshr -- --trust-key <action> ...     # 信任密钥库管理
+//!   cargo run ... --bin dshr -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -34,22 +36,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::profiler::{set_trace_enabled, FrameEvent, FrameTimingCollector};
 use gpui::{
-    actions, div, point, px, size, AnyElement, App, Bounds, ClipboardItem, Context, Entity,
-    Focusable, FocusHandle, Font, FontWeight, KeyBinding, Rgba, Role, ScrollHandle, TextOverflow, Window,
-    WindowBounds, WindowOptions,
+    actions, div, img, point, px, rgba, size, AnyElement, App, Bounds, ClipboardEntry,
+    ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths, FocusHandle, Focusable, Font,
+    FontWeight, KeyBinding, ObjectFit, PathPromptOptions, RenderImage, Role, ScrollHandle,
+    Stateful, StyledImage, TextOverflow, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gpui_platform::application;
 use serde_json::json;
 
 use dshr_agent_context::{
     estimate_tokens, history_for_model, history_from_log, plan_context, plan_context_with_spill,
-    ContextPlan, SpillPolicy, SpillStore,
+    user_message_from_payload, ContextPlan, Retention, SpillPolicy, SpillRef, SpillStore,
 };
 use dshr_agent_core::{
-    spawn_child_spec, Agent, AgentEvent, ChatMessage, CompletionRequest, MockProvider,
-    ModelProvider, ModelReply, ModelToolCall, ReasoningEffort, SessionTreeRuntime, SpawnChildArgs,
-    SpawnContext, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec, DEFAULT_MAX_DEPTH,
-    SPAWN_CHILD_TOOL,
+    spawn_child_spec, Agent, AgentEvent, AttachmentFormat, ChatMessage, CompletionRequest,
+    MockProvider, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort, SessionTreeRuntime,
+    SpawnChildArgs, SpawnContext, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
+    DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{
@@ -58,7 +61,7 @@ use dshr_compat_dsh_host::{
     StorageKvService, WorkingDirectoryService, CAP_SERVICE_PROXY, PROTOCOL_MAX, SESSION_LOG_V1,
     STORAGE_KV_V1, WORKING_DIRECTORY_V1,
 };
-use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard};
+use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard, UserAttachment};
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_llm_openai::OpenAiProvider;
 use dshr_llm_retry::{RetryPolicy, RetryingProvider};
@@ -83,12 +86,220 @@ use dshr_tool_runtime::{
 };
 use dshr_ui_contributions::parse_action;
 use dshr_ui_gpui::{
-    adc_panel_body, adc_panel_body_with_handler, diff_view_from_text, markdown_view,
-    terminal_view_from_text, Action as AdcAction, AdcActionHandler, DiagnosticCode, TextInput,
-    Theme, ThemeKind,
+    adc_panel_body, adc_panel_body_with_handler, diff_view_from_text, selectable_markdown_view,
+    terminal_view_from_text, Action as AdcAction, AdcActionHandler, DiagnosticCode,
+    MessageSelection, TextInput, Theme, ThemeKind,
 };
 
 const SESSION_ID: &str = "s-chat";
+const MAX_ATTACHMENTS: usize = 4;
+const MAX_TEXT_ATTACHMENT_BYTES: usize = 32 * 1024;
+const MAX_MEDIA_ATTACHMENT_BYTES: usize = 12 * 1024 * 1024;
+
+#[path = "chat/attachment_preview.rs"]
+mod attachment_preview;
+use attachment_preview::{
+    decode_image, AttachmentThumbnail, PreviewSource, StoredAttachment, THUMBNAIL_EDGE,
+};
+
+#[cfg(target_os = "windows")]
+#[path = "chat/window_bar.rs"]
+mod window_bar;
+
+#[path = "chat/composer_flow.rs"]
+mod composer_flow;
+#[path = "chat/composer_surface.rs"]
+mod composer_surface;
+#[path = "chat/plugins_view.rs"]
+mod plugins_view;
+#[path = "chat/popover.rs"]
+mod popover;
+#[path = "chat/settings_view.rs"]
+mod settings_view;
+#[path = "chat/workspace_view.rs"]
+mod workspace_view;
+
+struct DraftAttachment {
+    name: String,
+    content: AttachmentContent,
+    thumbnail: Option<Arc<RenderImage>>,
+}
+
+impl DraftAttachment {
+    fn new(name: String, content: AttachmentContent) -> Self {
+        let thumbnail = match &content {
+            AttachmentContent::Media { format, bytes } => {
+                decode_image(bytes, *format, THUMBNAIL_EDGE).ok()
+            }
+            AttachmentContent::Text(_) => None,
+        };
+        Self {
+            name,
+            content,
+            thumbnail,
+        }
+    }
+}
+
+enum AttachmentContent {
+    Text(String),
+    Media {
+        format: AttachmentFormat,
+        bytes: Arc<[u8]>,
+    },
+}
+
+enum AttachmentSource {
+    Picker,
+    Paths(Vec<PathBuf>),
+    ClipboardImage(Vec<u8>),
+}
+
+fn attachment_format(bytes: &[u8]) -> Option<AttachmentFormat> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(AttachmentFormat::Png)
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some(AttachmentFormat::Jpeg)
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(AttachmentFormat::Gif)
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some(AttachmentFormat::Webp)
+    } else if bytes.starts_with(b"%PDF-") {
+        Some(AttachmentFormat::Pdf)
+    } else {
+        None
+    }
+}
+
+fn read_attachments(
+    paths: Vec<PathBuf>,
+    remaining_files: usize,
+    mut remaining_text: usize,
+    mut remaining_media: usize,
+) -> Result<Vec<DraftAttachment>, String> {
+    if paths.len() > remaining_files {
+        return Err(format!("每条消息最多添加 {MAX_ATTACHMENTS} 个附件。"));
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let read_error = |error: std::io::Error| format!("无法读取 {name}：{error}");
+            if !path.metadata().map_err(read_error)?.is_file() {
+                return Err(format!("{name} 不是普通文件。"));
+            }
+            let file = std::fs::File::open(&path).map_err(read_error)?;
+            let max_bytes = remaining_text.max(remaining_media);
+            let mut bytes = Vec::new();
+            file.take(max_bytes as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(read_error)?;
+            if bytes.len() > max_bytes {
+                return Err(format!("{name} 超出剩余附件大小。"));
+            }
+            let content = if let Some(format) = attachment_format(&bytes) {
+                if bytes.len() > remaining_media {
+                    return Err("图片和 PDF 附件总大小不能超过 12 MiB。".to_owned());
+                }
+                remaining_media -= bytes.len();
+                AttachmentContent::Media {
+                    format,
+                    bytes: bytes.into(),
+                }
+            } else {
+                if bytes.len() > remaining_text {
+                    return Err("文本附件总大小不能超过 32 KiB。".to_owned());
+                }
+                remaining_text -= bytes.len();
+                let text = String::from_utf8(bytes)
+                    .ok()
+                    .filter(|text| !text.contains('\0'))
+                    .ok_or_else(|| format!("{name} 不是受支持的图片、PDF 或 UTF-8 文本文件。"))?;
+                AttachmentContent::Text(text)
+            };
+            Ok(DraftAttachment::new(name, content))
+        })
+        .collect()
+}
+
+fn read_clipboard_image(mut bytes: Vec<u8>, remaining: usize) -> Result<DraftAttachment, String> {
+    if bytes.starts_with(b"BM") {
+        use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+        use std::io::Cursor;
+
+        let decode_error = |error: image::ImageError| format!("无法读取剪贴板图片：{error}");
+        let decoder = ImageReader::with_format(Cursor::new(&bytes), ImageFormat::Bmp)
+            .into_decoder()
+            .map_err(decode_error)?;
+        let (width, height) = decoder.dimensions();
+        if u64::from(width) * u64::from(height) > 16 * 1024 * 1024 {
+            return Err("剪贴板图片像素过多，请缩小图片。".to_owned());
+        }
+        let bitmap = DynamicImage::from_decoder(decoder).map_err(decode_error)?;
+        let mut output = Cursor::new(Vec::new());
+        bitmap
+            .write_to(&mut output, ImageFormat::Png)
+            .map_err(decode_error)?;
+        bytes = output.into_inner();
+    }
+    if bytes.len() > remaining {
+        return Err("图片和 PDF 附件总大小不能超过 12 MiB。".to_owned());
+    }
+    let (format, extension) = match attachment_format(&bytes) {
+        Some(AttachmentFormat::Png) => (AttachmentFormat::Png, "png"),
+        Some(AttachmentFormat::Jpeg) => (AttachmentFormat::Jpeg, "jpg"),
+        Some(AttachmentFormat::Gif) => (AttachmentFormat::Gif, "gif"),
+        Some(AttachmentFormat::Webp) => (AttachmentFormat::Webp, "webp"),
+        _ => return Err("剪贴板图片格式不受支持。".to_owned()),
+    };
+    Ok(DraftAttachment::new(
+        format!("剪贴板图片.{extension}"),
+        AttachmentContent::Media {
+            format,
+            bytes: bytes.into(),
+        },
+    ))
+}
+
+fn user_message_payload(
+    id: &str,
+    text: &str,
+    attachments: &[DraftAttachment],
+    store: &SpillStore,
+) -> Result<(serde_json::Value, Vec<SpillRef>), String> {
+    if attachments.is_empty() {
+        return Ok((json!({ "message_id": id, "text": text }), Vec::new()));
+    }
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    let mut objects = Vec::new();
+    for attachment in attachments {
+        match &attachment.content {
+            AttachmentContent::Text(text) => content.push(json!({
+                "type": "text",
+                "attachment_name": attachment.name,
+                "text": format!("附件 {}：\n{text}", json!(&attachment.name)),
+            })),
+            AttachmentContent::Media { format, bytes } => {
+                let blob = SpillRef::from_payload(bytes, format.mime(), Retention::Session);
+                store
+                    .put(&blob, bytes)
+                    .map_err(|err| format!("无法保存附件 {}：{err}", attachment.name))?;
+                content.push(json!({
+                    "type": "attachment",
+                    "attachment_name": attachment.name,
+                    "mime": blob.mime,
+                    "$attachment": blob.id,
+                }));
+                objects.push(blob);
+            }
+        }
+    }
+    Ok((json!({ "message_id": id, "content": content }), objects))
+}
 
 // M4 W2：键盘优先的操作。键位在 `chat_key_bindings()` 注册，语义在 ChatApp 的
 // `shortcut_*` 方法里；不使用鼠标也能覆盖"新建→输入→发送→审批→面板→关闭"。
@@ -103,6 +314,8 @@ actions!(
         DenyFirstShortcut,
         EscapeShortcut,
         QuitShortcut,
+        PreviousSlashCommand,
+        NextSlashCommand,
     ]
 );
 
@@ -135,6 +348,12 @@ fn chat_key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-d", DenyFirstShortcut, None),
         KeyBinding::new("escape", EscapeShortcut, None),
         KeyBinding::new("cmd-w", QuitShortcut, None),
+        KeyBinding::new(
+            "up",
+            PreviousSlashCommand,
+            Some("DshrSlashMenu > TextInput"),
+        ),
+        KeyBinding::new("down", NextSlashCommand, Some("DshrSlashMenu > TextInput")),
     ]
 }
 
@@ -169,6 +388,233 @@ fn chat_shortcut_hint() -> String {
         label(4),
         label(5)
     )
+}
+
+fn chrome_button(id: impl Into<ElementId>, label: &'static str, theme: &Theme) -> Stateful<Div> {
+    let p = theme.palette;
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .h(px(28.0))
+        .px(px(8.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(theme.radii.sm)
+        .cursor_pointer()
+        .text_size(theme.type_scale.secondary)
+        .text_color(p.color(p.label_secondary))
+        .hover(|style| style.bg(p.color(p.interactive_hover)))
+        .child(label)
+}
+
+fn desktop_icon(windows_glyph: &'static str, fallback: &'static str) -> Div {
+    div()
+        .flex_none()
+        .text_size(px(14.0))
+        .line_height(px(18.0))
+        .when(cfg!(windows), |icon| icon.font_family("Segoe MDL2 Assets"))
+        .child(if cfg!(windows) {
+            windows_glyph
+        } else {
+            fallback
+        })
+}
+
+struct ToolbarTooltip {
+    label: gpui::SharedString,
+    theme: Theme,
+}
+
+impl Render for ToolbarTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let t = &self.theme;
+        let p = t.palette;
+        div()
+            .max_w(px(360.0))
+            .rounded(t.radii.sm)
+            .border_1()
+            .border_color(p.color(p.border_l2))
+            .bg(p.color(p.bg_layer_1))
+            .text_color(p.color(p.label_primary))
+            .text_size(t.type_scale.small)
+            .px(px(8.0))
+            .py(px(4.0))
+            .shadow_sm()
+            .child(self.label.clone())
+    }
+}
+
+fn toolbar_tooltip(
+    label: impl Into<gpui::SharedString>,
+    theme: Theme,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let label = label.into();
+    move |_, cx| {
+        cx.new(|_| ToolbarTooltip {
+            label: label.clone(),
+            theme,
+        })
+        .into()
+    }
+}
+
+fn toolbar_icon_button(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    windows_glyph: &'static str,
+    fallback: &'static str,
+    theme: &Theme,
+) -> Stateful<Div> {
+    chrome_button(id, "", theme)
+        .aria_label(label)
+        .focusable()
+        .size(px(28.0))
+        .px(px(0.0))
+        .child(desktop_icon(windows_glyph, fallback))
+        .tooltip(toolbar_tooltip(label, *theme))
+}
+
+fn attachment_image_button(
+    id: impl Into<ElementId>,
+    name: &str,
+    image: Option<Arc<RenderImage>>,
+    fallback: &'static str,
+    width: f32,
+    height: f32,
+    t: &Theme,
+) -> Stateful<Div> {
+    let p = t.palette;
+    div()
+        .id(id)
+        .role(Role::Button)
+        .focusable()
+        .aria_label(format!("预览图片 {name}"))
+        .w(px(width))
+        .h(px(height))
+        .max_w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .rounded(t.radii.sm)
+        .bg(p.color(p.tag))
+        .cursor_pointer()
+        .child(match image {
+            Some(image) => img(image)
+                .size_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => div()
+                .text_size(t.type_scale.small)
+                .text_color(p.color(p.label_secondary))
+                .child(fallback)
+                .into_any_element(),
+        })
+}
+
+fn stored_image(file: &SpillRef) -> bool {
+    AttachmentFormat::from_mime(&file.mime).is_some_and(|format| format != AttachmentFormat::Pdf)
+}
+
+fn file_size_label(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn composer_option(
+    id: impl Into<ElementId>,
+    label: &str,
+    description: &str,
+    selected: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let p = theme.palette;
+    div()
+        .id(id)
+        .role(Role::MenuItemRadio)
+        .aria_label(label.to_owned())
+        .aria_selected(selected)
+        .flex()
+        .flex_col()
+        .px(px(9.0))
+        .py(px(5.0))
+        .rounded(theme.radii.sm)
+        .cursor_pointer()
+        .hover(|style| style.bg(p.color(p.interactive_hover)))
+        .when(selected, |row| row.bg(p.color(p.business_tertiary)))
+        .child(
+            div()
+                .text_size(theme.type_scale.secondary)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(p.color(if selected { p.link } else { p.label_primary }))
+                .child(label.to_owned()),
+        )
+        .child(
+            div()
+                .text_size(theme.type_scale.small)
+                .text_color(p.color(p.label_secondary))
+                .child(description.to_owned()),
+        )
+}
+
+fn workspace_name(workspace: &str) -> &str {
+    workspace
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(workspace)
+}
+
+struct WorkspaceSessions<'a> {
+    workspace: Option<&'a str>,
+    sessions: Vec<(usize, &'a SessionMeta)>,
+}
+
+fn workspace_sessions<'a>(sessions: &'a [SessionMeta], query: &str) -> Vec<WorkspaceSessions<'a>> {
+    let mut groups = Vec::new();
+    let mut indices = HashMap::new();
+    for (index, session) in sessions.iter().enumerate() {
+        let workspace = session
+            .workspace_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty());
+        if !query.is_empty()
+            && !session.title.to_lowercase().contains(query)
+            && !workspace.is_some_and(|id| id.to_lowercase().contains(query))
+        {
+            continue;
+        }
+        let group = *indices.entry(workspace).or_insert_with(|| {
+            let group = groups.len();
+            groups.push(WorkspaceSessions {
+                workspace,
+                sessions: Vec::new(),
+            });
+            group
+        });
+        groups[group].sessions.push((index, session));
+    }
+    groups
+}
+
+fn desktop_permission_mode() -> Option<PermissionMode> {
+    if std::env::var("DSHR_TOOL_POLICY").as_deref() == Ok("ask-all") {
+        None
+    } else {
+        Some(PermissionMode::from_env())
+    }
 }
 
 /// 非空环境变量 → 路径。空字符串按"未设置"处理（Windows 上 `set VAR=` 是常见写法）。
@@ -599,6 +1045,14 @@ fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
         let (role, text) = match message {
             ChatMessage::System(text) => ("system", text.clone()),
             ChatMessage::User(text) => ("user", text.clone()),
+            ChatMessage::UserWithAttachments { text, attachments } => {
+                let names = attachments
+                    .iter()
+                    .map(|file| file.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、");
+                ("user", format!("{text}\n附件：{names}"))
+            }
             ChatMessage::Assistant { text, tool_calls } => {
                 let mut body = text.clone();
                 if !tool_calls.is_empty() {
@@ -634,10 +1088,12 @@ struct AdcPanelView {
 struct ChatState {
     log: SessionLog,
     path: PathBuf,
+    workspace: PathBuf,
     host: Option<SidecarHost>,
     plugins: PluginHost,
     /// Agent 在窗口内复用，会话上下文由当前日志重建。
     agent: Agent<Box<dyn ModelProvider>>,
+    settings: DesktopSettings,
     seq: u64,
     /// 审批 broker：工作线程阻塞等待 UI 决定；不属于大锁保护范围。
     approvals: Arc<ApprovalBroker>,
@@ -742,14 +1198,13 @@ struct ProbeWritePlugin {
 }
 
 impl ProbeWritePlugin {
-    fn new() -> Self {
-        // 工作区根与状态目录同源：CWD 不可写时回退到数据根，避免沙箱初始化 panic。
-        let root = workspace_root();
-        let workspace = Workspace::new(&root).unwrap_or_else(|err| {
-            eprintln!("[chat] 沙箱工作区不可用（回退到数据根）: {err}");
-            Workspace::new(data_root().join("workspace")).expect("data root workspace")
-        });
-        Self { workspace }
+    fn new(root: &Path) -> Result<Self, String> {
+        if !root.is_dir() {
+            return Err("工作区目录不可用".to_owned());
+        }
+        Workspace::new(root)
+            .map(|workspace| Self { workspace })
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -818,6 +1273,8 @@ impl Plugin for ProbeWritePlugin {
 /// 沙箱初始化在不可写的 CWD 上直接失败（`os error 5`），用户看到的就是"启动即退出"。
 fn workspace_root() -> PathBuf {
     if let Some(dir) = non_empty_env_path("DSHR_WORKSPACE") {
+        let dir = std::path::absolute(&dir).unwrap_or(dir);
+        let _ = std::fs::create_dir_all(&dir);
         return dir;
     }
     if let Some(cwd) = std::env::current_dir()
@@ -827,6 +1284,7 @@ fn workspace_root() -> PathBuf {
         return cwd;
     }
     let fallback = data_root().join("workspace");
+    let _ = std::fs::create_dir_all(&fallback);
     eprintln!(
         "[chat] 当前工作目录不可写，工具工作区改用 {}（可用 DSHR_WORKSPACE 指定）",
         fallback.display()
@@ -851,6 +1309,17 @@ fn spawn_sidecar(
     approvals: Option<Arc<ApprovalBroker>>,
     l2_access: Option<Arc<ChatSessionAccess>>,
 ) -> Option<SidecarHost> {
+    spawn_sidecar_in(&workspace_root(), approvals, l2_access)
+}
+
+fn spawn_sidecar_in(
+    workspace: &Path,
+    approvals: Option<Arc<ApprovalBroker>>,
+    l2_access: Option<Arc<ChatSessionAccess>>,
+) -> Option<SidecarHost> {
+    if !workspace.is_dir() {
+        return None;
+    }
     // 资源根按 exe 相对解析：`dist/dshr-dev` 整目录拷走后仍能找到 sidecar/（见 `app_root`）。
     let root = app_root();
     let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
@@ -877,7 +1346,9 @@ fn spawn_sidecar(
         ),
     };
 
-    let mut options = HostOptions::default();
+    let mut options = HostOptions::default()
+        .with_current_dir(workspace)
+        .with_env("DSHR_WORKSPACE", workspace.to_string_lossy());
     match dshr_sidecar_guard::resolve_node() {
         Some(node) => {
             eprintln!(
@@ -896,7 +1367,7 @@ fn spawn_sidecar(
         .unwrap_or(true);
     if mode == "dsh" && write_enabled {
         if let Some(approvals) = approvals {
-            match FsWriteService::open(workspace_root(), approvals) {
+            match FsWriteService::open(workspace, approvals) {
                 Ok(service) => options = options.with_fs_write(Arc::new(service)),
                 Err(err) => eprintln!("[chat] 官方写工具不可用（沙箱初始化失败）: {err}"),
             }
@@ -910,7 +1381,12 @@ fn spawn_sidecar(
         .unwrap_or(true);
     if mode == "dsh" && l2_enabled {
         if let Some(access) = l2_access {
-            match build_l2_router(access) {
+            match build_l2_router_at(
+                access,
+                data_root().join("storage"),
+                workspace.to_path_buf(),
+                "dsh-official",
+            ) {
                 Ok(router) => options = options.with_host_services(router),
                 Err(err) => eprintln!("[chat] L2 host-service 不可用（回退 v1）: {err}"),
             }
@@ -922,23 +1398,7 @@ fn spawn_sidecar(
         .ok()
 }
 
-/// 构造 v2 Host Service Router：`storage-kv/v1` + `working-directory/v1` + `session-log/v1`。
-///
-/// generation 先写占位值，`SidecarHost` 在 `runtime.ready` 协商到 2 后会写入真实
-/// generation（`HostServiceRouter::set_generation`）。
-fn build_l2_router(
-    access: Arc<ChatSessionAccess>,
-) -> Result<Arc<Mutex<HostServiceRouter>>, String> {
-    build_l2_router_at(
-        access,
-        data_root().join("storage"),
-        workspace_root(),
-        "dsh-official",
-    )
-}
-
-/// [`build_l2_router`] 的显式路径版本（`--selftest-l2` 用临时目录与 fixture 插件 id，
-/// 不污染用户 profile）。
+/// 构造 v2 Host Service Router，并在 runtime.ready 协商后更新 generation。
 fn build_l2_router_at(
     access: Arc<ChatSessionAccess>,
     storage_root: PathBuf,
@@ -1018,83 +1478,141 @@ fn cancel_aware(
     })
 }
 
-/// provider 选择：`DSHR_PROVIDER` 显式指定（mock/deepseek/openai），否则按 key 自动。
-///
-/// 真实 provider 统一包一层 `RetryingProvider`（429/5xx/连接中断指数退避）；
-/// 流式请求只在"还没有交付任何 delta"时重试，避免重复显示。
-fn select_provider(cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
-    // reasoning effort 由 provider 自己在 `from_env()` 里读取（`DSHR_REASONING_EFFORT`）；
-    // chat 不做覆盖，只在配置了时打印一行便于诊断。DeepSeek 当前不发该字段（厂商差异）。
-    if let Some(effort) = ReasoningEffort::from_env() {
-        println!(
-            "[chat] reasoning_effort={}（由 provider 按 env 应用）",
-            effort.as_str()
-        );
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelKind {
+    Mock,
+    DeepSeek,
+    OpenAi,
+}
+
+impl ModelKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mock => "本地模拟",
+            Self::DeepSeek => "DeepSeek",
+            Self::OpenAi => "OpenAI 兼容",
+        }
     }
-    // 自检必须确定性：显式要求 mock 时不看环境里的 key。
+}
+
+enum DesktopModel {
+    Mock,
+    DeepSeek(DeepSeekProvider),
+    OpenAi(OpenAiProvider),
+}
+
+impl DesktopModel {
+    fn kind(&self) -> ModelKind {
+        match self {
+            Self::Mock => ModelKind::Mock,
+            Self::DeepSeek(_) => ModelKind::DeepSeek,
+            Self::OpenAi(_) => ModelKind::OpenAi,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Mock => ModelKind::Mock.label(),
+            Self::DeepSeek(provider) => provider.model(),
+            Self::OpenAi(provider) => provider.model(),
+        }
+    }
+
+    fn supports_attachments(&self) -> bool {
+        match self {
+            Self::DeepSeek(provider) => provider.supports_attachments(),
+            Self::OpenAi(_) | Self::Mock => true,
+        }
+    }
+
+    fn provider(&self, cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
+        let (name, configured): (&str, Box<dyn ModelProvider>) = match self {
+            Self::Mock => {
+                println!("[chat] provider=mock");
+                return cancel_aware(MockProvider, cancel);
+            }
+            Self::DeepSeek(provider) => (
+                "deepseek",
+                Box::new(provider.clone().with_cancel(cancel.clone())),
+            ),
+            Self::OpenAi(provider) => (
+                "openai",
+                Box::new(provider.clone().with_cancel(cancel.clone())),
+            ),
+        };
+        let retry = RetryPolicy::from_env();
+        println!(
+            "[chat] provider={name} model={} retries={}",
+            self.name(),
+            retry.max_attempts
+        );
+        Box::new(RetryingProvider::new(configured, retry))
+    }
+}
+
+fn configured_models() -> Vec<Arc<DesktopModel>> {
     if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
-        println!("[chat] provider=mock（DSHR_FORCE_MOCK=1）");
-        return cancel_aware(MockProvider, cancel);
+        return vec![Arc::new(DesktopModel::Mock)];
     }
-    let requested = std::env::var("DSHR_PROVIDER").unwrap_or_default();
-    let with_retries = |provider: Box<dyn ModelProvider>, name: &str, model: &str| {
-        println!(
-            "[chat] provider={name} model={model} retries={}",
-            RetryPolicy::from_env().max_attempts
-        );
-        Box::new(RetryingProvider::new(provider, RetryPolicy::from_env()))
-    };
-
-    match requested.as_str() {
-        "mock" => {
-            println!("[chat] provider=mock（DSHR_PROVIDER=mock）");
-            return cancel_aware(MockProvider, cancel);
-        }
-        "openai" => {
-            if let Some(provider) = OpenAiProvider::from_env() {
-                let model = provider.model().to_owned();
-                return with_retries(
-                    Box::new(provider.with_cancel(cancel.clone())),
-                    "openai",
-                    &model,
-                );
-            }
-            println!("[chat] provider=mock（DSHR_PROVIDER=openai 但缺少 OPENAI_API_KEY）");
-            return cancel_aware(MockProvider, cancel);
-        }
-        "deepseek" => {
-            if let Some(provider) = DeepSeekProvider::from_env() {
-                let model = provider.model().to_owned();
-                return with_retries(
-                    Box::new(provider.with_cancel(cancel.clone())),
-                    "deepseek",
-                    &model,
-                );
-            }
-            println!("[chat] provider=mock（DSHR_PROVIDER=deepseek 但缺少 DEEPSEEK_API_KEY）");
-            return cancel_aware(MockProvider, cancel);
-        }
-        _ => {}
-    }
-
+    let mut models = Vec::new();
     if let Some(provider) = DeepSeekProvider::from_env() {
-        let model = provider.model().to_owned();
-        return with_retries(
-            Box::new(provider.with_cancel(cancel.clone())),
-            "deepseek",
-            &model,
-        );
+        if matches!(
+            provider.base_url().trim_end_matches('/'),
+            "https://api.deepseek.com" | "https://api.deepseek.com/v1"
+        ) && !provider.supports_attachments()
+        {
+            models.push(Arc::new(DesktopModel::DeepSeek(
+                provider.clone().with_model("deepseek-flash"),
+            )));
+        }
+        models.insert(0, Arc::new(DesktopModel::DeepSeek(provider)));
     }
     if let Some(provider) = OpenAiProvider::from_env() {
-        let model = provider.model().to_owned();
-        return with_retries(
-            Box::new(provider.with_cancel(cancel.clone())),
-            "openai",
-            &model,
-        );
+        models.push(Arc::new(DesktopModel::OpenAi(provider)));
     }
-    println!("[chat] provider=mock（未找到 DEEPSEEK_API_KEY / OPENAI_API_KEY）");
-    cancel_aware(MockProvider, cancel)
+    models.push(Arc::new(DesktopModel::Mock));
+    models
+}
+
+#[derive(Clone)]
+struct DesktopSettings {
+    model: Arc<DesktopModel>,
+    permission: Option<PermissionMode>,
+}
+
+impl DesktopSettings {
+    fn from_env(models: &[Arc<DesktopModel>]) -> Self {
+        let requested = match std::env::var("DSHR_PROVIDER").as_deref() {
+            Ok("mock") => Some(ModelKind::Mock),
+            Ok("deepseek") => Some(ModelKind::DeepSeek),
+            Ok("openai") => Some(ModelKind::OpenAi),
+            _ => None,
+        };
+        let model = if let Some(requested) = requested {
+            models
+                .iter()
+                .find(|model| model.kind() == requested)
+                .unwrap_or_else(|| models.last().expect("mock model"))
+        } else {
+            models.first().expect("mock model")
+        };
+        if let Some(effort) = ReasoningEffort::from_env() {
+            println!("[chat] reasoning_effort={}", effort.as_str());
+        }
+        Self {
+            model: model.clone(),
+            permission: desktop_permission_mode(),
+        }
+    }
+
+    fn approval_policy(&self) -> ApprovalPolicy {
+        self.permission
+            .map_or_else(ApprovalPolicy::ask_all, ApprovalPolicy::for_mode)
+    }
+
+    fn write_approvals(&self, approvals: &Arc<ApprovalBroker>) -> Option<Arc<ApprovalBroker>> {
+        (self.permission != Some(PermissionMode::ReadOnly)).then(|| approvals.clone())
+    }
 }
 
 /// sidecar 工具调用超时：按工具声明（`ToolDefinition.timeout_ms`，对齐 DSH 的 `timeoutMs`）
@@ -1458,6 +1976,7 @@ struct ChatExecutor<'a> {
     parent_id: &'a str,
     /// 父会话取消句柄：子轮次共享，用户停止会同时停掉子会话。
     cancel: &'a Arc<AtomicBool>,
+    settings: &'a DesktopSettings,
     /// 是否允许派生子会话（子会话本身不再派发，默认单层）。
     allow_spawn: bool,
     /// L2 Host Service 的会话读写面（None = 该轮不接 sidecar 服务）。
@@ -1621,6 +2140,7 @@ impl ChatExecutor<'_> {
             call,
             self.approvals,
             self.cancel,
+            self.settings,
         )
     }
 
@@ -1774,6 +2294,7 @@ impl TreeCoordinator {
         call: &ToolCallRequest,
         approvals: &Arc<ApprovalBroker>,
         cancel: &Arc<AtomicBool>,
+        settings: &DesktopSettings,
     ) -> ToolOutcome {
         let args = match SpawnChildArgs::from_call(call) {
             Ok(args) => args,
@@ -1816,13 +2337,14 @@ impl TreeCoordinator {
             return ToolOutcome::failure(format!("写入子会话失败: {err}"));
         }
         let child_path = store.path_for(&child_id);
-        let mut child = ChatState::open(
+        let mut child = ChatState::open_with_settings(
             child_path,
             &child_id,
             cancel,
             approvals.clone(),
             false,
             false,
+            settings.clone(),
         );
         let reply = child.stream_turn(&args.prompt, &mut |_| {});
         child.save();
@@ -1979,6 +2501,33 @@ fn last_message_seq(log: &SessionLog) -> u64 {
         .unwrap_or(0)
 }
 
+fn session_workspace(log: &SessionLog) -> PathBuf {
+    if let Some(workspace) = log
+        .created()
+        .map(|created| created.workspace_id.trim())
+        .filter(|workspace| !workspace.is_empty())
+    {
+        let path = Path::new(workspace);
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        let path = workspace_root().join(path);
+        return std::path::absolute(&path).unwrap_or(path);
+    }
+    workspace_root()
+}
+
+fn register_probe_write(plugins: &mut PluginHost, workspace: &Path) {
+    let result = ProbeWritePlugin::new(workspace).and_then(|plugin| {
+        plugins
+            .load(Box::new(plugin))
+            .map_err(|error| error.to_string())
+    });
+    if let Err(error) = result {
+        eprintln!("[chat] 工作区写入工具不可用: {error}");
+    }
+}
+
 impl ChatState {
     fn new(
         path: PathBuf,
@@ -2000,6 +2549,26 @@ impl ChatState {
         allow_spawn: bool,
         with_sidecar: bool,
     ) -> Self {
+        Self::open_with_settings(
+            path,
+            session_id,
+            cancel,
+            approvals,
+            allow_spawn,
+            with_sidecar,
+            DesktopSettings::from_env(&configured_models()),
+        )
+    }
+
+    fn open_with_settings(
+        path: PathBuf,
+        session_id: &str,
+        cancel: &Arc<AtomicBool>,
+        approvals: Arc<ApprovalBroker>,
+        allow_spawn: bool,
+        with_sidecar: bool,
+        settings: DesktopSettings,
+    ) -> Self {
         let OpenedSessionLog {
             log,
             errors: session_errors,
@@ -2007,6 +2576,7 @@ impl ChatState {
             wrote_created,
             ..
         } = open_session_log(&path, session_id);
+        let workspace = session_workspace(&log);
 
         let sessions_dir = path
             .parent()
@@ -2019,30 +2589,22 @@ impl ChatState {
             None
         };
         let host = if with_sidecar {
-            spawn_sidecar(Some(approvals.clone()), l2_access.clone())
+            spawn_sidecar_in(
+                &workspace,
+                settings.write_approvals(&approvals),
+                l2_access.clone(),
+            )
         } else {
             None
         };
-        // 审批策略：`DSHR_TOOL_POLICY=ask-all` 保持最高优先级（自检/演示要更严）；
-        // 否则按 `DSHR_PERMISSION_MODE`（read-only / workspace-write / danger-full-access），
-        // 缺省 workspace-write = 原有 desktop 行为，不回归。
-        let policy = if std::env::var("DSHR_TOOL_POLICY").as_deref() == Ok("ask-all") {
-            ApprovalPolicy::ask_all()
-        } else {
-            let mode = PermissionMode::from_env();
-            eprintln!(
-                "[chat] approval mode={}（DSHR_PERMISSION_MODE）",
-                mode.as_str()
-            );
-            ApprovalPolicy::from_env()
-        };
-        let mut plugins = PluginHost::new(policy);
+        if let Some(mode) = settings.permission {
+            eprintln!("[chat] approval mode={}", mode.as_str());
+        }
+        let mut plugins = PluginHost::new(settings.approval_policy());
         if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
             eprintln!("[chat] 原生插件加载失败: {err}");
         }
-        if let Err(err) = plugins.load(Box::new(ProbeWritePlugin::new())) {
-            eprintln!("[chat] 写入插件加载失败: {err}");
-        }
+        register_probe_write(&mut plugins, &workspace);
         if let Some(sidecar) = &host {
             register_sidecar_tools(&mut plugins, sidecar);
         }
@@ -2050,9 +2612,11 @@ impl ChatState {
         let mut state = Self {
             log,
             path: path.clone(),
+            workspace,
             host,
             plugins,
-            agent: Agent::new(select_provider(cancel)),
+            agent: Agent::new(settings.model.provider(cancel)),
+            settings,
             seq,
             approvals,
             spill: SpillStore::new(spill_dir_for(&path)),
@@ -2084,6 +2648,15 @@ impl ChatState {
         }
         self.seq = last_message_seq(&opened.log);
         self.log = opened.log;
+        let workspace = session_workspace(&self.log);
+        if workspace != self.workspace {
+            self.workspace = workspace;
+            let _ = self.plugins.unload("builtin.probe-write");
+            register_probe_write(&mut self.plugins, &self.workspace);
+            if self.l2_access.is_some() {
+                self.restart_sidecar();
+            }
+        }
         self.spill = SpillStore::new(spill_dir_for(&path));
         self.path = path;
         self.session_id = session_id.to_owned();
@@ -2184,12 +2757,31 @@ impl ChatState {
         if let Some(old) = self.host.take() {
             self.plugins.invalidate_generation(old.generation());
         }
-        let Some(host) = spawn_sidecar(Some(self.approvals.clone()), self.l2_access.clone()) else {
+        let Some(host) = spawn_sidecar_in(
+            &self.workspace,
+            self.settings.write_approvals(&self.approvals),
+            self.l2_access.clone(),
+        ) else {
             return false;
         };
         register_sidecar_tools(&mut self.plugins, &host);
         self.host = Some(host);
         true
+    }
+
+    fn set_model(&mut self, model: Arc<DesktopModel>) {
+        *self.agent.provider_mut() = model.provider(&self.cancel);
+        self.settings.model = model;
+    }
+
+    /// A change in write capability takes effect when the sidecar renegotiates.
+    fn set_permission(&mut self, permission: PermissionMode) -> bool {
+        let previous_write = self.settings.permission != Some(PermissionMode::ReadOnly);
+        self.settings.permission = Some(permission);
+        self.plugins
+            .registry_mut()
+            .set_policy(self.settings.approval_policy());
+        previous_write != (permission != PermissionMode::ReadOnly)
     }
 
     fn save(&self) {
@@ -2214,19 +2806,63 @@ impl ChatState {
     ///
     /// 同步场景（自检、`--live`）传一个空 sink 即可。
     fn stream_turn(&mut self, text: &str, emit: &mut dyn FnMut(Vec<Row>)) -> Option<String> {
+        self.stream_turn_with_attachments(text, &[], emit)
+    }
+
+    fn stream_turn_with_attachments(
+        &mut self,
+        text: &str,
+        attachments: &[DraftAttachment],
+        emit: &mut dyn FnMut(Vec<Row>),
+    ) -> Option<String> {
         let text = text.trim();
-        if text.is_empty() {
+        if text.is_empty() && attachments.is_empty() {
             return None;
         }
 
         let ts = now_ts();
         self.seq += 1;
         let user_id = format!("m-u{}", self.seq);
-        if let Err(err) = self.log.append(EventSpec::durable(
-            "message.user",
-            &ts,
-            json!({ "message_id": user_id, "text": text }),
-        )) {
+        let (payload, blobs) = match user_message_payload(&user_id, text, attachments, &self.spill)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let mut rows = rows_snapshot(&self.log, None);
+                rows.push(Row::Meta(format!("消息未发送：{error}")));
+                emit(rows);
+                return None;
+            }
+        };
+        if !blobs.is_empty() {
+            let mut recorded: std::collections::HashSet<_> = self
+                .log
+                .events()
+                .iter()
+                .filter(|event| {
+                    event.event_type == "spill.created" && event.payload["kind"] == "message.user"
+                })
+                .filter_map(|event| event.payload["id"].as_str().map(str::to_owned))
+                .collect();
+            for blob in blobs {
+                if recorded.insert(blob.id.clone()) {
+                    if let Err(error) = self.log.append(EventSpec::durable(
+                        "spill.created",
+                        &ts,
+                        blob.user_attachment_payload(),
+                    )) {
+                        let mut rows = rows_snapshot(&self.log, None);
+                        rows.push(Row::Meta(format!("消息未发送：无法记录附件（{error}）")));
+                        emit(rows);
+                        return None;
+                    }
+                }
+            }
+        }
+        let current = user_message_from_payload(&payload).expect("nonempty user message");
+        if let Err(err) = self
+            .log
+            .append(EventSpec::durable("message.user", &ts, payload))
+        {
             eprintln!("[chat] 写入用户消息失败: {err}");
             return None;
         }
@@ -2298,7 +2934,19 @@ impl ChatState {
             );
         }
         emit(rows_snapshot(&self.log, None));
-        let history = plan.messages;
+        let mut history = plan.messages;
+        // 预算计入刚落盘的用户输入。Agent 会单独追加本轮消息，避免在模型请求中发送两份。
+        if history.last() == Some(&current) {
+            history.pop();
+        }
+        history.push(current);
+        dshr_agent_context::spill::restore_user_attachments(
+            &self.spill,
+            &self.log,
+            &mut history,
+            |_| self.settings.model.supports_attachments(),
+        );
+        let current = history.pop().expect("current user message");
 
         // 来源与卡片类型在轮次开始前固定：流式回调里不能再借注册表（执行器正持有它）。
         let presentations: std::collections::BTreeMap<String, (String, String)> = self
@@ -2338,14 +2986,15 @@ impl ChatState {
                 sessions_dir: &self.sessions_dir,
                 parent_id: &self.session_id,
                 cancel: &self.cancel,
+                settings: &self.settings,
                 allow_spawn: self.allow_spawn,
                 l2_access: self.l2_access.clone(),
             };
             let log_for_events = log_cell.clone();
             let mut pending_call_seqs: HashMap<String, VecDeque<u64>> = HashMap::new();
-            self.agent.run_turn_streaming(
+            self.agent.run_turn_streaming_message(
                 &history,
-                text,
+                current,
                 &mut executor,
                 &mut |event| match event {
                     AgentEvent::TextDelta(delta) => {
@@ -2533,6 +3182,7 @@ impl ChatState {
             sessions_dir: &self.sessions_dir,
             parent_id: &self.session_id,
             cancel: &self.cancel,
+            settings: &self.settings,
             allow_spawn: self.allow_spawn,
             l2_access: self.l2_access.clone(),
         };
@@ -2759,6 +3409,85 @@ struct AdcEditor {
     multiline: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComposerMenu {
+    Model,
+    Permission,
+    Commands,
+    Add,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlashCommand {
+    New,
+    Search,
+    Turns,
+    Plugins,
+    Theme,
+}
+
+impl SlashCommand {
+    const ALL: [Self; 5] = [
+        Self::New,
+        Self::Search,
+        Self::Turns,
+        Self::Plugins,
+        Self::Theme,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Search => "search",
+            Self::Turns => "turns",
+            Self::Plugins => "plugins",
+            Self::Theme => "theme",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::New => "新建会话",
+            Self::Search => "搜索工作区和会话",
+            Self::Turns => "跳到指定轮次",
+            Self::Plugins => "打开或关闭插件面板",
+            Self::Theme => "切换浅色或深色主题",
+        }
+    }
+}
+
+fn slash_commands(text: &str) -> impl Iterator<Item = SlashCommand> + '_ {
+    let prefix = text.strip_prefix('/');
+    SlashCommand::ALL
+        .into_iter()
+        .filter(move |command| prefix.is_some_and(|prefix| command.name().starts_with(prefix)))
+}
+
+fn permission_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "只读",
+        PermissionMode::WorkspaceWrite => "工作区写入",
+        PermissionMode::DangerFullAccess => "工具免审批",
+    }
+}
+
+const EDITABLE_PERMISSIONS: [(PermissionMode, &str); 3] = [
+    (PermissionMode::ReadOnly, "拒绝写入和执行类工具"),
+    (PermissionMode::WorkspaceWrite, "写入和执行需要确认"),
+    (
+        PermissionMode::DangerFullAccess,
+        "跳过工具审批，官方文件写入仍需确认",
+    ),
+];
+
+struct AttachmentPreview {
+    name: String,
+    focus: FocusHandle,
+    return_focus: Option<FocusHandle>,
+    image: Option<Result<Arc<RenderImage>, String>>,
+    _load: gpui::Task<()>,
+}
+
 struct ChatApp {
     /// Agent / 工具 / 日志都在工作线程里改；UI 只读快照，所以这里必须加锁。
     state: Arc<Mutex<ChatState>>,
@@ -2767,20 +3496,52 @@ struct ChatApp {
     /// 真正的文本输入组件（实现 EntityInputHandler，中文 IME 组合输入可用）。
     input: Entity<TextInput>,
     scroll: ScrollHandle,
+    message_selection: MessageSelection,
+    activity_open: bool,
+    activity_scroll: ScrollHandle,
+    settings: DesktopSettings,
+    model_options: Vec<Arc<DesktopModel>>,
+    composer_menu: Option<ComposerMenu>,
+    #[cfg(target_os = "windows")]
+    window_menu: Option<window_bar::WindowMenu>,
+    slash_text: Option<String>,
+    selected_command: usize,
+    turn_menu_open: bool,
+    turn_jump: Option<usize>,
+    turn_focus: Option<usize>,
+    follow_transcript: bool,
+    attachments: Vec<DraftAttachment>,
+    attachment_error: Option<String>,
+    attachment_load: Option<u64>,
+    attachment_request: u64,
+    attachment_preview: Option<AttachmentPreview>,
+    attachment_thumbnails: RefCell<VecDeque<StoredAttachment>>,
     /// 一轮正在生成：输入框仍可编辑，但回车不会发第二条。
     busy: bool,
     /// 与 provider 共享的停止句柄（UI 不持锁就能请求中断）。
     cancel: Arc<AtomicBool>,
     /// DSH 设计 token（浅色/深色）。
     theme_kind: ThemeKind,
+    preferences: settings_view::Preferences,
+    settings_tab: Option<settings_view::SettingsTab>,
+    settings_focus: FocusHandle,
+    settings_restore_focus: Option<FocusHandle>,
+    settings_notice: Option<String>,
     /// 左侧会话栏收起状态（对齐 DSH 的折叠侧栏）。
-    sidebar_collapsed: bool,
+    sidebar_collapsed: Option<bool>,
     /// 首次渲染后把历史滚到最新一条（DSH 打开会话也是停在底部）。
     initial_scroll_done: bool,
     /// 会话目录索引与列表。
     store: SessionIndex,
     sessions: Vec<SessionMeta>,
+    session_search: Entity<TextInput>,
+    session_search_open: bool,
     session_id: String,
+    active_workspace: PathBuf,
+    folded_workspaces: std::collections::HashSet<String>,
+    workspace_picker_open: bool,
+    workspace_dialog_open: bool,
+    workspace_notice: Option<String>,
     /// 正在重命名的会话与输入框（None = 不在重命名）。
     renaming: Option<String>,
     rename_input: Option<Entity<TextInput>>,
@@ -2792,8 +3553,16 @@ struct ChatApp {
     pending_approvals: usize,
     /// 插件 profile（启停状态持久化）。
     profile: Profile,
-    /// 右侧插件面板是否打开。
+    /// 主内容区的插件管理页。
     plugins_open: bool,
+    plugin_focus: gpui::FocusHandle,
+    plugin_panels_open: bool,
+    plugin_detail: Option<usize>,
+    plugin_manifest_path: Option<PathBuf>,
+    plugin_edit_json: bool,
+    plugin_search: Entity<TextInput>,
+    plugin_config_input: Entity<TextInput>,
+    plugin_notice: Option<String>,
     /// 等待用户确认的 `openExternal` URL（M4 W3；确认前不打开）。
     pending_external: Option<String>,
     /// ADC Input/Textarea 的编辑模态（None = 未编辑）。
@@ -2827,11 +3596,28 @@ impl ChatApp {
     /// 回车提交（TextInput 的 Submit action）。
     ///
     /// 返回 `true` 表示已受理，输入框随后自行清空；生成中返回 `false`，内容保留。
-    fn on_submit(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
-        if self.busy || text.trim().is_empty() {
+    fn on_submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.busy
+            || self.attachment_preview.is_some()
+            || self.attachment_load.is_some()
+            || (text.trim().is_empty() && self.attachments.is_empty())
+        {
             return false;
         }
-        self.start_turn(text.to_owned(), cx);
+        if !self.settings.model.supports_attachments()
+            && self
+                .attachments
+                .iter()
+                .any(|file| matches!(file.content, AttachmentContent::Media { .. }))
+        {
+            self.attachment_error = Some(format!(
+                "{} 不支持图片或 PDF，请切换到 DeepSeek Flash 或兼容模型。",
+                self.settings.model.name()
+            ));
+            cx.notify();
+            return false;
+        }
+        self.start_turn(text.to_owned(), window, cx);
         true
     }
 
@@ -2842,17 +3628,28 @@ impl ChatApp {
             return;
         }
         let text = self.input.read(cx).content().to_owned();
-        if text.trim().is_empty() {
-            return;
+        if self.submit_composer(&text, window, cx) {
+            self.input.update(cx, |input, cx| input.clear(window, cx));
         }
-        self.input.update(cx, |input, cx| input.clear(window, cx));
-        self.start_turn(text, cx);
     }
 
-    fn start_turn(&mut self, text: String, cx: &mut Context<Self>) {
+    fn start_turn(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
+        self.activity_open = false;
+        self.composer_menu = None;
+        self.turn_menu_open = false;
+        self.turn_jump = None;
+        self.turn_focus = None;
+        self.follow_transcript = true;
+        let mut attachments = std::mem::take(&mut self.attachments);
+        for attachment in &mut attachments {
+            if let Some(image) = attachment.thumbnail.take() {
+                cx.drop_image(image, Some(window));
+            }
+        }
+        self.attachment_error = None;
         self.busy = true;
         // 上一轮的停止信号不能污染这一轮（provider 与 ChatState 共享同一个 Arc）。
         self.cancel.store(false, Ordering::Relaxed);
@@ -2870,7 +3667,7 @@ impl ChatApp {
             if reload_sidecar || guard.host.as_mut().is_some_and(SidecarHost::has_exited) {
                 let _ = guard.restart_sidecar();
             }
-            guard.stream_turn(&text, &mut |rows| {
+            guard.stream_turn_with_attachments(&text, &attachments, &mut |rows| {
                 // UI 已关闭时发送失败：忽略并继续，不要 panic。
                 let _ = tx.send(rows);
             });
@@ -2902,7 +3699,10 @@ impl ChatApp {
                             // 生成过程中始终跟随最新一行；结束后停止强制滚动，
                             // 用户往上翻历史不会被拽回去。
                             if app.busy {
-                                app.scroll.scroll_to_bottom();
+                                if app.follow_transcript {
+                                    app.scroll.scroll_to_bottom();
+                                }
+                                app.activity_scroll.scroll_to_bottom();
                             }
                             cx.notify();
                         })
@@ -2938,6 +3738,79 @@ impl ChatApp {
         .detach();
     }
 
+    fn on_composer_input_changed(&mut self, input: Entity<TextInput>, cx: &mut Context<Self>) {
+        let input = input.read(cx);
+        let text = input.content();
+        let slash_text =
+            (!self.busy && !input.is_composing() && slash_commands(text).next().is_some())
+                .then_some(text);
+        if slash_text != self.slash_text.as_deref() {
+            self.slash_text = slash_text.map(str::to_owned);
+            self.selected_command = 0;
+            if slash_text.is_some() {
+                self.turn_menu_open = false;
+                self.composer_menu = Some(ComposerMenu::Commands);
+            } else if self.composer_menu == Some(ComposerMenu::Commands) {
+                self.composer_menu = None;
+            }
+        }
+        if self.follow_transcript && !self.activity_open {
+            self.scroll.scroll_to_bottom();
+        }
+        cx.notify();
+    }
+
+    fn submit_composer(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.attachment_preview.is_some() {
+            return false;
+        }
+        if self.composer_menu == Some(ComposerMenu::Commands) {
+            let Some(command) = slash_commands(text).nth(self.selected_command) else {
+                return false;
+            };
+            self.composer_menu = None;
+            let chat = cx.weak_entity();
+            // TextInput 调用此回调时仍在更新自身。先让它清空，再执行会切换焦点的指令。
+            window.defer(cx, move |window, cx| {
+                let _ = chat.update(cx, |chat, cx| {
+                    chat.run_slash_command(command, window, cx);
+                });
+            });
+            return true;
+        }
+        self.on_submit(text, window, cx)
+    }
+
+    fn move_slash_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(text) = self.slash_text.as_deref() else {
+            return;
+        };
+        let count = slash_commands(text).count();
+        if self.composer_menu == Some(ComposerMenu::Commands) && count > 0 {
+            self.selected_command =
+                (self.selected_command as isize + delta).rem_euclid(count as isize) as usize;
+            cx.notify();
+        }
+    }
+
+    fn run_slash_command(
+        &mut self,
+        command: SlashCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            SlashCommand::New => self.new_session(window, cx),
+            SlashCommand::Search => {
+                self.open_session_search(window, cx);
+            }
+            SlashCommand::Turns => self.turn_menu_open = true,
+            SlashCommand::Plugins => self.toggle_plugins_panel(window, cx),
+            SlashCommand::Theme => self.toggle_theme(cx),
+        }
+        cx.notify();
+    }
+
     // ------------------------------------------------------------------
     // DSH Desktop 对齐的界面：侧栏 / 头部 / 对话流 / 输入卡片。
     // 尺寸与颜色都来自 `dshr_ui_gpui::theme`（从 DSH 安装包解析的 token）。
@@ -2948,23 +3821,45 @@ impl ChatApp {
     }
 
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
-        self.theme_kind = self.theme_kind.toggled();
+        self.set_theme(self.theme_kind.toggled(), cx);
+    }
+
+    fn set_theme(&mut self, kind: ThemeKind, cx: &mut Context<Self>) {
+        self.theme_kind = kind;
+        self.preferences.theme = kind;
+        self.save_preferences();
         cx.notify();
     }
 
-    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_collapsed = !self.sidebar_collapsed;
+    fn sidebar_is_collapsed(&self, window: &Window) -> bool {
+        self.sidebar_collapsed
+            .unwrap_or(window.bounds().size.width < px(600.0))
+    }
+
+    fn toggle_sidebar(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let collapsed = self.sidebar_is_collapsed(window);
+        self.sidebar_collapsed = Some(!collapsed);
         cx.notify();
     }
 
-    /// 打开/关闭右侧插件面板；打开时补一次 ADC 面板快照。
-    fn toggle_plugins_panel(&mut self, cx: &mut Context<Self>) {
+    /// 打开/关闭插件管理页；打开时补一次 ADC 面板快照。
+    fn toggle_plugins_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.plugins_open = !self.plugins_open;
+        self.plugin_detail = None;
+        self.plugin_manifest_path = None;
+        self.plugin_panels_open = false;
+        self.plugin_notice = None;
+        self.workspace_picker_open = false;
+        self.composer_menu = None;
+        self.turn_menu_open = false;
         if self.plugins_open {
             // 与点击入口一致：用 try_lock，工作线程持锁时不阻塞 UI 渲染。
             if let Ok(guard) = self.state.try_lock() {
                 self.adc_panels = guard.adc_panels.clone();
             }
+            window.focus(&self.plugin_focus, cx);
+        } else {
+            self.focus_composer(window, cx);
         }
         cx.notify();
     }
@@ -3274,21 +4169,23 @@ impl ChatApp {
     fn shortcut_toggle_sidebar(
         &mut self,
         _: &ToggleSidebarShortcut,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         trace_shortcut("toggle-sidebar");
-        self.toggle_sidebar(cx);
+        self.toggle_sidebar(window, cx);
     }
 
     fn shortcut_toggle_plugins(
         &mut self,
         _: &TogglePluginsShortcut,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         trace_shortcut("toggle-plugins");
-        self.toggle_plugins_panel(cx);
+        if self.settings_tab.is_none() {
+            self.toggle_plugins_panel(window, cx);
+        }
     }
 
     fn shortcut_approve_first(
@@ -3313,17 +4210,51 @@ impl ChatApp {
 
     fn shortcut_escape(&mut self, _: &EscapeShortcut, window: &mut Window, cx: &mut Context<Self>) {
         trace_shortcut("escape");
+        #[cfg(target_os = "windows")]
+        if self.close_window_menu(cx) {
+            return;
+        }
+        if self.close_attachment_preview(window, cx) {
+            return;
+        }
+        if self.close_settings(window, cx) {
+            return;
+        }
+        if self.workspace_picker_open {
+            self.workspace_picker_open = false;
+            self.focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
         if self.adc_editor.is_some() {
             self.cancel_adc_edit(cx);
         } else if self.pending_external.take().is_some() {
             cx.notify();
-        } else if self.plugins_open {
-            self.plugins_open = false;
+        } else if self.composer_menu.take().is_some() {
+            self.focus_composer(window, cx);
             cx.notify();
+        } else if self.turn_menu_open {
+            self.turn_menu_open = false;
+            self.focus_composer(window, cx);
+            cx.notify();
+        } else if self.plugins_open {
+            if self.plugin_detail.is_some() || self.plugin_panels_open {
+                self.return_to_plugins(window, cx);
+            } else {
+                self.toggle_plugins_panel(window, cx);
+            }
         } else if self.renaming.is_some() {
             self.cancel_rename(cx);
         } else if self.pending_delete.take().is_some() {
             cx.notify();
+        } else if self.session_search_open
+            && self
+                .session_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
+            self.close_session_search(window, cx);
         } else {
             self.focus_composer(window, cx);
         }
@@ -3335,6 +4266,13 @@ impl ChatApp {
     }
 
     fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plugins_open && self.settings_tab.is_none() {
+            self.toggle_plugins_panel(window, cx);
+            return;
+        }
+        if self.message_selection.clear() {
+            cx.notify();
+        }
         let handle = self.input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
@@ -3357,11 +4295,32 @@ impl ChatApp {
             .unwrap_or_else(|| self.session_id.clone())
     }
 
+    fn open_session_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar_is_collapsed(window) {
+            self.toggle_sidebar(window, cx);
+        }
+        self.session_search_open = true;
+        window.focus(&self.session_search.read(cx).focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn close_session_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_search_open = false;
+        self.session_search
+            .update(cx, |input, cx| input.clear(window, cx));
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
     /// 切到另一个会话：加载日志并刷新对话视图，保留窗口的侧车和插件。
     ///
     /// 生成中不允许切换——工作线程还在往旧 state 写，切走会让 UI 与日志分叉。
     fn open_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || id == self.session_id {
+        if id == self.session_id {
+            self.focus_composer(window, cx);
+            return;
+        }
+        if self.busy {
             return;
         }
         let path = self.store.path_for(&id);
@@ -3371,12 +4330,31 @@ impl ChatApp {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let index_changed = state.switch_session(path, &id);
+            self.active_workspace = state.workspace.clone();
             self.rows = rows_snapshot(&state.log, None);
             self.plugin_errors = state.load_errors();
             index_changed
         };
         self.session_id = id;
+        self.workspace_picker_open = false;
+        self.workspace_notice = None;
         self.initial_scroll_done = false;
+        self.activity_open = false;
+        self.composer_menu = None;
+        self.turn_menu_open = false;
+        self.turn_jump = None;
+        self.turn_focus = None;
+        self.follow_transcript = true;
+        self.close_attachment_preview(window, cx);
+        for attachment in self.attachments.drain(..) {
+            if let Some(image) = attachment.thumbnail {
+                cx.drop_image(image, Some(window));
+            }
+        }
+        self.attachment_error = None;
+        self.attachment_load = None;
+        self.activity_scroll = ScrollHandle::new();
+        self.activity_scroll.scroll_to_bottom();
         self.visible_limit = usize::MAX;
         self.renaming = None;
         self.rename_input = None;
@@ -3389,15 +4367,12 @@ impl ChatApp {
     }
 
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
-        let id = self.store.new_id();
-        if let Err(err) = self.store.create(&id) {
-            eprintln!("[chat] 新建会话失败: {err}");
-            return;
-        }
-        self.open_session(id, window, cx);
+        let workspace = if self.active_workspace.is_dir() {
+            self.active_workspace.clone()
+        } else {
+            workspace_root()
+        };
+        self.new_session_in(workspace, window, cx);
     }
 
     fn delete_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -3496,180 +4471,9 @@ impl ChatApp {
         cx.notify();
     }
 
-    /// 启用/禁用插件：写 profile、更新 sidecar 环境，生成中则留待下一轮重载。
-    fn toggle_plugin(&mut self, name: String, cx: &mut Context<Self>) {
-        if !self.profile.can_edit() {
-            eprintln!("[chat] Loader 模式插件列表只读（改 cordis.yml / patch 后重启）");
-            return;
-        }
-        let Some(entry) = self
-            .profile
-            .entries()
-            .iter()
-            .find(|entry| entry.name == name)
-            .cloned()
-        else {
-            return;
-        };
-        let next = !entry.enabled;
-        if !self.profile.set_enabled(&name, next) {
-            return;
-        }
-        if let Err(err) = self.profile.save() {
-            eprintln!("[chat] 保存插件 profile 失败: {err}");
-        }
-        std::env::set_var("DSHR_DSH_PLUGINS", self.profile.sidecar_json());
-        if self.busy {
-            self.sidecar_reload_pending = true;
-        } else {
-            let mut guard = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !guard.restart_sidecar() {
-                eprintln!("[chat] 重启 sidecar 失败（插件开关已保存，下次启动生效）");
-            }
-            self.sidecar_reload_pending = false;
-            self.plugin_errors = guard.load_errors();
-        }
-        cx.notify();
-    }
-
-    fn plugins_panel(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.plugins_open {
-            return None;
-        }
+    fn plugin_panels(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
-        let entries = self.profile.entries().to_vec();
-        let editable = self.profile.can_edit();
-        let enabled = entries.iter().filter(|entry| entry.enabled).count();
-        let total = entries.len();
-        let footer = if editable {
-            String::from("修改插件开关后重载 sidecar，配置保存到 DSHR_PROFILE_DIR/plugins.json")
-        } else {
-            String::from("来自 Loader YAML（DSHR_LOADER_BUNDLE），只读；修改 bundle/patch 后重启")
-        };
-
-        let mut list = div().flex().flex_col().gap(px(6.0)).w_full();
-        // 插件错误提示：sidecar 在装载阶段上报的 log.emit(error) 直接显示在面板顶部。
-        if !self.plugin_errors.is_empty() {
-            let message = self
-                .plugin_errors
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
-            list = list.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(t.radii.sm)
-                    .border_1()
-                    .border_color(p.color(p.state_error))
-                    .bg(p.color(p.bg_layer_1))
-                    .child(
-                        div()
-                            .text_size(t.type_scale.small)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(p.color(p.state_error))
-                            .child("启动/插件错误"),
-                    )
-                    .child(
-                        div()
-                            .text_size(t.type_scale.small)
-                            .line_height(t.type_scale.small_line)
-                            .text_color(p.color(p.label_tertiary))
-                            .child(message),
-                    ),
-            );
-        }
-        for (index, entry) in entries.iter().enumerate() {
-            let name = entry.name.clone();
-            let display = name
-                .strip_prefix("@deepseek-ai/")
-                .unwrap_or(&name)
-                .to_owned();
-            let is_enabled = entry.enabled;
-            let action: AnyElement = if editable {
-                let plugin_name = name.clone();
-                div()
-                    .id(("plugin-toggle", index))
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded(t.radii.sm)
-                    .border_1()
-                    .border_color(p.color(p.border_l2))
-                    .cursor_pointer()
-                    .text_size(t.type_scale.small)
-                    .text_color(if is_enabled {
-                        p.color(p.state_error)
-                    } else {
-                        p.color(p.state_success)
-                    })
-                    .child(if is_enabled { "禁用" } else { "启用" })
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.toggle_plugin(plugin_name.clone(), cx);
-                    }))
-                    .into_any_element()
-            } else {
-                div()
-                    .px(px(8.0))
-                    .py(px(3.0))
-                    .rounded(t.radii.sm)
-                    .border_1()
-                    .border_color(p.color(p.border_l2))
-                    .text_size(t.type_scale.small)
-                    .text_color(p.color(p.label_caption))
-                    .child("只读")
-                    .into_any_element()
-            };
-            list = list.child(
-                div()
-                    .id(("plugin-row", index))
-                    .w_full()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .rounded(t.radii.sm)
-                    .border_1()
-                    .border_color(p.color(p.border_l1))
-                    .bg(p.color(p.bg_layer_1))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w(px(0.0))
-                            .child(
-                                div()
-                                    .text_size(t.type_scale.small)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(p.color(p.label_primary))
-                                    .text_overflow(TextOverflow::Truncate("…".into()))
-                                    .child(display),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(if is_enabled {
-                                        p.color(p.state_success)
-                                    } else {
-                                        p.color(p.label_caption)
-                                    })
-                                    .child(if is_enabled { "已启用" } else { "已禁用" }),
-                            ),
-                    )
-                    .child(action),
-            );
-        }
-
+        let mut list = div().flex().flex_col().gap(px(8.0)).w_full();
         // ADC-v1 插件面板：对 `workspace.panel` 的每条注册渲染它的 view。
         // 树由装载/打开面板时取好并快照在 `ChatApp` 里（**渲染路径不碰 state 锁**，
         // 否则工作线程跑一轮时会冻住 UI）；事件轮留 M4（ADR-0011 降级清单）。
@@ -3790,374 +4594,489 @@ impl ChatApp {
             }
         }
 
-        Some(
-            div()
-                .w(px(300.0))
-                .h_full()
-                .flex()
-                .flex_col()
-                .border_l_1()
-                .border_color(p.color(p.border_l3))
-                .bg(p.color(p.bg_base))
-                .child(
-                    div()
-                        .min_h(t.layout.header_height)
-                        .px(px(16.0))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .border_b_1()
-                        .border_color(p.color(p.border_l3))
-                        .child(
-                            div()
-                                .text_size(t.type_scale.body)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(p.color(p.label_primary))
-                                .child(format!("插件 · {enabled}/{total} 启用")),
-                        )
-                        .child(
-                            div()
-                                .id("plugins-close")
-                                .role(Role::Button)
-                                .aria_label("关闭插件面板")
-                                .px(px(6.0))
-                                .rounded(t.radii.sm)
-                                .cursor_pointer()
-                                .text_size(t.type_scale.small)
-                                .text_color(p.color(p.label_secondary))
-                                .child("关闭")
-                                .on_click(cx.listener(|this, _, _window, cx| {
-                                    this.plugins_open = false;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("plugin-scroll")
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .overflow_y_scroll()
-                        .px(px(10.0))
-                        .py(px(8.0))
-                        .child(list),
-                )
-                .child(
-                    div()
-                        .px(px(16.0))
-                        .py(px(8.0))
-                        .border_t_1()
-                        .border_color(p.color(p.border_l3))
-                        .text_size(px(11.0))
-                        .line_height(px(16.0))
-                        .text_color(p.color(p.label_caption))
-                        .child(footer),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn session_list(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let p = t.palette;
-        let sessions = self.sessions.clone();
-        let active_id = self.session_id.clone();
-        let mut list = div().flex().flex_col().gap(px(2.0)).w_full();
-
-        for (index, session) in sessions.iter().enumerate() {
-            let is_active = session.id == active_id;
-            let is_renaming = self.renaming.as_deref() == Some(session.id.as_str());
-            // 子会话按树深度缩进，父会话保持 0 级。
-            let depth = self.session_depths.get(&session.id).copied().unwrap_or(0);
-
-            if is_renaming {
-                let input = self.rename_input.clone();
-                let row = div()
-                    .id(("rename-row", index))
-                    .w_full()
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .rounded(t.radii.sm)
-                    .bg(p.color(p.tag))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_primary))
-                            .children(input),
-                    )
-                    .child(
-                        div()
-                            .id(("rename-ok", index))
-                            .px(px(4.0))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.state_success))
-                            .child("✓")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.commit_rename(cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(("rename-cancel", index))
-                            .px(px(4.0))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_caption))
-                            .child("✕")
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                cx.stop_propagation();
-                                this.cancel_rename(cx);
-                            })),
-                    );
-                list = list.child(row);
-                continue;
-            }
-
-            let open_id = session.id.clone();
-            let is_pending_delete = self.pending_delete.as_deref() == Some(session.id.as_str());
-            let actions: AnyElement = if is_pending_delete {
-                let confirm_id = session.id.clone();
-                let cancel_id = session.id.clone();
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(
-                        div()
-                            .id(("confirm-delete", index))
-                            .px(px(4.0))
-                            .rounded(t.radii.xs)
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.state_error))
-                            .child("删除")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.delete_session(confirm_id.clone(), window, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(("cancel-delete", index))
-                            .px(px(4.0))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_caption))
-                            .child("取消")
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                cx.stop_propagation();
-                                let _ = cancel_id;
-                                this.pending_delete = None;
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element()
-            } else {
-                let rename_id = session.id.clone();
-                let delete_id = session.id.clone();
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .id(("rename", index))
-                            .px(px(3.0))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_tertiary))
-                            .child("✎")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.start_rename(rename_id.clone(), window, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id(("delete", index))
-                            .px(px(3.0))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_tertiary))
-                            .child("×")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.delete_session(delete_id.clone(), window, cx);
-                            })),
-                    )
-                    .into_any_element()
-            };
-            let row = div()
-                .id(("session-row", index))
-                .w_full()
-                .pl(px(10.0 + depth as f32 * 14.0))
-                .pr(px(10.0))
-                .py(px(7.0))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(6.0))
-                .rounded(t.radii.sm)
-                .cursor_pointer()
-                .when(is_active, |row| row.bg(p.color(p.interactive_hover)))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .flex_1()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .when(depth > 0, |title| {
-                                    title.child(
-                                        div()
-                                            .text_size(t.type_scale.small)
-                                            .text_color(p.color(p.label_caption))
-                                            .child("↳"),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_size(t.type_scale.small)
-                                        .line_height(px(18.0))
-                                        .font_weight(if is_active {
-                                            FontWeight::MEDIUM
-                                        } else {
-                                            FontWeight::NORMAL
-                                        })
-                                        .text_color(p.color(p.label_primary))
-                                        .text_overflow(TextOverflow::Truncate("…".into()))
-                                        .child(session.title.clone()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .line_height(px(15.0))
-                                .text_color(p.color(p.label_caption))
-                                .child(format!(
-                                    "{} 条 · {}",
-                                    session.events,
-                                    relative_time(session.updated_at)
-                                )),
-                        ),
-                )
-                .child(actions)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_session(open_id.clone(), window, cx);
-                }));
-            list = list.child(row);
-        }
-
         list.into_any_element()
     }
 
-    fn sidebar(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn session_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
-        let plugin_total = self.profile.entries().len();
-        let plugin_enabled = self
-            .profile
-            .entries()
-            .iter()
-            .filter(|entry| entry.enabled)
-            .count();
+        let query = self.session_search.read(cx).content().trim().to_lowercase();
+        let groups = workspace_sessions(&self.sessions, &query);
+        let mut list = div().flex().flex_col().gap(px(8.0)).w_full();
+        if groups.is_empty() {
+            return list
+                .child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(8.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_secondary))
+                        .child("没有匹配的会话"),
+                )
+                .into_any_element();
+        }
+        for (
+            group_index,
+            WorkspaceSessions {
+                workspace,
+                sessions,
+            },
+        ) in groups.into_iter().enumerate()
+        {
+            let label = workspace.map_or("未分组会话", workspace_name);
+            let key = workspace.unwrap_or("").to_owned();
+            let folded = query.is_empty() && self.folded_workspaces.contains(&key);
+            let path = workspace.map(|workspace| workspace_root().join(workspace));
+            let mut group = div().flex().flex_col().gap(px(2.0)).child(
+                div()
+                    .group("workspace-row")
+                    .flex()
+                    .items_center()
+                    .pr(px(4.0))
+                    .rounded(t.radii.sm)
+                    .hover(|style| style.bg(p.color(p.interactive_hover)))
+                    .child(
+                        chrome_button(("workspace-fold", group_index), "", t)
+                            .aria_label(label.to_owned())
+                            .aria_expanded(!folded)
+                            .focusable()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h(px(34.0))
+                            .justify_start()
+                            .gap(px(6.0))
+                            .child(
+                                desktop_icon(
+                                    if folded { "\u{e76c}" } else { "\u{e70d}" },
+                                    if folded { "›" } else { "▾" },
+                                )
+                                .text_size(px(10.0)),
+                            )
+                            .child(desktop_icon(
+                                if folded { "\u{e8b7}" } else { "\u{e838}" },
+                                "▱",
+                            ))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(label.to_owned()),
+                            )
+                            .tooltip(toolbar_tooltip(workspace.unwrap_or(label).to_owned(), *t))
+                            .on_click(cx.listener(move |chat, _, _, cx| {
+                                if !chat.folded_workspaces.remove(&key) {
+                                    chat.folded_workspaces.insert(key.clone());
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .when_some(path, |row, path| {
+                        row.child(
+                            toolbar_icon_button(
+                                ("workspace-new-session", group_index),
+                                "在此工作区新建会话",
+                                "\u{e710}",
+                                "+",
+                                t,
+                            )
+                            .invisible()
+                            .group_hover("workspace-row", |style| style.visible())
+                            .on_click(cx.listener(
+                                move |chat, _, window, cx| {
+                                    chat.new_session_in(path.clone(), window, cx);
+                                },
+                            )),
+                        )
+                    }),
+            );
+            if !folded {
+                for (index, session) in sessions {
+                    group = group.child(
+                        div()
+                            .pl(px(12.0))
+                            .child(self.session_row(index, session, t, cx)),
+                    );
+                }
+            }
+            list = list.child(group);
+        }
+        list.into_any_element()
+    }
+
+    fn session_row(
+        &self,
+        index: usize,
+        session: &SessionMeta,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        let is_active = session.id == self.session_id;
+        let is_renaming = self.renaming.as_deref() == Some(session.id.as_str());
+        // 子会话按树深度缩进，父会话保持 0 级。
+        let depth = self
+            .session_depths
+            .get(&session.id)
+            .copied()
+            .unwrap_or(0)
+            .min(6);
+
+        if is_renaming {
+            let input = self.rename_input.clone();
+            let row = div()
+                .id(("rename-row", index))
+                .w_full()
+                .px(px(8.0))
+                .py(px(5.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .rounded(t.radii.sm)
+                .bg(p.color(p.tag))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_primary))
+                        .children(input),
+                )
+                .child(
+                    div()
+                        .id(("rename-ok", index))
+                        .role(Role::Button)
+                        .aria_label("保存会话名称")
+                        .px(px(4.0))
+                        .cursor_pointer()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.state_success))
+                        .child("✓")
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            cx.stop_propagation();
+                            this.commit_rename(cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("rename-cancel", index))
+                        .role(Role::Button)
+                        .aria_label("取消重命名")
+                        .px(px(4.0))
+                        .cursor_pointer()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_caption))
+                        .child("✕")
+                        .on_click(cx.listener(|this, _, _window, cx| {
+                            cx.stop_propagation();
+                            this.cancel_rename(cx);
+                        })),
+                );
+            return row.into_any_element();
+        }
+
+        let open_id = session.id.clone();
+        let is_pending_delete = self.pending_delete.as_deref() == Some(session.id.as_str());
+        let actions: AnyElement = if is_pending_delete {
+            let confirm_id = session.id.clone();
+            let cancel_id = session.id.clone();
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id(("confirm-delete", index))
+                        .role(Role::Button)
+                        .aria_label("确认删除会话")
+                        .px(px(4.0))
+                        .rounded(t.radii.xs)
+                        .cursor_pointer()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.state_error))
+                        .child("删除")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.delete_session(confirm_id.clone(), window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("cancel-delete", index))
+                        .role(Role::Button)
+                        .aria_label("取消删除会话")
+                        .px(px(4.0))
+                        .cursor_pointer()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_caption))
+                        .child("取消")
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            cx.stop_propagation();
+                            let _ = cancel_id;
+                            this.pending_delete = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element()
+        } else {
+            let rename_id = session.id.clone();
+            let delete_id = session.id.clone();
+            div()
+                .id(("session-actions", index))
+                .absolute()
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .invisible()
+                .group_hover("session-row", |style| style.visible())
+                .child(
+                    div()
+                        .id(("rename", index))
+                        .role(Role::Button)
+                        .aria_label("重命名会话")
+                        .px(px(3.0))
+                        .cursor_pointer()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_tertiary))
+                        .child("✎")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.start_rename(rename_id.clone(), window, cx);
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("delete", index))
+                        .role(Role::Button)
+                        .aria_label("删除会话")
+                        .px(px(3.0))
+                        .cursor_pointer()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_tertiary))
+                        .child("×")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.delete_session(delete_id.clone(), window, cx);
+                        })),
+                )
+                .into_any_element()
+        };
+        div()
+            .id(("session-row", index))
+            .group("session-row")
+            .role(Role::Button)
+            .aria_label(session.title.clone())
+            .w_full()
+            .pl(px(10.0 + depth as f32 * 14.0))
+            .pr(px(10.0))
+            .min_h(px(32.0))
+            .py(px(3.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(6.0))
+            .rounded(t.radii.sm)
+            .cursor_pointer()
+            .when(is_active, |row| row.bg(p.color(p.business_tertiary)))
+            .hover(|style| style.bg(p.color(p.interactive_hover_solid)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_size(t.type_scale.small)
+                    .line_height(px(18.0))
+                    .when(is_active, |title| title.font_weight(FontWeight::MEDIUM))
+                    .text_color(p.color(p.label_primary))
+                    .child(if depth > 0 {
+                        format!("↳ {}", session.title)
+                    } else {
+                        session.title.clone()
+                    }),
+            )
+            .child(if is_pending_delete {
+                actions
+            } else {
+                div()
+                    .relative()
+                    .min_w(px(40.0))
+                    .flex()
+                    .flex_none()
+                    .justify_end()
+                    .child(
+                        div()
+                            .id(("session-time", index))
+                            .flex_none()
+                            .text_size(px(11.0))
+                            .line_height(px(18.0))
+                            .text_color(p.color(p.label_secondary))
+                            .group_hover("session-row", |style| style.invisible())
+                            .child(relative_time(session.updated_at)),
+                    )
+                    .child(actions)
+                    .into_any_element()
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_session(open_id.clone(), window, cx);
+            }))
+            .into_any_element()
+    }
+
+    fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        let searching = !self.session_search.read(cx).content().is_empty();
         div()
             .w(t.layout.sidebar_width)
+            .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .px(px(8.0))
-            .py(px(6.0))
+            .gap(px(8.0))
+            .px(px(10.0))
+            .py(px(10.0))
             .bg(p.color(p.sidebar_fill))
             .child(
-                // 品牌行：DSH 的 logo 由图形 + 名称组成；这里用首字母方块占位。
                 div()
-                    .h(px(52.0))
-                    .px(px(8.0))
+                    .h(px(36.0))
+                    .px(px(6.0))
                     .flex()
                     .items_center()
                     .gap(px(8.0))
                     .child(
                         div()
-                            .w(px(24.0))
-                            .h(px(24.0))
+                            .size(px(24.0))
                             .rounded(t.radii.sm)
-                            .bg(p.color(p.label_primary))
+                            .bg(p.color(p.business_tertiary))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.color(p.bg_base))
-                                    .child("D"),
-                            ),
+                            .text_size(t.type_scale.small)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.color(p.link))
+                            .child("D"),
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .line_height(px(22.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.color(p.label_primary))
-                                    .child("DeepSeek Harness"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .line_height(px(16.0))
-                                    .text_color(p.color(p.label_caption))
-                                    .child("dshr · 本地桌面"),
-                            ),
+                            .text_size(t.type_scale.body)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.color(p.label_primary))
+                            .child("DSHR"),
                     ),
             )
             .child(
-                // 新建对话：DSH 侧栏顶部的主按钮。
-                div()
-                    .id("new-session")
-                    .role(Role::Button)
-                    .aria_label("新建对话")
-                    .mx(px(4.0))
-                    .mb(px(10.0))
+                chrome_button("new-session", "", t)
+                    .aria_label("新建会话")
+                    .w_full()
                     .h(px(38.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
                     .gap(px(6.0))
-                    .rounded(t.radii.md)
-                    .border_1()
-                    .border_color(p.color(p.border_l3))
-                    .bg(p.color(p.button_elevated))
-                    .cursor_pointer()
-                    .text_size(px(14.0))
-                    .font_weight(FontWeight::MEDIUM)
+                    .bg(p.color(p.interactive_hover_solid))
                     .text_color(p.color(p.label_primary))
-                    .child("＋  新建对话")
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(desktop_icon("\u{e710}", "+"))
+                    .child("新建会话")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.new_session(window, cx);
                     })),
             )
             .child(
+                chrome_button("plugins-toggle", "", t)
+                    .w_full()
+                    .focusable()
+                    .justify_start()
+                    .gap(px(6.0))
+                    .child(desktop_icon("\u{e71d}", "⋮"))
+                    .child("插件")
+                    .aria_label("打开或关闭插件面板")
+                    .aria_selected(self.plugins_open)
+                    .when(self.plugins_open, |button| {
+                        button.bg(p.color(p.business_tertiary))
+                    })
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_plugins_panel(window, cx)),
+                    ),
+            )
+            .child(
                 div()
-                    .px(px(12.0))
-                    .pb(px(4.0))
-                    .pt(px(6.0))
-                    .text_size(t.type_scale.small)
-                    .text_color(p.color(p.label_caption))
-                    .child("会话"),
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .border_t_1()
+                    .border_color(p.color(p.border_l2))
+                    .pt(px(10.0))
+                    .child(
+                        div()
+                            .pl(px(8.0))
+                            .pr(px(2.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.label_secondary))
+                            .child(div().flex_1().child("工作区"))
+                            .child(self.workspace_add_button(t, cx))
+                            .child(
+                                toolbar_icon_button(
+                                    "toggle-session-search",
+                                    "搜索会话或工作区",
+                                    "\u{e721}",
+                                    "搜索",
+                                    t,
+                                )
+                                .aria_expanded(self.session_search_open)
+                                .when(self.session_search_open, |button| {
+                                    button.bg(p.color(p.tag)).text_color(p.color(p.link))
+                                })
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        if this.session_search_open {
+                                            this.close_session_search(window, cx);
+                                        } else {
+                                            this.open_session_search(window, cx);
+                                        }
+                                    },
+                                )),
+                            ),
+                    )
+                    .when(self.session_search_open, |workspace| {
+                        workspace.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .px(px(6.0))
+                                .py(px(4.0))
+                                .rounded(t.radii.sm)
+                                .border_1()
+                                .border_color(p.color(p.border_l2))
+                                .bg(p.color(p.input_major))
+                                .text_color(p.color(p.label_primary))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .overflow_hidden()
+                                        .child(self.session_search.clone()),
+                                )
+                                .when(searching, |search| {
+                                    search.child(
+                                        chrome_button("clear-session-search", "×", t)
+                                            .aria_label("清除会话搜索")
+                                            .h(px(24.0))
+                                            .px(px(6.0))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.session_search.update(cx, |input, cx| {
+                                                    input.clear(window, cx)
+                                                });
+                                                let handle =
+                                                    this.session_search.read(cx).focus_handle(cx);
+                                                window.focus(&handle, cx);
+                                            })),
+                                    )
+                                }),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -4167,256 +5086,742 @@ impl ChatApp {
                     .overflow_y_scroll()
                     .child(self.session_list(t, cx)),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_tertiary))
-                            .child("模型 · deepseek-chat"),
-                    )
-                    .child(
-                        div()
-                            .id("theme-toggle-sidebar")
-                            .role(Role::Button)
-                            .aria_label(format!("切换到{}主题", self.theme_kind.toggled().label()))
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(t.radii.sm)
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_secondary))
-                            .child(format!("界面 · {}（点击切换）", self.theme_kind.label()))
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.toggle_theme(cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("plugins-toggle")
-                            .role(Role::Button)
-                            .aria_label(if self.plugins_open {
-                                "关闭插件面板"
-                            } else {
-                                "打开插件面板"
-                            })
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(t.radii.sm)
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(if self.plugins_open {
-                                p.color(p.label_primary)
-                            } else {
-                                p.color(p.label_secondary)
-                            })
-                            .child(if self.profile.can_edit() {
-                                format!("插件 · {plugin_enabled}/{plugin_total} 启用（点击管理）")
-                            } else {
-                                format!("插件 · {plugin_enabled}/{plugin_total}（Loader 只读）")
-                            })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.plugins_open = !this.plugins_open;
-                                // 打开时补一次面板快照；用 try_lock：工作线程持有 state 时
-                                // 保持旧快照，绝不阻塞 UI 渲染路径。
-                                if this.plugins_open {
-                                    if let Ok(guard) = this.state.try_lock() {
-                                        this.adc_panels = guard.adc_panels.clone();
-                                    }
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn header(&mut self, t: &Theme, collapsed: bool, cx: &mut Context<Self>) -> AnyElement {
-        let p = t.palette;
-        let (dot, status) = if self.busy {
-            (p.state_warn, "生成中…")
-        } else {
-            (p.state_success, "就绪")
-        };
-        div()
-            .min_h(t.layout.header_height)
-            .px(px(24.0))
-            .flex()
-            .items_center()
-            .justify_between()
-            .border_b_1()
-            .border_color(p.color(p.border_l3))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .id("sidebar-toggle")
-                            .role(Role::Button)
-                            .aria_label(if collapsed {
-                                "展开侧栏"
-                            } else {
-                                "收起侧栏"
-                            })
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(t.radii.sm)
-                            .cursor_pointer()
-                            .text_color(p.color(p.label_secondary))
-                            .hover(|style| style.bg(p.color(p.interactive_hover)))
-                            .child(if collapsed { "≡" } else { "⟨" })
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.toggle_sidebar(cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .min_w(px(0.0))
-                            .child(
-                                div()
-                                    .text_size(t.type_scale.body)
-                                    .text_color(p.color(p.label_tertiary))
-                                    .child("会话"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(t.type_scale.body)
-                                    .text_color(p.color(p.label_caption))
-                                    .child("/"),
-                            )
-                            .child(
-                                div()
-                                    .max_w(px(360.0))
-                                    .overflow_hidden()
-                                    .text_size(t.type_scale.body)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(p.color(p.label_primary))
-                                    .text_overflow(TextOverflow::Truncate("…".into()))
-                                    .child(self.active_title()),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(p.color(dot)))
-                            .child(
-                                div()
-                                    .text_size(t.type_scale.secondary)
-                                    .text_color(p.color(p.label_secondary))
-                                    .child(status),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_tertiary))
-                            .child(format!("{} 条", self.rows.len())),
-                    )
-                    .child(
-                        div()
-                            .id("theme-toggle-header")
-                            .role(Role::Button)
-                            .aria_label(format!("切换到{}主题", self.theme_kind.toggled().label()))
-                            .px(px(10.0))
-                            .py(px(4.0))
-                            .rounded(t.radii.sm)
-                            .border_1()
-                            .border_color(p.color(p.border_l2))
-                            .bg(p.color(p.button_elevated))
-                            .cursor_pointer()
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_secondary))
-                            .child(format!("切换到{}", self.theme_kind.toggled().label()))
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.toggle_theme(cx);
-                            })),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn render_row(&self, row: &Row, t: &Theme, base_font: &Font, base_color: Rgba) -> AnyElement {
-        let p = t.palette;
-        match row {
-            Row::User(text) => div()
-                .flex()
-                .justify_end()
-                .child(
+            .when_some(self.workspace_notice.as_ref(), |sidebar, notice| {
+                sidebar.child(
                     div()
-                        .max_w(t.layout.content_width * 0.702)
-                        .px(px(14.0))
-                        .py(px(10.0))
-                        .rounded(t.radii.lg)
-                        .bg(p.color(p.bubble))
-                        .text_size(t.type_scale.body)
-                        .line_height(t.type_scale.body_line)
-                        .text_color(p.color(p.label_primary))
-                        .child(text.clone()),
+                        .px(px(8.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.state_error))
+                        .child(notice.clone()),
+                )
+            })
+            .child(self.settings_trigger(false, t, cx))
+            .into_any_element()
+    }
+
+    fn sidebar_rail(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w(px(48.0))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.0))
+            .py(px(10.0))
+            .child(
+                toolbar_icon_button("rail-new-session", "新建会话", "\u{e710}", "+", t)
+                    .on_click(cx.listener(|chat, _, window, cx| chat.new_session(window, cx))),
+            )
+            .child(
+                toolbar_icon_button("rail-plugins", "插件", "\u{e71d}", "◇", t)
+                    .aria_selected(self.plugins_open)
+                    .on_click(
+                        cx.listener(|chat, _, window, cx| chat.toggle_plugins_panel(window, cx)),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(self.settings_trigger(true, t, cx))
+            .into_any_element()
+    }
+
+    fn jump_to_turn(&mut self, row: usize, cx: &mut Context<Self>) {
+        if !matches!(self.rows.get(row), Some(Row::User { .. })) {
+            return;
+        }
+        self.activity_open = false;
+        self.turn_menu_open = false;
+        self.initial_scroll_done = true;
+        self.follow_transcript = false;
+        self.visible_limit = self.visible_limit.max(self.rows.len() - row);
+        self.turn_jump = Some(row);
+        self.turn_focus = Some(row);
+        cx.notify();
+    }
+
+    fn toggle_turn_navigator(&mut self, cx: &mut Context<Self>) {
+        self.composer_menu = None;
+        self.turn_menu_open = !self.turn_menu_open;
+        cx.notify();
+    }
+
+    fn turn_rail(&self, focus_row: usize, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let anchors: Vec<_> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| matches!(row, Row::User { .. }).then_some(index))
+            .collect();
+        if anchors.is_empty() {
+            return None;
+        }
+        let active = anchors
+            .partition_point(|row| *row <= focus_row)
+            .saturating_sub(1);
+        let p = t.palette;
+        Some(
+            div()
+                .id("turn-rail")
+                .aria_label("会话轮次")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right(px(3.0))
+                .w(px(22.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .children(turn_rail_window(anchors.len(), active).map(|turn| {
+                    let row = anchors[turn];
+                    let selected = turn == active;
+                    let label = format!("跳到第 {} 轮", turn + 1);
+                    let preview: String = turn_preview(&self.rows[row])
+                        .unwrap_or_default()
+                        .chars()
+                        .take(50)
+                        .collect();
+                    let tooltip = if preview.is_empty() {
+                        label.clone()
+                    } else {
+                        format!("{label} · {preview}")
+                    };
+                    div()
+                        .id(("turn-marker", turn))
+                        .role(Role::Button)
+                        .aria_label(label)
+                        .aria_selected(selected)
+                        .focusable()
+                        .w_full()
+                        .h(px(18.0))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .pr(px(4.0))
+                        .rounded(t.radii.xs)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(p.color(p.interactive_hover)))
+                        .child(
+                            div()
+                                .w(px(if selected { 14.0 } else { 8.0 }))
+                                .h(px(2.0))
+                                .rounded_full()
+                                .bg(p.color(if selected { p.link } else { p.label_secondary })),
+                        )
+                        .tooltip(toolbar_tooltip(tooltip, *t))
+                        .on_click(cx.listener(move |chat, _, _, cx| chat.jump_to_turn(row, cx)))
+                }))
+                .child(
+                    toolbar_icon_button(
+                        "open-turn-navigator-rail",
+                        "查看全部轮次",
+                        "\u{e712}",
+                        "⋯",
+                        t,
+                    )
+                    .size(px(22.0))
+                    .mt(px(2.0))
+                    .aria_expanded(self.turn_menu_open)
+                    .on_click(cx.listener(|chat, _, _, cx| chat.toggle_turn_navigator(cx))),
                 )
                 .into_any_element(),
-            Row::Assistant(text) => {
-                let streaming = text.ends_with('▌');
+        )
+    }
+
+    fn turn_navigator(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let anchors: Vec<_> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| matches!(row, Row::User { .. }).then_some(index))
+            .collect();
+        let p = t.palette;
+        let mut menu = div()
+            .id("turn-navigator")
+            .role(Role::ListBox)
+            .aria_label("轮次导航")
+            .absolute()
+            .top(gpui::relative(1.0))
+            .right(px(12.0))
+            .w(px(312.0))
+            .max_w_full()
+            .occlude()
+            .p(px(5.0))
+            .rounded(t.radii.md)
+            .border_1()
+            .border_color(p.color(p.border_l2))
+            .bg(p.color(p.bg_layer_1))
+            .shadow_sm();
+        if anchors.is_empty() {
+            menu = menu.child(
+                div()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .text_size(t.type_scale.secondary)
+                    .text_color(p.color(p.label_secondary))
+                    .child("此会话暂无可跳转的轮次"),
+            );
+        } else {
+            let height = 36.0 * anchors.len().min(6) as f32;
+            let theme = *t;
+            menu = menu.child(
+                gpui::uniform_list(
+                    "turn-anchors",
+                    anchors.len(),
+                    cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        range
+                            .filter_map(|turn| {
+                                let row = anchors[turn];
+                                let preview = turn_preview(this.rows.get(row)?)?;
+                                Some(
+                                    div()
+                                        .id(("turn-anchor", turn))
+                                        .role(Role::ListBoxOption)
+                                        .aria_label(format!("跳到第 {} 轮 {preview}", turn + 1))
+                                        .h(px(36.0))
+                                        .w_full()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .px(px(8.0))
+                                        .rounded(theme.radii.sm)
+                                        .cursor_pointer()
+                                        .text_size(theme.type_scale.secondary)
+                                        .text_color(p.color(p.label_secondary))
+                                        .hover(|style| style.bg(p.color(p.interactive_hover)))
+                                        .children([
+                                            div().flex_none().child(format!("第 {} 轮", turn + 1)),
+                                            div()
+                                                .min_w(px(0.0))
+                                                .overflow_hidden()
+                                                .text_color(p.color(p.label_primary))
+                                                .text_overflow(TextOverflow::Truncate("…".into()))
+                                                .child(preview.to_owned()),
+                                        ])
+                                        .on_click(cx.listener(move |chat, _, _, cx| {
+                                            chat.jump_to_turn(row, cx)
+                                        })),
+                                )
+                            })
+                            .collect()
+                    }),
+                )
+                .h(px(height))
+                .w_full(),
+            );
+        }
+        gpui::deferred(menu).with_priority(1).into_any_element()
+    }
+
+    fn header(
+        &self,
+        t: &Theme,
+        collapsed: bool,
+        compact: bool,
+        show_turn_rail: bool,
+        show_window_bar: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        let (theme_label, theme_glyph) = match self.theme_kind {
+            ThemeKind::Light => ("切换到深色主题", "\u{e708}"),
+            ThemeKind::Dark => ("切换到浅色主题", "\u{e706}"),
+        };
+        let sidebar_label = if collapsed {
+            "展开侧栏"
+        } else {
+            "收起侧栏"
+        };
+        let panel_label = if self.plugins_open {
+            "关闭插件面板"
+        } else {
+            "打开插件面板"
+        };
+        div()
+            .relative()
+            .min_h(t.layout.header_height)
+            .flex()
+            .flex_none()
+            .flex_col()
+            .justify_end()
+            .gap(px(4.0))
+            .px(if compact { px(12.0) } else { px(20.0) })
+            .pt(px(6.0))
+            .border_b_1()
+            .border_color(p.color(p.border_l2))
+            .child(
                 div()
                     .flex()
-                    .gap(px(10.0))
+                    .items_center()
+                    .gap(px(6.0))
+                    .when(!show_window_bar, |header| {
+                        header.child(
+                            toolbar_icon_button(
+                                "sidebar-toggle",
+                                sidebar_label,
+                                "\u{e700}",
+                                "☰",
+                                t,
+                            )
+                            .aria_expanded(!collapsed)
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.toggle_sidebar(window, cx);
+                                },
+                            )),
+                        )
+                    })
                     .child(
                         div()
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .mt(px(2.0))
-                            .rounded(t.radii.xs)
-                            .bg(p.color(p.business_tertiary))
-                            .flex()
-                            .items_center()
-                            .justify_center()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_size(t.type_scale.body)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.color(p.label_primary))
+                            .text_overflow(TextOverflow::Truncate("…".into()))
+                            .child(self.active_title()),
+                    )
+                    .when(self.busy && !compact, |header| {
+                        header.child(
+                            div()
+                                .flex_none()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_secondary))
+                                .child("生成中…"),
+                        )
+                    })
+                    .child(
+                        toolbar_icon_button(
+                            "theme-toggle-header",
+                            theme_label,
+                            theme_glyph,
+                            "◐",
+                            t,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
+                    )
+                    .child(
+                        toolbar_icon_button(
+                            "plugins-toggle-header",
+                            panel_label,
+                            "\u{e71d}",
+                            "⋮",
+                            t,
+                        )
+                        .aria_expanded(self.plugins_open)
+                        .when(self.plugins_open, |button| {
+                            button
+                                .bg(p.color(p.business_tertiary))
+                                .text_color(p.color(p.link))
+                        })
+                        .on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.toggle_plugins_panel(window, cx)
+                            }),
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .children(
+                        [
+                            ("conversation-tab", "对话", false),
+                            ("activity-tab", "轨迹", true),
+                        ]
+                        .into_iter()
+                        .map(|(id, label, activity)| {
+                            let selected = self.activity_open == activity;
+                            chrome_button(id, label, t)
+                                .role(Role::Tab)
+                                .aria_selected(selected)
+                                .focusable()
+                                .h(px(30.0))
+                                .rounded(px(0.0))
+                                .border_b_2()
+                                .border_color(p.color(if selected { p.link } else { 0x0000_0000 }))
+                                .when(selected, |tab| {
+                                    tab.text_color(p.color(p.link))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.activity_open = activity;
+                                    cx.notify();
+                                }))
+                        }),
+                    )
+                    .when(
+                        !show_turn_rail
+                            && self.rows.iter().any(|row| matches!(row, Row::User { .. })),
+                        |tabs| {
+                            tabs.child(div().flex_1()).child(
+                                chrome_button("open-turn-navigator", "轮次 ▾", t)
+                                    .aria_label("轮次导航")
+                                    .aria_expanded(self.turn_menu_open)
+                                    .on_click(
+                                        cx.listener(|chat, _, _, cx| {
+                                            chat.toggle_turn_navigator(cx)
+                                        }),
+                                    ),
+                            )
+                        },
+                    ),
+            )
+            .when(self.turn_menu_open, |header| {
+                header.child(self.turn_navigator(t, cx))
+            })
+            .into_any_element()
+    }
+
+    fn copy_message_button(
+        index: usize,
+        text: &str,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let text = text.to_owned();
+        toolbar_icon_button(("copy-message", index), "复制消息", "\u{e8c8}", "⧉", t)
+            .size(px(24.0))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            }))
+    }
+
+    fn message_attachments(
+        &self,
+        attachments: &[UserAttachment],
+        row: usize,
+        t: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        let compact = attachments.len() > 1;
+        div()
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .w_full()
+            .max_w(t.layout.content_width * 0.702)
+            .gap(px(6.0))
+            .children(attachments.iter().enumerate().map(|(index, attachment)| {
+                if let Some(file) = attachment.file.as_ref().filter(|file| stored_image(file)) {
+                    let source = StoredAttachment {
+                        root: spill_dir_for(&self.store.path_for(&self.session_id)),
+                        file: file.clone(),
+                    };
+                    let result = self.message_thumbnail(&source, window, cx);
+                    let (width, height) = if compact {
+                        (108.0, 80.0)
+                    } else {
+                        (196.0, 144.0)
+                    };
+                    let name = attachment.name.clone();
+                    let retry = matches!(result, Some(Err(_)));
+                    let (image, fallback) = match result {
+                        Some(Ok(image)) => (Some(image), ""),
+                        Some(Err(_)) => (None, "图片不可用"),
+                        None => (None, "加载图片…"),
+                    };
+                    return attachment_image_button(
+                        format!("message-image-{row}-{index}"),
+                        &name,
+                        image,
+                        fallback,
+                        width,
+                        height,
+                        t,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if retry {
+                            cx.remove_asset::<AttachmentThumbnail>(&source);
+                        }
+                        this.open_attachment_preview(
+                            name.clone(),
+                            PreviewSource::Stored(source.clone()),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element();
+                }
+                let (kind, details) = match &attachment.file {
+                    Some(file) if file.mime == "application/pdf" => {
+                        ("PDF", Some(file_size_label(file.size)))
+                    }
+                    _ => ("附件", None),
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .max_w_full()
+                    .rounded(t.radii.sm)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .bg(p.color(p.bg_base))
+                    .text_color(p.color(p.label_primary))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.link))
+                            .child(kind),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .max_w(px(174.0))
+                            .text_size(t.type_scale.small)
                             .child(
                                 div()
-                                    .text_size(px(10.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.color(p.business_primary))
-                                    .child("D"),
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(attachment.name.clone()),
+                            )
+                            .when_some(details, |card, size| {
+                                card.child(div().text_color(p.color(p.label_secondary)).child(size))
+                            }),
+                    )
+                    .into_any_element()
+            }))
+            .into_any_element()
+    }
+
+    fn message_thumbnail(
+        &self,
+        source: &StoredAttachment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Result<Arc<RenderImage>, String>> {
+        const LIMIT: usize = 128;
+        let mut sources = self.attachment_thumbnails.borrow_mut();
+        if let Some(index) = sources.iter().position(|entry| entry == source) {
+            sources.remove(index);
+        }
+        sources.push_back(source.clone());
+        if sources.len() > LIMIT {
+            if let Some(oldest) = sources.pop_front() {
+                if let Some(Ok(image)) = cx.fetch_asset::<AttachmentThumbnail>(&oldest) {
+                    cx.drop_image(image, Some(window));
+                }
+                cx.remove_asset::<AttachmentThumbnail>(&oldest);
+            }
+        }
+        window.use_asset::<AttachmentThumbnail>(source, cx)
+    }
+
+    fn open_attachment_preview(
+        &mut self,
+        name: String,
+        source: PreviewSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_attachment_preview(window, cx);
+        self.composer_menu = None;
+        self.turn_menu_open = false;
+        let focus = cx.focus_handle();
+        let return_focus = window.focused(cx);
+        let image = cx.background_executor().spawn(async move { source.load() });
+        let load = cx.spawn(async move |this, cx| {
+            let image = image.await;
+            let _ = this.update(cx, |chat, cx| {
+                if let Some(preview) = chat.attachment_preview.as_mut() {
+                    preview.image = Some(image);
+                    cx.notify();
+                }
+            });
+        });
+        window.focus(&focus, cx);
+        self.attachment_preview = Some(AttachmentPreview {
+            name,
+            focus,
+            return_focus,
+            image: None,
+            _load: load,
+        });
+        cx.notify();
+    }
+
+    fn close_attachment_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(preview) = self.attachment_preview.take() else {
+            return false;
+        };
+        if let Some(Ok(image)) = preview.image {
+            cx.drop_image(image, Some(window));
+        }
+        if let Some(focus) = preview.return_focus {
+            window.focus(&focus, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    fn image_preview_overlay(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let preview = self.attachment_preview.as_ref()?;
+        let p = t.palette;
+        let overlay = div()
+            .id("attachment-preview-backdrop")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(24.0))
+            .bg(rgba(0x10131acc))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.close_attachment_preview(window, cx);
+            }))
+            .child(
+                div()
+                    .id("attachment-preview")
+                    .role(Role::Dialog)
+                    .aria_label(format!("图片预览 {}", preview.name))
+                    .size_full()
+                    .max_w(px(1080.0))
+                    .max_h(px(780.0))
+                    .flex()
+                    .flex_col()
+                    .rounded(t.radii.lg)
+                    .border_1()
+                    .border_color(p.color(p.border_l2))
+                    .bg(p.color(p.bg_base))
+                    .text_color(p.color(p.label_primary))
+                    .p(px(12.0))
+                    .gap(px(8.0))
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(preview.name.clone()),
+                            )
+                            .child(
+                                chrome_button("attachment-preview-close", "关闭", t)
+                                    .track_focus(&preview.focus)
+                                    .aria_label("关闭图片预览")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_attachment_preview(window, cx);
+                                    })),
                             ),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.0))
+                            .min_h(px(0.0))
+                            .overflow_hidden()
                             .flex()
-                            .flex_col()
-                            .gap(px(8.0))
-                            .child(markdown_view(text, t, base_font, base_color))
-                            .when(streaming, |el| {
-                                el.child(
-                                    div()
-                                        .text_size(t.type_scale.small)
-                                        .text_color(p.color(p.label_caption))
-                                        .child("正在生成 · 可点击右侧停止"),
-                                )
+                            .items_center()
+                            .justify_center()
+                            .child(match &preview.image {
+                                Some(Ok(image)) => img(image.clone())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain)
+                                    .into_any_element(),
+                                result => div()
+                                    .text_size(t.type_scale.secondary)
+                                    .text_color(p.color(p.label_secondary))
+                                    .child(match result {
+                                        Some(Err(error)) => error.clone(),
+                                        _ => "加载图片…".to_owned(),
+                                    })
+                                    .into_any_element(),
                             }),
+                    ),
+            );
+        Some(gpui::deferred(overlay).with_priority(10).into_any_element())
+    }
+
+    fn render_row(
+        &self,
+        row: &Row,
+        index: usize,
+        t: &Theme,
+        base_font: &Font,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        match row {
+            Row::User { text, attachments } => div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(2.0))
+                .when(!attachments.is_empty(), |row| {
+                    row.child(self.message_attachments(attachments, index, t, window, cx))
+                })
+                .when(!text.is_empty(), |row| {
+                    let text_view = gpui::SharedString::from(text.clone());
+                    row.child(
+                        div()
+                            .max_w(gpui::relative(0.702))
+                            .px(px(14.0))
+                            .py(px(8.0))
+                            .rounded(t.radii.lg)
+                            .bg(p.color(p.bubble))
+                            .text_size(t.type_scale.body)
+                            .line_height(t.type_scale.body_line)
+                            .text_color(p.color(p.label_primary))
+                            .child(self.message_selection.fragment(
+                                index,
+                                0,
+                                text_view.clone(),
+                                gpui::StyledText::new(text_view),
+                                p.color(p.business_primary).into(),
+                            )),
                     )
+                    .child(Self::copy_message_button(index, text, t, cx))
+                })
+                .into_any_element(),
+            Row::Assistant(text) => {
+                let streaming = text.ends_with('▌');
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.0))
+                    .gap(px(4.0))
+                    .child(selectable_markdown_view(
+                        text,
+                        t,
+                        base_font,
+                        p.color(p.label_primary),
+                        &self.message_selection,
+                        index,
+                    ))
+                    .when(streaming, |el| {
+                        el.child(
+                            div()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_caption))
+                                .child("正在生成 · 可点击右侧停止"),
+                        )
+                    })
+                    .when(!streaming && !text.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .flex()
+                                .child(Self::copy_message_button(index, text, t, cx)),
+                        )
+                    })
                     .into_any_element()
             }
             Row::Tool {
@@ -4531,68 +5936,85 @@ impl ChatApp {
         }
     }
 
-    fn transcript(&mut self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn transcript(
+        &mut self,
+        t: &Theme,
+        show_turn_rail: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = t.palette;
-        let text_style = window.text_style();
-        let base_font = text_style.font();
-        let base_color: Rgba = text_style.color.into();
+        let base_font = window.text_style().font();
+        self.message_selection.begin_frame(&self.session_id);
+        let jump = (!self.activity_open)
+            .then(|| self.turn_jump.take())
+            .flatten();
         // 不 clone 整份 rows：10k 会话下每帧克隆 7500 个 String 是纯浪费。
-        let rows = &self.rows;
-        let mut column = div()
+        let activity = self.activity_open.then(|| {
+            self.rows
+                .iter()
+                .filter(|row| matches!(row, Row::Tool { .. } | Row::Meta(_)))
+                .collect::<Vec<_>>()
+        });
+        let total = activity.as_ref().map_or(self.rows.len(), Vec::len);
+        let row_at = |index| match &activity {
+            Some(rows) => rows[index],
+            None => &self.rows[index],
+        };
+        let scroll = if self.activity_open {
+            &self.activity_scroll
+        } else {
+            &self.scroll
+        };
+        let column_width = if self.activity_open {
+            t.layout.content_width
+        } else {
+            t.layout.composer_max_width - px(32.0)
+        };
+        let row_gap = if self.activity_open { 16.0 } else { 14.0 };
+        let item = || div().flex_none().w_full().max_w(column_width).mx_auto();
+        let mut pane = div()
+            .id(if self.activity_open {
+                "activity-scroll"
+            } else {
+                "transcript-scroll"
+            })
             .flex()
             .flex_col()
-            .w_full()
-            .max_w(t.layout.content_width)
-            .mx_auto()
-            .gap(px(16.0))
-            .py(px(20.0));
-        if rows.is_empty() {
-            column = column.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(8.0))
-                    .py(px(64.0))
-                    .child(
-                        div()
-                            .w(px(48.0))
-                            .h(px(48.0))
-                            .rounded(t.radii.lg)
-                            .bg(p.color(p.label_primary))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .text_size(px(20.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.color(p.bg_base))
-                                    .child("D"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(t.type_scale.h2)
-                            .line_height(t.type_scale.h2_line)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.color(p.label_primary))
-                            .child("开始对话"),
-                    )
-                    .child(
-                        div()
-                            .text_size(t.type_scale.body)
-                            .text_color(p.color(p.label_tertiary))
-                            .child("输入问题，Agent 会调用工具，并把每一步写进本地会话日志。"),
-                    ),
+            .flex_1()
+            .min_h(px(0.0))
+            .min_w(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(scroll)
+            .px(px(24.0))
+            .gap(px(row_gap))
+            .on_scroll(
+                cx.listener(|this, _event: &gpui::ScrollEvent, _window, cx| {
+                    if !this.activity_open {
+                        this.follow_transcript = false;
+                        this.turn_focus = None;
+                    }
+                    cx.notify();
+                }),
+            )
+            .py(px(20.0))
+            .when(!self.activity_open, |pane| {
+                self.message_selection.bind(pane)
+            });
+        if self.activity_open && total == 0 {
+            pane = pane.child(
+                item()
+                    .py(px(28.0))
+                    .text_size(t.type_scale.body)
+                    .text_color(p.color(p.label_secondary))
+                    .child("此会话暂无工具调用或上下文压缩记录。"),
             );
         }
-        let total = rows.len();
         let start = total.saturating_sub(self.visible_limit);
         if start > 0 {
             let hidden = start;
-            column = column.child(
-                div()
+            pane = pane.child(
+                item()
                     .id("load-earlier")
                     .w_full()
                     .flex()
@@ -4610,54 +6032,86 @@ impl ChatApp {
         // 变高行虚拟化：只构造/排版视口附近的几十行，用上下占位块维持滚动高度。
         // 实测 400 行全量渲染时 prepaint 要 125ms（debug），滚动只有 ~6fps；虚拟化后
         // 帧成本与历史长度基本无关，这是 Gate 2 "滚动帧率不低于基线" 的实现基础。
-        let visible = &rows[start..];
-        let mut cumulative = Vec::with_capacity(visible.len() + 1);
+        let visible = total - start;
+        let mut cumulative = Vec::with_capacity(visible + 1);
         cumulative.push(0.0f32);
-        for (index, row) in visible.iter().enumerate() {
-            let gap = if index == 0 { 0.0 } else { ROW_GAP };
-            let next = cumulative[index] + estimated_row_height(row) + gap;
+        for index in 0..visible {
+            let gap = if index == 0 { 0.0 } else { row_gap };
+            let next = cumulative[index] + estimated_row_height(row_at(start + index)) + gap;
             cumulative.push(next);
         }
-        let total_height = cumulative[visible.len()];
-        let viewport_height = self.scroll.bounds().size.height.as_f32().max(240.0);
-        let offset = (-self.scroll.offset().y.as_f32()).clamp(0.0, total_height);
+        let total_height = cumulative[visible];
+        let viewport_height = scroll.bounds().size.height.as_f32().max(240.0);
+        let jump = jump
+            .and_then(|row| row.checked_sub(start))
+            .filter(|row| *row < visible);
+        let offset = if let Some(target) = jump {
+            let approx = cumulative[target].min((total_height - viewport_height).max(0.0));
+            scroll.set_offset(point(px(0.0), px(-approx)));
+            approx
+        } else {
+            (-scroll.offset().y.as_f32()).clamp(0.0, total_height)
+        };
         const OVERSCAN: f32 = 240.0;
         let top_edge = (offset - OVERSCAN).max(0.0);
         let bottom_edge = (offset + viewport_height + OVERSCAN).min(total_height);
-        let first = cumulative
+        let mut first = cumulative
             .partition_point(|edge| *edge < top_edge)
             .saturating_sub(1)
-            .min(visible.len().saturating_sub(1));
+            .min(visible.saturating_sub(1));
         let mut last = cumulative.partition_point(|edge| *edge < bottom_edge);
         if last <= first {
-            last = (first + 1).min(visible.len());
+            last = (first + 1).min(visible);
         }
-        let top_spacer = (cumulative[first] - ROW_GAP).max(0.0);
-        let bottom_spacer = (total_height - cumulative[last] - ROW_GAP).max(0.0);
+        if let Some(target) = jump {
+            first = first.min(target);
+            last = last.max(target + 1);
+        }
+        let top_spacer = (cumulative[first] - row_gap).max(0.0);
+        let bottom_spacer = (total_height - cumulative[last] - row_gap).max(0.0);
         if top_spacer > 0.5 {
-            column = column.child(div().w_full().h(px(top_spacer)));
+            pane = pane.child(item().h(px(top_spacer)));
         }
-        for row in &visible[first..last] {
-            column = column.child(self.render_row(row, t, &base_font, base_color));
+        if let Some(target) = jump {
+            let prefix = usize::from(start > 0) + usize::from(top_spacer > 0.5);
+            scroll.scroll_to_top_of_item(prefix + target - first);
+        }
+        for index in first..last {
+            let row_index = start + index;
+            pane = pane.child(item().child(self.render_row(
+                row_at(row_index),
+                row_index,
+                t,
+                &base_font,
+                window,
+                cx,
+            )));
         }
         if bottom_spacer > 0.5 {
-            column = column.child(div().w_full().h(px(bottom_spacer)));
+            pane = pane.child(item().h(px(bottom_spacer)));
         }
-        let _ = cx;
+        if !show_turn_rail {
+            return pane.into_any_element();
+        }
+        let focus_row = if let Some(row) = self.turn_focus.filter(|row| *row < total) {
+            row
+        } else if self.follow_transcript || offset + viewport_height >= total_height - 1.0 {
+            total.saturating_sub(1)
+        } else {
+            let focus_edge = offset + viewport_height * 0.25;
+            start
+                + cumulative
+                    .partition_point(|edge| *edge <= focus_edge)
+                    .saturating_sub(1)
+        };
         div()
-            .id("transcript-scroll")
+            .relative()
+            .flex()
             .flex_1()
             .min_h(px(0.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .px(px(24.0))
-            // 滚动只改变窗口位置：重绘一次（只排版可见行）而不是重新构造整段历史。
-            .on_scroll(
-                cx.listener(|_this, _event: &gpui::ScrollEvent, _window, cx| {
-                    cx.notify();
-                }),
-            )
-            .child(column)
+            .min_w(px(0.0))
+            .child(pane)
+            .children(self.turn_rail(focus_row, t, cx))
             .into_any_element()
     }
 
@@ -4794,107 +6248,756 @@ impl ChatApp {
         )
     }
 
-    fn composer(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn toggle_composer_menu(&mut self, menu: ComposerMenu, cx: &mut Context<Self>) {
+        if !self.busy {
+            self.turn_menu_open = false;
+            self.composer_menu = (self.composer_menu != Some(menu)).then_some(menu);
+            cx.notify();
+        }
+    }
+
+    fn choose_model(
+        &mut self,
+        model: Arc<DesktopModel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        if !Arc::ptr_eq(&model, &self.settings.model) {
+            let Ok(mut state) = self.state.try_lock() else {
+                return;
+            };
+            state.set_model(model.clone());
+            self.settings.model = model;
+            self.attachment_error = None;
+        }
+        self.composer_menu = None;
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    fn choose_permission(
+        &mut self,
+        permission: PermissionMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.settings.permission.is_none() {
+            return;
+        }
+        if self.settings.permission != Some(permission) {
+            let Ok(mut state) = self.state.try_lock() else {
+                return;
+            };
+            self.sidecar_reload_pending |= state.set_permission(permission);
+            self.settings.permission = Some(permission);
+        }
+        self.composer_menu = None;
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    fn composer_options(
+        &self,
+        menu: ComposerMenu,
+        t: &Theme,
+        max_width: gpui::Pixels,
+        max_height: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.composer_menu != Some(menu) {
+            return None;
+        }
         let p = t.palette;
-        let (button_bg, button_label) = if self.busy {
-            (p.state_error, "■")
+        let mut options = div()
+            .id("composer-options")
+            .role(Role::Menu)
+            .aria_label(match menu {
+                ComposerMenu::Model => "选择模型",
+                ComposerMenu::Permission => "选择工具权限",
+                ComposerMenu::Commands => "选择指令",
+                ComposerMenu::Add => "添加附件或调用指令",
+            })
+            .occlude()
+            .w(px(276.0))
+            .max_w(max_width)
+            .max_h(max_height)
+            .overflow_y_scroll()
+            .p(px(5.0))
+            .rounded(t.radii.md)
+            .border_1()
+            .border_color(p.color(p.border_l2))
+            .bg(p.color(p.bg_layer_1))
+            .shadow_sm();
+        match menu {
+            ComposerMenu::Model => {
+                for (index, model) in self.model_options.iter().enumerate() {
+                    let option = model.clone();
+                    options = options.child(
+                        composer_option(
+                            ("model", index),
+                            model.name(),
+                            match model.kind() {
+                                ModelKind::Mock => "在本机生成演示回复",
+                                kind => kind.label(),
+                            },
+                            Arc::ptr_eq(model, &self.settings.model),
+                            t,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.choose_model(option.clone(), window, cx);
+                            },
+                        )),
+                    );
+                }
+            }
+            ComposerMenu::Permission => {
+                for (index, (mode, description)) in EDITABLE_PERMISSIONS.into_iter().enumerate() {
+                    options = options.child(
+                        composer_option(
+                            ("permission", index),
+                            permission_label(mode),
+                            description,
+                            self.settings.permission == Some(mode),
+                            t,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.choose_permission(mode, window, cx);
+                            },
+                        )),
+                    );
+                }
+            }
+            ComposerMenu::Commands | ComposerMenu::Add => {
+                let typed_slash = menu == ComposerMenu::Commands;
+                if !typed_slash && self.attachments.len() < MAX_ATTACHMENTS {
+                    options = options.child(
+                        composer_option(
+                            "add-file",
+                            "添加附件",
+                            "图片、PDF 或 UTF-8 文本",
+                            false,
+                            t,
+                        )
+                        .role(Role::MenuItem)
+                        .focusable()
+                        .on_click(cx.listener(|chat, _, _, cx| {
+                            chat.add_attachments(AttachmentSource::Picker, cx);
+                        })),
+                    );
+                }
+                let text = if typed_slash {
+                    self.slash_text.as_deref().unwrap_or("/")
+                } else {
+                    "/"
+                };
+                for (index, command) in slash_commands(text).enumerate() {
+                    options = options.child(
+                        composer_option(
+                            ("slash-command", index),
+                            &format!("/{}", command.name()),
+                            command.description(),
+                            typed_slash && index == self.selected_command,
+                            t,
+                        )
+                        .focusable()
+                        .on_click(cx.listener(
+                            move |chat, _, window, cx| {
+                                chat.composer_menu = None;
+                                if typed_slash {
+                                    chat.input.update(cx, |input, cx| input.clear(window, cx));
+                                }
+                                chat.run_slash_command(command, window, cx);
+                            },
+                        )),
+                    );
+                }
+            }
+        }
+        Some(options.into_any_element())
+    }
+
+    fn paste_attachments(&mut self, item: &mut ClipboardItem, cx: &mut Context<Self>) -> bool {
+        if self.busy || self.attachment_load.is_some() {
+            return false;
+        }
+        let source = item
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ClipboardEntry::ExternalPaths(paths) if !paths.paths().is_empty() => {
+                    Some(AttachmentSource::Paths(paths.paths().to_vec()))
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                item.entries.iter_mut().find_map(|entry| match entry {
+                    ClipboardEntry::Image(image) => Some(AttachmentSource::ClipboardImage(
+                        std::mem::take(&mut image.bytes),
+                    )),
+                    _ => None,
+                })
+            });
+        if let Some(source) = source {
+            self.add_attachments(source, cx);
+            return true;
+        }
+        false
+    }
+
+    fn add_attachments(&mut self, source: AttachmentSource, cx: &mut Context<Self>) {
+        if self.busy || self.attachment_load.is_some() {
+            return;
+        }
+        if self.attachments.len() == MAX_ATTACHMENTS {
+            self.attachment_error = Some(format!("每条消息最多添加 {MAX_ATTACHMENTS} 个附件。"));
+            cx.notify();
+            return;
+        }
+        let remaining_files = MAX_ATTACHMENTS - self.attachments.len();
+        let (mut used_text, mut used_media) = (0, 0);
+        for attachment in &self.attachments {
+            match &attachment.content {
+                AttachmentContent::Text(text) => used_text += text.len(),
+                AttachmentContent::Media { bytes, .. } => used_media += bytes.len(),
+            }
+        }
+        self.composer_menu = None;
+        self.attachment_error = None;
+        self.attachment_request = self.attachment_request.wrapping_add(1);
+        let request = self.attachment_request;
+        self.attachment_load = Some(request);
+        let picker = matches!(source, AttachmentSource::Picker).then(|| {
+            cx.prompt_for_paths(PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: Some("添加图片、PDF 或 UTF-8 文本".into()),
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let source = match picker {
+                Some(picker) => match picker.await {
+                    Ok(Ok(Some(paths))) => Ok(AttachmentSource::Paths(paths)),
+                    Ok(Ok(None)) | Err(_) => Ok(AttachmentSource::Paths(Vec::new())),
+                    Ok(Err(err)) => Err(format!("无法打开文件选择器：{err}")),
+                },
+                None => Ok(source),
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let remaining_media = MAX_MEDIA_ATTACHMENT_BYTES - used_media;
+                    match source? {
+                        AttachmentSource::Paths(paths) => read_attachments(
+                            paths,
+                            remaining_files,
+                            MAX_TEXT_ATTACHMENT_BYTES - used_text,
+                            remaining_media,
+                        ),
+                        AttachmentSource::ClipboardImage(bytes) => {
+                            read_clipboard_image(bytes, remaining_media).map(|image| vec![image])
+                        }
+                        AttachmentSource::Picker => {
+                            unreachable!("picker is resolved before loading")
+                        }
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |chat, cx| {
+                if chat.attachment_load != Some(request) {
+                    return;
+                }
+                chat.attachment_load = None;
+                match result {
+                    Ok(files) => chat.attachments.extend(files),
+                    Err(err) => chat.attachment_error = Some(err),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn attachment_chips(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = t.palette;
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(6.0))
+            .px(px(14.0))
+            .pt(px(10.0))
+            .children(self.attachments.iter().enumerate().map(|(index, file)| {
+                let tile = match &file.content {
+                    AttachmentContent::Media { format, bytes }
+                        if *format != AttachmentFormat::Pdf =>
+                    {
+                        let (format, bytes, name) = (*format, bytes.clone(), file.name.clone());
+                        attachment_image_button(
+                            ("draft-image", index),
+                            &file.name,
+                            file.thumbnail.clone(),
+                            "图片",
+                            66.0,
+                            46.0,
+                            t,
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_attachment_preview(
+                                name.clone(),
+                                PreviewSource::Draft {
+                                    format,
+                                    bytes: bytes.clone(),
+                                },
+                                window,
+                                cx,
+                            );
+                        }))
+                        .into_any_element()
+                    }
+                    _ => {
+                        let label = match &file.content {
+                            AttachmentContent::Media { bytes, .. } => {
+                                format!("PDF · {}", file_size_label(bytes.len() as u64))
+                            }
+                            AttachmentContent::Text(_) => "文本".to_owned(),
+                        };
+                        div()
+                            .flex_none()
+                            .text_size(t.type_scale.small)
+                            .text_color(p.color(p.link))
+                            .child(label)
+                            .into_any_element()
+                    }
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.0))
+                    .max_w_full()
+                    .rounded(t.radii.sm)
+                    .bg(p.color(p.tag))
+                    .pl(px(8.0))
+                    .child(tile)
+                    .when(file.thumbnail.is_none(), |chip| {
+                        chip.child(
+                            div()
+                                .min_w(px(0.0))
+                                .max_w(px(150.0))
+                                .overflow_hidden()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_secondary))
+                                .text_overflow(TextOverflow::Truncate("…".into()))
+                                .child(file.name.clone()),
+                        )
+                    })
+                    .child(
+                        chrome_button(("remove-attachment", index), "×", t)
+                            .h(px(24.0))
+                            .aria_label(format!("移除附件 {}", file.name))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if index < this.attachments.len() {
+                                    if let Some(image) = this.attachments.remove(index).thumbnail {
+                                        cx.drop_image(image, Some(window));
+                                    }
+                                    this.attachment_error = None;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+            }))
+            .into_any_element()
+    }
+
+    fn composer(
+        &self,
+        t: &Theme,
+        hero: bool,
+        body_width: gpui::Pixels,
+        viewport_height: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        let row_width = (body_width - t.layout.composer_clearance * 2)
+            .min(t.layout.composer_max_width)
+            - px(16.0);
+        let compact_toolbar = row_width <= px(560.0);
+        let model_icon_only = row_width < px(300.0);
+        let choosing_command = self.composer_menu == Some(ComposerMenu::Commands);
+        let can_choose_permission = !self.busy && self.settings.permission.is_some();
+        let permission = self
+            .settings
+            .permission
+            .map_or("所有工具需审批", permission_label);
+        let model = self.settings.model.name();
+        let can_add = !self.busy && self.attachment_load.is_none();
+        let can_send = self.busy
+            || (self.attachment_load.is_none()
+                && (!self.attachments.is_empty()
+                    || !self.input.read(cx).content().trim().is_empty()));
+        let (button_label, button_glyph, button_fallback) = if self.busy {
+            ("停止生成", "\u{e73b}", "■")
+        } else if choosing_command {
+            ("运行所选指令", "\u{e768}", "▶")
         } else {
-            (p.button_info, "↑")
+            ("发送消息", "\u{e898}", "↑")
         };
+        let placeholder = if !self.attachments.is_empty() {
+            ""
+        } else if hero {
+            "描述你想做的事，或输入 / 查看指令"
+        } else {
+            "发消息，或输入 / 查看指令"
+        };
+        // 矮窗给消息区和按钮留空间，桌面大窗最多显示 14 行草稿。
+        let draft_max_height = (viewport_height * 0.45).clamp(px(48.0), px(336.0));
+        let menu_max_height = (viewport_height * 0.48).clamp(px(108.0), px(320.0));
+        let menu_max_width = (body_width - t.layout.composer_clearance * 2).max(px(0.0));
+        self.input.update(cx, |input, cx| {
+            input.style_draft(
+                placeholder,
+                draft_max_height,
+                p.color(p.label_caption).into(),
+                p.color(p.business_primary).into(),
+                cx,
+            );
+        });
+
+        let chevron = |open| {
+            desktop_icon(
+                if open { "\u{e70e}" } else { "\u{e70d}" },
+                if open { "▴" } else { "▾" },
+            )
+            .text_color(p.color(p.label_caption))
+            .text_size(px(10.0))
+        };
+        let permission_open = self.composer_menu == Some(ComposerMenu::Permission);
+        let permission_picker = div()
+            .id("permission-picker")
+            .flex()
+            .items_center()
+            .min_w(px(0.0))
+            .gap(px(4.0))
+            .h(px(28.0))
+            .pl(px(8.0))
+            .pr(px(4.0))
+            .rounded(t.radii.sm)
+            .text_size(t.type_scale.secondary)
+            .line_height(px(20.0))
+            .text_color(p.color(p.label_secondary))
+            .font_weight(FontWeight::MEDIUM)
+            .child(desktop_icon("\u{ea18}", "◇"))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(permission),
+            )
+            .when(can_choose_permission, |button| {
+                button
+                    .child(chevron(permission_open))
+                    .role(Role::Button)
+                    .aria_label(format!("选择工具权限，当前 {permission}"))
+                    .aria_expanded(permission_open)
+                    .focusable()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(p.color(p.interactive_hover)))
+                    .on_click(cx.listener(|chat, _, _, cx| {
+                        chat.toggle_composer_menu(ComposerMenu::Permission, cx);
+                    }))
+            });
+        let model_open = self.composer_menu == Some(ComposerMenu::Model);
+        let model_picker = div()
+            .id("model-picker")
+            .flex()
+            .items_center()
+            .min_w(px(0.0))
+            .max_w(px(360.0))
+            .gap(px(4.0))
+            .h(px(28.0))
+            .pl(px(8.0))
+            .pr(px(4.0))
+            .rounded(t.radii.sm)
+            .text_size(t.type_scale.secondary)
+            .line_height(px(20.0))
+            .text_color(p.color(p.label_secondary))
+            .when(model_icon_only, |button| {
+                button.child(desktop_icon("\u{e950}", "◇"))
+            })
+            .when(!model_icon_only, |button| {
+                button.child(
+                    div()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(model.to_owned()),
+                )
+            })
+            .when(!self.busy, |button| {
+                button
+                    .child(chevron(model_open))
+                    .role(Role::Button)
+                    .aria_label(format!("选择模型，当前 {model}"))
+                    .aria_expanded(model_open)
+                    .focusable()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(p.color(p.interactive_hover)))
+                    .tooltip(toolbar_tooltip(format!("选择模型 · {model}"), *t))
+                    .on_click(cx.listener(|chat, _, _, cx| {
+                        chat.toggle_composer_menu(ComposerMenu::Model, cx);
+                    }))
+            });
+        let add_open = self.composer_menu == Some(ComposerMenu::Add);
+        let menu = |kind, cx: &mut Context<Self>| {
+            self.composer_options(kind, t, menu_max_width, menu_max_height, cx)
+        };
+        let toolbar = div()
+            .flex()
+            .items_center()
+            .gap(px(if compact_toolbar { 8.0 } else { 12.0 }))
+            .pt(px(2.0))
+            .px(px(8.0))
+            .pb(px(6.0))
+            .child(
+                toolbar_icon_button("composer-add", "添加附件或调用指令", "\u{e710}", "+", t)
+                    .rounded_full()
+                    .bg(p.color(if add_open {
+                        p.interactive_hover_solid
+                    } else {
+                        p.tag
+                    }))
+                    .aria_expanded(add_open)
+                    .when(can_add, |button| {
+                        button.on_click(cx.listener(|chat, _, _, cx| {
+                            chat.toggle_composer_menu(ComposerMenu::Add, cx);
+                        }))
+                    })
+                    .when(!can_add, |button| button.opacity(0.5).cursor_default()),
+            )
+            .child(popover::attach(
+                permission_picker,
+                menu(ComposerMenu::Permission, cx),
+                gpui::Anchor::TopLeft,
+                gpui::Anchor::BottomLeft,
+            ))
+            .child(div().flex_1().min_w(px(0.0)))
+            .child(popover::attach(
+                model_picker,
+                menu(ComposerMenu::Model, cx),
+                gpui::Anchor::TopRight,
+                gpui::Anchor::BottomRight,
+            ))
+            .child(
+                div()
+                    .id("send-button")
+                    .role(Role::Button)
+                    .aria_label(button_label)
+                    .size(px(34.0))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(p.color(p.button_info))
+                    .text_color(gpui::white())
+                    .child(desktop_icon(button_glyph, button_fallback).text_size(px(16.0)))
+                    .when(!can_send, |button| button.opacity(0.4))
+                    .when(can_send, |button| {
+                        button
+                            .focusable()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(p.color(p.button_info_hover)))
+                            .on_click(
+                                cx.listener(|chat, _, window, cx| chat.button_click(window, cx)),
+                            )
+                    }),
+            );
+        let card = div()
+            .id("composer-card")
+            .w_full()
+            .max_w(t.layout.composer_max_width)
+            .relative()
+            .flex()
+            .flex_col()
+            .pt(px(7.0))
+            .gap(px(12.0))
+            .rounded(t.radii.panel)
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .shadow(vec![
+                gpui::BoxShadow::new(px(0.0), px(4.0), gpui::rgba(0x0000_0008).into())
+                    .blur_radius(px(16.0)),
+                gpui::BoxShadow::new(px(0.0), px(0.0), gpui::rgba(0x0000_0008).into())
+                    .blur_radius(px(24.0)),
+            ])
+            .child(composer_surface::surface(t, can_add))
+            .when(can_add, |composer| {
+                composer
+                    .drag_over::<ExternalPaths>(|style, _, _, _| style)
+                    .on_drop(cx.listener(|chat, paths: &ExternalPaths, _, cx| {
+                        chat.add_attachments(AttachmentSource::Paths(paths.paths().to_vec()), cx);
+                    }))
+            })
+            .when(!self.attachments.is_empty(), |composer| {
+                composer.child(self.attachment_chips(t, cx))
+            })
+            .child(
+                div()
+                    .id("composer-editing-area")
+                    .pl(px(13.0))
+                    .pr(px(11.0))
+                    .pt(px(4.0))
+                    .min_h(px(if hero { 52.0 } else { 36.0 }))
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.0))
+                    .when(choosing_command, |input| input.key_context("DshrSlashMenu"))
+                    .text_color(p.color(p.label_primary))
+                    .child(self.input.clone())
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|chat, _, window, cx| {
+                            if !chat.input.read(cx).focus_handle(cx).is_focused(window) {
+                                chat.focus_composer(window, cx);
+                            }
+                        }),
+                    ),
+            )
+            .child(toolbar)
+            .when(add_open || choosing_command, |card| {
+                let kind = if add_open {
+                    ComposerMenu::Add
+                } else {
+                    ComposerMenu::Commands
+                };
+                card.child(div().absolute().top_0().left_0().child(popover::attach(
+                    div().size(px(0.0)),
+                    menu(kind, cx),
+                    gpui::Anchor::TopLeft,
+                    gpui::Anchor::BottomLeft,
+                )))
+            });
+
         div()
             .flex()
             .flex_col()
+            .flex_none()
             .items_center()
-            .px(px(16.0))
-            .pb(px(8.0))
-            .pt(px(4.0))
+            .px(t.layout.composer_clearance)
+            .pb(px(if hero { 0.0 } else { 4.0 }))
+            .child(card)
+            .when_some(self.attachment_error.as_ref(), |composer, error| {
+                composer.child(
+                    div()
+                        .max_w(t.layout.composer_max_width)
+                        .mt(px(6.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.state_error))
+                        .child(error.clone()),
+                )
+            })
+            .when(self.attachment_load.is_some(), |composer| {
+                composer.child(
+                    div()
+                        .mt(px(6.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_secondary))
+                        .child("正在添加附件…"),
+                )
+            })
+            .when(!hero || choosing_command, |composer| {
+                composer.child(
+                    div()
+                        .id("composer-key-hint")
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .h(px(26.0))
+                        .pt(px(4.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_tertiary))
+                        .child(if choosing_command {
+                            "↑↓ 选择 · 回车运行 · Esc 关闭"
+                        } else {
+                            "回车发送"
+                        })
+                        .when(!choosing_command, |hint| {
+                            let shortcuts = format!("Shift+Enter 换行 · {}", chat_shortcut_hint());
+                            hint.aria_description(shortcuts.clone())
+                                .child(
+                                    desktop_icon("\u{e92e}", "⌨")
+                                        .text_size(px(11.0))
+                                        .line_height(px(14.0)),
+                                )
+                                .tooltip(toolbar_tooltip(shortcuts, *t))
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn empty_composer(
+        &self,
+        composer: AnyElement,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = t.palette;
+        div()
+            .id("empty-composer")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .child(div().flex_1().min_h(px(12.0)))
             .child(
                 div()
-                    .w_full()
-                    .max_w(t.layout.composer_max_width)
                     .flex()
                     .flex_col()
-                    .rounded(t.radii.panel)
-                    .border_1()
-                    .border_color(p.color(p.border_l2))
-                    .bg(p.color(p.input_major))
-                    .shadow_sm()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(8.0))
+                    .mb(px(18.0))
                     .child(
                         div()
-                            .px(px(20.0))
-                            .pt(px(14.0))
-                            .min_h(px(48.0))
+                            .size(px(48.0))
+                            .rounded(t.radii.lg)
+                            .bg(p.color(p.business_tertiary))
                             .flex()
                             .items_center()
-                            .text_size(t.type_scale.body)
-                            .line_height(t.type_scale.body_line)
-                            .text_color(p.color(p.label_primary))
-                            .child(self.input.clone()),
+                            .justify_center()
+                            .text_size(px(20.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.color(p.link))
+                            .child("D"),
                     )
                     .child(
                         div()
-                            .px(px(12.0))
-                            .pb(px(10.0))
-                            .pt(px(2.0))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .px(px(8.0))
-                                            .py(px(2.0))
-                                            .rounded(t.radii.sm)
-                                            .bg(p.color(p.tag))
-                                            .text_size(t.type_scale.small)
-                                            .text_color(p.color(p.label_secondary))
-                                            .child("deepseek-chat"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(t.type_scale.small)
-                                            .text_color(p.color(p.label_caption))
-                                            .child("本地会话 · 严格工具协议"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("send-button")
-                                    .role(Role::Button)
-                                    .aria_label(if self.busy {
-                                        "停止生成"
-                                    } else {
-                                        "发送消息"
-                                    })
-                                    .w(px(34.0))
-                                    .h(px(34.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_full()
-                                    .bg(p.color(button_bg))
-                                    .text_color(p.color(p.bg_base))
-                                    .text_size(px(16.0))
-                                    .cursor_pointer()
-                                    .child(button_label)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.button_click(window, cx);
-                                    })),
-                            ),
+                            .text_size(t.type_scale.h2)
+                            .line_height(t.type_scale.h2_line)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.color(p.label_primary))
+                            .child("开始对话"),
                     ),
             )
+            .child(composer)
             .child(
                 div()
-                    .mt(px(6.0))
-                    .text_size(t.type_scale.small)
-                    .text_color(p.color(p.label_caption))
-                    .child("回车发送 · 生成中可停止 · 输入法组合输入可用")
-                    .child(chat_shortcut_hint()),
+                    .w_full()
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .pt(px(8.0))
+                    .child(self.workspace_picker(t, cx)),
             )
+            .child(div().flex_1().min_h(px(32.0)))
             .into_any_element()
     }
 }
@@ -4904,7 +7007,10 @@ impl ChatApp {
 /// 这是"数据"而不是"样式"：渲染时再按 DSH 的对话样式组合。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Row {
-    User(String),
+    User {
+        text: String,
+        attachments: Vec<UserAttachment>,
+    },
     Assistant(String),
     Tool {
         name: String,
@@ -4922,7 +7028,7 @@ enum Row {
 impl Row {
     fn main_text(&self) -> String {
         match self {
-            Self::User(text) => format!("你 · {text}"),
+            Self::User { text, .. } => format!("你 · {text}"),
             Self::Assistant(text) => format!("助手 · {text}"),
             Self::Tool {
                 name,
@@ -4947,21 +7053,66 @@ fn is_streaming_row(row: &Row) -> bool {
     matches!(row, Row::Assistant(text) if text.contains('▌'))
 }
 
-/// 虚拟化列表的行间距（必须与 transcript 列容器的 `gap` 一致）。
-const ROW_GAP: f32 = 16.0;
+fn turn_preview(row: &Row) -> Option<&str> {
+    let Row::User { text, attachments } = row else {
+        return None;
+    };
+    Some(
+        text.lines()
+            .find(|line| !line.trim().is_empty())
+            .or_else(|| attachments.first().map(|file| file.name.as_str()))
+            .unwrap_or_default(),
+    )
+}
+
+fn turn_rail_window(total: usize, active: usize) -> std::ops::Range<usize> {
+    let count = total.min(7);
+    let start = active.saturating_sub(count / 2).min(total - count);
+    start..start + count
+}
 
 /// 估计一行的高度（逻辑像素）。用于虚拟化的滚动占位；估算偏差只影响滚动条比例，
 /// 不影响可见行之间的真实排版。按 CJK 宽度保守估计每行字符数。
 fn estimated_row_height(row: &Row) -> f32 {
     const LINE: f32 = 23.0;
     match row {
-        Row::User(text) => {
+        Row::User { text, attachments } => {
             let chars = text.chars().count() as f32;
-            (chars / 28.0).ceil().max(1.0) * LINE + 20.0
+            let text_height = if text.is_empty() {
+                0.0
+            } else {
+                (chars / 28.0).ceil() * LINE + 43.0
+            };
+            let image_height = if attachments.len() == 1 {
+                144.0_f32
+            } else {
+                80.0
+            };
+            let attachment_height: f32 = attachments
+                .chunks(2)
+                .map(|row| {
+                    if row
+                        .iter()
+                        .any(|attachment| attachment.file.as_ref().is_some_and(stored_image))
+                    {
+                        image_height + 6.0
+                    } else {
+                        48.0
+                    }
+                })
+                .sum();
+            text_height + attachment_height
         }
         Row::Assistant(text) => {
             let chars = text.chars().count() as f32;
-            (chars / 36.0).ceil().max(1.0) * LINE + 12.0
+            let actions = if text.ends_with('▌') {
+                22.0
+            } else if text.is_empty() {
+                0.0
+            } else {
+                28.0
+            };
+            (chars / 36.0).ceil().max(1.0) * LINE + 12.0 + actions
         }
         Row::Tool { detail, .. } => {
             let chars = detail.chars().count() as f32;
@@ -4980,7 +7131,10 @@ fn streaming_text(row: &Row) -> &str {
 
 fn describe(item: &Item) -> Row {
     match item {
-        Item::User { text } => Row::User(text.clone()),
+        Item::User { text, attachments } => Row::User {
+            text: text.clone(),
+            attachments: attachments.clone(),
+        },
         Item::Assistant { text } => Row::Assistant(text.clone()),
         Item::Tool(tool) => {
             let (status, pending) = match &tool.state {
@@ -5093,11 +7247,25 @@ impl Render for ChatApp {
                 self.rows.last().map(Row::main_text)
             );
         }
-        let theme = self.theme();
+        let mut theme = self.theme();
         let p = theme.palette;
         if !self.initial_scroll_done && !self.rows.is_empty() {
             self.scroll.scroll_to_bottom();
             self.initial_scroll_done = true;
+            // Re-anchor after the virtualized list has laid out the real tail rows.
+            let session_id = self.session_id.clone();
+            let chat = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = chat.update(cx, |chat, cx| {
+                    if chat.session_id == session_id
+                        && chat.follow_transcript
+                        && !chat.activity_open
+                    {
+                        chat.scroll.scroll_to_bottom();
+                        cx.notify();
+                    }
+                });
+            });
         }
         // 帧探针：每帧推进滚动位置并请求下一帧；达到目标帧数后写报告（可选退出）。
         // 时间戳全部来自 GPUI 渲染管线，测量的是真实滚动帧率而不是估算。
@@ -5140,39 +7308,106 @@ impl Render for ChatApp {
                 cx.quit();
             }
         }
-        // 窄窗口（远程会话 / 小屏）自动收起侧栏，否则 280 的侧栏会把正文挤到窗口外；
-        // 插件面板打开时同理，否则 280+300 会吃掉正文宽度。
-        let collapsed =
-            self.sidebar_collapsed || self.plugins_open || window.bounds().size.width < px(600.0);
-        let mut shell = div().flex().size_full().bg(p.color(p.sidebar_fill));
-        if !collapsed {
-            shell = shell.child(self.sidebar(&theme, cx));
-        }
-        shell = shell.child(
-            div()
-                .flex_1()
-                .h_full()
-                .min_w(px(0.0))
-                .flex()
-                .flex_col()
-                .rounded_tl(theme.radii.lg)
-                .border_l_1()
-                .border_color(p.color(p.border_l3))
-                .bg(p.color(p.bg_base))
-                .child(self.header(&theme, collapsed, cx))
-                // 启动/加载错误在 GUI 主界面可见（双击启动没有控制台可看 stderr）。
-                .when(!self.plugin_errors.is_empty(), |el| {
-                    el.child(self.error_banner(&theme))
-                })
-                .child(self.transcript(&theme, window, cx))
-                .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
-                .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
-                    el.child(bar)
-                })
-                .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
-                .child(self.composer(&theme, cx)),
-        );
-        shell
+        let collapsed = self.sidebar_is_collapsed(window);
+        let width = window.bounds().size.width;
+        let sidebar_width = if collapsed {
+            px(48.0)
+        } else {
+            theme.layout.sidebar_width
+        };
+        let body_width = width - sidebar_width;
+        let compact = body_width < px(480.0);
+        theme.layout.composer_max_width =
+            (body_width * 0.64).clamp(px(680.0), px(920.0)) + px(32.0);
+        let hero = self.rows.is_empty() && !self.busy && !self.activity_open;
+        let show_turn_rail =
+            !compact && !self.activity_open && window.viewport_size().height >= px(388.0);
+        let show_window_bar = cfg!(target_os = "windows") && !window.is_fullscreen();
+        let shell = div()
+            .relative()
+            .flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .bg(p.color(p.sidebar_fill))
+            .child(if collapsed {
+                self.sidebar_rail(&theme, cx)
+            } else {
+                self.sidebar(&theme, cx)
+            });
+        let body = div()
+            .flex_1()
+            .h_full()
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .rounded_tl(theme.radii.lg)
+            .border_l_1()
+            .border_color(p.color(p.border_l3))
+            .bg(p.color(p.bg_base));
+        let body = if self.plugins_open {
+            body.child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(self.plugins_page(&theme, cx)),
+            )
+            .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
+            .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
+                el.child(bar)
+            })
+            .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
+        } else {
+            let composer =
+                self.composer(&theme, hero, body_width, window.viewport_size().height, cx);
+            body.child(self.header(
+                &theme,
+                collapsed,
+                compact,
+                show_turn_rail,
+                show_window_bar,
+                cx,
+            ))
+            // 启动/加载错误在 GUI 主界面可见（双击启动没有控制台可看 stderr）。
+            .when(!self.plugin_errors.is_empty(), |el| {
+                el.child(self.error_banner(&theme))
+            })
+            .when(!hero, |body| {
+                body.child(self.transcript(&theme, show_turn_rail, window, cx))
+            })
+            .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
+            .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
+                el.child(bar)
+            })
+            .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
+            .child(if hero {
+                self.empty_composer(composer, &theme, cx)
+            } else {
+                composer
+            })
+        };
+        let shell = shell
+            .child(body)
+            .children(self.settings_overlay(&theme, width, cx))
+            .when_some(self.image_preview_overlay(&theme, cx), |el, overlay| {
+                el.child(overlay)
+            });
+        let frame = div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(p.color(p.sidebar_fill));
+        #[cfg(target_os = "windows")]
+        let frame = frame
+            .when(show_window_bar, |frame| {
+                frame.child(self.window_bar(&theme, collapsed, window, cx))
+            })
+            .when(show_window_bar, |frame| {
+                frame.children(self.window_menu_dismiss_layer(cx))
+            });
+        frame
+            .child(shell)
             .on_action(cx.listener(Self::shortcut_new_session))
             .on_action(cx.listener(Self::shortcut_focus_composer))
             .on_action(cx.listener(Self::shortcut_toggle_sidebar))
@@ -5181,7 +7416,12 @@ impl Render for ChatApp {
             .on_action(cx.listener(Self::shortcut_deny_first))
             .on_action(cx.listener(Self::shortcut_escape))
             .on_action(cx.listener(Self::shortcut_quit))
-            .when_some(self.plugins_panel(&theme, cx), |el, panel| el.child(panel))
+            .on_action(cx.listener(|this, _: &PreviousSlashCommand, _, cx| {
+                this.move_slash_selection(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextSlashCommand, _, cx| {
+                this.move_slash_selection(1, cx);
+            }))
     }
 }
 
@@ -6842,7 +9082,7 @@ fn selftest_loader() -> i32 {
     }
 }
 
-/// 离线安装插件：`chat --install-plugin <本地包目录>`。
+/// 离线安装插件：`dshr --install-plugin <本地包目录>`。
 ///
 /// 复制到 `sidecar/dsh-official/node_modules/<name>` 并追加 profile 条目；
 /// 不解析 npm 依赖（包需要在本地已完整）。
@@ -6901,7 +9141,7 @@ fn sessions_dir_from_env() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".tmp/sessions"))
 }
 
-/// `chat --export-session <id> [--export-dir <dir>]`：
+/// `dshr --export-session <id> [--export-dir <dir>]`：
 /// 导出 JSONL + 外部化附件 + manifest（sha256），并立刻自校验。
 fn export_session_cli(id: &str, out: Option<PathBuf>) -> i32 {
     let store = SessionIndex::new(sessions_dir_from_env());
@@ -6966,7 +9206,7 @@ fn export_session_cli(id: &str, out: Option<PathBuf>) -> i32 {
     }
 }
 
-/// `chat --retention-plan`：只计算、不删除（每个会话一个 JSONL 段）。
+/// `dshr --retention-plan`：只计算、不删除（每个会话一个 JSONL 段）。
 fn retention_plan_cli() -> i32 {
     use dshr_session_export::{plan_retention, RetentionPolicy, SegmentUsage, SessionUsage};
     let store = SessionIndex::new(sessions_dir_from_env());
@@ -7115,7 +9355,7 @@ fn install_plugin_with_options(
                 report.trust.signature_status.as_str()
             );
             println!(
-                "[install] profile={}；重启 chat 后加载",
+                "[install] profile={}；重启 DSHR 后加载",
                 profile.path().display()
             );
             println!(
@@ -7244,7 +9484,7 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// `chat --uninstall-plugin <name>`：目录 + profile + 审计（M4 W1）。
+/// `dshr --uninstall-plugin <name>`：目录 + profile + 审计（M4 W1）。
 fn uninstall_plugin_cli(name: String) -> i32 {
     let sidecar_dir = sidecar_dir_for_app();
     let profile_dir = profile_dir_for_app();
@@ -7292,7 +9532,7 @@ fn trust_key_status(key: &TrustKey, at_ms: u64) -> &'static str {
     }
 }
 
-/// `chat --trust-key <list|add|remove|revoke|rotate> ...`：本机信任密钥库管理。
+/// `dshr --trust-key <list|add|remove|revoke|rotate> ...`：本机信任密钥库管理。
 fn trust_key_cli(args: &[String]) -> i32 {
     let profile_dir = profile_dir_for_app();
     if let Err(err) = std::fs::create_dir_all(&profile_dir) {
@@ -7331,7 +9571,7 @@ fn trust_key_cli(args: &[String]) -> i32 {
         }
         "add" => {
             let (Some(key_id), Some(public_key_hex)) = (args.get(1), args.get(2)) else {
-                eprintln!("用法: chat --trust-key add <key_id> <public_key_hex> [--note <text>]");
+                eprintln!("用法: dshr --trust-key add <key_id> <public_key_hex> [--note <text>]");
                 return 2;
             };
             let note = args
@@ -7357,7 +9597,7 @@ fn trust_key_cli(args: &[String]) -> i32 {
         }
         "remove" | "revoke" => {
             let Some(key_id) = args.get(1) else {
-                eprintln!("用法: chat --trust-key {action} <key_id>");
+                eprintln!("用法: dshr --trust-key {action} <key_id>");
                 return 2;
             };
             let result = if action == "remove" {
@@ -7384,7 +9624,7 @@ fn trust_key_cli(args: &[String]) -> i32 {
                 (args.get(1), args.get(2), args.get(3))
             else {
                 eprintln!(
-                    "用法: chat --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>"
+                    "用法: dshr --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>"
                 );
                 return 2;
             };
@@ -7670,11 +9910,7 @@ fn load_enabled_external_plugins(
             }
             RuntimeKind::WasmComponent => {
                 let plugin_id = manifest.plugin.id.clone();
-                let entry = manifest
-                    .runtime
-                    .entry
-                    .as_deref()
-                    .unwrap_or("plugin.wasm");
+                let entry = manifest.runtime.entry.as_deref().unwrap_or("plugin.wasm");
                 let entry_path = package_dir.join(entry);
                 // component binary: \0asm + version 0x0d 0x00 0x01 0x00
                 let is_component = std::fs::read(&entry_path)
@@ -8028,11 +10264,9 @@ fn selftest_cpp_component() -> i32 {
         }
     };
     let mut plugins = PluginHost::new(AllowAll);
-    if let Err(error) = plugins.load_cpp_component_plugin_from_manifest(
-        &manifest,
-        &root,
-        &host_sdk_version(),
-    ) {
+    if let Err(error) =
+        plugins.load_cpp_component_plugin_from_manifest(&manifest, &root, &host_sdk_version())
+    {
         eprintln!("[selftest-cpp-component] FAIL：装载: {error}");
         return 1;
     }
@@ -9337,7 +11571,7 @@ fn selftest_perf() -> i32 {
 }
 
 /// 多轮真实对话（需要 API key）：验证"多轮记忆"而不是单轮应答。
-/// 用法：`chat --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
+/// 用法：`dshr --live-chat "第一句" "第二句" ...`（每个参数是一轮用户消息）
 fn live_chat(script: &[String]) -> i32 {
     let path = PathBuf::from(".tmp/chat-live-chat.jsonl");
     let _ = std::fs::create_dir_all(".tmp");
@@ -9733,6 +11967,7 @@ fn selftest_parallel_tools() -> i32 {
         sessions_dir: &state.sessions_dir,
         parent_id: "s-parallel",
         cancel: &cancel,
+        settings: &state.settings,
         allow_spawn: false,
         l2_access: state.l2_access.clone(),
     };
@@ -9793,6 +12028,69 @@ fn selftest_parallel_tools() -> i32 {
         println!("[selftest-parallel-tools] FAIL（并行加速比应 < 0.6）");
         1
     }
+}
+
+fn run_navigation_flow(window: gpui::WindowHandle<ChatApp>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let delay = Duration::from_millis(250);
+        cx.background_executor().timer(delay).await;
+        let initial = window.update(cx, |chat, _, _| {
+            chat.visible_limit < chat.rows.len() && chat.scroll.offset().y < px(-100.0)
+        }).unwrap_or(false);
+
+        for key in ["/", "down", "down", "enter"] {
+            let _ = window.update(cx, |_, window, cx| {
+                window.defer(cx, move |window, cx| {
+                    let mut keystroke = gpui::Keystroke::parse(key).expect("navigation flow key");
+                    if key == "/" {
+                        keystroke.key_char = Some("/".into());
+                    }
+                    window.dispatch_keystroke(keystroke, cx);
+                });
+            });
+            cx.background_executor().timer(delay).await;
+        }
+        let invoked = window.update(cx, |chat, window, cx| {
+            let invoked = chat.turn_menu_open && chat.composer_menu.is_none()
+                && chat.input.read(cx).content().is_empty() && !chat.busy;
+            if invoked {
+                let position = point(
+                    window.viewport_size().width - px(150.0),
+                    chat.scroll.bounds().top() + px(20.0),
+                );
+                window.defer(cx, move |window, cx| {
+                    window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position,
+                        modifiers: gpui::Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }), cx);
+                    window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        position,
+                        modifiers: gpui::Modifiers::default(),
+                        click_count: 1,
+                    }), cx);
+                });
+            }
+            invoked
+        }).unwrap_or(false);
+        cx.background_executor().timer(delay).await;
+        let anchored = window.update(cx, |chat, _, _| {
+            let scroll = &chat.scroll;
+            scroll.bounds_for_item(0).is_some_and(|bounds| {
+                let top = bounds.top() + scroll.offset().y;
+                top >= scroll.bounds().top() - px(1.0)
+                    && top <= scroll.bounds().top() + px(24.0)
+            }) && chat.visible_limit >= chat.rows.len() && !chat.turn_menu_open
+        }).unwrap_or(false);
+        println!("[navigation-flow] initial_tail={initial} slash_invoked={invoked} first_turn_visible={anchored}");
+        if !(initial && invoked && anchored) {
+            std::process::exit(1);
+        }
+        cx.update(|cx| cx.quit());
+    }).detach();
 }
 
 fn main() {
@@ -9934,7 +12232,7 @@ fn main() {
     if let Some(index) = std::env::args().position(|arg| arg == "--install-plugin") {
         let Some(path) = std::env::args().nth(index + 1) else {
             eprintln!(
-                "用法: chat --install-plugin <本地包目录> [--yes-install] [--allow-downgrade]"
+                "用法: dshr --install-plugin <本地包目录> [--yes-install] [--allow-downgrade]"
             );
             std::process::exit(2);
         };
@@ -9942,7 +12240,7 @@ fn main() {
     }
     if let Some(index) = std::env::args().position(|arg| arg == "--uninstall-plugin") {
         let Some(name) = std::env::args().nth(index + 1) else {
-            eprintln!("用法: chat --uninstall-plugin <插件名>");
+            eprintln!("用法: dshr --uninstall-plugin <插件名>");
             std::process::exit(2);
         };
         std::process::exit(uninstall_plugin_cli(name));
@@ -9953,7 +12251,7 @@ fn main() {
     }
     if let Some(index) = std::env::args().position(|arg| arg == "--export-session") {
         let Some(id) = std::env::args().nth(index + 1) else {
-            eprintln!("用法: chat --export-session <会话 id> [--export-dir <目录>]");
+            eprintln!("用法: dshr --export-session <会话 id> [--export-dir <目录>]");
             std::process::exit(2);
         };
         let out = std::env::args()
@@ -10041,7 +12339,7 @@ fn main() {
     let (mut sessions, mut session_depths) = ordered_sessions(&store);
     if sessions.is_empty() {
         let id = store.new_id();
-        if let Err(err) = store.create(&id) {
+        if let Err(err) = store.create_root(&id, &workspace_root().to_string_lossy(), &now_ts()) {
             eprintln!("[chat] 无法创建初始会话: {err}");
             std::process::exit(1);
         }
@@ -10082,11 +12380,18 @@ fn main() {
     let recovery_path = path.clone();
     let cancel = Arc::new(AtomicBool::new(false));
     let approvals = ApprovalBroker::new();
-    let state = Arc::new(Mutex::new(ChatState::new(
+    let model_options = configured_models();
+    let preferences = settings_view::Preferences::load(&data_root());
+    let mut settings = DesktopSettings::from_env(&model_options);
+    preferences.apply(&mut settings, &model_options);
+    let state = Arc::new(Mutex::new(ChatState::open_with_settings(
         path,
         &active,
         &cancel,
         approvals.clone(),
+        true,
+        true,
+        settings.clone(),
     )));
     let app_cancel = cancel.clone();
     // 已安装的 external-process 插件：按 profile 的 enabled 条目在启动时装载；
@@ -10101,7 +12406,7 @@ fn main() {
         // external-process 面板也在这里取一次树（之后渲染只读缓存）。
         guard.refresh_adc_panels();
     }
-    let (rows, plugin_errors, adc_panels) = {
+    let (rows, plugin_errors, adc_panels, active_workspace) = {
         let guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -10109,14 +12414,14 @@ fn main() {
             rows_snapshot(&guard.log, None),
             guard.load_errors(),
             guard.adc_panels.clone(),
+            guard.workspace.clone(),
         )
     };
 
     application().run(move |cx: &mut App| {
-        // M4 W2：全局键盘动作（cmd 在 Windows 映射 Ctrl，在 macOS 映射 Cmd）。
-        cx.bind_keys(chat_key_bindings());
-        // 文本输入组件的按键绑定（含回车提交）。
+        // 指令菜单打开时，方向键优先选择指令，再回退到草稿光标移动。
         dshr_ui_gpui::init(cx);
+        cx.bind_keys(chat_key_bindings());
         // 先用一个保守尺寸开窗，拿到真实 scale / display 后再调整。
         // 高 DPI（本机 1.75）下 GPUI 把 Bounds 当逻辑像素、平台再乘 scale 变成物理窗口，
         // 而远程会话的可见视口可能只有显示器逻辑尺寸的一半——直接开 1180x780 会让
@@ -10135,83 +12440,158 @@ fn main() {
         let plugin_errors = plugin_errors;
         let adc_panels = adc_panels;
         let recovery_path = recovery_path;
-        let window_handle = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            move |window, cx| {
-                // 按"可见视口是逻辑尺寸 / scale"来估算，保证物理窗口不超过可见区域。
-                if let Some(display) = window.display(cx) {
-                    let scale = window.scale_factor();
-                    let available = display.visible_bounds().size;
-                    let width = (available.width.as_f32() / scale - 16.0).clamp(560.0, 1180.0);
-                    let height = (available.height.as_f32() / scale - 24.0).clamp(400.0, 780.0);
-                    if std::env::var("DSHR_UI_TRACE").as_deref() == Ok("1") {
-                        eprintln!(
-                            "[ui-trace] display={:?} scale={scale} window={width}x{height}",
-                            available
-                        );
+        let window_handle = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("DSHR".into()),
+                        appears_transparent: cfg!(target_os = "windows"),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                move |window, cx| {
+                    // 按"可见视口是逻辑尺寸 / scale"来估算，保证物理窗口不超过可见区域。
+                    if let Some(display) = window.display(cx) {
+                        let scale = window.scale_factor();
+                        let available = display.visible_bounds().size;
+                        let width = (available.width.as_f32() / scale - 16.0).clamp(560.0, 1180.0);
+                        let height = (available.height.as_f32() / scale - 24.0).clamp(400.0, 780.0);
+                        if std::env::var("DSHR_UI_TRACE").as_deref() == Ok("1") {
+                            eprintln!(
+                                "[ui-trace] display={:?} scale={scale} window={width}x{height}",
+                                available
+                            );
+                        }
+                        window.resize(size(px(width), px(height)));
                     }
-                    window.resize(size(px(width), px(height)));
-                }
-                let input = cx.new(|cx| TextInput::new("输入消息，回车发送", cx));
-                let app = cx.new(|_cx| ChatApp {
-                    state,
-                    rows,
-                    input: input.clone(),
-                    scroll: ScrollHandle::new(),
-                    busy: false,
-                    cancel: app_cancel,
-                    theme_kind: ThemeKind::Light,
-                    sidebar_collapsed: false,
-                    initial_scroll_done: false,
-                    store,
-                    sessions,
-                    session_id: active,
-                    renaming: None,
-                    rename_input: None,
-                    pending_delete: None,
-                    approvals,
-                    pending_approvals: 0,
-                    profile,
-                    plugins_open: false,
-                    pending_external: None,
-                    adc_editor: None,
-                    visible_limit,
-                    frame_probe,
-                    session_depths,
-                    plugin_errors,
-                    sidecar_reload_pending: false,
-                    adc_panels,
-                });
-                // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
-                let weak = app.downgrade();
-                let accepted = std::rc::Rc::new(std::cell::Cell::new(false));
-                let accepted_in = accepted.clone();
-                input.update(cx, |input, _cx| {
-                    input.set_on_submit(Box::new(move |text, _window, cx| {
-                        let accepted = accepted_in.clone();
-                        let _ = weak.update(cx, |chat, cx| {
-                            accepted.set(chat.on_submit(text, cx));
-                        });
-                        accepted_in.get()
-                    }));
-                });
-                let focus = input.read(cx).focus_handle(cx);
-                window.focus(&focus, cx);
-                // 首次 IME 组合前刷新一次坐标，缓解候选窗落到屏幕角落（issue 0001）。
-                window.invalidate_character_coordinates();
-                // 调试钩子：绕过输入法/鼠标，直接发一条消息（验证审批卡片等）。
-                if let Ok(text) = std::env::var("DSHR_UI_AUTOSEND") {
-                    app.update(cx, |chat, cx| {
-                        chat.on_submit(&text, cx);
+                    let input =
+                        cx.new(|cx| TextInput::new("输入消息，或输入 / 查看指令", cx).multiline());
+                    let session_search = cx.new(|cx| TextInput::new("搜索会话或工作区", cx));
+                    let plugin_search = cx.new(|cx| TextInput::new("搜索已安装插件", cx));
+                    let plugin_config_input =
+                        cx.new(|cx| TextInput::new("插件配置", cx).multiline());
+                    let app = cx.new(|cx| {
+                        cx.observe(&session_search, |_, _, cx| cx.notify()).detach();
+                        cx.observe(&plugin_search, |_, _, cx| cx.notify()).detach();
+                        cx.observe(&input, ChatApp::on_composer_input_changed)
+                            .detach();
+                        let activity_scroll = ScrollHandle::new();
+                        activity_scroll.scroll_to_bottom();
+                        ChatApp {
+                            state,
+                            rows,
+                            input: input.clone(),
+                            scroll: ScrollHandle::new(),
+                            message_selection: MessageSelection::new(cx.focus_handle()),
+                            activity_open: false,
+                            activity_scroll,
+                            settings,
+                            model_options,
+                            composer_menu: None,
+                            #[cfg(target_os = "windows")]
+                            window_menu: None,
+                            slash_text: None,
+                            selected_command: 0,
+                            turn_menu_open: false,
+                            turn_jump: None,
+                            turn_focus: None,
+                            follow_transcript: true,
+                            attachments: Vec::new(),
+                            attachment_error: None,
+                            attachment_load: None,
+                            attachment_request: 0,
+                            attachment_preview: None,
+                            attachment_thumbnails: RefCell::new(VecDeque::new()),
+                            busy: false,
+                            cancel: app_cancel,
+                            theme_kind: preferences.theme,
+                            preferences,
+                            settings_tab: None,
+                            settings_focus: cx.focus_handle(),
+                            settings_restore_focus: None,
+                            settings_notice: None,
+                            sidebar_collapsed: None,
+                            initial_scroll_done: false,
+                            store,
+                            sessions,
+                            session_search,
+                            session_search_open: false,
+                            session_id: active,
+                            active_workspace,
+                            folded_workspaces: Default::default(),
+                            workspace_picker_open: false,
+                            workspace_dialog_open: false,
+                            workspace_notice: None,
+                            renaming: None,
+                            rename_input: None,
+                            pending_delete: None,
+                            approvals,
+                            pending_approvals: 0,
+                            profile,
+                            plugins_open: false,
+                            plugin_focus: cx.focus_handle(),
+                            plugin_panels_open: false,
+                            plugin_detail: None,
+                            plugin_manifest_path: None,
+                            plugin_edit_json: false,
+                            plugin_search,
+                            plugin_config_input,
+                            plugin_notice: None,
+                            pending_external: None,
+                            adc_editor: None,
+                            visible_limit,
+                            frame_probe,
+                            session_depths,
+                            plugin_errors,
+                            sidecar_reload_pending: false,
+                            adc_panels,
+                        }
                     });
-                }
-                app
-            },
-        )
-        .expect("failed to open window");
+                    // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
+                    let weak = app.downgrade();
+                    let paste_target = weak.clone();
+                    let accepted = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let accepted_in = accepted.clone();
+                    input.update(cx, |input, _cx| {
+                        input.set_on_paste(Box::new(move |item, _, cx| {
+                            paste_target
+                                .update(cx, |chat, cx| chat.paste_attachments(item, cx))
+                                .unwrap_or(false)
+                        }));
+                        input.set_on_submit(Box::new(move |text, window, cx| {
+                            let accepted = accepted_in.clone();
+                            let _ = weak.update(cx, |chat, cx| {
+                                accepted.set(chat.submit_composer(text, window, cx));
+                            });
+                            accepted_in.get()
+                        }));
+                    });
+                    let focus = input.read(cx).focus_handle(cx);
+                    window.focus(&focus, cx);
+                    // 首次 IME 组合前刷新一次坐标，缓解候选窗落到屏幕角落（issue 0001）。
+                    window.invalidate_character_coordinates();
+                    // 调试钩子：绕过输入法/鼠标，直接发一条消息（验证审批卡片等）。
+                    if let Ok(text) = std::env::var("DSHR_UI_AUTOSEND") {
+                        app.update(cx, |chat, cx| {
+                            chat.on_submit(&text, window, cx);
+                        });
+                    }
+                    app
+                },
+            )
+            .expect("failed to open window");
+        if std::env::var("DSHR_COMPOSER_FLOW").as_deref() == Ok("1") {
+            composer_flow::run(window_handle, cx);
+        }
+        #[cfg(target_os = "windows")]
+        if std::env::var("DSHR_TITLEBAR_FLOW").as_deref() == Ok("1") {
+            window_bar::run_titlebar_flow(window_handle, cx);
+        }
+        if std::env::var("DSHR_NAVIGATION_FLOW").as_deref() == Ok("1") {
+            run_navigation_flow(window_handle, cx);
+        }
         if std::env::var("DSHR_KEYBOARD_FLOW").as_deref() == Ok("1") {
             let approval_result = std::sync::Arc::new(std::sync::Mutex::new(None));
             let approval_out = approval_result.clone();
@@ -10407,11 +12787,384 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_sessions_rebinds_native_writes_to_the_session_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "dshr-workspace-switch-{}-{}",
+            std::process::id(),
+            now_millis()
+        ));
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let store = SessionIndex::new(root.join("sessions"));
+        store
+            .create_root("first", &first.to_string_lossy(), &now_ts())
+            .unwrap();
+        store
+            .create_root("second", &second.to_string_lossy(), &now_ts())
+            .unwrap();
+
+        let mut state = ChatState::open_with_settings(
+            store.path_for("first"),
+            "first",
+            &Arc::new(AtomicBool::new(false)),
+            ApprovalBroker::new(),
+            false,
+            false,
+            DesktopSettings {
+                model: Arc::new(DesktopModel::Mock),
+                permission: Some(PermissionMode::DangerFullAccess),
+            },
+        );
+        assert_eq!(state.workspace, first);
+        state
+            .plugins
+            .call(
+                "probe_write",
+                &json!({"path": "note.txt", "content": "first"}),
+            )
+            .unwrap();
+        state.switch_session(store.path_for("second"), "second");
+        assert_eq!(state.workspace, second);
+        state
+            .plugins
+            .call(
+                "probe_write",
+                &json!({"path": "note.txt", "content": "second"}),
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(first.join("note.txt")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            std::fs::read_to_string(second.join("note.txt")).unwrap(),
+            "second"
+        );
+        drop(state);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     use std::path::Path;
+
+    #[test]
+    fn turn_rail_keeps_the_active_turn_visible_with_bounded_markers() {
+        assert_eq!(turn_rail_window(0, 0), 0..0);
+        assert_eq!(turn_rail_window(3, 2), 0..3);
+        assert_eq!(turn_rail_window(24, 0), 0..7);
+        assert_eq!(turn_rail_window(24, 10), 7..14);
+        assert_eq!(turn_rail_window(24, 23), 17..24);
+    }
+
+    #[test]
+    fn command_menu_matches_only_slash_prefixes() {
+        assert_eq!(slash_commands("/").collect::<Vec<_>>(), SlashCommand::ALL);
+        assert_eq!(
+            slash_commands("/se").collect::<Vec<_>>(),
+            [SlashCommand::Search]
+        );
+        assert_eq!(slash_commands("/theme").next(), Some(SlashCommand::Theme));
+        for ordinary_message in ["/src/main.rs", "/new.txt", "/new later", "see /search"] {
+            assert_eq!(slash_commands(ordinary_message).next(), None);
+        }
+    }
+
+    #[test]
+    fn text_attachment_survives_replay_and_is_sent_once_per_request() {
+        struct RecordingModel(Arc<Mutex<Vec<Vec<String>>>>);
+
+        impl ModelProvider for RecordingModel {
+            fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+                self.0.lock().unwrap().push(
+                    request
+                        .messages
+                        .iter()
+                        .filter_map(|message| match message {
+                            ChatMessage::User(text) => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                );
+                Ok(ModelReply::text_only("已收到"))
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "dshr-attachment-test-{}",
+            now_ts().replace(':', "-")
+        ));
+        let log = root.join("test.jsonl");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_with_settings(
+            log.clone(),
+            "test",
+            &cancel,
+            ApprovalBroker::new(),
+            false,
+            false,
+            DesktopSettings {
+                model: Arc::new(DesktopModel::Mock),
+                permission: Some(PermissionMode::ReadOnly),
+            },
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        *state.agent.provider_mut() = Box::new(RecordingModel(requests.clone()));
+        assert!(state
+            .stream_turn_with_attachments(
+                "",
+                &[DraftAttachment::new(
+                    "notes.txt".into(),
+                    AttachmentContent::Text("fixture body".into()),
+                )],
+                &mut |_| {},
+            )
+            .is_some());
+        let first = "附件 \"notes.txt\"：\nfixture body".to_owned();
+
+        let replayed =
+            SessionLog::from_jsonl("test", &std::fs::read_to_string(&log).unwrap()).unwrap();
+        assert!(matches!(
+            &build_from_log(&replayed)[0],
+            Item::User { text, attachments }
+                if text.is_empty() && attachments.len() == 1
+                    && attachments[0].name == "notes.txt" && attachments[0].file.is_none()
+        ));
+        let index = SessionIndex::new(&root);
+        assert_eq!(index.scan().unwrap()[0].title, "notes.txt");
+        assert_eq!(
+            history_for_model(&replayed)[0],
+            ChatMessage::User(first.clone())
+        );
+        assert!(state.stream_turn("继续", &mut |_| {}).is_some());
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![vec![first.clone()], vec![first, "继续".to_owned()]]
+        );
+        drop(state);
+        index.delete("test").unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn media_attachments_survive_restart_and_export() {
+        struct RecordingModel(Arc<Mutex<Vec<Vec<ChatMessage>>>>);
+
+        impl ModelProvider for RecordingModel {
+            fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+                self.0.lock().unwrap().push(
+                    request
+                        .messages
+                        .iter()
+                        .filter(|message| message.user_text().is_some())
+                        .cloned()
+                        .collect(),
+                );
+                Ok(ModelReply::text_only("已收到"))
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "dshr-media-test-{}-{}",
+            std::process::id(),
+            now_ts().replace(':', "-")
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(300, 150, image::Rgb([32, 96, 224]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let fixtures = [
+            ("样图.png", AttachmentFormat::Png, png.get_ref().as_slice()),
+            (
+                "notes.pdf",
+                AttachmentFormat::Pdf,
+                b"%PDF-1.4\nfixture\n%%EOF".as_slice(),
+            ),
+        ];
+        let paths = fixtures
+            .iter()
+            .map(|(name, _, bytes)| {
+                let path = root.join(name);
+                std::fs::write(&path, bytes).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        assert!(read_attachments(paths.clone(), 1, 32 * 1024, 1024).is_err());
+        assert!(read_attachments(paths.clone(), 4, 32 * 1024, 8).is_err());
+        let attachments = read_attachments(paths, 4, 32 * 1024, 4096).unwrap();
+        let thumbnail = attachments[0].thumbnail.as_ref().unwrap();
+        assert_eq!(thumbnail.size(0), size(200u32.into(), 100u32.into()));
+        assert_eq!(&thumbnail.as_bytes(0).unwrap()[..4], &[224, 96, 32, 255]);
+        assert!(attachments[1].thumbnail.is_none());
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let open = || {
+            let mut state = ChatState::open_with_settings(
+                root.join("test.jsonl"),
+                "test",
+                &cancel,
+                ApprovalBroker::new(),
+                false,
+                false,
+                DesktopSettings {
+                    model: Arc::new(DesktopModel::Mock),
+                    permission: Some(PermissionMode::ReadOnly),
+                },
+            );
+            state.spill = SpillStore::new(root.join("blobs"));
+            *state.agent.provider_mut() = Box::new(RecordingModel(requests.clone()));
+            state
+        };
+        let mut state = open();
+        assert!(state
+            .stream_turn_with_attachments("", &attachments, &mut |_| {})
+            .is_some());
+        drop(state);
+        let mut state = open();
+        let projection = build_from_log(&state.log);
+        let Item::User { text, attachments } = &projection[0] else {
+            panic!("missing user attachments after reopening");
+        };
+        assert!(text.is_empty());
+        assert_eq!(attachments.len(), 2);
+        for (attachment, (name, format, bytes)) in attachments.iter().zip(fixtures) {
+            assert_eq!(attachment.name, name);
+            let file = attachment.file.as_ref().unwrap();
+            assert_eq!(file.size, bytes.len() as u64);
+            assert_eq!(file.mime, format.mime());
+        }
+        let stored = StoredAttachment {
+            root: state.spill.root().to_owned(),
+            file: attachments[0].file.as_ref().unwrap().clone(),
+        };
+        let preview = PreviewSource::Stored(stored.clone()).load().unwrap();
+        assert_eq!(preview.size(0), size(300u32.into(), 150u32.into()));
+        assert_eq!(
+            SessionIndex::new(&root).scan().unwrap()[0].title,
+            "样图.png"
+        );
+        assert!(state.stream_turn("继续", &mut |_| {}).is_some());
+
+        let recorded = requests.lock().unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].len(), 1);
+        assert_eq!(recorded[1].len(), 2);
+        assert_eq!(recorded[1][0], recorded[0][0]);
+        assert_eq!(recorded[1][1], ChatMessage::user("继续"));
+        let ChatMessage::UserWithAttachments { text, attachments } = &recorded[0][0] else {
+            panic!("missing media user message");
+        };
+        assert!(text.is_empty());
+        assert_eq!(attachments.len(), fixtures.len());
+        for (attachment, (name, format, bytes)) in attachments.iter().zip(fixtures) {
+            assert_eq!(attachment.name, name);
+            assert_eq!(attachment.format, format);
+            assert_eq!(attachment.bytes.as_deref(), Some(bytes));
+        }
+
+        let out = root.join("export");
+        let manifest = export_session(
+            &state.log,
+            &SpillStoreSource::new(&state.spill),
+            &out,
+            &ExportOptions::new(now_ts()).fail_on_missing_blob(true),
+        )
+        .unwrap();
+        assert!(verify_export(&out, "test").unwrap().is_ok());
+        assert_eq!(manifest.attachments.len(), fixtures.len());
+        for (_, format, bytes) in fixtures {
+            let entry = manifest
+                .attachments
+                .iter()
+                .find(|entry| entry.mime == format.mime())
+                .unwrap();
+            assert_eq!(std::fs::read(out.join(&entry.path)).unwrap(), bytes);
+        }
+        assert!(!std::fs::read(out.join(&manifest.jsonl.path))
+            .unwrap()
+            .windows(b"%PDF-1.4".len())
+            .any(|window| window == b"%PDF-1.4"));
+        let mut corrupted = fixtures[0].2.to_vec();
+        corrupted[0] ^= 0xff;
+        std::fs::write(state.spill.object_path(&stored.file), corrupted).unwrap();
+        assert!(PreviewSource::Stored(stored).load().is_err());
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clipboard_bitmap_is_converted_to_png_with_media_budget() {
+        use image::{ImageFormat, Rgb, RgbImage};
+        use std::io::Cursor;
+
+        let mut bitmap = Cursor::new(Vec::new());
+        RgbImage::from_pixel(2, 1, Rgb([10, 20, 30]))
+            .write_to(&mut bitmap, ImageFormat::Bmp)
+            .unwrap();
+        let bitmap = bitmap.into_inner();
+        assert!(read_clipboard_image(bitmap.clone(), 8).is_err());
+        let attachment = read_clipboard_image(bitmap, 1024).unwrap();
+        assert_eq!(attachment.name, "剪贴板图片.png");
+        let AttachmentContent::Media { format, bytes } = attachment.content else {
+            panic!("expected an image attachment");
+        };
+        assert_eq!(format, AttachmentFormat::Png);
+        let png = image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(png.dimensions(), (2, 1));
+        assert_eq!(png.get_pixel(0, 0), &Rgb([10, 20, 30]));
+    }
+
+    #[test]
+    fn permission_change_reauthorizes_tools_and_renegotiates_write_access() {
+        let root = std::env::temp_dir().join(format!(
+            "dshr-permission-test-{}",
+            now_ts().replace(':', "-")
+        ));
+        let approvals = ApprovalBroker::new();
+        let mut state = ChatState::open_with_settings(
+            root.join("test.jsonl"),
+            "test",
+            &Arc::new(AtomicBool::new(false)),
+            approvals.clone(),
+            false,
+            false,
+            DesktopSettings {
+                model: Arc::new(DesktopModel::Mock),
+                permission: Some(PermissionMode::WorkspaceWrite),
+            },
+        );
+        let args = json!({ "path": "probe.txt", "content": "fixture" });
+        assert!(matches!(
+            state.plugins.registry().authorize("probe_write", &args),
+            Err(RegistryError::NeedsApproval { .. })
+        ));
+        assert!(state.set_permission(PermissionMode::ReadOnly));
+        assert!(matches!(
+            state.plugins.registry().authorize("probe_write", &args),
+            Err(RegistryError::Denied { .. })
+        ));
+        assert!(state.settings.write_approvals(&approvals).is_none());
+        assert!(state.set_permission(PermissionMode::WorkspaceWrite));
+        assert!(!state.set_permission(PermissionMode::DangerFullAccess));
+        assert!(state
+            .plugins
+            .registry()
+            .authorize("probe_write", &args)
+            .is_ok());
+        assert!(state.settings.write_approvals(&approvals).is_some());
+        drop(state);
+        SessionIndex::new(&root).delete("test").unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         // 第 0 个元素模拟 exe 路径，与 `std::env::args()` 一致。
-        std::iter::once("chat.exe")
+        std::iter::once("dshr.exe")
             .chain(values.iter().copied())
             .map(str::to_owned)
             .collect()
@@ -10479,7 +13232,7 @@ mod tests {
         }
         assert_eq!(
             chat_key_bindings().len(),
-            CHAT_SHORTCUTS.len(),
+            CHAT_SHORTCUTS.len() + 2,
             "绑定数量必须与说明表一致"
         );
         let hint = chat_shortcut_hint();

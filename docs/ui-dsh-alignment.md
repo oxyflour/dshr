@@ -8,10 +8,15 @@
 | 参考物 | 路径（asar 内） | 用途 |
 |---|---|---|
 | 设计 token | `@deepseek-ai/dsh-client-ui-theme/lib/client.js` 内的 `design-platform.css` 等 | 调色板、语义别名、圆角、字体、阴影 |
+| Windows 主窗口 | `lib/main.js` 的 `titleBarStyle`、`titleBarOverlay`，以及 `@deepseek-ai/dsh-client-ui-layout/lib/client.js` | 隐藏系统标题栏，菜单和窗口按钮位于顶部，窗口栏底色随主题变化 |
 | 桌面壳样式 | `lib/welcome/design-platform.css`、`renderer/*.css` | Windows 标题栏/侧栏底色、圆角窗口 |
 | 对话布局 | `@deepseek-ai/dsh-client-ui-chat` 的 CSS modules | 内容列宽、消息间距、Turn 指示 |
 | 侧栏 | `@deepseek-ai/dsh-client-ui-sidebar` | 宽 280、8px 内边距、38px 新建按钮 |
 | 输入区 | `@deepseek-ai/dsh-client-ui-conversation` / chat | 卡片 max-width、panel 圆角 28、34px 圆形发送键 |
+| 输入区复核（0.2.2-rc.5） | `dsh-client-ui-conversation/src/client/skeleton/InputBar.module.css`、`ConversationRoot.module.css`、`dsh-client-ui-theme/src/styles/corner-shape.css` | 初始居中与会话底栏两种布局、卡片宽度、编辑区行高和 28px 超椭圆轮廓 |
+| 插件管理（0.2.2-rc.5） | `dsh-client-ui-plugin-manager/src/client/PluginManagerPage.tsx` | 主内容区的已安装列表、开关和设置详情 |
+| 工作区（0.2.2-rc.5） | `dsh-client-ui-workspace/src/client/rows/WorkspaceBrowser.tsx`、`src/client/WorkspacePicker.tsx` | 可折叠分组和新会话的工作区选择器 |
+| 用户设置（0.2.2-rc.5） | `dsh-client-ui-settings-general/src/client/SettingsRoot.tsx` | 左下角入口、居中模态、分类导航 |
 
 提取步骤（可复现）：
 
@@ -31,34 +36,58 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
 |---|---|---|
 | 侧栏宽 | 280（`layoutInfo.sidebar \|\| 280`） | `Layout::sidebar_width` |
 | 侧栏底色 | `--dsw-specific-sidebar-fill`（浅 `#f9fafb` / 深 `#1b1b1c`） | 侧栏 `bg` |
-| 内容列宽 | 748（`--dsh-chat-content-width` 回退值） | `Layout::content_width`，居中 |
-| 输入卡片 | max-width 780（内容宽 + 32）、圆角 28、`input-major` 底色 | `composer_max_width` / `radii.panel` |
-| 发送键 | 34×34 圆形、`button-info-fill` | `rounded_full` + `button_info` |
+| 对话列宽 | 同尺寸桌面窗口实测约 680 px | 聊天正文列 680 px，居中，窄窗随可用宽度收缩 |
+| 输入卡片 | 同尺寸桌面窗口实测约 713 px，圆角 28 | 桌面目标宽 712 px，窄窗随内容收缩 |
+| 发送键 | 34×34 圆形、向上箭头 | 圆形图标键，发送、停止与执行指令沿用现有操作 |
 | 用户消息 | 右对齐气泡、深蓝 50 底、圆角 16、最宽 70.2% 内容宽 | `bubble` + `radii.lg` |
-| 助手消息 | 无气泡、14/24 正文、左侧小标记 | 首字母方块（DSH 是鲸鱼图标） |
+| 助手消息 | 无气泡，已完成回复下方有紧凑操作行 | 正文从列边缘开始，下方用图标复制原文 |
 | 工具调用 | 圆角 8 的紧凑行 + 来源标签 + 状态色 | 工具卡片行 |
-| 头部 | `min-height: 76px`、面包屑、右侧操作 | `header_height` + 会话面包屑 |
+| 头部 | `min-height: 76px`、会话标题、下划线标签页 | 会话标题、下划线标签页和带提示的工具栏图标 |
 | 字体/行高 | 正文 14/24、secondary 13/20、small 12/18 | `Typography::DSH` |
 | 消息正文 | Markdown（标题/列表/表格/代码块/引用/行内样式） | `ui-gpui::markdown` 子集渲染：标题 h1–h4、段落、粗体/斜体/行内代码/链接、围栏代码块、列表、引用、表格、分隔线 |
 | 边框 | 低透明度 0.5–1px（`border-l1..l4`） | 对应 RGBA token |
 | 主题 | 跟随 DSH 的 `ui-theme.preference`（当前 profile 为 light） | 默认浅色，侧栏/头部可切换深色 |
 
+### 插件、工作区与本地设置
+
+- 侧栏「插件」打开主内容区管理页。已安装列表支持搜索和启停，文件工具提供独立的权限开关和 JSON 编辑。其他侧车插件可编辑配置 JSON，Loader 配置可查看。外置插件详情显示清单路径，启停在重启后生效。已注册的 ADC 视图位于「插件面板」。
+- 侧栏按工作区折叠会话。可在工作区分组或新会话输入框下方选择工作区，也可用系统对话框选择文件夹后创建会话。会话记录工作区，切换会话时工具目录随之恢复。
+- 左下角「设置」打开本地设置，侧栏折叠时保留齿轮入口。通用和模型页保存外观、工具权限和模型选择，插件页提供管理入口。
+
 ## 未对齐（明确边界）
 
 1. **Markdown 只覆盖常用子集**：语法高亮、图片、嵌套列表的层级渲染、表格列宽自适应、
    代码行号还没做；围栏代码块只有语言标签与等宽字体。未闭合的标记按字面量渲染。
-2. **会话列表是真实数据但功能仍少**：侧栏已列出目录里的会话（标题/条数/相对时间），
-   支持新建、切换、行内重命名、二次确认删除；但没有按时间分组、搜索、置顶，
-   也没有跨会话搜索。实现见 [`m2-sessions.md`](m2-sessions.md)。
-3. **没有命令面板 / 模型选择器 / 附件 / 审批 / Turn 导航 / 消息反馈**：
-   这些是 DSH 输入区与对话区的完整能力，涉及后端状态，未用假 UI 硬凑。
-4. **图标用文字/首字母近似**：DSH 的鲸鱼 logo、面板图标是 SVG 资源；
-   我们的品牌方块与 `DM` 是占位，避免引入未授权资源。
-5. **Windows 自定义标题栏 / 圆角窗口**：DSH 用 `--dsh-windows-titlebar` 与
-   `corner-shape` 做系统级圆角；GPUI 侧暂用默认标题栏。
+2. **会话侧栏**：按工作区分组，标题与更新时间同排。工作区标题旁的搜索按钮可展开搜索框，
+   支持按会话标题或工作区路径筛选。会话可新建、切换、行内重命名和二次确认删除。
+   会话行默认显示更新时间，悬停时在同一位置显示重命名和删除图标。
+   会话置顶、按时间分组、跨会话正文搜索待实现。
+   会话操作见 [`m2-sessions.md`](m2-sessions.md)。
+3. **聊天与输入区**：顶部有「对话」「轨迹」和插件面板入口。输入区可切换本机配置的模型
+   和工具权限，设置作用于当前窗口后续轮次及派发的子会话。`DSHR_FORCE_MOCK=1`
+   限定为本地模拟。`DSHR_TOOL_POLICY=ask-all` 锁定逐次审批。选择只读时，官方侧车
+   在下一次运行前撤销写入能力。可用文件选择器、拖入输入区或粘贴文件和剪贴板图片来添加附件，每条消息最多 4 个，
+   UTF-8 文本总计 32 KiB，PNG、JPEG、GIF、WebP 和 PDF 总计 12 MiB。图片和 PDF
+   需要 DeepSeek Flash 或支持对应内容类型的 OpenAI 兼容模型。会话日志保留文件名和引用，
+   原始图片和 PDF 随会话导出。在构建多轮模型请求时，优先恢复较新的图片和 PDF。
+   空会话的输入卡居中，会话开始后停靠底部。草稿随内容自动换行并增高，达到高度上限后内部滚动。
+   Shift+Enter 换行，回车发送。「+」打开附件和指令菜单，权限和模型分别位于工具栏两侧。
+   权限菜单沿触发按钮左侧对齐，模型菜单沿按钮右侧对齐，空间不足时调整到视口内。
+   草稿和已发消息显示图片缩略图，点击可放大，按 Escape 关闭。动图预览使用首帧。
+   PDF 文件卡片显示文件名和大小。
+   输入 `/` 打开宿主指令菜单，
+   可用方向键选择，回车执行。宽窗在消息区右缘显示轮次标记，当前轮次高亮，末尾按钮打开完整列表。
+   窄窗和轨迹页使用头部「轮次」入口。两处均可定位已落盘的早期轮次。
+   用户消息和助手的 Markdown 正文可拖选并使用复制快捷键。消息操作行支持复制原文。
+   输入框下方显示「回车发送」，悬停可看快捷键。
+   插件注册的斜杠指令待实现。
+4. **品牌与图标**：保留 DSHR 品牌。Windows 工具栏与复制键使用系统图标字体，工具卡片沿用现有样式。
+5. **Windows 窗口栏**。顶部放置侧栏按钮、「应用」和「编辑」菜单，以及 Windows 窗口按钮。
+   拖动区和最小化、最大化/还原、关闭按钮使用 GPUI 的原生窗口命中区。菜单调用现有会话和文本编辑操作。
+   `DSHR_TITLEBAR_FLOW=1` 自检查验窗口栏下方的布局，以及通过菜单全选输入文本和新建会话。
 6. **无过渡动画**：DSH 有 0.1–0.3s 的 hover/侧栏动画；GPUI 版先保证静态一致。
-7. **长会话未虚拟化**：`ScrollHandle + overflow_y_scroll` 是普通滚动容器；
-   上千条消息需要回到 `uniform_list` 或分段渲染（M2 性能）。
+7. **长会话**：聊天流和轨迹使用变高行虚拟化。旧版性能基线见
+   [`m2-performance.md`](m2-performance.md)。
 
 ## 窗口尺寸与高 DPI（踩过的坑）
 
@@ -73,15 +102,22 @@ GPUI 的 `WindowBounds` 是**逻辑像素**，平台再乘 `scale_factor` 变成
 ## 验证与限制
 
 - `cargo test -p dshr-ui-gpui`：token 数值断言（浅/深底色、侧栏色、圆角、布局常量）。
-- `cargo test --workspace` 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 全绿。
-- `chat --selftest` / `--selftest-stream` / `--selftest-cordis` / `--selftest-dsh` 全部 PASS
+- 对 10,000 事件测试会话设置 `DSHR_VISIBLE_LIMIT=24` 和 `DSHR_NAVIGATION_FLOW=1`，
+  可在真实 GPUI 窗口验证从斜杠菜单键盘进入轮次列表，并点击跳到第一轮。
+- 附件已在真实 GPUI 窗口以本地模拟模型验证多选和发送，并对会话导出的两个原文件验证 SHA-256。
+  已在浅色和深色窗口核对图片放大、关闭及重启后加载缩略图。
+  测试还覆盖重启回放、剪贴板位图转 PNG、DeepSeek 的 PDF 上传与文件 ID 复用，以及 OpenAI 的内联图片和 PDF。
+  [DeepSeek 视觉理解](https://api-docs.deepseek.com/guides/vision/)、
+  [DeepSeek 文档解析](https://api-docs.deepseek.com/guides/document_parsing/)、
+  [OpenAI 文件输入](https://developers.openai.com/api/docs/guides/file-inputs)。
+- `dshr --selftest` / `--selftest-stream` / `--selftest-cordis` / `--selftest-dsh` 全部 PASS
   （UI 改动没有改变会话/工具/回放行为）。
 - **截图已可用**：桌面截图抓不到 GPUI 窗口，但 `PrintWindow(PW_RENDERFULLCONTENT)` 可以：
 
   ```powershell
   # 进程不是 DPI-aware，窗口矩形是虚拟化尺寸，用 -Scale 1.75 抓完整物理窗口
   node tools/asar.mjs ls dsh/node_modules/@deepseek-ai   # （示例：确认工具可用）
-  tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+  tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
   # 另开终端：先 windows 拿 hwnd，再 winshot
   $env:TMP='C:\Projects\dshr\.tmp'; $env:TEMP=$env:TMP
   powershell -ExecutionPolicy Bypass -File tools\screen.ps1 windows -ProcessId <pid>
