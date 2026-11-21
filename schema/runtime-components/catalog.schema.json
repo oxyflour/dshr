@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Windows x64 runtime component catalog",
+  "type": "object",
+  "required": ["schema_version", "platform", "components"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "platform": { "const": "windows-x64" },
+    "components": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/asset" }
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "required": ["version", "archive", "bytes", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "maxLength": 96, "pattern": "^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9_-])?$" },
+        "archive": { "type": "string", "maxLength": 96, "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*\\.zip$" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "url": { "type": ["string", "null"], "pattern": "^[hH][tT][tT][pP][sS]://[^/@?#]+(?:[/?#]|$)" }
+      }
+    }
+  }
+}

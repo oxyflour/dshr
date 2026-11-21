@@ -189,6 +189,27 @@ jobs:
         if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
         run: bash tools/sign-macos.sh target/debug/dshr "$MACOS_SIGN_IDENTITY"
 
+      - name: Verify diagnostic sidecar recovery (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:DSHR_SIDECAR = "probe"
+          $env:DSHR_HOME = Join-Path $env:RUNNER_TEMP "dshr-diagnostic-home"
+          & target/debug/dshr.exe --selftest-sidecar-recovery
+          exit $LASTEXITCODE
+
+      - name: Verify diagnostic sidecar recovery (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: DSHR_SIDECAR=probe DSHR_HOME="$RUNNER_TEMP/dshr-diagnostic-home" target/debug/dshr --selftest-sidecar-recovery
+
+      - name: Stage locked official sidecar
+        run: npm ci --ignore-scripts --prefix sidecar/dsh-official
+
+      - name: Stage bundled Node (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: node tools/vendor-node.mjs --source (Get-Command node.exe).Source
+
       - name: Package desktop (Windows)
         if: runner.os == 'Windows'
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug

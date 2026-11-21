@@ -1,47 +1,56 @@
-# M3 Loader 完整语义（include/group）与 DSH 差异
+# Loader YAML 支持范围（include、group、patch）
 
-> 更新：2026-11-14 · 实现：[`crates/profile/src/loader.rs`](../crates/profile/src/loader.rs) ·
-> 计划依据：[ADR-0007](decisions/0007-m3-scope.md) §3（include/group 进 M3，`!!js` 留 Node）·
-> 旧文档：[`m2-loader.md`](m2-loader.md)
+桌面端设置 `DSHR_LOADER_BUNDLE` 后，由 Rust 读取 bundle 和可选的 `DSHR_LOADER_PATCH`，派生只读
+profile。桌面默认使用的 DSH sidecar 接收启用条目的 `name`、`config`、`inject`，
+sidecar 按条目导入模块并调用 `ctx.plugin`。调整全局条目后重启生效。默认的文件模式使用 `plugins.json`。
+[Profile 实现](../crates/profile/src/lib.rs) · [Sidecar 实现](../sidecar/dsh-official/sidecar-dsh.mjs)
 
-## 1. M3 新增能力
+基础发行包内置 Node 和默认官方 Sidecar 依赖。Windows x64 的默认工作区依赖工具需要可用的 Python 载荷。可通过「设置 → 运行组件」安装；在 Loader 或 `plugins.json` 显式指定 `config.source` 时使用指定的 DSH `primary-runtime` 路径。[运行组件规范](spec/runtime-components.md)
 
-| 能力 | 语义 | 入口 |
-|---|---|---|
-| `include` 递归展开 | 行级 `include: <path>`（字符串/数组）或 `- name: cordis:include` + `config.path(s)`；相对路径基准是**声明文件所在目录**；活动栈防环，循环/缺失/非法路径 → 警告并跳过 | `entries_from_loader_with_base` / `entries_from_loader_files` |
-| `group` 展开 | `- group: true` + `config: [rows]`（真实 DSH 形状）或 `group: [rows]`；深度优先展平，嵌套上限 `MAX_GROUP_DEPTH = 16`（超出跳过并告警） | 同上 |
-| patch 追加进 group | `insert: [rows]`、`id + insert`（追加进同名 group）、`disabled/config` 覆盖；`PatchOp::InsertInto` | 同上 |
-| 诊断 | 统一 `Vec<String>` warnings（include 循环/缺失/逃逸、超深 group、无基准文本入口等） | 两个新入口 |
-| 兼容 | `entries_from_loader(text, patches)` 签名不变（文本入口的 include 逐条告警） | 旧入口 |
+## 支持的配置
 
-测试：`M3-LOADER-001..015` + 1 个 lib 集成（`cargo test -p dshr-profile` → 58 passed，原 42）。
+| 配置 | dshr 行为 |
+|---|---|
+| bundle 内的 `include` | 支持 `include: <path>`、路径数组，以及 `name: cordis:include` 配合 `config.path` 或 `config.paths`。相对路径以声明该 include 的文件所在目录为基准。也支持顶层 `include` 映射和 JSON include |
+| `group` | 支持 `group: true` 配合 `config: [rows]`，也支持 `group: [rows]`。将子条目按深度优先顺序展开 |
+| patch 插入 | `insert: [rows]` 追加顶层条目。`id` 和 `insert` 同时指定时，追加到对应 group |
+| patch 覆盖 | 按 `id` 覆盖普通条目或 group 内的子条目。`config` 整体替换，`disabled` 和 `inject` 可覆盖。`name` 用于断言原名称 |
 
-## 2. 与真实 DSH Loader 的差异（必须明示）
+`include` 和 `group` 的深度上限均为 16。缺失文件、循环引用、非法 include 路径和超深分支会告警并跳过。
+文本入口 `entries_from_loader` 缺少 include 的文件基准，带文件路径的桌面入口使用 `entries_from_loader_files`。
+预设后台重载遇到缺失或非法的 include 会保留上一次已发布的目录。空 patch 可以写作 `[]`。
+[Loader 实现及 `M3-LOADER-001..015` 测试](../crates/profile/src/loader.rs)
+
+## 迁移 DSH 配置时的限制
 
 具名 headless 使用静态声明入口，覆盖优先级和支持字段见 [Headless CLI 规范](spec/headless-profile.md#7-dsh-profile-声明兼容)。
 
-1. **`!!js` 不求值**：原文透传；`disabled: !!js` 按"真值"处理。**风险**：真实 `dsh-base` patch
-   里有多处 `!!js` 条件禁用，会被全部判为 disabled；M3 建议只用于**自有 bundle**，DSH 官方
-   bundle 的 `!!js` 仍交给 Node sidecar 处理（ADR-0007 的边界）。
-2. **patch 内 `include` 无文件基准**：patch 里的相对路径不锚定 patch 文件所在目录（真实 loader 有）；
-   `name` 相对路径也不锚定。→ 跨文件 patch 需写绝对/仓库相对路径，文档标注。
-3. **group 的 `config` 与 `children` 双存**：patch 覆盖 `group.config` 不会重建 children；
-   对真实 DSH 的"覆盖后即时生效"语义是超集/差异，文档标注。
-4. **`isolate` / `intercept` 不生效**：真实 Loader 的隔离/拦截语义未实现（M4+）。
-5. **深度上限 16**：为防滥用新增（告警非报错），真实 loader 无此限制。
-6. **超集**：支持 JSON include 与 bundle 顶层 `include` 映射（真实方言之外）。
-7. **patch 可按 id 覆盖 group 内条目**：真实 DSH 未承诺；作为我们的超集记录。
+- **`!!js` 不求值。** 表达式按字符串保留，`disabled: !!js` 的非空表达式会按真值禁用条目。把条件替换成已经求值的布尔值或配置字面量。
+- **`isolate` 和 `intercept` 尚未实现。** bundle 条目可以包含这些字段，派生的 profile 不携带对应语义。依赖服务隔离或拦截的插件需要适配。
+- **patch 插入的 include 会告警并跳过。** 把 include 放在 bundle 里。插件 `name` 的相对路径也不以 YAML 文件为基准，可使用 sidecar 可解析的包名或绝对 `file:` URL。
+- **覆盖 `group.config` 不会重建子条目。** 用 `id` 覆盖具体子条目，或通过 `id` 和 `insert` 追加子条目。
+- **预设与全局条目分别装载。** 声明 `@deepseek-ai/dsh-agent-preset`，用 `config.id` 标识预设、`config.plugins` 列出子插件。用 Loader 行 ID 覆盖整份 `config`。桌面后台检查 bundle、patch 和 include，空闲时自动发布稳定变更。已绑定会话保留原修订。全局条目仍由 profile 启动配置装载。
+  [Agent 预设契约](spec/agent-presets.md)
 
-## 3. 使用建议
+官方 DSH bundle 可以作为选择插件条目和配置的参考。迁移时把所需条目写入 dshr 自有 bundle 或 `plugins.json`，
+再按包版本核对实际可执行的工具和所需宿主服务。[DSH 插件兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵)
 
-- 自有 bundle（项目/团队维护）：可用 include/group/patch，注意 §2 第 1/2 条。
-- 官方 DSH bundle：`!!js`、嵌套 patch、isolate 语义仍由 Node sidecar 原生 Loader 处理；
-  Rust 侧只做"派生只读视图"（M2 行为）时不要开启完整展开，或只读取 `plugins.json` 派生结果。
-- 诊断：`entries_from_loader_with_base` 返回的 warnings 必须展示给用户（CLI/GUI），
-  尤其是 include 缺失与 `!!js` 跳过。
+## 声明创造预设
 
-## 4. 后续（M4+）
+将下面的行加入 `DSHR_LOADER_BUNDLE` 指向的 YAML。示例需要先准备兼容矩阵列出的 `dsh-tool-working-directory` 包，并启用 Sidecar 服务代理。在新会话的模式菜单中选择「创造模式」即可使用 `cordis`。需要覆盖组合时，在 patch 中按 `preset-cordis` 替换整份 `config`，包括 `id` 和完整 `plugins`。
 
-- 评估 `!!js` 的安全求值（受限 JS 引擎）或永久留给 Node；
-- patch 文件基准路径与 name 锚定；
-- `isolate`/`intercept` 与真实 DSH 语义对齐。
+```yaml
+- id: preset-cordis
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: cordis
+    plugins:
+      - id: working-directory
+        name: '@deepseek-ai/dsh-tool-working-directory'
+```
+
+## 验证
+
+`dshr --selftest-loader` 覆盖 bundle 与 patch 的派生、禁用条目过滤和只读 profile。
+Loader 解析失败时，桌面端记录错误并回退到默认 profile。遇到插件未注册时，先检查 Loader 诊断和实际启用的条目。
+[桌面自检与启动入口](../apps/desktop-gpui/src/bin/chat.rs) · [M2 历史记录](m2-loader.md)

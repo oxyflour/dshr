@@ -28,6 +28,9 @@ Registry 的 `authorize` 原本就会把 `Ask` 变成 `RegistryError::NeedsAppro
   `approval.asked` / `approval.answered` durable 事件（顺序上位于工具事件之后，
   不影响模型输入；审计/回放可配对）。
 
+创造会话的插件试用使用交互审批入口，要求用户明确允许一次。`DSHR_APPROVAL_MODE` 仍适用于普通工具审批。
+[创造模式试用规则](spec/creator-mode.md#试用与失败条件)
+
 ## UI
 
 - 审批卡片在输入框上方：黄色边框、工具名、格式化参数（限高）、

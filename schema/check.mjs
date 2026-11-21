@@ -22,6 +22,7 @@ const schemas = {
   trust: load('cpp-v1/trust.schema.json'),
   trustKeys: load('cpp-v1/trust-keys.schema.json'),
   envelope: load('sidecar-rpc/envelope.schema.json'),
+  runtimeComponents: load('runtime-components/catalog.schema.json'),
 }
 
 const catalog = load('adc-v1/slots.v1.json')
@@ -395,7 +396,24 @@ function checkField(name, spec, value) {
 
 const cloneCatalog = () => JSON.parse(JSON.stringify(catalog))
 
+const pythonAsset = {
+  version: '3.13.12',
+  archive: 'python-3.13.12-windows-x64.zip',
+  bytes: 10944098,
+  sha256: '3bf10b8f8cdc914a790a9a0d0e16f86dccc3f7184a862961cc59bb696a821938',
+}
+const runtimeFixture = (asset) => ({
+  schema_version: 1,
+  platform: 'windows-x64',
+  components: { python: asset },
+})
+
 const cases = [
+  ['runtimeComponents', 'valid: offline component catalog', runtimeFixture(pythonAsset), true],
+  ['runtimeComponents', 'invalid: component archive outside package directory',
+    runtimeFixture({ ...pythonAsset, archive: '../python.zip' }), false],
+  ['runtimeComponents', 'invalid: insecure component download',
+    runtimeFixture({ ...pythonAsset, url: 'http://example.com/python.zip' }), false],
   // ---- ADC element tree ----
   ['element', 'valid: nested stack', {
     type: 'Stack',
@@ -678,6 +696,25 @@ const cases = [
     ts: '2026-11-08T10:00:00.000Z',
     payload: { arguments: { path: 'part.step' } },
   }, true],
+  ['envelope', 'valid: tool.register for an opaque session ID', {
+    version: 2, kind: 'tool.register', request_id: 'tool-reg-1',
+    runtime_generation: 'node-0007', plugin_id: 'dsh-official',
+    session_id: 's-c70a0bb3-354d-4944-8f28-39e29be20459',
+    depth: 0, trace_id: 't', ts: '2026-11-08T10:00:00Z',
+    payload: { name: 'echo', input_schema: { type: 'object' } },
+  }, true],
+  ['envelope', 'valid: preset.bind inherits the parent revision', {
+    version: 2, kind: 'preset.bind', request_id: 'req-preset-2',
+    runtime_generation: 'node-0007', session_id: 's-child',
+    depth: 0, trace_id: 't', ts: '2026-11-08T10:00:00Z',
+    payload: { preset: 'cordis', parent_session_id: 's-parent' },
+  }, true],
+  ['envelope', 'invalid: tool.unregister with empty session_id', {
+    version: 2, kind: 'tool.unregister', request_id: 'tool-unreg-1',
+    runtime_generation: 'node-0007', plugin_id: 'dsh-official',
+    registration_id: 'reg-42', session_id: '',
+    depth: 0, trace_id: 't', ts: '2026-11-08T10:00:00Z', payload: {},
+  }, false],
   ['envelope', 'invalid: missing trace_id', {
     version: 1, kind: 'tool.invoke', request_id: 'req-001', runtime_generation: 'node-0007',
     depth: 0, ts: '2026-11-08T10:00:00Z', payload: {},
@@ -743,6 +780,7 @@ const cases = [
 ]
 
 const validators = {
+  runtimeComponents: (data) => validate(schemas.runtimeComponents, data, '$', schemas.runtimeComponents),
   element: (data) => validate(schemas.element, data, '$', schemas.element),
   slotRegistration: (data) => validate(schemas.slotRegistration, data, '$', schemas.slotRegistration),
   manifest: (data) => validate(schemas.manifest, data, '$', schemas.manifest),

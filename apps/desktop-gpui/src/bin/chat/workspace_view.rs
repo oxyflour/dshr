@@ -1,9 +1,10 @@
 use super::{
-    chrome_button, desktop_icon, now_ts, popover, toolbar_icon_button, toolbar_tooltip,
-    workspace_name, ChatApp, Theme,
+    ChatApp, ComposerMenu, Theme, blank_root_created, chrome_button, creator, creator_preset_id,
+    desktop_icon, now_ts, popover, rows_snapshot, toolbar_icon_button, toolbar_tooltip,
+    workspace_name,
 };
 use gpui::prelude::*;
-use gpui::{div, px, Anchor, AnyElement, Context, PathPromptOptions, Pixels, Role, Window};
+use gpui::{Anchor, AnyElement, Context, PathPromptOptions, Pixels, Role, Window, div, px};
 use std::path::PathBuf;
 
 impl ChatApp {
@@ -47,6 +48,43 @@ impl ChatApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.blank_root && self.show_empty_composer() {
+            self.create_workspace_session(path, self.active_preset.clone(), window, cx);
+        } else {
+            self.new_session_with_preset(path, None, window, cx);
+        }
+    }
+
+    pub(super) fn new_session_with_preset(
+        &mut self,
+        path: PathBuf,
+        preset: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        let selected = preset
+            .map(str::to_owned)
+            .or_else(|| match super::read_agent_presets() {
+                Ok(catalog) => catalog.default,
+                Err(_) => self
+                    .state
+                    .lock()
+                    .ok()
+                    .and_then(|state| state.default_preset.clone()),
+            });
+        self.create_workspace_session(path, selected, window, cx);
+    }
+
+    fn create_workspace_session(
+        &mut self,
+        path: PathBuf,
+        selected: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy {
             return;
         }
@@ -62,7 +100,9 @@ impl ChatApp {
         }
         let workspace = path.to_string_lossy();
         let id = self.store.new_id();
-        if let Err(error) = self.store.create_root(&id, &workspace, &now_ts()) {
+        let created = super::SessionCreated::root(workspace.as_ref().to_owned())
+            .with_optional_preset(selected);
+        if let Err(error) = self.store.create_with_created(&id, &created, &now_ts()) {
             self.workspace_notice = Some(format!("无法新建会话：{error}"));
             cx.notify();
             return;
@@ -74,6 +114,108 @@ impl ChatApp {
             .update(cx, |input, cx| input.clear(window, cx));
         self.reload_sessions();
         self.open_session(id, window, cx);
+    }
+
+    pub(super) fn preset_label(preset: Option<&str>) -> (&str, &'static str) {
+        match preset {
+            None => ("标准模式", "使用工作区的常规工具"),
+            Some(creator::CORDIS_PRESET | creator::PRESET) => ("创造模式", "编写、构建和试用插件"),
+            Some(preset) => (preset, "使用该预设的工具"),
+        }
+    }
+
+    pub(super) fn preset_choices(&self) -> Vec<Option<String>> {
+        let creator = match self.active_preset.as_deref() {
+            Some(id @ (creator::CORDIS_PRESET | creator::PRESET)) => id,
+            _ => creator_preset_id(),
+        };
+        let mut choices = vec![None, Some(creator.to_owned())];
+        if let Ok(state) = self.state.try_lock() {
+            if let Some(presets) = state
+                .host
+                .as_ref()
+                .and_then(|host| host.preset_status().as_object())
+            {
+                choices.extend(presets.iter().filter_map(|(id, status)| {
+                    (id != creator::CORDIS_PRESET
+                        && id != creator::PRESET
+                        && status.get("error").is_none())
+                    .then(|| Some(id.clone()))
+                }));
+            }
+        }
+        choices
+    }
+
+    pub(super) fn choose_session_preset(
+        &mut self,
+        preset: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_menu = None;
+        if self.blank_root && self.show_empty_composer() {
+            let result = if let Ok(mut state) = self.state.try_lock() {
+                let result = state.select_blank_preset(preset);
+                self.active_preset = state
+                    .log
+                    .created()
+                    .and_then(|created| created.preset.clone());
+                self.blank_root = blank_root_created(&state.log).is_some();
+                self.creator_mode = creator::is_creator_session(&state.log);
+                self.plugin_errors = state.load_errors();
+                self.adc_panels = state.adc_panels.clone();
+                if !self.blank_root {
+                    self.rows = rows_snapshot(&state.log, None);
+                }
+                result
+            } else {
+                Err("工作区正在更新，请稍后重试".to_owned())
+            };
+            self.preset_notice = result.err();
+        }
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn preset_picker(
+        &self,
+        t: &Theme,
+        max_width: Pixels,
+        max_height: Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.composer_menu == Some(ComposerMenu::Preset);
+        let (label, _) = Self::preset_label(self.active_preset.as_deref());
+        let p = t.palette;
+        let button = chrome_button("session-preset-picker", "", t)
+            .aria_label(format!("会话模式：{label}"))
+            .aria_expanded(open)
+            .gap(px(4.0))
+            .min_w(px(0.0))
+            .max_w(px(156.0))
+            .focusable()
+            .when(open, |button| button.bg(p.color(p.interactive_hover)))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(label.to_owned()),
+            )
+            .child(desktop_icon("\u{e70d}", "▾").text_size(px(12.0)))
+            .on_click(cx.listener(|chat, _, _, cx| {
+                chat.workspace_picker_open = false;
+                chat.preset_notice = None;
+                chat.toggle_composer_menu(ComposerMenu::Preset, cx);
+            }));
+        popover::attach_dismissible(
+            button,
+            self.composer_options(ComposerMenu::Preset, t, max_width, max_height, cx),
+            Anchor::BottomLeft,
+            Anchor::TopLeft,
+            cx.listener(Self::dismiss_composer_menu),
+        )
     }
 
     pub(super) fn workspace_picker(

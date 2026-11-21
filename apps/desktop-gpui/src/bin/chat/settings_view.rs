@@ -7,26 +7,30 @@ use gpui::{deferred, div, px, rgba, AnyElement, Context, FontWeight, Role, Windo
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use super::runtime_components::{self, Component};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingsTab {
     General,
     Models,
     Plugins,
+    Components,
 }
 
 impl SettingsTab {
-    const TABS: [(Self, &'static str, &'static str); 3] = [
+    const TABS: [(Self, &'static str, &'static str); 4] = [
         (Self::General, "通用", "\u{e713}"),
         (Self::Models, "模型", "\u{e950}"),
         (Self::Plugins, "插件", "\u{e71d}"),
+        (Self::Components, "运行组件", "\u{e8b7}"),
     ];
 }
 
 pub(super) struct Preferences {
     path: PathBuf,
     pub(super) theme: ThemeKind,
-    model: Option<String>,
+    pub(super) model: Option<String>,
+    pub(super) model_connection: Option<super::model_settings::ConnectionId>,
     permission: Option<PermissionMode>,
 }
 
@@ -45,12 +49,13 @@ impl Preferences {
                 ThemeKind::Light
             },
             model: data["model"].as_str().map(str::to_owned),
+            model_connection: serde_json::from_value(data["model_connection"].clone()).ok(),
             permission: data["permission"].as_str().and_then(PermissionMode::parse),
         }
     }
 
     pub(super) fn apply(&self, settings: &mut DesktopSettings, models: &[Arc<DesktopModel>]) {
-        if std::env::var_os("DSHR_PROVIDER").is_none() {
+        if std::env::var_os("DSHR_PROVIDER").is_none() && self.model_connection.is_none() {
             if let Some(model) = models
                 .iter()
                 .find(|model| Some(model.name()) == self.model.as_deref())
@@ -67,6 +72,7 @@ impl Preferences {
         let data = json!({
             "theme": if self.theme == ThemeKind::Dark { "dark" } else { "light" },
             "model": self.model,
+            "model_connection": self.model_connection,
             "permission": self.permission.map(PermissionMode::as_str),
         });
         save_atomic(&self.path, data.to_string().as_bytes())
@@ -101,13 +107,20 @@ impl ChatApp {
             .text_color(p.color(p.label_primary))
             .child(desktop_icon("\u{e713}", "⚙"))
             .when(!compact, |button| button.child("设置"))
-            .on_click(cx.listener(|chat, _, window, cx| chat.open_settings(window, cx)))
+            .on_click(cx.listener(|chat, _, window, cx| {
+                chat.open_settings(SettingsTab::General, window, cx)
+            }))
             .into_any_element()
     }
 
-    pub(super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_settings(
+        &mut self,
+        tab: SettingsTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.settings_restore_focus = window.focused(cx);
-        self.settings_tab = Some(SettingsTab::General);
+        self.settings_tab = Some(tab);
         self.turn_menu_open = false;
         self.composer_menu = None;
         self.session_menu = None;
@@ -122,6 +135,7 @@ impl ChatApp {
         if self.settings_tab.take().is_none() {
             return false;
         }
+        self.model_settings.close_editor();
         if let Some(handle) = self.settings_restore_focus.take() {
             window.focus(&handle, cx);
         } else if !self.plugins_open {
@@ -140,6 +154,11 @@ impl ChatApp {
         let active = self.settings_tab?;
         let p = t.palette;
         let compact = width < px(580.0);
+        let content_id = if active == SettingsTab::Models && self.model_settings.editor_is_open() {
+            "model-editor-content"
+        } else {
+            "settings-content"
+        };
         let card = div()
             .id("user-settings-dialog")
             .role(Role::Dialog)
@@ -196,6 +215,9 @@ impl ChatApp {
                                 .child(desktop_icon(icon, ""))
                                 .child(label)
                                 .on_click(cx.listener(move |chat, _, _, cx| {
+                                    if tab != SettingsTab::Models {
+                                        chat.model_settings.close_editor();
+                                    }
                                     chat.settings_tab = Some(tab);
                                     cx.notify();
                                 }))
@@ -234,7 +256,7 @@ impl ChatApp {
                     )
                     .child(
                         div()
-                            .id("settings-content")
+                            .id(content_id)
                             .min_h(px(0.0))
                             .flex_1()
                             .overflow_y_scroll()
@@ -381,46 +403,7 @@ impl ChatApp {
                 ))
                 .into_any_element(),
             SettingsTab::Models => section("模型")
-                .child(
-                    container().children(self.model_options.iter().enumerate().map(
-                        |(index, model)| {
-                            let option = model.clone();
-                            let selected = Arc::ptr_eq(model, &self.settings.model);
-                            chrome_button(("settings-model", index), "", t)
-                                .aria_label(model.name().to_owned())
-                                .aria_selected(selected)
-                                .h(px(42.0))
-                                .w_full()
-                                .justify_between()
-                                .px(px(12.0))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(model.name().to_owned()),
-                                )
-                                .when(selected, |button| button.child("✓"))
-                                .when(!self.busy, |button| {
-                                    button.focusable().on_click(cx.listener(
-                                        move |chat, _, _, cx| {
-                                            if let Ok(mut state) = chat.state.try_lock() {
-                                                state.set_model(option.clone());
-                                                chat.settings.model = option.clone();
-                                            }
-                                            if Arc::ptr_eq(&chat.settings.model, &option) {
-                                                chat.preferences.model =
-                                                    Some(option.name().to_owned());
-                                                chat.save_preferences();
-                                                cx.notify();
-                                            }
-                                        },
-                                    ))
-                                })
-                        },
-                    )),
-                )
+                .child(self.model_settings_view(t, cx))
                 .into_any_element(),
             SettingsTab::Plugins => section("插件")
                 .child(
@@ -440,6 +423,58 @@ impl ChatApp {
                     ),
                 )
                 .into_any_element(),
+            SettingsTab::Components => section("运行组件")
+                .child(container().children(Component::ALL.map(|component| {
+                    let asset = runtime_components::asset(component);
+                    let installed = runtime_components::installed(component).is_some();
+                    let installing = self.runtime_installing == Some(component);
+                    let status = match &asset {
+                        Ok(asset) if installed => format!("已安装 {}", asset.version),
+                        Ok(_) if installing => "正在安装".to_owned(),
+                        Ok(asset) => format!(
+                            "{} · {:.1} MiB",
+                            asset.version,
+                            asset.bytes as f64 / (1024.0 * 1024.0)
+                        ),
+                        Err(message) => message.clone(),
+                    };
+                    div().flex().items_center().justify_between().gap(px(12.0)).p(px(12.0))
+                        .child(div().flex().flex_col().gap(px(4.0))
+                            .child(component.title())
+                            .child(div().text_color(p.color(p.label_secondary)).child(component.description()))
+                            .child(div().text_color(p.color(p.label_secondary)).child(status)))
+                        .when(asset.is_ok() && !installed && self.runtime_installing.is_none(), |row| {
+                            row.child(
+                                chrome_button(component.id(), "安装", t)
+                                    .focusable()
+                                    .on_click(cx.listener(move |chat, _, _, cx| {
+                                        chat.install_component(component, cx);
+                                    })),
+                            )
+                        })
+                })))
+                .children(self.runtime_notice.clone())
+                .into_any_element(),
         }
+    }
+
+    fn install_component(&mut self, component: Component, cx: &mut Context<Self>) {
+        if self.runtime_installing.is_some() {
+            return;
+        }
+        self.runtime_installing = Some(component);
+        self.runtime_notice = None;
+        let install = cx.background_executor().spawn(async move {
+            runtime_components::install(component)
+        });
+        cx.spawn(async move |chat, cx| {
+            let result = install.await;
+            let _ = chat.update(cx, |chat, cx| {
+                chat.runtime_installing = None;
+                chat.runtime_notice = result.err();
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
     }
 }

@@ -23,6 +23,7 @@
         "runtime.hello", "runtime.ready", "runtime.reject", "runtime.crashed",
         "plugin.load", "plugin.loaded", "plugin.failed", "plugin.unload", "plugin.unloaded",
         "tool.register", "tool.unregister",
+        "preset.sync", "preset.bind", "preset.release",
         "tool.invoke", "tool.chunk", "tool.result", "tool.cancel", "tool.aborted",
         "fs.write.request", "fs.write.result",
         "service.publish", "service.revoke", "service.invoke", "service.result",
@@ -37,13 +38,21 @@
     "request_id": { "type": "string", "pattern": "^[A-Za-z0-9:_-]{1,64}$" },
     "runtime_generation": { "type": "string", "pattern": "^node-[0-9]{4,}$" },
     "plugin_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$" },
-    "registration_id": { "type": "string", "pattern": "^reg-[0-9]+$" },
+    "registration_id": {
+      "type": "string",
+      "pattern": "^reg-[0-9]+$",
+      "description": "Host-assigned binding for a registered tool. Scoped tool.register requests omit this field until acknowledged."
+    },
     "service_key": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*/v[1-9][0-9]*$",
       "description": "Service route anchor: `<name>/v<major>` (docs/spec/README.md §3). Required on every service proxy message; absent on v1 messages."
     },
-    "session_id": { "type": "string", "pattern": "^s-[0-9]+$" },
+    "session_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable opaque session ID. For tool.register and tool.unregister, omission denotes a global binding."
+    },
     "call_id": { "type": "string", "minLength": 1 },
     "depth": { "type": "integer", "minimum": 0, "maximum": 4 },
     "trace_id": { "type": "string", "minLength": 1, "maxLength": 64 },

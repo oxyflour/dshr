@@ -117,7 +117,7 @@ v2 服务代理消息另带 `service_key`，示例见 §13.4。
 | `request_id` | 是 | 一次请求/响应对的关联 ID；响应必须回填 |
 | `runtime_generation` | 是 | 发起方所属 generation；不匹配即丢弃 |
 | `plugin_id` | 条件 | 与插件相关的消息必需 |
-| `registration_id` | 条件 | 注册/执行类消息必需 |
+| `registration_id` | 条件 | 已登记工具的注册答复、撤销和调用使用此字段 |
 | `service_key` | 条件 | **v2 服务代理消息必需**（`service.publish/revoke/invoke/result/cancel`、`host.service.*`，见 §13）；v1 消息一律缺省。形态 `name/vN`，见 [`README.md`](README.md) §3 |
 | `session_id` | 条件 | 涉及会话的消息必需（工具、事件、会话级服务方法） |
 | `call_id` | 条件 | 执行类消息必需 |
@@ -148,7 +148,7 @@ v2 服务代理消息另带 `service_key`，示例见 §13.4。
 | `runtime.crashed` | → | `reason`, `exit_code` | — |
 | `plugin.load` / `plugin.loaded` / `plugin.failed` | ↔ | `plugin_id`, `entry` | load 幂等（同 id 返回已加载） |
 | `plugin.unload` / `plugin.unloaded` | ↔ | `plugin_id`, `timeout_ms` | unload 幂等 |
-| `tool.register` / `tool.unregister` | → | `definition`（含 `output_schema?` / `presentation?`，对齐 DSH `output.schema` / `presentResult` 卡片类型）, `registration_id` | 重复注册返回同一 id |
+| `tool.register` / `tool.unregister` | → / ↔ | 工具定义（含 `input_schema?`、`output_schema?` 和 `presentation?`），撤销按 `registration_id` | 同一作用域内的同名 Sidecar 注册返回 `E_DUPLICATE_REG`，撤销幂等 |
 | `tool.invoke` / `tool.chunk` / `tool.result` / `tool.cancel` | ↔ | 见 §7 | `result` 恰好一次 |
 | `fs.write.request` / `fs.write.result` | ↔ | 见 §7.5 | `result` 恰好一次（按 `request_id` 关联） |
 | `service.publish` / `service.revoke` | Sidecar → host | 信封 `service_key` + `methods[]`、`generation`（§13.3） | key 冲突即 `E_SERVICE_CONFLICT`；需 `service.expose` |
@@ -179,6 +179,20 @@ v2 服务代理消息另带 `service_key`，示例见 §13.4。
 
 ## 7. 执行语义
 
+### Agent 预设消息
+
+Sidecar 在 `runtime.ready.sidecar_caps` 声明 `agent.presets` 后可使用这组消息。`preset.sync` 发布静态声明，载荷 `definitions` 将预设 ID 映射到子插件条目列表。答复 `presets` 按 ID 返回 `revision` 和可选的 `error`。`preset.bind` 在指定 `session_id` 上选择 `preset` 或继承 `parent_session_id` 的原修订。答复包含 `preset` 和 `revision`。`preset.release` 解除会话绑定。答复使用原 `request_id` 与消息类型，未知或不可用的绑定返回 `E_PRESET`。
+
+工具注册和撤销载荷的可选 `preset_revision` 表示预设修订作用域，与信封的注册 `session_id` 互斥。宿主和 Sidecar 均在派发时验证会话绑定。[Agent 预设契约](agent-presets.md)
+
+### 注册作用域和调用身份
+
+- `tool.register` 信封省略 `session_id` 时登记全局工具。显式提供时，仅所属会话可见，并优先于继承的全局同名工具。注册答复通过原 `request_id` 返回宿主分配的 ID。官方 Sidecar 的现有 Cordis 包默认登记全局工具。
+- `tool.unregister` 按 generation、插件、作用域和注册 ID 匹配。注册答复尚未到达时，可用载荷中的 `register_request_id` 指向原注册请求。Sidecar 先停止接受该注册的新调用，宿主收到撤销后从发现列表删除。已开始的调用仍按原身份结算。
+- 宿主为已登记的工具发送其 `plugin_id`、`registration_id`、调用 `session_id` 和 `runtime_generation`。官方 Sidecar 使用这些字段及工具名校验绑定，找不到或不匹配时返回 `E_TOOL_UNAVAILABLE`。旧驱动可使用按名称调用的兼容入口。携带注册 ID 的调用禁止按名称回退。
+- 桌面每个模型步骤处理已到达的注册和撤销，再生成本步的工具快照。执行只使用快照中的绑定。新注册从下一模型请求起可见，撤销后的调用失败，不转发给后续同名注册。
+- 桌面删除会话时，宿主移除该会话的注册，并以 `tool.unregister` 通知 Sidecar 解除相同绑定。工作区切换保留原 Sidecar 进程及其注册。仅当前工作区的 Sidecar 参与工具发现和派发。显式重载与进程退出按 generation 失效规则处理。
+
 ```text
 Rust ──tool.invoke(req)──► Sidecar
 Rust ◄──tool.chunk #0────  Sidecar
@@ -203,6 +217,8 @@ Rust ◄──tool.result──────  Sidecar
 官方 `@deepseek-ai/dsh-tool-fs` 的 `write`/`edit`/`apply_patch` 不在 Sidecar 直接落盘：
 它们经官方 `ctx.fs` 服务发出写入意图，Sidecar 翻译成 `fs.write.request` 交给 Rust
 裁决（路径边界、审批、写前快照、原子写、版本），结果用 `fs.write.result` 返回。
+
+宿主在审批前验证父目录已存在，并检查解析后的父目录是否位于工作区内。父目录缺失时返回 `FS_NOT_FOUND`。dshr 的 `creator_write_file` 仅用于创造根会话，行为见 [创造模式](creator-mode.md#创作工具)。
 
 ```text
 Sidecar ──fs.write.request(req)──► Rust（在等待 tool.result 的读循环里同步服务）
@@ -279,6 +295,8 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
 | `E_VERSION` | 版本无交集 | 否 |
 | `E_UNKNOWN_PLUGIN` | 插件未加载或已卸载 | 否 |
 | `E_DUPLICATE_REG` | 注册冲突 | 否 |
+| `E_TOOL_UNAVAILABLE` | 注册已撤销、作用域不符或 generation 失效 | 否 |
+| `E_PRESET` | 无法发布声明、绑定预设或释放会话修订 | 否 |
 | `E_SCHEMA` | 参数/结果不符合 schema | 是（修正后） |
 | `E_TIMEOUT` | 超过 `timeout_ms` | 视工具语义 |
 | `E_CANCELLED` | 被取消 | 否 |
@@ -322,7 +340,7 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
 | 分类 | 错误码 | 建议 |
 |---|---|---|
 | 瞬时（错误本身） | `E_TIMEOUT`、`E_BACKPRESSURE`、`E_INTERNAL`、`E_SERVICE_TIMEOUT` | 可退避后重试；`E_BACKPRESSURE` 必须退避 |
-| 永久（协议/参数） | `E_PROTOCOL`、`E_VERSION`、`E_SCHEMA`、`E_RPC_DEPTH`、`E_TOO_LARGE`、`E_UNKNOWN_PLUGIN`、`E_DUPLICATE_REG`、`E_SERVICE_ARGS`、`E_SERVICE_METHOD`、`E_SERVICE_UNAVAILABLE`、`E_SERVICE_DENIED`、`E_SERVICE_CONFLICT` | 不重试；修配置/参数后重新发起 |
+| 永久（协议/参数） | `E_PROTOCOL`、`E_VERSION`、`E_SCHEMA`、`E_RPC_DEPTH`、`E_TOO_LARGE`、`E_UNKNOWN_PLUGIN`、`E_DUPLICATE_REG`、`E_TOOL_UNAVAILABLE`、`E_SERVICE_ARGS`、`E_SERVICE_METHOD`、`E_SERVICE_UNAVAILABLE`、`E_SERVICE_DENIED`、`E_SERVICE_CONFLICT` | 不重试；修配置/参数后重新发起 |
 | 取消/已结算 | `E_CANCELLED`、`E_ALREADY_SETTLED` | 不重试 |
 | 崩溃 | `runtime.crashed` / 管道 EOF | 在途调用全部 `aborted` 写日志，**不自动重试**；新 generation 重新注册后由用户/Agent 决定 |
 
@@ -384,7 +402,7 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
 | 前缀 | 覆盖 |
 |---|---|
 | `RPC-HANDSHAKE-*` | 版本协商、拒绝路径、超时 |
-| `RPC-REG-*` | 注册/撤销/重复注册/generation 失效 |
+| `RPC-REG-001` | 跨会话同名注册、全局回退、运行期撤销、旧身份失效和会话清理 |
 | `RPC-EXEC-*` | invoke/chunk/result 顺序、幂等、大小上限 |
 | `RPC-WRITE-*` | `fs.write` 能力协商、审批/越界/版本/快照、读循环不死锁 |
 | `RPC-CANCEL-*` | 取消传播、迟到结果、已结算 |

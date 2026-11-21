@@ -1,7 +1,8 @@
 param(
     [ValidateSet("debug", "release")]
     [string]$Configuration = "debug",
-    [string]$OutDir = "dist"
+    [string]$OutDir = "dist",
+    [string]$RuntimeComponentCatalog = ""
 )
 
 # M4 G1 最小 Windows 打包：编译 dshr.exe，连同 README/版本信息压成 zip。
@@ -9,6 +10,47 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+$nodeExe = Join-Path $root "runtime/node/node.exe"
+$official = Join-Path $root "sidecar/dsh-official"
+$vswhere = Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) "Microsoft Visual Studio/Installer/vswhere.exe"
+$vcRuntime = if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+    & $vswhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT/vcruntime140.dll" |
+        Select-Object -First 1
+}
+if (-not $vcRuntime -or -not (Test-Path -LiteralPath $vcRuntime -PathType Leaf)) {
+    throw "missing x64 vcruntime140.dll in the Visual Studio redistributable directory"
+}
+foreach ($file in @(
+    $nodeExe,
+    (Join-Path $official "sidecar-dsh.mjs"),
+    (Join-Path $official "node_modules/@deepseek-ai/cordis/package.json"),
+    (Join-Path $official "node_modules/@deepseek-ai/dsh-tool-fs/package.json"),
+    (Join-Path $official "node_modules/@deepseek-ai/dsh-tool-workspace-dependencies/package.json")
+)) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing required runtime asset: $file" }
+}
+if (-not $RuntimeComponentCatalog -and (Test-Path -LiteralPath "runtime/components.json")) {
+    $RuntimeComponentCatalog = "runtime/components.json"
+}
+if ($Configuration -eq "release" -and -not $RuntimeComponentCatalog) {
+    throw "Windows release packaging requires -RuntimeComponentCatalog. Run tools/build-runtime-components.py first."
+}
+if ($RuntimeComponentCatalog) {
+    $RuntimeComponentCatalog = (Resolve-Path -LiteralPath $RuntimeComponentCatalog).Path
+    $catalog = Get-Content -LiteralPath $RuntimeComponentCatalog -Raw | ConvertFrom-Json
+    if ($catalog.schema_version -ne 1 -or $catalog.platform -ne "windows-x64") {
+        throw "invalid Windows runtime component catalog"
+    }
+    foreach ($id in @("python", "creator-build")) {
+        $asset = $catalog.components.$id
+        if (-not $asset -or $asset.version -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' -or
+            $asset.archive -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*\.zip$' -or
+            $asset.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $asset.bytes -lt 1 -or $asset.bytes -gt 1GB) {
+            throw "invalid runtime component catalog entry: $id"
+        }
+    }
+}
 
 $cargoArgs = @("build", "-p", "dshr-desktop-gpui", "--bin", "dshr", "--bin", "dshr-cli")
 if ($Configuration -eq "release") { $cargoArgs += "--release" }
@@ -19,32 +61,32 @@ $binary = Join-Path $root "target/$Configuration/dshr.exe"
 $console = Join-Path $root "target/$Configuration/dshr-cli.exe"
 if (-not (Test-Path $binary)) { throw "missing $binary" }
 if (-not (Test-Path $console)) { throw "missing $console" }
-$stage = Join-Path $root "$OutDir/dshr-$Configuration-windows-x64"
-if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+$output = [IO.Path]::GetFullPath((Join-Path $root $OutDir))
+$stage = Join-Path $output "dshr-$Configuration-windows-x64"
+if (Test-Path -LiteralPath $stage) {
+    $target = Get-Item -LiteralPath $stage -Force
+    if ($target.Parent.FullName -ne $output -or ($target.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "refusing to replace package stage: $stage"
+    }
+    Remove-Item -LiteralPath $target.FullName -Recurse -Force
+}
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item $binary (Join-Path $stage "dshr.exe")
 New-Item -ItemType Directory -Path (Join-Path $stage "bin") | Out-Null
 Copy-Item -LiteralPath $console (Join-Path $stage "bin/dshr.exe")
+Copy-Item -LiteralPath $vcRuntime -Destination (Join-Path $stage "vcruntime140.dll")
+Copy-Item -LiteralPath $vcRuntime -Destination (Join-Path $stage "bin/vcruntime140.dll")
 
-$nodeExe = "$root\runtime\node\node.exe"
 Write-Host "[package-desktop] node=$nodeExe"
-if (Test-Path -LiteralPath $nodeExe) {
-    New-Item -ItemType Directory -Path (Join-Path $stage "runtime\node") -Force | Out-Null
-    Copy-Item -LiteralPath $nodeExe (Join-Path $stage "runtime\node\node.exe")
-} else {
-    Write-Warning "[package-desktop] 缺少 node runtime，包将进入 Native-only 模式"
+New-Item -ItemType Directory -Path (Join-Path $stage "runtime/node") -Force | Out-Null
+Copy-Item -LiteralPath $nodeExe (Join-Path $stage "runtime/node/node.exe")
+if ($RuntimeComponentCatalog) {
+    Copy-Item -LiteralPath $RuntimeComponentCatalog (Join-Path $stage "runtime/components.json")
 }
 
 $sidecarStage = Join-Path $stage "sidecar"
 New-Item -ItemType Directory -Path $sidecarStage -Force | Out-Null
-foreach ($name in @("probe-sidecar.mjs", "probe-plugin.mjs")) {
-    $src = Join-Path $root "sidecar/$name"
-    if (Test-Path $src) { Copy-Item $src (Join-Path $sidecarStage $name) }
-}
-$official = Join-Path $root "sidecar/dsh-official"
-if (Test-Path $official) {
-    Copy-Item -Recurse -Force $official (Join-Path $sidecarStage "dsh-official")
-}
+Copy-Item -LiteralPath $official -Recurse -Force -Destination (Join-Path $sidecarStage "dsh-official")
 
 $componentStage = Join-Path $stage "components/cpp-component"
 New-Item -ItemType Directory -Path $componentStage -Force | Out-Null
@@ -82,11 +124,12 @@ if (-not $commit) { $commit = "dirty" }
     ""
     "Run dshr.exe --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery / --selftest-cpp-component."
     "Run bin/dshr.exe --profile headless --help for the console entry."
-    "Includes runtime/node, probe sidecar, vendored dsh-official sidecar, and components/cpp-component."
+    "Includes runtime/node, vendored dsh-official sidecar, and components/cpp-component."
+    "Windows executables use the included app-local Visual C++ runtime."
     "No installer, code signing, or auto-update in this package."
 ) | Set-Content -Encoding UTF8 (Join-Path $stage "README.txt")
 
-$zip = Join-Path $root "$OutDir/dshr-$Configuration-windows-x64.zip"
+$zip = Join-Path $output "dshr-$Configuration-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip
 $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()

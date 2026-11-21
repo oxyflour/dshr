@@ -205,7 +205,7 @@ impl ChatApp {
         if let Some(index) = detail {
             body = body.child(self.plugin_detail_view(index, t, cx));
         } else if self.plugin_panels_open {
-            body = body.child(self.plugin_panels(t, cx));
+            body = body.child(self.plugin_panels(false, t, cx));
         } else {
             body = body.child(self.installed_plugins(t, cx));
         }
@@ -263,10 +263,24 @@ impl ChatApp {
                             ),
                     )
                     .child(
-                        toolbar_icon_button("plugins-close", "返回对话", "\u{e8bb}", "×", t)
-                            .on_click(cx.listener(|chat, _, window, cx| {
-                                chat.toggle_plugins_panel(window, cx);
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .when(detail.is_none() && !self.plugin_panels_open && !self.busy, |bar| {
+                                bar.child(
+                                    chrome_button("open-creator-session", "新建创造会话", t)
+                                        .on_click(cx.listener(|chat, _, window, cx| {
+                                            chat.new_creator_session(window, cx);
+                                        })),
+                                )
+                            })
+                            .child(
+                                toolbar_icon_button("plugins-close", "返回对话", "\u{e8bb}", "×", t)
+                                    .on_click(cx.listener(|chat, _, window, cx| {
+                                        chat.toggle_plugins_panel(window, cx);
+                                    })),
+                            ),
                     ),
             )
             .child(

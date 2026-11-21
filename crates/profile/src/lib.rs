@@ -202,7 +202,8 @@ impl Profile {
         let entries: Vec<Value> = self
             .entries
             .iter()
-            .filter(|entry| entry.enabled)
+            .filter(|entry| entry.enabled && !matches!(entry.name.as_str(),
+                loader::AGENT_PRESET_PLUGIN | loader::AGENT_PRESET_REGISTRY))
             .map(|entry| {
                 let mut object = serde_json::json!({
                     "name": entry.name,

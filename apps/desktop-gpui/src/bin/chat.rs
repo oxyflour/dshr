@@ -111,6 +111,14 @@ mod window_bar;
 mod composer_flow;
 #[path = "chat/composer_surface.rs"]
 mod composer_surface;
+#[path = "chat/model_settings.rs"]
+mod model_settings;
+#[path = "chat/creator.rs"]
+mod creator;
+#[path = "chat/runtime_components.rs"]
+mod runtime_components;
+#[path = "chat/preset_reload.rs"]
+mod preset_reload;
 #[path = "chat/headless.rs"]
 mod headless;
 #[path = "chat/plugins_view.rs"]
@@ -561,12 +569,18 @@ fn composer_option(
                 .text_size(theme.type_scale.secondary)
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(p.color(if selected { p.link } else { p.label_primary }))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .child(label.to_owned()),
         )
         .child(
             div()
                 .text_size(theme.type_scale.small)
                 .text_color(p.color(p.label_secondary))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .child(description.to_owned()),
         )
 }
@@ -1080,6 +1094,7 @@ fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
 struct AdcPanelView {
     plugin_id: String,
     title: String,
+    trial: bool,
     /// 面板声明的 view 名（`ui.action` 回传时用于定位插件状态）。
     view: String,
     /// `render_panel` 成功时的元素树；失败为 `None`，错误在 `error`。
@@ -1088,11 +1103,21 @@ struct AdcPanelView {
     error: Option<String>,
 }
 
+type ParsedAgentPresets = Result<dshr_profile::loader::AgentPresets, String>;
+
 struct ChatState {
     log: SessionLog,
     path: PathBuf,
     workspace: PathBuf,
     host: Option<SidecarHost>,
+    workspace_sidecars: HashMap<PathBuf, SidecarHost>,
+    preset_diagnostics: Vec<String>,
+    active_preset_error: Option<String>,
+    default_preset: Option<String>,
+    inherited_preset_from: Option<String>,
+    preset_inputs: Option<(PathBuf, Vec<PathBuf>)>,
+    published_presets: Option<ParsedAgentPresets>,
+    sidecar_start_error: Option<String>,
     plugins: PluginHost,
     /// Agent 在窗口内复用，会话上下文由当前日志重建。
     agent: Agent<Box<dyn ModelProvider>>,
@@ -1119,12 +1144,22 @@ struct ChatState {
     /// 插件 ADC 面板缓存（`workspace.panel` 的 view → 元素树 JSON）。
     adc_panels: Vec<AdcPanelView>,
     headless: bool,
+    diagnostics: bool,
+    creator_trials: HashMap<String, creator::TrialScope>,
 }
 
 enum TurnUpdate<'a> {
     Preview(&'a SessionLog, Option<&'a str>),
     Call { seq: u64, tool: &'a str },
     Result { seq: u64, status: &'static str },
+}
+
+enum DesktopTurnUpdate {
+    Rows(Vec<Row>),
+    Finished {
+        plugin_errors: Vec<String>,
+        adc_panels: Vec<AdcPanelView>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1150,7 +1185,11 @@ struct TurnResult {
 }
 
 enum ChatRuntime {
-    Desktop { allow_spawn: bool, sidecar: bool },
+    Desktop {
+        allow_spawn: bool,
+        sidecar: bool,
+        diagnostics: bool,
+    },
     Headless,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
@@ -1229,34 +1268,35 @@ impl Plugin for ProbeNativePlugin {
 /// 原生写入工具：走沙箱 seam（路径根 + 写前快照 + 1 MiB 限制）。
 ///
 /// 工具展示类型是 `diff`，所以默认策略会要求审批；审批通过后才写文件。
-/// 这不是官方 `write` 的替代品，而是用来证明"审批 + 沙箱"链路可端到端工作。
-struct ProbeWritePlugin {
+struct WorkspaceWritePlugin {
     workspace: Workspace,
+    tool: &'static str,
+    id: &'static str,
 }
 
-impl ProbeWritePlugin {
-    fn new(root: &Path) -> Result<Self, String> {
+impl WorkspaceWritePlugin {
+    fn new(root: &Path, tool: &'static str, id: &'static str) -> Result<Self, String> {
         if !root.is_dir() {
             return Err("工作区目录不可用".to_owned());
         }
         Workspace::new(root)
-            .map(|workspace| Self { workspace })
+            .map(|workspace| Self { workspace, tool, id })
             .map_err(|error| error.to_string())
     }
 }
 
-impl Plugin for ProbeWritePlugin {
+impl Plugin for WorkspaceWritePlugin {
     fn id(&self) -> &'static str {
-        "builtin.probe-write"
+        self.id
     }
 
     fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
         ctx.register_tool(
             ToolDefinition::new(
-                "probe_write",
-                "把一段文本写入工作区文件（沙箱 seam：相对路径、写前快照、1 MiB 限制）",
+                self.tool,
+                "写入工作区内的 UTF-8 文件。支持新建多层父目录，例如 hello-world/src/main.rs。路径相对工作区，覆盖前留快照，单次限 1 MiB。",
                 ToolOrigin::Native {
-                    plugin_id: "builtin.probe-write".to_owned(),
+                    plugin_id: self.id.to_owned(),
                 },
             )
             .with_schema(json!({
@@ -1277,9 +1317,9 @@ impl Plugin for ProbeWritePlugin {
         tool: &str,
         arguments: &serde_json::Value,
     ) -> Result<serde_json::Value, PluginError> {
-        if tool != "probe_write" {
+        if tool != self.tool {
             return Err(PluginError::UnknownTool {
-                plugin: "builtin.probe-write".to_owned(),
+                plugin: self.id.to_owned(),
                 tool: tool.to_owned(),
             });
         }
@@ -1293,7 +1333,7 @@ impl Plugin for ProbeWritePlugin {
             .ok_or_else(|| PluginError::Invalid(String::from("missing content")))?;
         let receipt = self
             .workspace
-            .write_text(path, content)
+            .write_text_creating_parents(path, content)
             .map_err(|err| PluginError::Invalid(err.to_string()))?;
         Ok(json!({
             "path": receipt.path.display().to_string(),
@@ -1329,13 +1369,55 @@ fn workspace_root() -> PathBuf {
     fallback
 }
 
-/// 启动 Sidecar；失败时返回 None（Native 工具不受影响）。
+fn loader_inputs() -> Option<(PathBuf, Vec<PathBuf>)> {
+    let bundle = PathBuf::from(std::env::var_os("DSHR_LOADER_BUNDLE")?);
+    let patches = std::env::var_os("DSHR_LOADER_PATCH")
+        .map(|value| {
+            std::env::split_paths(&value)
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((bundle, patches))
+}
+
+fn read_agent_presets() -> ParsedAgentPresets {
+    read_agent_presets_from(loader_inputs().as_ref())
+}
+
+fn read_agent_presets_from(
+    inputs: Option<&(PathBuf, Vec<PathBuf>)>,
+) -> ParsedAgentPresets {
+    match inputs {
+        Some((bundle, patches)) => dshr_profile::loader::AgentPresets::from_files(bundle, patches),
+        None => Ok(dshr_profile::loader::AgentPresets::default()),
+    }
+}
+
+fn creator_preset_id() -> &'static str {
+    if std::env::var("DSHR_SIDECAR").as_deref() == Ok("dsh") {
+        creator::CORDIS_PRESET
+    } else {
+        creator::PRESET
+    }
+}
+
+fn blank_root_created(log: &SessionLog) -> Option<&SessionCreated> {
+    log.created()
+        .filter(|created| !created.is_child() && log.events().len() == 1)
+}
+
+fn prepare_desktop_sidecar(profile: &Profile) {
+    set_env_default("DSHR_SIDECAR", "dsh");
+    std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
+}
+
+/// 启动 Sidecar；失败时原生工具仍可用。
 ///
 /// 三种运行时（`DSHR_SIDECAR`）：
-/// - 缺省：probe 侧车（自研最小协议探针）；
-/// - `cordis`：真实 Cordis 4.0.5 + 只注册 `ctx.bridge.tool` 的探针插件；
-/// - `dsh`：真实 Cordis 4.1.0 + **未修改的官方 DSH 插件**（依赖由 `tools/dsh-vendor.mjs`
-///   从本机 DSH 安装中抽取，见 `docs/m2-dsh-official.md`）。
+/// - `probe`：最小协议探针（仅显式诊断命令）；
+/// - `cordis`：真实 Cordis 4.0.5 + 只注册 `ctx.bridge.tool` 的探针插件（仅显式诊断命令）；
+/// - `dsh`：桌面默认，真实 Cordis + 官方 DSH 插件。
 ///
 /// 启动路径统一走：
 /// 1. Node 解析 `DSHR_NODE` → 捆绑 `runtime/node` → PATH（`dshr-sidecar-guard`）；
@@ -1346,46 +1428,60 @@ fn spawn_sidecar(
     approvals: Option<Arc<ApprovalBroker>>,
     l2_access: Option<Arc<ChatSessionAccess>>,
 ) -> Option<SidecarHost> {
-    spawn_sidecar_in(&workspace_root(), approvals, l2_access)
+    spawn_sidecar_in(&workspace_root(), approvals, l2_access, true)
+        .inspect_err(|error| eprintln!("[chat] {error}"))
+        .ok()
 }
 
 fn spawn_sidecar_in(
     workspace: &Path,
     approvals: Option<Arc<ApprovalBroker>>,
     l2_access: Option<Arc<ChatSessionAccess>>,
-) -> Option<SidecarHost> {
+    diagnostics: bool,
+) -> Result<SidecarHost, String> {
     if !workspace.is_dir() {
-        return None;
+        return Err(format!("sidecar 工作区目录不可用：{}", workspace.display()));
     }
     // 资源根按 exe 相对解析：`dist/dshr-dev` 整目录拷走后仍能找到 sidecar/（见 `app_root`）。
     let root = app_root();
-    let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
+    let mode = std::env::var("DSHR_SIDECAR")
+        .ok()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| if diagnostics { "probe" } else { "dsh" }.to_owned());
     let (script, plugin) = match mode.as_str() {
-        "cordis" => (
+        "cordis" if diagnostics => (
             root.join("sidecar/cordis/sidecar-cordis.mjs"),
             root.join("sidecar/cordis/bridge-plugin.mjs"),
         ),
         "dsh" => {
             let dir = root.join("sidecar/dsh-official");
-            if !dir.join("node_modules").exists() {
-                eprintln!(
-                    "[chat] 官方插件运行时未准备：先运行 `node tools/dsh-vendor.mjs`（需要本机安装 DSH）"
-                );
-                return None;
+            let modules = dir.join("node_modules");
+            if !modules.is_dir() {
+                return Err(format!("官方 DSH sidecar 缺少依赖：{}", modules.display()));
             }
             let script = dir.join("sidecar-dsh.mjs");
             // 官方侧车不需要插件路径参数，但协议签名保持两个文件参数。
             (script.clone(), script)
         }
-        _ => (
+        "probe" if diagnostics => (
             root.join("sidecar/probe-sidecar.mjs"),
             root.join("sidecar/probe-plugin.mjs"),
         ),
+        "probe" | "cordis" => return Err(format!("Sidecar {mode} 仅供诊断命令使用")),
+        _ => return Err(format!("不支持的 Sidecar 模式 {mode}")),
     };
 
     let mut options = HostOptions::default()
         .with_current_dir(workspace)
         .with_env("DSHR_WORKSPACE", workspace.to_string_lossy());
+    if mode == "dsh" {
+        if let Some(effective) = std::env::var("DSHR_DSH_PLUGINS")
+            .ok()
+            .and_then(|raw| runtime_components::sidecar_profile(&raw))
+        {
+            options = options.with_env("DSHR_DSH_PLUGINS", effective);
+        }
+    }
     match dshr_sidecar_guard::resolve_node() {
         Some(node) => {
             eprintln!(
@@ -1431,8 +1527,7 @@ fn spawn_sidecar_in(
     }
     options = options.with_guard(GuardLimits::sidecar_default());
     SidecarHost::spawn_with(script, plugin, options)
-        .map_err(|err| eprintln!("[chat] sidecar 不可用（工具调用会显示为 aborted）: {err}"))
-        .ok()
+        .map_err(|error| format!("sidecar 启动失败（{mode}）：{error}"))
 }
 
 /// 构造 v2 Host Service Router，并在 runtime.ready 协商后更新 generation。
@@ -1517,6 +1612,7 @@ fn cancel_aware(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModelKind {
+    Unconfigured,
     Mock,
     DeepSeek,
     OpenAi,
@@ -1525,6 +1621,7 @@ enum ModelKind {
 impl ModelKind {
     fn label(self) -> &'static str {
         match self {
+            Self::Unconfigured => "未配置模型",
             Self::Mock => "本地模拟",
             Self::DeepSeek => "DeepSeek",
             Self::OpenAi => "OpenAI 兼容",
@@ -1533,6 +1630,7 @@ impl ModelKind {
 }
 
 enum DesktopModel {
+    Unconfigured,
     Mock,
     DeepSeek(DeepSeekProvider),
     OpenAi(OpenAiProvider),
@@ -1541,6 +1639,7 @@ enum DesktopModel {
 impl DesktopModel {
     fn kind(&self) -> ModelKind {
         match self {
+            Self::Unconfigured => ModelKind::Unconfigured,
             Self::Mock => ModelKind::Mock,
             Self::DeepSeek(_) => ModelKind::DeepSeek,
             Self::OpenAi(_) => ModelKind::OpenAi,
@@ -1549,14 +1648,19 @@ impl DesktopModel {
 
     fn name(&self) -> &str {
         match self {
-            Self::Mock => ModelKind::Mock.label(),
             Self::DeepSeek(provider) => provider.model(),
             Self::OpenAi(provider) => provider.model(),
+            Self::Unconfigured | Self::Mock => self.kind().label(),
         }
+    }
+
+    fn is_configured(&self) -> bool {
+        !matches!(self, Self::Unconfigured)
     }
 
     fn supports_attachments(&self) -> bool {
         match self {
+            Self::Unconfigured => false,
             Self::DeepSeek(provider) => provider.supports_attachments(),
             Self::OpenAi(_) | Self::Mock => true,
         }
@@ -1564,6 +1668,7 @@ impl DesktopModel {
 
     fn provider(&self, cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
         let (name, configured): (&str, Box<dyn ModelProvider>) = match self {
+            Self::Unconfigured => return Box::new(UnconfiguredProvider),
             Self::Mock => {
                 eprintln!("[chat] provider=mock");
                 return cancel_aware(MockProvider, cancel);
@@ -1587,8 +1692,20 @@ impl DesktopModel {
     }
 }
 
+struct UnconfiguredProvider;
+
+impl ModelProvider for UnconfiguredProvider {
+    fn complete(&mut self, _: &CompletionRequest) -> Result<ModelReply, String> {
+        Err("请先配置可用的模型连接。".to_owned())
+    }
+}
+
+fn force_mock() -> bool {
+    std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1")
+}
+
 fn configured_models() -> Vec<Arc<DesktopModel>> {
-    if std::env::var("DSHR_FORCE_MOCK").as_deref() == Ok("1") {
+    if force_mock() {
         return vec![Arc::new(DesktopModel::Mock)];
     }
     let mut models = Vec::new();
@@ -1607,7 +1724,9 @@ fn configured_models() -> Vec<Arc<DesktopModel>> {
     if let Some(provider) = OpenAiProvider::from_env() {
         models.push(Arc::new(DesktopModel::OpenAi(provider)));
     }
-    models.push(Arc::new(DesktopModel::Mock));
+    if std::env::var("DSHR_PROVIDER").as_deref() == Ok("mock") {
+        models.push(Arc::new(DesktopModel::Mock));
+    }
     models
 }
 
@@ -1619,25 +1738,26 @@ struct DesktopSettings {
 
 impl DesktopSettings {
     fn from_env(models: &[Arc<DesktopModel>]) -> Self {
-        let requested = match std::env::var("DSHR_PROVIDER").as_deref() {
-            Ok("mock") => Some(ModelKind::Mock),
-            Ok("deepseek") => Some(ModelKind::DeepSeek),
-            Ok("openai") => Some(ModelKind::OpenAi),
-            _ => None,
-        };
-        let model = if let Some(requested) = requested {
-            models
-                .iter()
-                .find(|model| model.kind() == requested)
-                .unwrap_or_else(|| models.last().expect("mock model"))
+        let requested = if force_mock() {
+            Some(ModelKind::Mock)
         } else {
-            models.first().expect("mock model")
+            match std::env::var("DSHR_PROVIDER").as_deref() {
+                Ok("mock") => Some(ModelKind::Mock),
+                Ok("deepseek") => Some(ModelKind::DeepSeek),
+                Ok("openai") => Some(ModelKind::OpenAi),
+                _ => None,
+            }
         };
+        let model = models
+            .iter()
+            .find(|model| requested.is_none_or(|kind| model.kind() == kind))
+            .cloned()
+            .unwrap_or_else(|| Arc::new(DesktopModel::Unconfigured));
         if let Some(effort) = ReasoningEffort::from_env() {
             println!("[chat] reasoning_effort={}", effort.as_str());
         }
         Self {
-            model: model.clone(),
+            model,
             permission: desktop_permission_mode(),
         }
     }
@@ -2002,8 +2122,12 @@ fn session_depth(log: &SessionLog, sessions_dir: &std::path::Path) -> u32 {
 /// Agent 的工具执行器：authorize 之后按来源分发给 PluginHost（native）或 Sidecar。
 struct ChatExecutor<'a> {
     plugins: &'a mut PluginHost,
-    host: Option<&'a mut SidecarHost>,
+    host: &'a mut Option<SidecarHost>,
     approvals: &'a Arc<ApprovalBroker>,
+    creator: Option<creator::Session<'a>>,
+    step: ToolStep,
+    headless: bool,
+    diagnostics: bool,
     /// 父会话日志（与流式回调共享同一个 RefCell：`spawn_child` 要向它追加
     /// child.spawned/finished，回调同时在追加 tool.call/tool.result）。
     log: std::rc::Rc<std::cell::RefCell<SessionLog>>,
@@ -2014,188 +2138,284 @@ struct ChatExecutor<'a> {
     /// 父会话取消句柄：子轮次共享，用户停止会同时停掉子会话。
     cancel: &'a Arc<AtomicBool>,
     settings: &'a DesktopSettings,
+    preset_inputs: &'a Option<(PathBuf, Vec<PathBuf>)>,
+    published_presets: &'a mut Option<ParsedAgentPresets>,
     /// 是否允许派生子会话（子会话本身不再派发，默认单层）。
     allow_spawn: bool,
     /// L2 Host Service 的会话读写面（None = 该轮不接 sidecar 服务）。
     l2_access: Option<Arc<ChatSessionAccess>>,
 }
 
+#[derive(Clone, Copy)]
+enum ToolLocation {
+    Global,
+    Trial,
+    Creator,
+    SpawnChild,
+}
+
+#[derive(Clone)]
+struct ResolvedTool {
+    definition: ToolDefinition,
+    location: ToolLocation,
+}
+
+type ToolStep = std::rc::Rc<RefCell<std::collections::BTreeMap<String, ResolvedTool>>>;
+
 impl ToolExecutor for ChatExecutor<'_> {
     fn specs(&self) -> Vec<ToolSpec> {
-        let mut specs: Vec<ToolSpec> = self
-            .plugins
-            .registry()
-            .list()
-            .iter()
-            .map(|definition| ToolSpec {
-                name: definition.name.clone(),
-                description: definition.description.clone(),
-                parameters: definition.input_schema.clone(),
+        self.step
+            .borrow()
+            .values()
+            .map(|tool| ToolSpec {
+                name: tool.definition.name.clone(),
+                description: tool.definition.description.clone(),
+                parameters: tool.definition.input_schema.clone(),
             })
-            .collect();
-        // `spawn_child` 是核心能力，不经过插件注册表；子会话不暴露该工具。
-        if self.allow_spawn {
-            specs.push(spawn_child_spec());
+            .collect()
+    }
+
+    fn prepare_step(&mut self) -> Vec<ToolSpec> {
+        if let Some(host) = self.host.as_mut() {
+            if let Err(error) = host.refresh_registrations() {
+                eprintln!("[chat] sidecar tool registry: {error}");
+            }
+            self.plugins.invalidate_generation(host.generation());
+            register_sidecar_tools(self.plugins, host, self.headless);
         }
-        specs
+
+        let mut tools = self.step.borrow_mut();
+        tools.clear();
+        let workspace_dependencies_ready = runtime_components::workspace_dependencies_ready();
+        let mut insert = |definition: ToolDefinition, location| {
+            if !self.diagnostics && definition.name.starts_with("probe_") {
+                return;
+            }
+            if !workspace_dependencies_ready
+                && definition.name == runtime_components::WORKSPACE_DEPS_TOOL
+                && matches!(&definition.origin, ToolOrigin::Sidecar { plugin_id, .. } if plugin_id == "dsh-official")
+            {
+                return;
+            }
+            tools.insert(
+                definition.name.clone(),
+                ResolvedTool {
+                    definition,
+                    location,
+                },
+            );
+        };
+        for definition in self.plugins.registry().list() {
+            insert(definition.clone(), ToolLocation::Global);
+        }
+        if !self.headless {
+            if let Some(host) = self.host.as_ref() {
+                for definition in host.preset_tool_definitions(self.parent_id) {
+                    insert(definition, ToolLocation::Global);
+                }
+                for definition in host.tool_definitions_at_scope(Some(self.parent_id)) {
+                    insert(definition, ToolLocation::Global);
+                }
+            }
+        }
+        if let Some(creator) = &self.creator {
+            for definition in creator.scope.plugins.registry().list() {
+                insert(definition.clone(), ToolLocation::Trial);
+            }
+        }
+        // Preserve the core entry points if a package declares the same name.
+        let mut add_builtin = |spec: ToolSpec, location| {
+            insert(
+                ToolDefinition::new(
+                    spec.name,
+                    spec.description,
+                    ToolOrigin::Native {
+                        plugin_id: "core".to_owned(),
+                    },
+                )
+                .with_schema(spec.parameters),
+                location,
+            );
+        };
+        if self.creator.is_some() {
+            for spec in creator::specs() {
+                add_builtin(spec, ToolLocation::Creator);
+            }
+        }
+        if self.allow_spawn {
+            add_builtin(spawn_child_spec(), ToolLocation::SpawnChild);
+        }
+        drop(tools);
+        self.specs()
     }
 
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
-        if self.allow_spawn && call.tool == SPAWN_CHILD_TOOL {
-            return self.execute_spawn_child(call);
-        }
-        match self.authorize_call(call) {
-            Ok(definition) => self.dispatch_one(call, &definition),
-            Err(outcome) => outcome,
-        }
+        self.execute_batch(std::slice::from_ref(call), 1).remove(0)
     }
 
-    /// 同一 step 的批量执行（M3 并行工具，DSH `maxParallelToolCalls=10`）：
-    /// - sidecar 工具走 [`SidecarHost::invoke_batch`]（≤ `max_parallel` 并发）；
-    /// - native/MCP/`spawn_child` 逐个顺序执行（native 的插件调用是同步的，不做并发）；
-    /// - 合并后按**原顺序**返回；单个失败/超时/拒绝在各自槽位降级，不拖垮整批。
     fn execute_batch(
         &mut self,
         calls: &[ToolCallRequest],
         max_parallel: usize,
     ) -> Vec<ToolOutcome> {
-        let mut outcomes: Vec<Option<ToolOutcome>> = (0..calls.len()).map(|_| None).collect();
-        let mut sidecar_indices: Vec<usize> = Vec::new();
-        let mut sidecar_calls: Vec<dshr_compat_dsh_host::BatchInvokeCall> = Vec::new();
-        let mut native_indices: Vec<usize> = Vec::new();
-        let mut native_calls: Vec<(String, serde_json::Value)> = Vec::new();
+        let mut outcomes = vec![ToolOutcome::failure("batch outcome missing"); calls.len()];
+        let mut sidecar_calls = Vec::new();
+        let mut sidecar_indices = Vec::new();
+        let mut native_calls = [Vec::new(), Vec::new()];
+        let mut native_indices = [Vec::new(), Vec::new()];
+        let mut replaced_trials = std::collections::BTreeSet::new();
 
         for (index, call) in calls.iter().enumerate() {
-            // 子会话派发会阻塞跑一整轮，必须保持串行（且不改事件顺序）。
-            if self.allow_spawn && call.tool == SPAWN_CHILD_TOOL {
-                outcomes[index] = Some(self.execute_spawn_child(call));
+            let tool = self.step.borrow().get(&call.tool).cloned();
+            let Some(ResolvedTool {
+                definition,
+                location,
+            }) = tool
+            else {
+                outcomes[index] = ToolOutcome::failure(format!(
+                    "tool {} was not offered for this model step",
+                    call.tool
+                ));
                 continue;
-            }
-            let definition = match self.authorize_call(call) {
-                Ok(definition) => definition,
-                Err(outcome) => {
-                    outcomes[index] = Some(outcome);
+            };
+            match location {
+                ToolLocation::Creator => {
+                    let names: Vec<_> = self
+                        .step
+                        .borrow()
+                        .iter()
+                        .filter_map(|(name, tool)| {
+                            matches!(tool.location, ToolLocation::Global | ToolLocation::Trial)
+                                .then(|| name.clone())
+                        })
+                        .collect();
+                    outcomes[index] = self.creator.as_mut().expect("creator step").execute(
+                        call,
+                        &names,
+                        self.approvals,
+                        self.cancel,
+                    );
+                    if call.tool == creator::TRY_PLUGIN_TOOL
+                        && outcomes[index].value["replaced"] == true
+                    {
+                        if let Some(id) = outcomes[index].value["plugin"].as_str() {
+                            replaced_trials.insert(id.to_owned());
+                        }
+                    }
                     continue;
                 }
-            };
-            match definition.origin {
+                ToolLocation::SpawnChild => {
+                    outcomes[index] = self.execute_spawn_child(call);
+                    continue;
+                }
+                ToolLocation::Global | ToolLocation::Trial => {}
+            }
+            if let Err(outcome) = self.authorize_call(call, &definition) {
+                outcomes[index] = outcome;
+                continue;
+            }
+            match &definition.origin {
                 ToolOrigin::Sidecar { .. } => {
-                    if self.host.is_some() {
-                        sidecar_indices.push(index);
-                        sidecar_calls.push(
-                            dshr_compat_dsh_host::BatchInvokeCall::new(
-                                call.call_id.clone(),
-                                call.tool.clone(),
-                                call.arguments.clone(),
-                                sidecar_tool_timeout(&definition),
-                            )
-                            .with_session(self.parent_id),
-                        );
-                    } else {
-                        outcomes[index] = Some(ToolOutcome::failure("sidecar unavailable"));
-                    }
+                    sidecar_indices.push(index);
+                    sidecar_calls.push(
+                        dshr_compat_dsh_host::BatchInvokeCall::new(
+                            call.call_id.clone(),
+                            call.tool.clone(),
+                            call.arguments.clone(),
+                            sidecar_tool_timeout(&definition),
+                        )
+                        .with_session(self.parent_id)
+                        .with_binding(definition.origin),
+                    );
                 }
                 ToolOrigin::Native { .. } => {
-                    // M4 W4：native 调用先收集；批末尾按插件并行（不同插件才会重叠）。
-                    native_indices.push(index);
-                    native_calls.push((call.tool.clone(), call.arguments.clone()));
+                    let scope = usize::from(matches!(location, ToolLocation::Trial));
+                    native_indices[scope].push(index);
+                    native_calls[scope].push((call.tool.clone(), call.arguments.clone()));
                 }
                 ToolOrigin::Mcp { .. } => {
-                    outcomes[index] = Some(ToolOutcome::failure("mcp not wired"));
+                    outcomes[index] = ToolOutcome::failure("mcp not wired");
                 }
             }
         }
 
         if !sidecar_calls.is_empty() {
-            // 服务读面快照一次；批结束后统一把 L2 追加事件写回内存日志。
             self.publish_l2_snapshot();
-            let results = match self.host.as_mut() {
-                Some(host) => host.invoke_batch(
-                    &sidecar_calls,
-                    max_parallel.max(1),
-                    Some(self.cancel.as_ref()),
-                ),
-                None => (0..sidecar_calls.len())
-                    .map(|_| {
-                        Err(dshr_compat_dsh_host::HostError::Protocol(
-                            "sidecar disappeared before batch".to_owned(),
-                        ))
-                    })
-                    .collect(),
-            };
-            self.drain_l2_appends();
-            for (slot, index) in sidecar_indices.iter().enumerate() {
-                let outcome = match results.get(slot) {
-                    Some(Ok(outcome)) if outcome.terminal.kind == "tool.result" => {
-                        outcome_from_terminal(&outcome.terminal)
+            if let Some(host) = self.host.as_mut() {
+                let results = host.invoke_batch(&sidecar_calls, max_parallel, Some(self.cancel));
+                self.drain_l2_appends();
+                for (index, result) in sidecar_indices.into_iter().zip(results) {
+                    outcomes[index] = match result {
+                        Ok(result) if result.terminal.kind == "tool.result" => {
+                            outcome_from_terminal(&result.terminal)
+                        }
+                        Ok(result) => ToolOutcome::failure(result.terminal.payload.to_string()),
+                        Err(error) => ToolOutcome::failure(error.to_string()),
+                    };
+                }
+            } else {
+                for index in sidecar_indices {
+                    outcomes[index] = ToolOutcome::failure("sidecar unavailable");
+                }
+            }
+        }
+
+        for (scope, (indices, calls)) in native_indices.into_iter().zip(native_calls).enumerate() {
+            let (indices, calls): (Vec<_>, Vec<_>) = indices.into_iter().zip(calls)
+                .filter(|(index, (name, _))| {
+                    let from_replaced_trial = scope == 1 && self.step.borrow().get(name)
+                        .is_some_and(|tool| matches!(&tool.definition.origin,
+                            ToolOrigin::Native { plugin_id } if replaced_trials.contains(plugin_id)));
+                    if from_replaced_trial {
+                        outcomes[*index] = ToolOutcome::failure(
+                            "This trial was replaced during the current step. Call the newly offered tool on the next step.",
+                        );
                     }
-                    Some(Ok(outcome)) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
-                    Some(Err(error)) => ToolOutcome::failure(error.to_string()),
-                    None => ToolOutcome::failure("batch outcome missing"),
-                };
-                outcomes[*index] = Some(outcome);
+                    !from_replaced_trial
+                }).unzip();
+            if calls.is_empty() {
+                continue;
             }
-        }
-
-        if !native_calls.is_empty() {
-            let results = self.plugins.call_approved_batch_cancellable(
-                &native_calls,
+            let plugins = if scope == 0 {
+                &mut *self.plugins
+            } else {
+                &mut self.creator.as_mut().expect("trial step").scope.plugins
+            };
+            let results = plugins.call_approved_batch_cancellable(
+                &calls,
                 max_parallel.max(1),
-                Some(self.cancel.as_ref()),
+                Some(self.cancel),
             );
-            for (slot, index) in native_indices.iter().enumerate() {
-                let outcome = match results.get(slot) {
-                    Some(Ok(value)) => ToolOutcome::success(
-                        json!([{ "type": "json", "value": value.clone() }]),
-                        value.clone(),
-                    ),
-                    Some(Err(error)) => ToolOutcome::failure(error.clone()),
-                    None => ToolOutcome::failure("native batch outcome missing"),
+            for (index, result) in indices.into_iter().zip(results) {
+                outcomes[index] = match result {
+                    Ok(value) => {
+                        ToolOutcome::success(json!([{ "type": "json", "value": value }]), value)
+                    }
+                    Err(error) => ToolOutcome::failure(error),
                 };
-                outcomes[*index] = Some(outcome);
             }
         }
-
         outcomes
-            .into_iter()
-            .map(|outcome| {
-                outcome
-                    .unwrap_or_else(|| ToolOutcome::failure("batch outcome missing for this call"))
-            })
-            .collect()
     }
 }
 
 impl ChatExecutor<'_> {
-    /// `spawn_child`：阻塞跑一整轮子会话（必须串行）。
     fn execute_spawn_child(&mut self, call: &ToolCallRequest) -> ToolOutcome {
-        let mut log = self.log.borrow_mut();
-        TreeCoordinator::spawn_child(
-            &mut log,
-            self.parent_id,
-            self.sessions_dir,
-            call,
-            self.approvals,
-            self.cancel,
-            self.settings,
-        )
+        let log = self.log.clone();
+        let outcome = TreeCoordinator::spawn_child(&mut log.borrow_mut(), call, self);
+        outcome
     }
 
-    /// 策略 + schema 授权（Ask 时阻塞等审批）；失败返回可直接使用的降级结果。
-    ///
-    /// `ToolOutcome` 携带 content/value/meta（与协议 payload 同量级），这里按错误值直接
-    /// 复用而不是再包一层 enum，与 chat 现有错误路径一致。
     #[allow(clippy::result_large_err)]
-    fn authorize_call(&mut self, call: &ToolCallRequest) -> Result<ToolDefinition, ToolOutcome> {
-        match self
-            .plugins
-            .registry()
-            .authorize(&call.tool, &call.arguments)
-        {
-            Ok(definition) => Ok(definition.clone()),
+    fn authorize_call(
+        &self,
+        call: &ToolCallRequest,
+        definition: &ToolDefinition,
+    ) -> Result<(), ToolOutcome> {
+        let registry = self.plugins.registry();
+        match registry.authorize_definition(definition, &call.arguments) {
+            Ok(_) => Ok(()),
             Err(RegistryError::NeedsApproval { tool }) => {
-                // 策略说"要确认"：阻塞等工作线程外的 UI 决定（或超时按拒绝）。
-                // 停止生成必须能打断审批等待：request_cancellable 每 100ms 检查一次取消标志。
                 let outcome = self.approvals.request_cancellable(
                     &call.call_id,
                     &tool,
@@ -2204,73 +2424,19 @@ impl ChatExecutor<'_> {
                     self.cancel.as_ref(),
                 );
                 match outcome {
-                    ApprovalOutcome::AllowOnce => self
-                        .plugins
-                        .registry()
-                        .get(&tool)
-                        .cloned()
-                        .ok_or_else(|| ToolOutcome::failure(format!("工具 {tool} 已卸载"))),
-                    ApprovalOutcome::Deny => Err(ToolOutcome::failure(format!(
-                        "用户拒绝了工具 `{tool}` 的调用"
-                    ))),
-                }
-            }
-            Err(err) => Err(ToolOutcome::failure(err.to_string())),
-        }
-    }
-
-    /// 单调用分发（sidecar 走单调用路径，保持既有语义）。
-    fn dispatch_one(&mut self, call: &ToolCallRequest, definition: &ToolDefinition) -> ToolOutcome {
-        match definition.origin {
-            ToolOrigin::Sidecar { .. } => {
-                // 发布当前会话快照：L2 服务（working-directory/session-log）读面
-                // 看到的是本轮最新日志；工具返回后再把服务追加的事件补写回来。
-                self.publish_l2_snapshot();
-                let Some(host) = self.host.as_mut() else {
-                    return ToolOutcome::failure("sidecar unavailable");
-                };
-                // 超时用工具声明的 `timeout_ms`（对齐 DSH 的 per-tool timeoutMs），
-                // 而不是写死 5s：带 bash/pwsh 的工具固定 5s 必超时。
-                // 可取消版本在用户停止时发 tool.cancel 给 sidecar（慢工具不再等待完整超时）。
-                let timeout = sidecar_tool_timeout(definition);
-                let result = host.invoke_as_cancellable_in_session(
-                    &call.call_id,
-                    Some(self.parent_id),
-                    &call.tool,
-                    call.arguments.clone(),
-                    timeout,
-                    Some(self.cancel.as_ref()),
-                );
-                self.drain_l2_appends();
-                match result {
-                    Ok(outcome) if outcome.terminal.kind == "tool.result" => {
-                        outcome_from_terminal(&outcome.terminal)
+                    ApprovalOutcome::AllowOnce => {
+                        dshr_tool_runtime::ToolRegistry::validate_definition(
+                            definition,
+                            &call.arguments,
+                        )
+                        .map_err(|error| ToolOutcome::failure(error.to_string()))
                     }
-                    Ok(outcome) => ToolOutcome::failure(outcome.terminal.payload.to_string()),
-                    Err(err) => ToolOutcome::failure(err.to_string()),
-                }
-            }
-            _ => self.dispatch_non_sidecar(call, definition),
-        }
-    }
-
-    /// native / MCP 分发（同步；批量里也保持串行）。
-    fn dispatch_non_sidecar(
-        &mut self,
-        call: &ToolCallRequest,
-        definition: &ToolDefinition,
-    ) -> ToolOutcome {
-        match definition.origin {
-            ToolOrigin::Native { .. } => {
-                match self.plugins.call_approved(&call.tool, &call.arguments) {
-                    Ok(value) => {
-                        ToolOutcome::success(json!([{ "type": "json", "value": value }]), value)
+                    ApprovalOutcome::Deny => {
+                        Err(ToolOutcome::failure(format!("user denied tool `{tool}`")))
                     }
-                    Err(err) => ToolOutcome::failure(err.to_string()),
                 }
             }
-            ToolOrigin::Mcp { .. } => ToolOutcome::failure("mcp not wired"),
-            ToolOrigin::Sidecar { .. } => ToolOutcome::failure("sidecar must use invoke_batch"),
+            Err(error) => Err(ToolOutcome::failure(error.to_string())),
         }
     }
 
@@ -2300,6 +2466,11 @@ impl ChatExecutor<'_> {
 fn outcome_from_terminal(terminal: &Envelope) -> ToolOutcome {
     let payload = &terminal.payload;
     let content = payload["content"].clone();
+    if content.is_null() {
+        if let Some(error) = &terminal.error {
+            return ToolOutcome::failure(format!("{}: {}", error.code, error.message));
+        }
+    }
     // value 优先取自 payload.value；旧插件只在 content 里放值，做一次兼容回退。
     let value = payload.get("value").cloned().unwrap_or_else(|| {
         content
@@ -2326,18 +2497,16 @@ struct TreeCoordinator;
 impl TreeCoordinator {
     fn spawn_child(
         log: &mut SessionLog,
-        parent_id: &str,
-        sessions_dir: &std::path::Path,
         call: &ToolCallRequest,
-        approvals: &Arc<ApprovalBroker>,
-        cancel: &Arc<AtomicBool>,
-        settings: &DesktopSettings,
+        executor: &mut ChatExecutor<'_>,
     ) -> ToolOutcome {
+        let parent_id = executor.parent_id;
+        let cancel = executor.cancel;
         let args = match SpawnChildArgs::from_call(call) {
             Ok(args) => args,
             Err(err) => return ToolOutcome::failure(format!("spawn_child 参数非法: {err}")),
         };
-        let store = SessionIndex::new(sessions_dir);
+        let store = SessionIndex::new(executor.sessions_dir);
         let child_id = store.new_id();
         let child_path = store.path_for(&child_id);
         let _writer = match try_lock_session(&child_path) {
@@ -2386,11 +2555,33 @@ impl TreeCoordinator {
             spawned.log,
             session_workspace(log),
             cancel,
-            approvals.clone(),
-            settings.clone(),
-            ChatRuntime::Desktop { allow_spawn: false, sidecar: false },
+            executor.approvals.clone(),
+            executor.settings.clone(),
+            ChatRuntime::Desktop {
+                allow_spawn: false,
+                sidecar: false,
+                diagnostics: executor.diagnostics,
+            },
         );
+        let uses_preset = child
+            .log
+            .created()
+            .and_then(|created| created.preset.as_deref())
+            .is_some_and(|preset| preset != creator::PRESET);
+        if uses_preset {
+            child.host = executor.host.take();
+            child.preset_inputs = executor.preset_inputs.clone();
+            child.l2_access = executor.l2_access.clone();
+            if args.preset.is_none() {
+                child.inherited_preset_from = Some(parent_id.to_owned());
+            }
+        }
         let reply = child.stream_turn(&args.prompt, &mut |_| {});
+        if uses_preset {
+            *executor.host = child.host.take();
+            // The child may have synchronized a newer catalog on this same Sidecar.
+            *executor.published_presets = None;
+        }
         child.save();
 
         let interrupted = cancel.load(Ordering::Relaxed);
@@ -2435,8 +2626,17 @@ impl TreeCoordinator {
 }
 
 /// 把 sidecar 注册映射进同一个 ToolRegistry。
-fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost) {
+fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost, headless: bool) {
     for definition in host.tool_definitions() {
+        if headless
+            && (definition.presentation.as_deref() == Some("terminal")
+                || matches!(
+                    definition.name.as_str(),
+                    "bash" | "pwsh" | "shell" | "powershell" | "exec"
+                ))
+        {
+            continue;
+        }
         let name = definition.name.clone();
         if let Err(err) = plugins.registry_mut().register(definition) {
             eprintln!("[chat] 注册 sidecar 工具 `{name}` 失败: {err}");
@@ -2586,30 +2786,29 @@ fn session_workspace(log: &SessionLog) -> PathBuf {
 }
 
 fn register_probe_write(plugins: &mut PluginHost, workspace: &Path) {
-    let result = ProbeWritePlugin::new(workspace).and_then(|plugin| {
-        plugins
-            .load(Box::new(plugin))
-            .map_err(|error| error.to_string())
-    });
+    let result = WorkspaceWritePlugin::new(workspace, "probe_write", "builtin.probe-write")
+        .and_then(|plugin| {
+            plugins
+                .load(Box::new(plugin))
+                .map_err(|error| error.to_string())
+        });
     if let Err(error) = result {
         eprintln!("[chat] 工作区写入工具不可用: {error}");
     }
 }
 
 impl ChatState {
-    fn new(
+    fn open_diagnostics(
         path: PathBuf,
         session_id: &str,
         cancel: &Arc<AtomicBool>,
         approvals: Arc<ApprovalBroker>,
     ) -> Self {
-        Self::open(path, session_id, cancel, approvals, true, true)
+        Self::open_diagnostics_with_options(path, session_id, cancel, approvals, true, true)
     }
 
-    /// 通用构造：
-    /// - `allow_spawn = false`：子会话不再派发（默认单层，深度上限 2）；
-    /// - `with_sidecar = false`：子会话只用原生工具，避免每次派发再起一个 Node 进程。
-    fn open(
+    /// Opens a chat for explicit diagnostics and self-tests.
+    fn open_diagnostics_with_options(
         path: PathBuf,
         session_id: &str,
         cancel: &Arc<AtomicBool>,
@@ -2617,14 +2816,17 @@ impl ChatState {
         allow_spawn: bool,
         with_sidecar: bool,
     ) -> Self {
-        Self::open_with_settings(
+        Self::open_in(
             path,
             session_id,
             cancel,
             approvals,
-            allow_spawn,
-            with_sidecar,
             DesktopSettings::from_env(&configured_models()),
+            ChatRuntime::Desktop {
+                allow_spawn,
+                sidecar: with_sidecar,
+                diagnostics: true,
+            },
         )
     }
 
@@ -2637,6 +2839,28 @@ impl ChatState {
         with_sidecar: bool,
         settings: DesktopSettings,
     ) -> Self {
+        Self::open_in(
+            path,
+            session_id,
+            cancel,
+            approvals,
+            settings,
+            ChatRuntime::Desktop {
+                allow_spawn,
+                sidecar: with_sidecar,
+                diagnostics: false,
+            },
+        )
+    }
+
+    fn open_in(
+        path: PathBuf,
+        session_id: &str,
+        cancel: &Arc<AtomicBool>,
+        approvals: Arc<ApprovalBroker>,
+        settings: DesktopSettings,
+        runtime: ChatRuntime,
+    ) -> Self {
         let OpenedSessionLog {
             log,
             errors: session_errors,
@@ -2646,7 +2870,7 @@ impl ChatState {
         let workspace = session_workspace(&log);
         let mut state = Self::from_log(
             path, log, workspace, cancel, approvals, settings,
-            ChatRuntime::Desktop { allow_spawn, sidecar: with_sidecar },
+            runtime,
         );
         state.session_errors = session_errors;
         state.save_blocked = save_blocked;
@@ -2662,9 +2886,13 @@ impl ChatState {
         settings: DesktopSettings,
         runtime: ChatRuntime,
     ) -> Self {
-        let (headless, allow_spawn, with_sidecar) = match runtime {
-            ChatRuntime::Desktop { allow_spawn, sidecar } => (false, allow_spawn, sidecar),
-            ChatRuntime::Headless => (true, false, true),
+        let (headless, allow_spawn, with_sidecar, diagnostics) = match runtime {
+            ChatRuntime::Desktop {
+                allow_spawn,
+                sidecar,
+                diagnostics,
+            } => (false, allow_spawn, sidecar, diagnostics),
+            ChatRuntime::Headless => (true, false, true, false),
         };
         let sessions_dir = path
             .parent()
@@ -2676,35 +2904,34 @@ impl ChatState {
         } else {
             None
         };
-        let host = if with_sidecar {
-            spawn_sidecar_in(
+        let (host, sidecar_start_error) = if with_sidecar {
+            match spawn_sidecar_in(
                 &workspace,
                 settings.write_approvals(&approvals),
                 l2_access.clone(),
-            )
+                diagnostics,
+            ) {
+                Ok(host) => (Some(host), None),
+                Err(error) => {
+                    eprintln!("[chat] {error}");
+                    (None, Some(error))
+                }
+            }
         } else {
-            None
+            (None, None)
         };
         if let Some(mode) = settings.permission {
             eprintln!("[chat] approval mode={}", mode.as_str());
         }
         let mut plugins = PluginHost::new(settings.approval_policy());
-        if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
-            eprintln!("[chat] 原生插件加载失败: {err}");
-        }
-        register_probe_write(&mut plugins, &workspace);
-        if let Some(sidecar) = &host {
-            if headless {
-                for definition in sidecar.tool_definitions() {
-                    if definition.presentation.as_deref() != Some("terminal")
-                        && !matches!(definition.name.as_str(), "bash" | "pwsh" | "shell" | "powershell" | "exec")
-                    {
-                        let _ = plugins.registry_mut().register(definition);
-                    }
-                }
-            } else {
-                register_sidecar_tools(&mut plugins, sidecar);
+        if diagnostics {
+            if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
+                eprintln!("[chat] 诊断插件加载失败: {err}");
             }
+            register_probe_write(&mut plugins, &workspace);
+        }
+        if let Some(sidecar) = &host {
+            register_sidecar_tools(&mut plugins, sidecar, headless);
         }
         let seq = last_message_seq(&log);
         let session_id = log.session_id().to_owned();
@@ -2713,6 +2940,14 @@ impl ChatState {
             path: path.clone(),
             workspace,
             host,
+            workspace_sidecars: HashMap::new(),
+            preset_diagnostics: Vec::new(),
+            active_preset_error: None,
+            default_preset: None,
+            inherited_preset_from: None,
+            preset_inputs: loader_inputs(),
+            published_presets: None,
+            sidecar_start_error,
             plugins,
             agent: Agent::new(settings.model.provider(cancel)),
             settings,
@@ -2729,8 +2964,11 @@ impl ChatState {
             save_blocked: None,
             adc_panels: Vec::new(),
             headless,
+            diagnostics,
+            creator_trials: HashMap::new(),
         };
         if !headless {
+            state.refresh_agent_presets();
             state.refresh_adc_panels();
         }
         state
@@ -2747,11 +2985,27 @@ impl ChatState {
         self.log = opened.log;
         let workspace = session_workspace(&self.log);
         if workspace != self.workspace {
-            self.workspace = workspace;
-            let _ = self.plugins.unload("builtin.probe-write");
-            register_probe_write(&mut self.plugins, &self.workspace);
+            let previous = std::mem::replace(&mut self.workspace, workspace);
+            if self.diagnostics {
+                let _ = self.plugins.unload("builtin.probe-write");
+                register_probe_write(&mut self.plugins, &self.workspace);
+            }
             if self.l2_access.is_some() {
-                self.restart_sidecar();
+                if let Some(mut host) = self.host.take() {
+                    self.plugins.invalidate_generation(host.generation());
+                    if !host.has_exited() {
+                        self.workspace_sidecars.insert(previous, host);
+                    }
+                }
+                let cached = self.workspace_sidecars.remove(&self.workspace);
+                if let Some(mut host) = cached {
+                    if !host.has_exited() {
+                        self.attach_sidecar(host);
+                    }
+                }
+                if self.host.is_none() {
+                    self.start_sidecar();
+                }
             }
         }
         self.spill = SpillStore::new(spill_dir_for(&path));
@@ -2759,13 +3013,147 @@ impl ChatState {
         self.session_id = session_id.to_owned();
         self.session_errors = opened.errors;
         self.save_blocked = opened.save_blocked;
+        if !self.headless {
+            self.refresh_agent_presets();
+            self.refresh_adc_panels();
+        }
         opened.wrote_created || opened.recovered
+    }
+
+    fn refresh_agent_presets(&mut self) {
+        if self.headless {
+            return;
+        }
+        let catalog = read_agent_presets_from(self.preset_inputs.as_ref());
+        self.publish_agent_presets(catalog);
+        self.bind_agent_preset();
+    }
+
+    fn publish_agent_presets(&mut self, parsed: ParsedAgentPresets) {
+        self.preset_diagnostics.clear();
+        let catalog = match &parsed {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                self.preset_diagnostics
+                    .push(format!("预设配置读取失败：{error}"));
+                self.published_presets = Some(parsed);
+                return;
+            }
+        };
+        let definitions = json!(catalog.definitions);
+        let mut applied = true;
+        let hosts = self
+            .host
+            .iter_mut()
+            .chain(self.workspace_sidecars.values_mut());
+        for host in hosts.filter(|host| host.supports_agent_presets()) {
+            if host.has_exited() {
+                continue;
+            }
+            match host.sync_presets(&definitions) {
+                Ok(status) => {
+                    self.default_preset.clone_from(&catalog.default);
+                    if let Some(rows) = status.as_object() {
+                        for (id, row) in rows {
+                            if let Some(error) = row["error"].as_str() {
+                                let message = format!("预设 {id}: {error}");
+                                if !self.preset_diagnostics.contains(&message) {
+                                    self.preset_diagnostics.push(message);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    applied = false;
+                    self.preset_diagnostics.push(error.to_string());
+                }
+            }
+        }
+        self.published_presets = applied.then_some(parsed);
+    }
+
+    fn bind_agent_preset(&mut self) {
+        self.active_preset_error = None;
+        let id = self
+            .log
+            .created()
+            .and_then(|created| created.preset.as_deref())
+            .filter(|id| *id != creator::PRESET);
+        if let Some(host) = self
+            .host
+            .as_mut()
+            .filter(|host| host.supports_agent_presets())
+        {
+            // A blank-session change can update the stored preset ID.
+            // An unchanged ID keeps its existing revision across reloads.
+            if host.bound_preset(&self.session_id) != id {
+                if let Err(error) = host.release_preset(&self.session_id) {
+                    self.active_preset_error = Some(format!("无法释放原预设：{error}"));
+                    return;
+                }
+            }
+            if let Some(id) = id {
+                if let Err(error) =
+                    host.bind_preset(&self.session_id, id, self.inherited_preset_from.as_deref())
+                {
+                    self.active_preset_error = Some(format!("无法启用预设 {id}：{error}"));
+                }
+            }
+        } else if let Some(id) = id {
+            self.active_preset_error = Some(format!("预设 {id} 需要支持 Agent 预设的官方 Sidecar"));
+        }
+    }
+
+    fn select_blank_preset(&mut self, preset: Option<String>) -> Result<(), String> {
+        let _writer = self.lock_and_refresh()?;
+        let created = blank_root_created(&self.log)
+            .ok_or_else(|| "只能在空白的根会话更改模式".to_owned())?;
+        if created.preset == preset {
+            return Ok(());
+        }
+        let created = created.clone().with_optional_preset(preset);
+        self.publish_agent_presets(read_agent_presets_from(self.preset_inputs.as_ref()));
+        if let Some(preset) = created.preset.as_deref().filter(|id| *id != creator::PRESET) {
+            let host = self
+                .host
+                .as_mut()
+                .filter(|host| host.supports_agent_presets())
+                .ok_or_else(|| "此模式需要支持 Agent 预设的官方 Sidecar".to_owned())?;
+            if host.has_exited() {
+                return Err("官方 Sidecar 已退出，无法改选模式".to_owned());
+            }
+            let status = host
+                .preset_status()
+                .get(preset)
+                .ok_or_else(|| format!("预设 {preset} 不可用"))?;
+            if let Some(error) = status["error"].as_str() {
+                return Err(format!("无法启用预设 {preset}：{error}"));
+            }
+        }
+        let mut updated = SessionLog::new(&self.session_id);
+        updated
+            .append_created(&self.log.events()[0].ts, &created)
+            .map_err(|error| error.to_string())?;
+        save_atomic(&self.path, updated.to_jsonl().as_bytes())
+            .map_err(|error| format!("无法保存会话模式：{error}"))?;
+        self.log = updated;
+        self.creator_trials.remove(&self.session_id);
+        self.bind_agent_preset();
+        self.refresh_adc_panels();
+        match &self.active_preset_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     fn load_errors(&self) -> Vec<String> {
         self.host
             .iter()
             .flat_map(|host| host.boot_errors())
+            .chain(&self.sidecar_start_error)
+            .chain(&self.active_preset_error)
+            .chain(&self.preset_diagnostics)
             .chain(&self.external_plugin_errors)
             .chain(&self.session_errors)
             .cloned()
@@ -2778,10 +3166,42 @@ impl ChatState {
     /// 等外部进程（`ui.render` 超时默认 10s）。未知 view / 不实现 view 的插件只留下
     /// 可读错误，不影响其它面板。
     fn refresh_adc_panels(&mut self) {
-        let registrations: Vec<(String, String, String)> = self
-            .plugins
+        let mut panels = std::collections::BTreeMap::new();
+        if let Some(scope) = self.creator_trials.get_mut(&self.session_id) {
+            Self::render_adc_panels(&mut scope.plugins, true, &mut panels);
+        }
+        Self::render_adc_panels(&mut self.plugins, false, &mut panels);
+        self.adc_panels = panels.into_values().collect();
+    }
+
+    fn apply_adc_action(
+        &mut self,
+        plugin_id: &str,
+        view: &str,
+        action: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), dshr_plugin_host::HostError> {
+        let plugins = match self.creator_trials.get_mut(&self.session_id) {
+            Some(scope) if scope.plugins.panels().iter().any(|registration| {
+                registration.plugin_id == plugin_id
+                    && registration.panel.slot == "workspace.panel"
+                    && registration.panel.view_name() == view
+            }) => &mut scope.plugins,
+            _ => &mut self.plugins,
+        };
+        plugins.dispatch_action(plugin_id, view, action, payload)?;
+        self.refresh_adc_panels();
+        Ok(())
+    }
+
+    fn render_adc_panels(
+        plugins: &mut PluginHost,
+        trial: bool,
+        panels: &mut std::collections::BTreeMap<(String, String), AdcPanelView>,
+    ) {
+        let registrations: Vec<_> = plugins
             .panels()
-            .iter()
+            .into_iter()
             .filter(|registration| registration.panel.slot == "workspace.panel")
             .map(|registration| {
                 (
@@ -2791,22 +3211,39 @@ impl ChatState {
                 )
             })
             .collect();
-        let mut panels = Vec::with_capacity(registrations.len());
         for (plugin_id, title, view) in registrations {
-            let mut panel = AdcPanelView {
-                plugin_id: plugin_id.clone(),
-                title,
-                view: view.clone(),
-                tree: None,
-                error: None,
-            };
-            match self.plugins.render_panel(&plugin_id, &view) {
-                Ok(tree) => panel.tree = Some(tree),
-                Err(error) => panel.error = Some(format!("view `{view}`: {error}")),
-            }
-            panels.push(panel);
+            panels
+                .entry((plugin_id.clone(), view.clone()))
+                .or_insert_with(|| {
+                    let (tree, error) = match plugins.render_panel(&plugin_id, &view) {
+                        Ok(tree) => (Some(tree), None),
+                        Err(error) => (None, Some(format!("view `{view}`: {error}"))),
+                    };
+                    AdcPanelView {
+                        plugin_id,
+                        title,
+                        trial,
+                        view,
+                        tree,
+                        error,
+                    }
+                });
         }
-        self.adc_panels = panels;
+    }
+
+    fn drop_session_scope(&mut self, session_id: &str) {
+        for host in self
+            .host
+            .iter_mut()
+            .chain(self.workspace_sidecars.values_mut())
+        {
+            if let Err(error) = host.retire_session(session_id) {
+                eprintln!("[chat] retire sidecar session {session_id}: {error}");
+            }
+        }
+        if self.creator_trials.remove(session_id).is_some() && self.session_id == session_id {
+            self.refresh_adc_panels();
+        }
     }
 
     /// 组装上下文计划：先按阈值把超大工具结果外部化（写对象 + 事件留痕），再重新计划。
@@ -2848,19 +3285,39 @@ impl ChatState {
 
     /// 重启 Sidecar：先撤销旧 generation，再按当前 profile/环境重新装载。
     fn restart_sidecar(&mut self) -> bool {
+        self.workspace_sidecars.clear();
+        self.restart_active_sidecar()
+    }
+
+    fn restart_active_sidecar(&mut self) -> bool {
         if let Some(old) = self.host.take() {
             self.plugins.invalidate_generation(old.generation());
         }
-        let Some(host) = spawn_sidecar_in(
+        self.start_sidecar()
+    }
+
+    fn start_sidecar(&mut self) -> bool {
+        let host = match spawn_sidecar_in(
             &self.workspace,
             self.settings.write_approvals(&self.approvals),
             self.l2_access.clone(),
-        ) else {
-            return false;
+            self.diagnostics,
+        ) {
+            Ok(host) => host,
+            Err(error) => {
+                eprintln!("[chat] {error}");
+                self.sidecar_start_error = Some(error);
+                return false;
+            }
         };
-        register_sidecar_tools(&mut self.plugins, &host);
-        self.host = Some(host);
+        self.attach_sidecar(host);
         true
+    }
+
+    fn attach_sidecar(&mut self, host: SidecarHost) {
+        register_sidecar_tools(&mut self.plugins, &host, self.headless);
+        self.host = Some(host);
+        self.sidecar_start_error = None;
     }
 
     fn set_model(&mut self, model: Arc<DesktopModel>) {
@@ -2948,6 +3405,10 @@ impl ChatState {
         attachments: &[DraftAttachment],
         emit: &mut dyn FnMut(TurnUpdate<'_>),
     ) -> Result<TurnResult, String> {
+        self.refresh_agent_presets();
+        if let Some(error) = &self.active_preset_error {
+            return Err(error.clone());
+        }
         let ts = now_ts();
         self.seq += 1;
         let user_id = format!("m-u{}", self.seq);
@@ -3062,31 +3523,21 @@ impl ChatState {
         );
         let current = history.pop().expect("current user message");
 
-        // 来源与卡片类型在轮次开始前固定：流式回调里不能再借注册表（执行器正持有它）。
-        let presentations: std::collections::BTreeMap<String, (String, String)> = self
-            .plugins
-            .registry()
-            .list()
-            .iter()
-            .map(|definition| {
-                (
-                    definition.name.clone(),
-                    (
-                        definition.origin.kind().to_owned(),
-                        definition
-                            .presentation
-                            .clone()
-                            .unwrap_or_else(|| "generic".to_owned()),
-                    ),
-                )
-            })
-            .collect();
-
+        let creator_enabled = !self.headless && creator::is_creator_session(&self.log);
+        let preset = self
+            .log
+            .created()
+            .and_then(|created| created.preset.clone());
+        let step = ToolStep::default();
         let mut reply = String::new();
         let mut reason = TurnReason::Error;
         let mut event_error = None;
         // 非失败结束原因（用户取消）：决定 TurnEnded 后写 session.interrupted 而不是“处理失败”。
         let mut cancelled: Option<String> = None;
+        let trial_revision_before_turn = self
+            .creator_trials
+            .get(&self.session_id)
+            .map_or(0, |scope| scope.revision);
         // 父日志临时放进 Rc<RefCell>：流式回调（tool.* 事件）与 spawn_child 执行器
         // （child.spawned/finished）都要写同一份父日志，单借用无法同时满足。
         let log_cell = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
@@ -3096,13 +3547,28 @@ impl ChatState {
         {
             let mut executor = ChatExecutor {
                 plugins: &mut self.plugins,
-                host: self.host.as_mut(),
+                host: &mut self.host,
                 approvals: &self.approvals,
+                creator: creator_enabled.then(|| creator::Session {
+                    preset: preset.as_deref().expect("creator preset"),
+                    workspace: &self.workspace,
+                    sessions_dir: &self.sessions_dir,
+                    scope: self
+                        .creator_trials
+                        .entry(self.session_id.clone())
+                        .or_insert_with(|| creator::TrialScope::new(&self.settings, &self.workspace)),
+                    read_only: self.settings.permission == Some(PermissionMode::ReadOnly),
+                }),
+                step: step.clone(),
+                headless: self.headless,
+                diagnostics: self.diagnostics,
                 log: log_cell.clone(),
                 sessions_dir: &self.sessions_dir,
                 parent_id: &self.session_id,
                 cancel: &self.cancel,
                 settings: &self.settings,
+                preset_inputs: &self.preset_inputs,
+                published_presets: &mut self.published_presets,
                 allow_spawn: self.allow_spawn,
                 l2_access: self.l2_access.clone(),
             };
@@ -3118,27 +3584,34 @@ impl ChatState {
                         emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::ToolCall(call) => {
-                        let (origin, presentation) = presentations
-                            .get(&call.tool)
-                            .cloned()
-                            .unwrap_or_else(|| ("unknown".to_owned(), "generic".to_owned()));
+                        let tools = step.borrow();
+                        let definition = tools.get(&call.tool).map(|tool| &tool.definition);
+                        let origin = definition.map_or("unknown", |tool| tool.origin.kind());
+                        let presentation = definition.and_then(|tool| tool.presentation.as_deref())
+                            .unwrap_or("generic");
+                        let registration = match definition.map(|tool| &tool.origin) {
+                            Some(ToolOrigin::Sidecar { registration_id, generation, plugin_id }) =>
+                                Some((registration_id, generation, plugin_id)),
+                            _ => None,
+                        };
+                        let mut data = json!({
+                            "call_id": call.call_id,
+                            "tool": call.tool,
+                            "origin": origin,
+                            "presentation": presentation,
+                            "arguments": call.arguments
+                        });
+                        if let Some((id, generation, plugin_id)) = registration {
+                            data["registration_id"] = json!(id);
+                            data["generation"] = json!(generation);
+                            data["plugin_id"] = json!(plugin_id);
+                        }
+                        drop(tools);
                         {
                             let mut log = log_for_events.borrow_mut();
                             let call_seq = log.len() as u64 + 1;
-                            match log.append(EventSpec::durable(
-                                "tool.call",
-                                &ts,
-                                json!({
-                                    "call_id": call.call_id,
-                                    "call_seq": call_seq,
-                                    "tool": call.tool,
-                                    "origin": origin,
-                                    // 展示元数据随事件持久化（spec/session-log.md §6）：
-                                    // 回放不依赖插件当前版本。
-                                    "presentation": presentation,
-                                    "arguments": call.arguments
-                                }),
-                            )) {
+                            data["call_seq"] = json!(call_seq);
+                            match log.append(EventSpec::durable("tool.call", &ts, data)) {
                                 Ok(seq) => {
                                     pending_call_seqs.entry(call.call_id.clone()).or_default().push_back(seq);
                                     emit(TurnUpdate::Call { seq, tool: &call.tool });
@@ -3257,6 +3730,16 @@ impl ChatState {
             ));
         }
 
+        if self
+            .creator_trials
+            .get(&self.session_id)
+            .map_or(0, |scope| scope.revision)
+            != trial_revision_before_turn
+            || self.adc_panels.iter().any(|panel| panel.trial)
+        {
+            self.refresh_adc_panels();
+        }
+
         // 审批痕迹落盘（在工具事件之后：审批链用于审计/回放，不影响模型输入）。
         let records = self.approvals.take_records();
         for record in records {
@@ -3289,15 +3772,21 @@ impl ChatState {
             reason = TurnReason::Cancelled;
         }
         if !(cancelled_turn && reply.trim().is_empty()) {
-            self.log.append(EventSpec::durable(
-                "message.assistant.settled",
-                &ts,
-                json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
-            )).map_err(|error| error.to_string())?;
+            self.log
+                .append(EventSpec::durable(
+                    "message.assistant.settled",
+                    &ts,
+                    json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
+                ))
+                .map_err(|error| error.to_string())?;
         }
-        self.log.append(EventSpec::durable(
-            "turn.ended", &ts, json!({ "turn_id": turn_id, "reason": reason.as_str() })
-        )).map_err(|error| error.to_string())?;
+        self.log
+            .append(EventSpec::durable(
+                "turn.ended",
+                &ts,
+                json!({ "turn_id": turn_id, "reason": reason.as_str() }),
+            ))
+            .map_err(|error| error.to_string())?;
         self.save_checked()?;
         emit(TurnUpdate::Preview(&self.log, None));
         Ok(TurnResult { reply, reason })
@@ -3314,22 +3803,48 @@ impl ChatState {
 
     /// 直接执行一次工具调用（自检用；走与真实轮次相同的策略/审批/沙箱路径）。
     fn execute_tool(&mut self, call: &ToolCallRequest) -> ToolOutcome {
+        self.refresh_agent_presets();
+        if let Some(error) = &self.active_preset_error {
+            return ToolOutcome::failure(error.clone());
+        }
+        let creator_enabled = !self.headless && creator::is_creator_session(&self.log);
+        let preset = self
+            .log
+            .created()
+            .and_then(|created| created.preset.clone());
         let log_cell = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
             &mut self.log,
             SessionLog::new(&self.session_id),
         )));
+        let step = ToolStep::default();
         let mut executor = ChatExecutor {
             plugins: &mut self.plugins,
-            host: self.host.as_mut(),
+            host: &mut self.host,
             approvals: &self.approvals,
+            creator: creator_enabled.then(|| creator::Session {
+                preset: preset.as_deref().expect("creator preset"),
+                workspace: &self.workspace,
+                sessions_dir: &self.sessions_dir,
+                scope: self
+                    .creator_trials
+                    .entry(self.session_id.clone())
+                    .or_insert_with(|| creator::TrialScope::new(&self.settings, &self.workspace)),
+                read_only: self.settings.permission == Some(PermissionMode::ReadOnly),
+            }),
+            step: step.clone(),
+            headless: self.headless,
+                diagnostics: self.diagnostics,
             log: log_cell.clone(),
             sessions_dir: &self.sessions_dir,
             parent_id: &self.session_id,
             cancel: &self.cancel,
             settings: &self.settings,
+            preset_inputs: &self.preset_inputs,
+            published_presets: &mut self.published_presets,
             allow_spawn: self.allow_spawn,
             l2_access: self.l2_access.clone(),
         };
+        executor.prepare_step();
         let outcome = executor.execute(call);
         drop(executor);
         self.log = std::rc::Rc::try_unwrap(log_cell)
@@ -3557,6 +4072,7 @@ struct AdcEditor {
 enum ComposerMenu {
     Model,
     Permission,
+    Preset,
     Commands,
     Add,
 }
@@ -3569,6 +4085,7 @@ struct SessionMenu {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommand {
     New,
+    Creator,
     Search,
     Turns,
     Plugins,
@@ -3576,8 +4093,9 @@ enum SlashCommand {
 }
 
 impl SlashCommand {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::New,
+        Self::Creator,
         Self::Search,
         Self::Turns,
         Self::Plugins,
@@ -3587,6 +4105,7 @@ impl SlashCommand {
     fn name(self) -> &'static str {
         match self {
             Self::New => "new",
+            Self::Creator => "creator",
             Self::Search => "search",
             Self::Turns => "turns",
             Self::Plugins => "plugins",
@@ -3597,6 +4116,7 @@ impl SlashCommand {
     fn description(self) -> &'static str {
         match self {
             Self::New => "新建会话",
+            Self::Creator => "新建创造会话",
             Self::Search => "搜索工作区和会话",
             Self::Turns => "跳到指定轮次",
             Self::Plugins => "打开或关闭插件面板",
@@ -3638,6 +4158,10 @@ struct AttachmentPreview {
 }
 
 struct ChatApp {
+    creator_mode: bool,
+    active_preset: Option<String>,
+    blank_root: bool,
+    preset_notice: Option<String>,
     /// Agent / 工具 / 日志都在工作线程里改；UI 只读快照，所以这里必须加锁。
     state: Arc<Mutex<ChatState>>,
     /// 当前渲染用的整份快照（由工作线程推送）。
@@ -3650,6 +4174,7 @@ struct ChatApp {
     activity_scroll: ScrollHandle,
     settings: DesktopSettings,
     model_options: Vec<Arc<DesktopModel>>,
+    model_settings: model_settings::ModelSettings,
     composer_menu: Option<ComposerMenu>,
     #[cfg(target_os = "windows")]
     window_menu: Option<window_bar::WindowMenu>,
@@ -3676,6 +4201,8 @@ struct ChatApp {
     settings_focus: FocusHandle,
     settings_restore_focus: Option<FocusHandle>,
     settings_notice: Option<String>,
+    runtime_installing: Option<runtime_components::Component>,
+    runtime_notice: Option<String>,
     /// 左侧会话栏收起状态（对齐 DSH 的折叠侧栏）。
     sidebar_collapsed: Option<bool>,
     /// 首次渲染后把历史滚到最新一条（DSH 打开会话也是停在底部）。
@@ -3728,6 +4255,7 @@ struct ChatApp {
     sidecar_reload_pending: bool,
     /// 插件 ADC 面板快照（渲染路径只读；刷新见加载插件/打开面板处，不持锁渲染）。
     adc_panels: Vec<AdcPanelView>,
+    trial_panels_collapsed: bool,
 }
 
 impl ChatApp {
@@ -3748,6 +4276,8 @@ impl ChatApp {
     /// 返回 `true` 表示已受理，输入框随后自行清空；生成中返回 `false`，内容保留。
     fn on_submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.busy
+            || self.model_settings.pending
+            || !self.settings.model.is_configured()
             || self.attachment_preview.is_some()
             || self.attachment_load.is_some()
             || (text.trim().is_empty() && self.attachments.is_empty())
@@ -3810,7 +4340,7 @@ impl ChatApp {
         // 事件 → 快照 → channel → UI 合并，UI 侧没有事件重放逻辑。
         let state = self.state.clone();
         let reload_sidecar = std::mem::take(&mut self.sidecar_reload_pending);
-        let (tx, rx) = mpsc::channel::<Vec<Row>>();
+        let (tx, rx) = mpsc::channel::<DesktopTurnUpdate>();
         std::thread::spawn(move || {
             let mut guard = state
                 .lock()
@@ -3820,27 +4350,40 @@ impl ChatApp {
                 Err(error) => {
                     let mut rows = rows_snapshot(&guard.log, None);
                     rows.push(Row::Meta(format!("消息未发送：{error}")));
-                    let _ = tx.send(rows);
+                    let _ = tx.send(DesktopTurnUpdate::Rows(rows));
                     return;
                 }
             };
-            if reload_sidecar || guard.host.as_mut().is_some_and(SidecarHost::has_exited) {
+            if reload_sidecar {
                 let _ = guard.restart_sidecar();
+            } else if guard.host.as_mut().is_some_and(SidecarHost::has_exited) {
+                let _ = guard.restart_active_sidecar();
             }
             guard.stream_turn_with_attachments(&text, &attachments, &mut |rows| {
                 // UI 已关闭时发送失败：忽略并继续，不要 panic。
-                let _ = tx.send(rows);
+                let _ = tx.send(DesktopTurnUpdate::Rows(rows));
             });
+            let finished = DesktopTurnUpdate::Finished {
+                plugin_errors: guard.load_errors(),
+                adc_panels: guard.adc_panels.clone(),
+            };
+            drop(_writer);
+            drop(guard);
+            let _ = tx.send(finished);
         });
 
         cx.spawn(async move |this, cx| {
             loop {
                 // 同一轮询窗口内只取最后一份快照：快照是全量的，旧的不需要画。
                 let mut latest = None;
+                let mut finished = None;
                 let mut closed = false;
                 loop {
                     match rx.try_recv() {
-                        Ok(rows) => latest = Some(rows),
+                        Ok(DesktopTurnUpdate::Rows(rows)) => latest = Some(rows),
+                        Ok(DesktopTurnUpdate::Finished { plugin_errors, adc_panels }) => {
+                            finished = Some((plugin_errors, adc_panels));
+                        }
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
                             closed = true;
@@ -3871,10 +4414,20 @@ impl ChatApp {
                         return;
                     }
                 }
-                if closed {
+                if closed || finished.is_some() {
                     let _ = this.update(cx, |app, cx| {
-                        if let Ok(guard) = app.state.try_lock() {
-                            app.plugin_errors = guard.load_errors();
+                        if let Some((errors, panels)) = finished {
+                            if panels.iter().filter(|panel| panel.trial).any(|panel| {
+                                !app.adc_panels.iter().any(|previous| {
+                                    previous.trial
+                                        && previous.plugin_id == panel.plugin_id
+                                        && previous.view == panel.view
+                                })
+                            }) {
+                                app.trial_panels_collapsed = false;
+                            }
+                            app.plugin_errors = errors;
+                            app.adc_panels = panels;
                         }
                         app.busy = false;
                         cx.notify();
@@ -3962,6 +4515,7 @@ impl ChatApp {
     ) {
         match command {
             SlashCommand::New => self.new_session(window, cx),
+            SlashCommand::Creator => self.new_creator_session(window, cx),
             SlashCommand::Search => {
                 self.open_session_search(window, cx);
             }
@@ -4508,9 +5062,15 @@ impl ChatApp {
             self.active_workspace = state.workspace.clone();
             self.rows = rows_snapshot(&state.log, None);
             self.plugin_errors = state.load_errors();
+            self.adc_panels = state.adc_panels.clone();
+            self.creator_mode = creator::is_creator_session(&state.log);
+            self.active_preset = state.log.created().and_then(|created| created.preset.clone());
+            self.blank_root = blank_root_created(&state.log).is_some();
             index_changed
         };
         self.session_id = id;
+        self.trial_panels_collapsed = false;
+        self.preset_notice = None;
         self.workspace_picker_open = false;
         self.workspace_notice = None;
         self.initial_scroll_done = false;
@@ -4542,12 +5102,26 @@ impl ChatApp {
     }
 
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let workspace = if self.active_workspace.is_dir() {
+        let workspace = self.new_session_workspace();
+        self.new_session_with_preset(workspace, None, window, cx);
+    }
+
+    fn new_creator_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.plugins_open = false;
+        self.plugin_panels_open = false;
+        let workspace = self.new_session_workspace();
+        self.new_session_with_preset(workspace, Some(creator_preset_id()), window, cx);
+    }
+
+    fn new_session_workspace(&self) -> PathBuf {
+        if self.active_workspace.is_dir() {
             self.active_workspace.clone()
         } else {
             workspace_root()
-        };
-        self.new_session_in(workspace, window, cx);
+        }
     }
 
     fn delete_session(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -4564,6 +5138,19 @@ impl ChatApp {
         if let Err(err) = self.store.delete(&id) {
             eprintln!("[chat] 删除会话 {id} 失败: {err}");
             return;
+        }
+        let state = self.state.clone();
+        let deleted = id.clone();
+        let drop_scope = move || {
+            state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .drop_session_scope(&deleted);
+        };
+        if self.busy {
+            std::thread::spawn(drop_scope);
+        } else {
+            drop_scope();
         }
         self.renaming = None;
         self.rename_input = None;
@@ -4631,16 +5218,16 @@ impl ChatApp {
         payload: serde_json::Value,
         cx: &mut Context<Self>,
     ) {
+        if self.busy {
+            return;
+        }
         let result = {
             let mut guard = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let result = guard
-                .plugins
-                .dispatch_action(plugin_id, view, action, &payload);
+            let result = guard.apply_adc_action(plugin_id, view, action, &payload);
             if result.is_ok() {
-                guard.refresh_adc_panels();
                 self.adc_panels = guard.adc_panels.clone();
             }
             result
@@ -4651,127 +5238,181 @@ impl ChatApp {
         cx.notify();
     }
 
-    fn plugin_panels(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn conversation_trial_panels(
+        &self,
+        t: &Theme,
+        height: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.adc_panels.iter().any(|panel| panel.trial) {
+            return None;
+        }
+        let expanded = !self.trial_panels_collapsed;
+        let p = t.palette;
+        Some(
+            div()
+                .flex_none()
+                .w_full()
+                .max_w(t.layout.composer_max_width)
+                .mx_auto()
+                .px(px(16.0))
+                .pb(px(6.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(t.type_scale.secondary)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.color(p.label_primary))
+                                .child("试用面板"),
+                        )
+                        .child(
+                            chrome_button(
+                                "toggle-trial-panels",
+                                if expanded { "收起面板" } else { "展开面板" },
+                                t,
+                            )
+                            .aria_expanded(expanded)
+                            .focusable()
+                            .on_click(cx.listener(|chat, _, _, cx| {
+                                chat.trial_panels_collapsed = !chat.trial_panels_collapsed;
+                                cx.notify();
+                            })),
+                        ),
+                )
+                .when(expanded, |section| {
+                    section.child(
+                        div()
+                            .id("conversation-trial-panels")
+                            .max_h((height * 0.35).clamp(px(90.0), px(270.0)))
+                            .overflow_y_scroll()
+                            .child(self.plugin_panels(true, t, cx)),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn plugin_panels(&self, trial_only: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
         let mut list = div().flex().flex_col().gap(px(8.0)).w_full();
-        // ADC-v1 插件面板：对 `workspace.panel` 的每条注册渲染它的 view。
-        // 树由装载/打开面板时取好并快照在 `ChatApp` 里（**渲染路径不碰 state 锁**，
-        // 否则工作线程跑一轮时会冻住 UI）；事件轮留 M4（ADR-0011 降级清单）。
-        let adc_panels = self.adc_panels.clone();
-        if !adc_panels.is_empty() {
-            list = list.child(
-                div()
-                    .w_full()
-                    .pt(px(6.0))
-                    .text_size(t.type_scale.small)
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(p.color(p.label_secondary))
-                    .child("插件面板 · ADC-v1"),
-            );
-            for (index, panel) in adc_panels.iter().enumerate() {
-                let mut card = div()
-                    .id(("adc-panel", index))
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(t.radii.sm)
-                    .border_1()
-                    .border_color(p.color(p.border_l2))
-                    .bg(p.color(p.bg_layer_1))
-                    .child(
-                        div()
-                            .w_full()
-                            .text_size(t.type_scale.small)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(p.color(p.label_secondary))
-                            .text_overflow(TextOverflow::Truncate("…".into()))
-                            .child(format!("{} · {}", panel.plugin_id, panel.title)),
-                    );
-                match &panel.tree {
-                    Some(tree) => {
-                        let weak = cx.entity().downgrade();
-                        let plugin_id = panel.plugin_id.clone();
-                        let view = panel.view.clone();
-                        let handler: AdcActionHandler =
-                            std::rc::Rc::new(move |action, window, app| match action {
-                                AdcAction::Copy { text } => {
-                                    app.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                                    eprintln!("[adc] copy {} bytes", text.len());
-                                }
-                                AdcAction::Call { method, args } => {
-                                    if method == "__adc_edit" {
-                                        let plugin_id = plugin_id.clone();
-                                        let view = view.clone();
-                                        let args = args.clone();
-                                        let _ = weak.update(app, |chat, cx| {
-                                            chat.open_adc_editor(plugin_id, view, args, window, cx);
-                                        });
-                                    } else {
-                                        let payload = json!({ "method": method, "args": args });
-                                        let _ = weak.update(app, |chat, cx| {
-                                            chat.dispatch_adc_action(
-                                                &plugin_id, &view, "call", payload, cx,
-                                            );
-                                        });
-                                    }
-                                }
-                                AdcAction::Command { id } => {
-                                    let payload = json!({ "id": id });
+        // 绘制快照时不持有 ChatState 锁，也不向插件请求渲染。
+        for (index, panel) in self.adc_panels.iter().enumerate()
+            .filter(|(_, panel)| !trial_only || panel.trial)
+        {
+            let mut card = div()
+                .id(("adc-panel", index))
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(t.radii.sm)
+                .border_1()
+                .border_color(p.color(p.border_l2))
+                .bg(p.color(p.bg_layer_1))
+                .child(
+                    div()
+                        .w_full()
+                        .text_size(t.type_scale.small)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.color(p.label_secondary))
+                        .text_overflow(TextOverflow::Truncate("…".into()))
+                        .child(if trial_only {
+                            panel.title.clone()
+                        } else {
+                            format!("{} · {}", panel.plugin_id, panel.title)
+                        }),
+                );
+            match &panel.tree {
+                Some(tree) => {
+                    let weak = cx.entity().downgrade();
+                    let plugin_id = panel.plugin_id.clone();
+                    let view = panel.view.clone();
+                    let handler: AdcActionHandler =
+                        std::rc::Rc::new(move |action, window, app| match action {
+                            AdcAction::Copy { text } => {
+                                app.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                eprintln!("[adc] copy {} bytes", text.len());
+                            }
+                            AdcAction::Call { method, args } => {
+                                if method == "__adc_edit" {
+                                    let plugin_id = plugin_id.clone();
+                                    let view = view.clone();
+                                    let args = args.clone();
+                                    let _ = weak.update(app, |chat, cx| {
+                                        chat.open_adc_editor(plugin_id, view, args, window, cx);
+                                    });
+                                } else {
+                                    let payload = json!({ "method": method, "args": args });
                                     let _ = weak.update(app, |chat, cx| {
                                         chat.dispatch_adc_action(
-                                            &plugin_id, &view, "command", payload, cx,
+                                            &plugin_id, &view, "call", payload, cx,
                                         );
                                     });
                                 }
-                                AdcAction::OpenExternal { url } => {
-                                    let url = url.clone();
-                                    let _ = weak.update(app, |chat, cx| {
-                                        chat.request_open_external(url, cx);
-                                    });
-                                }
-                                _ => {
-                                    eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
-                                }
-                            });
-                        let (body, diagnostics) = adc_panel_body_with_handler(t, tree, handler);
-                        card = card.child(body);
-                        if !diagnostics.is_empty() {
-                            // 未知元素 Placeholder / 配额裁剪仍然可见，诊断只作提示。
-                            let errors = diagnostics
-                                .iter()
-                                .filter(|diagnostic| diagnostic.is_error())
-                                .count();
-                            card = card.child(
-                                div()
-                                    .text_size(t.type_scale.small)
-                                    .line_height(t.type_scale.small_line)
-                                    .text_color(p.color(p.state_warn))
-                                    .child(format!(
-                                        "ADC 诊断 {} 条（error {errors}）",
-                                        diagnostics.len()
-                                    )),
-                            );
-                        }
-                    }
-                    None => {
-                        let message = panel
-                            .error
-                            .clone()
-                            .unwrap_or_else(|| "（没有可渲染的 view）".to_owned());
+                            }
+                            AdcAction::Command { id } => {
+                                let payload = json!({ "id": id });
+                                let _ = weak.update(app, |chat, cx| {
+                                    chat.dispatch_adc_action(
+                                        &plugin_id, &view, "command", payload, cx,
+                                    );
+                                });
+                            }
+                            AdcAction::OpenExternal { url } => {
+                                let url = url.clone();
+                                let _ = weak.update(app, |chat, cx| {
+                                    chat.request_open_external(url, cx);
+                                });
+                            }
+                            _ => {
+                                eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
+                            }
+                        });
+                    let (body, diagnostics) = if self.busy {
+                        adc_panel_body(t, tree)
+                    } else {
+                        adc_panel_body_with_handler(t, tree, handler)
+                    };
+                    card = card.child(body);
+                    if !diagnostics.is_empty() {
+                        // 未知元素 Placeholder / 配额裁剪仍然可见，诊断只作提示。
+                        let errors = diagnostics
+                            .iter()
+                            .filter(|diagnostic| diagnostic.is_error())
+                            .count();
                         card = card.child(
                             div()
                                 .text_size(t.type_scale.small)
                                 .line_height(t.type_scale.small_line)
-                                .text_color(p.color(p.state_error))
-                                .child(format!("面板渲染失败：{message}")),
+                                .text_color(p.color(p.state_warn))
+                                .child(format!(
+                                    "ADC 诊断 {} 条（error {errors}）",
+                                    diagnostics.len()
+                                )),
                         );
                     }
                 }
-                list = list.child(card);
+                None => {
+                    let message = panel
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "（没有可渲染的 view）".to_owned());
+                    card = card.child(
+                        div()
+                            .text_size(t.type_scale.small)
+                            .line_height(t.type_scale.small_line)
+                            .text_color(p.color(p.state_error))
+                            .child(format!("面板渲染失败：{message}")),
+                    );
+                }
             }
+            list = list.child(card);
         }
 
         list.into_any_element()
@@ -5645,6 +6286,15 @@ impl ChatApp {
                                 .child(self.active_title())
                         }),
                     )
+                    .when(self.creator_mode && !hero, |header| {
+                        header.child(
+                            div()
+                                .flex_none()
+                                .text_size(t.type_scale.secondary)
+                                .text_color(p.color(p.label_secondary))
+                                .child("创造模式"),
+                        )
+                    })
                     .when(self.busy && !compact, |header| {
                         header.child(
                             div()
@@ -6389,13 +7039,25 @@ impl ChatApp {
         let first = pending.first()?;
         let p = t.palette;
         let call_id = first.call_id.clone();
-        let preview = serde_json::to_string_pretty(&first.arguments).unwrap_or_default();
-        let preview = if preview.chars().count() > 260 {
-            let mut text: String = preview.chars().take(260).collect();
-            text.push('…');
-            text
+        let is_trial = first.tool == creator::TRY_PLUGIN_TOOL;
+        let is_build = first.tool == creator::BUILD_PLUGIN_TOOL;
+        let preview = if is_trial {
+            creator::approval_preview(&first.arguments)
+        } else if is_build {
+            format!(
+                "{}\n构建入口 {}",
+                first.arguments["operation"].as_str().unwrap_or_default(),
+                first.arguments["entry"].as_str().unwrap_or_default(),
+            )
         } else {
-            preview
+            let preview = serde_json::to_string_pretty(&first.arguments).unwrap_or_default();
+            if preview.chars().count() > 260 {
+                let mut text: String = preview.chars().take(260).collect();
+                text.push('…');
+                text
+            } else {
+                preview
+            }
         };
         let call_id_allow = call_id.clone();
         let call_id_deny = call_id.clone();
@@ -6439,7 +7101,13 @@ impl ChatApp {
                                         .text_size(t.type_scale.secondary)
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(p.color(p.label_primary))
-                                        .child(format!("工具调用需要确认：{}", first.tool)),
+                                        .child(if is_trial {
+                                            "允许在当前会话试用插件？".to_owned()
+                                        } else if is_build {
+                                            "允许构建插件？".to_owned()
+                                        } else {
+                                            format!("工具调用需要确认：{}", first.tool)
+                                        }),
                                 )
                                 .child(div().flex_1())
                                 .when(pending.len() > 1, |row| {
@@ -6453,7 +7121,7 @@ impl ChatApp {
                         )
                         .child(
                             div()
-                                .max_h(px(80.0))
+                                .max_h(px(if is_trial { 136.0 } else { 80.0 }))
                                 .overflow_hidden()
                                 .text_size(t.type_scale.small)
                                 .line_height(t.type_scale.small_line)
@@ -6540,20 +7208,27 @@ impl ChatApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy {
+        if !self.apply_model(model) {
             return;
+        }
+        self.composer_menu = None;
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    fn apply_model(&mut self, model: Arc<DesktopModel>) -> bool {
+        if self.busy || self.model_settings.pending {
+            return false;
         }
         if !Arc::ptr_eq(&model, &self.settings.model) {
             let Ok(mut state) = self.state.try_lock() else {
-                return;
+                return false;
             };
             state.set_model(model.clone());
             self.settings.model = model;
             self.attachment_error = None;
         }
-        self.composer_menu = None;
-        self.focus_composer(window, cx);
-        cx.notify();
+        true
     }
 
     fn choose_permission(
@@ -6595,6 +7270,7 @@ impl ChatApp {
             .aria_label(match menu {
                 ComposerMenu::Model => "选择模型",
                 ComposerMenu::Permission => "选择工具权限",
+                ComposerMenu::Preset => "选择会话模式",
                 ComposerMenu::Commands => "选择指令",
                 ComposerMenu::Add => "添加附件或调用指令",
             })
@@ -6613,22 +7289,45 @@ impl ChatApp {
             ComposerMenu::Model => {
                 for (index, model) in self.model_options.iter().enumerate() {
                     let option = model.clone();
+                    let description = match model.kind() {
+                        ModelKind::Mock => "在本机生成演示回复".to_owned(),
+                        kind => format!("{} · {}", kind.label(), self.model_settings.source(model)),
+                    };
                     options = options.child(
                         composer_option(
                             ("model", index),
                             model.name(),
-                            match model.kind() {
-                                ModelKind::Mock => "在本机生成演示回复",
-                                kind => kind.label(),
-                            },
+                            &description,
                             Arc::ptr_eq(model, &self.settings.model),
                             t,
                         )
+                        .when(model.kind() != ModelKind::Mock, |row| {
+                            row.aria_label(format!("{}，{description}", model.name()))
+                                .tooltip(toolbar_tooltip(description, *t))
+                        })
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.choose_model(option.clone(), window, cx);
                             },
                         )),
+                    );
+                }
+            }
+            ComposerMenu::Preset => {
+                for (index, preset) in self.preset_choices().into_iter().enumerate() {
+                    let (label, description) = Self::preset_label(preset.as_deref());
+                    options = options.child(
+                        composer_option(
+                            ("session-preset", index),
+                            label,
+                            description,
+                            self.active_preset == preset,
+                            t,
+                        )
+                        .focusable()
+                        .on_click(cx.listener(move |chat, _, window, cx| {
+                            chat.choose_session_preset(preset.clone(), window, cx);
+                        })),
                     );
                 }
             }
@@ -6913,16 +7612,31 @@ impl ChatApp {
             .settings
             .permission
             .map_or("所有工具需审批", permission_label);
-        let model = self.settings.model.name();
+        let has_models = !self.model_options.is_empty();
+        let model = if has_models {
+            self.settings.model.name()
+        } else {
+            "配置模型"
+        };
+        let model_label = if has_models {
+            format!("选择模型 · {model}")
+        } else {
+            "配置模型".to_owned()
+        };
         let can_add = !self.busy && self.attachment_load.is_none();
+        let model_ready = self.settings.model.is_configured();
+        let can_submit = choosing_command || (model_ready && !self.model_settings.pending);
         let can_send = self.busy
-            || (self.attachment_load.is_none()
+            || (can_submit
+                && self.attachment_load.is_none()
                 && (!self.attachments.is_empty()
                     || !self.input.read(cx).content().trim().is_empty()));
         let (button_label, button_glyph, button_fallback) = if self.busy {
             ("停止生成", "\u{e73b}", "■")
         } else if choosing_command {
             ("运行所选指令", "\u{e768}", "▶")
+        } else if !model_ready {
+            ("配置模型后发送", "\u{e898}", "↑")
         } else {
             ("发送消息", "\u{e898}", "↑")
         };
@@ -7018,18 +7732,25 @@ impl ChatApp {
                         .child(model.to_owned()),
                 )
             })
-            .when(!self.busy, |button| {
+            .when(!self.busy && !self.model_settings.pending, |button| {
                 button
-                    .child(chevron(model_open))
+                    .when(has_models, |button| {
+                        button.child(chevron(model_open)).aria_expanded(model_open)
+                    })
                     .role(Role::Button)
-                    .aria_label(format!("选择模型，当前 {model}"))
-                    .aria_expanded(model_open)
+                    .aria_label(model_label.clone())
                     .focusable()
                     .cursor_pointer()
                     .hover(|style| style.bg(p.color(p.interactive_hover)))
-                    .tooltip(toolbar_tooltip(format!("选择模型 · {model}"), *t))
-                    .on_click(cx.listener(|chat, _, _, cx| {
-                        chat.toggle_composer_menu(ComposerMenu::Model, cx);
+                    .when(has_models || model_icon_only, |button| {
+                        button.tooltip(toolbar_tooltip(model_label, *t))
+                    })
+                    .on_click(cx.listener(move |chat, _, window, cx| {
+                        if has_models {
+                            chat.toggle_composer_menu(ComposerMenu::Model, cx);
+                        } else {
+                            chat.open_settings(settings_view::SettingsTab::Models, window, cx);
+                        }
                     }))
             });
         let add_open = self.composer_menu == Some(ComposerMenu::Add);
@@ -7208,10 +7929,25 @@ impl ChatApp {
                         .pl(px(20.0))
                         .pr(px(16.0))
                         .mb(px(8.0))
-                        .child(self.workspace_picker(t, menu_max_width, cx)),
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(self.workspace_picker(t, menu_max_width, cx))
+                        .when(self.blank_root, |row| {
+                            row.child(self.preset_picker(t, menu_max_width, menu_max_height, cx))
+                        }),
                 )
             })
             .child(card)
+            .when_some(self.preset_notice.as_ref().filter(|_| hero), |composer, notice| {
+                composer.child(
+                    div()
+                        .max_w(t.layout.composer_max_width)
+                        .mt(px(6.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.state_error))
+                        .child(notice.clone()),
+                )
+            })
             .when_some(self.attachment_error.as_ref(), |composer, error| {
                 composer.child(
                     div()
@@ -7262,8 +7998,11 @@ impl ChatApp {
             .into_any_element()
     }
 
-    fn empty_composer(&self, composer: AnyElement, t: &Theme) -> AnyElement {
+    fn empty_composer(&self, composer: AnyElement, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
+        let offer_build = self.active_preset.as_deref() == Some(creator::CORDIS_PRESET)
+            && creator::build_available().is_err()
+            && runtime_components::asset(runtime_components::Component::CreatorBuild).is_ok();
         div()
             .id("empty-composer")
             .flex()
@@ -7306,6 +8045,16 @@ impl ChatApp {
                     ),
             )
             .child(composer)
+            .when(offer_build, |view| {
+                view.child(
+                    div().flex().justify_center().mt(px(8.0)).child(
+                        chrome_button("creator-runtime-settings", "安装创造模式构建组件", t)
+                            .on_click(cx.listener(|chat, _, window, cx| {
+                                chat.open_settings(settings_view::SettingsTab::Components, window, cx);
+                            })),
+                    ),
+                )
+            })
             .child(div().flex_1().min_h(px(12.0)))
             .into_any_element()
     }
@@ -7693,6 +8442,7 @@ impl Render for ChatApp {
                 show_window_bar,
                 cx,
             ))
+            .children(self.conversation_trial_panels(&theme, window.viewport_size().height, cx))
             // 启动/加载错误在 GUI 主界面可见（双击启动没有控制台可看 stderr）。
             .when(!self.plugin_errors.is_empty(), |el| {
                 el.child(self.error_banner(&theme))
@@ -7706,7 +8456,7 @@ impl Render for ChatApp {
             })
             .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
             .child(if hero {
-                self.empty_composer(composer, &theme)
+                self.empty_composer(composer, &theme, cx)
             } else {
                 composer
             })
@@ -7756,7 +8506,7 @@ fn selftest() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     state.submit("你好");
     state.submit("用工具试一下"); // sidecar
@@ -7875,8 +8625,41 @@ fn selftest() -> i32 {
         .as_mut()
         .is_some_and(|host| !host.has_exited() && generation.as_deref() == Some(host.generation()));
     reset_session_file(&other_path);
+    let workspace = tempfile::tempdir().expect("second probe workspace");
+    let store = SessionIndex::new(workspace.path().join("sessions"));
+    store
+        .create_root(
+            "s-other-root",
+            &workspace.path().to_string_lossy(),
+            &now_ts(),
+        )
+        .expect("create session in second workspace");
+    let first_path = state.path.clone();
+    state.switch_session(store.path_for("s-other-root"), "s-other-root");
+    let used_second_runtime = state
+        .host
+        .as_ref()
+        .is_some_and(|host| generation.as_deref() != Some(host.generation()));
+    state.submit("用工具试一下");
+    let second_completed = matches!(state.items().as_slice(), [_, Item::Tool(t), _]
+        if t.origin == "sidecar" && t.state == ToolState::Settled { is_error: false });
+    state.switch_session(first_path, SESSION_ID);
+    let resumed_first_runtime = state
+        .host
+        .as_ref()
+        .is_some_and(|host| generation.as_deref() == Some(host.generation()));
+    let audited_binding = state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type == "tool.call" && event.payload["call_id"] == RAW_ID)
+        .all(|event| {
+            event.payload["generation"].as_str() == generation.as_deref()
+                && event.payload["registration_id"].as_str().is_some()
+        });
+    let workspace_switch_ok = used_second_runtime && second_completed && resumed_first_runtime;
     println!(
-        "[selftest] switch created={created} other_ok={other_ok} restored={restored} resumed={resumed} reused={reused} timed_out={timed_out} replayed_raw_ids={replayed_raw_ids} load={switch_elapsed:?}"
+        "[selftest] switch created={created} other_ok={other_ok} restored={restored} resumed={resumed} reused={reused} timed_out={timed_out} replayed_raw_ids={replayed_raw_ids} workspace_switch_ok={workspace_switch_ok} audited_binding={audited_binding} load={switch_elapsed:?}"
     );
 
     if ok
@@ -7889,6 +8672,8 @@ fn selftest() -> i32 {
         && reused
         && timed_out
         && replayed_raw_ids
+        && workspace_switch_ok
+        && audited_binding
     {
         println!("[selftest] PASS");
         0
@@ -7904,7 +8689,7 @@ fn selftest_cordis() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     state.submit("用工具试一下");
 
@@ -7942,7 +8727,7 @@ fn selftest_cordis() -> i32 {
     }
 }
 
-/// 官方 DSH 插件自检（`DSHR_SIDECAR=dsh`）。
+/// 验证普通桌面启动默认注册的官方 DSH 插件。
 ///
 /// 装载的是**未修改的官方包**（`@deepseek-ai/dsh-tool-workspace-dependencies`
 /// 与只读配置的 `@deepseek-ai/dsh-tool-fs`），通过 `tools` 服务的 `register`
@@ -7958,13 +8743,17 @@ fn selftest_dsh() -> i32 {
         return 0;
     }
 
-    let path = PathBuf::from(".tmp/chat-dsh.jsonl");
-    let _ = std::fs::create_dir_all(".tmp");
-    reset_session_file(&path);
+    let fixture = tempfile::tempdir_in(data_root()).expect("create DSH selftest workspace");
+    let path = fixture.path().join("session.jsonl");
+    let contents = "dshr desktop sidecar read fixture";
+    std::fs::write(fixture.path().join("read-test.txt"), contents).expect("write DSH fixture");
+    std::env::set_var("DSHR_WORKSPACE", fixture.path());
+    std::env::remove_var("DSHR_SIDECAR");
+    prepare_desktop_sidecar(&Profile::defaults(fixture.path()));
     // 本自检只验证"只读官方插件 + 回放"；写工具由 --selftest-dsh-write 覆盖。
     std::env::set_var("DSHR_FS_WRITE", "0");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     // 官方插件经 ctx.tools.register 映射进同一个 Registry，origin 必须是 sidecar。
     let registered_workspace = state
@@ -8002,24 +8791,12 @@ fn selftest_dsh() -> i32 {
         if t.card.as_ref().is_some_and(|card| card.detail.contains("python")));
 
     // 直接调官方 read 工具：证明带依赖（fs/systemPrompt）的插件也能执行。
-    let read_ok = {
-        let host = state.host.as_mut().expect("dsh sidecar should be running");
-        host.invoke_as(
-            "selftest-read-1",
-            "read",
-            json!({ "file_path": "README.md", "limit": 3 }),
-            Duration::from_secs(5),
-        )
-        .ok()
-        .filter(|outcome| outcome.terminal.kind == "tool.result")
-        .is_some_and(|outcome| {
-            let payload = &outcome.terminal.payload;
-            !payload["is_error"].as_bool().unwrap_or(true)
-                && payload["content"]
-                    .to_string()
-                    .contains("Native Agent Desktop")
-        })
-    };
+    let read = state.execute_tool(&ToolCallRequest {
+        call_id: "selftest-read-1".to_owned(),
+        tool: "read".to_owned(),
+        arguments: json!({ "file_path": "read-test.txt" }),
+    });
+    let read_ok = !read.is_error && read.content.to_string().contains(contents);
     println!("[selftest-dsh] read_tool_ok={read_ok}");
 
     let replayed = build_from_log(
@@ -8047,7 +8824,15 @@ fn live_turn(text: &str) -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_with_settings(
+        path,
+        SESSION_ID,
+        &cancel,
+        ApprovalBroker::new(),
+        true,
+        true,
+        DesktopSettings::from_env(&configured_models()),
+    );
 
     let started = std::time::Instant::now();
     let mut updates = 0usize;
@@ -8078,7 +8863,7 @@ fn selftest_stream() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     let mut snapshots: Vec<Vec<Row>> = Vec::new();
     let reply = state.stream_turn("你好", &mut |rows| snapshots.push(rows));
@@ -8132,7 +8917,7 @@ fn selftest_context() -> i32 {
     reset_session_file(&path);
     std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     // 直接写日志模拟长会话：CJK 文本 + 大工具结果，确保超过 8000 的 80%。
     for index in 0..20 {
@@ -8260,7 +9045,7 @@ fn selftest_long_context() -> i32 {
     reset_session_file(&path);
     std::env::set_var("DSHR_CONTEXT_WINDOW", "8000");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     let mut failures = 0usize;
     let mut compactions = 0usize;
@@ -8410,7 +9195,7 @@ fn selftest_spill() -> i32 {
     // 窗口放大，避免压缩/丢弃与外部化互相干扰；阈值用默认 16 KiB。
     std::env::set_var("DSHR_CONTEXT_WINDOW", "200000");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     let big = format!("{}结尾唯一标记XYZ", "外部化内容".repeat(6_000));
     let _ = state.log.append(EventSpec::durable(
@@ -8534,7 +9319,7 @@ fn selftest_dsh_write() -> i32 {
     let path = PathBuf::from(".tmp/chat-dsh-write.jsonl");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path, SESSION_ID, &cancel, ApprovalBroker::new());
 
     let registered: Vec<String> = state
         .plugins
@@ -8619,7 +9404,7 @@ fn selftest_approval() -> i32 {
     reset_session_file(&denied_path);
     std::env::set_var("DSHR_APPROVAL_MODE", "deny");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut denied_state = ChatState::new(denied_path, SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut denied_state = ChatState::open_diagnostics(denied_path, SESSION_ID, &cancel, ApprovalBroker::new());
     let denied_reply = denied_state.stream_turn("用工具试一下", &mut |_| {});
 
     let event_count = |state: &ChatState, kind: &str| {
@@ -8652,7 +9437,7 @@ fn selftest_approval() -> i32 {
     reset_session_file(&allowed_path);
     std::env::set_var("DSHR_APPROVAL_MODE", "allow");
     let mut allowed_state =
-        ChatState::new(allowed_path, SESSION_ID, &cancel, ApprovalBroker::new());
+        ChatState::open_diagnostics(allowed_path, SESSION_ID, &cancel, ApprovalBroker::new());
     let allowed_reply = allowed_state.stream_turn("用工具试一下", &mut |_| {});
     let allowed_tool = allowed_state.log.events().iter().any(|event| {
         event.event_type == "tool.result"
@@ -8711,7 +9496,7 @@ fn selftest_corrupt_session() -> i32 {
     std::fs::write(&path, &corrupt_bytes).expect("write corrupt fixture");
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let state = ChatState::open(
+    let state = ChatState::open_diagnostics_with_options(
         path.clone(),
         "s-corrupt",
         &cancel,
@@ -8937,7 +9722,7 @@ fn selftest_crash_recovery() -> i32 {
     let crashed = status.map(|status| !status.success()).unwrap_or(false);
     let backup_exists = path.with_extension("jsonl.bak").exists();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::open(
+    let mut state = ChatState::open_diagnostics_with_options(
         path.clone(),
         "s-crash",
         &cancel,
@@ -9074,7 +9859,7 @@ fn selftest_sidecar_recovery() -> i32 {
     let _ = std::fs::create_dir_all(&root);
     let path = root.join("s-sidecar.jsonl");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::open(
+    let mut state = ChatState::open_diagnostics_with_options(
         path.clone(),
         "s-sidecar",
         &cancel,
@@ -9152,7 +9937,7 @@ fn selftest_cancel() -> i32 {
     let path = PathBuf::from(".tmp/chat-cancel.jsonl");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::open(
+    let mut state = ChatState::open_diagnostics_with_options(
         path,
         SESSION_ID,
         &cancel,
@@ -9206,7 +9991,7 @@ fn selftest_sandbox() -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path, SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path, SESSION_ID, &cancel, ApprovalBroker::new());
 
     let write = |call_id: &str, relative: &str, content: &str| ToolCallRequest {
         call_id: call_id.to_owned(),
@@ -9283,7 +10068,7 @@ fn selftest_profile() -> i32 {
         std::env::set_var("DSHR_SIDECAR", "dsh");
         std::env::set_var("DSHR_DSH_PLUGINS", disabled_json.clone());
         let cancel = Arc::new(AtomicBool::new(false));
-        let without_fs = ChatState::new(
+        let without_fs = ChatState::open_diagnostics(
             PathBuf::from(".tmp/chat-profile-without-fs.jsonl"),
             SESSION_ID,
             &cancel,
@@ -9300,7 +10085,7 @@ fn selftest_profile() -> i32 {
         reopened.set_enabled("@deepseek-ai/dsh-tool-fs", true);
         let _ = reopened.save();
         std::env::set_var("DSHR_DSH_PLUGINS", reopened.sidecar_json());
-        let with_fs = ChatState::new(
+        let with_fs = ChatState::open_diagnostics(
             PathBuf::from(".tmp/chat-profile-with-fs.jsonl"),
             SESSION_ID,
             &cancel,
@@ -10217,56 +11002,48 @@ fn load_enabled_external_plugins(
                 continue;
             }
         };
-        match manifest.runtime.kind {
-            RuntimeKind::ExternalProcess => {
-                let plugin_id = manifest.plugin.id.clone();
-                let spec = ExternalPluginSpec::new(manifest, &package_dir, host_sdk_version(), 1);
-                match ExternalPlugin::spawn(spec) {
-                    Ok(plugin) => {
-                        let id = plugin.id().to_owned();
-                        if let Err(err) = plugins.load(Box::new(plugin)) {
-                            errors.push(format!("插件 {id} 装载失败: {err}"));
-                        } else {
-                            eprintln!("[plugin] external-process 已装载: {id}");
-                        }
-                    }
-                    Err(err) => errors.push(format!("插件 {plugin_id} 启动失败: {err}")),
-                }
-            }
-            RuntimeKind::WasmComponent => {
-                let plugin_id = manifest.plugin.id.clone();
-                let entry = manifest.runtime.entry.as_deref().unwrap_or("plugin.wasm");
-                let entry_path = package_dir.join(entry);
-                // component binary: \0asm + version 0x0d 0x00 0x01 0x00
-                let is_component = std::fs::read(&entry_path)
-                    .map(|bytes| bytes.len() >= 8 && bytes[4..8] == [0x0d, 0x00, 0x01, 0x00])
-                    .unwrap_or(false);
-                let loaded = if is_component {
-                    plugins
-                        .load_cpp_component_plugin_from_manifest(
-                            &manifest,
-                            &package_dir,
-                            &host_sdk_version(),
-                        )
-                        .map(|()| eprintln!("[plugin] cpp component 已装载: {plugin_id}"))
-                } else {
-                    plugins
-                        .load_wasm_plugin(&manifest, &package_dir, &host_sdk_version())
-                        .map(|()| eprintln!("[plugin] wasm-component 已装载: {plugin_id}"))
-                };
-                if let Err(err) = loaded {
-                    errors.push(format!("插件 {plugin_id} WASM 装载失败: {err}"));
-                }
-            }
-            // 安装包里出现 native-kind 的 plugin.toml 属于包装错位：必须报错，
-            // 不能像 W5 前那样静默 `continue`（review P1-1）。
-            other => errors.push(format!(
-                "插件 {} 的 runtime.kind={other:?} 不支持从安装包装载（rust-static 需内置）",
-                entry.name
-            )),
+        if let Err(error) = load_cpp_package(plugins, manifest, &package_dir) {
+            errors.push(error);
         }
     }
     errors
+}
+
+fn load_cpp_package(
+    plugins: &mut PluginHost,
+    manifest: Manifest,
+    package_dir: &std::path::Path,
+) -> Result<(), String> {
+    let plugin_id = manifest.plugin.id.clone();
+    let host = host_sdk_version();
+    match manifest.runtime.kind {
+        RuntimeKind::ExternalProcess => {
+            let spec = ExternalPluginSpec::new(manifest, package_dir, host, 1);
+            let plugin = ExternalPlugin::spawn(spec)
+                .map_err(|error| format!("插件 {plugin_id} 启动失败: {error}"))?;
+            plugins.load(Box::new(plugin))
+                .map_err(|error| format!("插件 {plugin_id} 装载失败: {error}"))?;
+            eprintln!("[plugin] external-process 已装载: {plugin_id}");
+            Ok(())
+        }
+        RuntimeKind::WasmComponent => {
+            let entry = manifest.runtime.entry.as_deref().unwrap_or("plugin.wasm");
+            let is_component = std::fs::read(package_dir.join(entry))
+                .map(|bytes| bytes.get(4..8) == Some(&[0x0d, 0x00, 0x01, 0x00]))
+                .unwrap_or(false);
+            let loaded = if is_component {
+                plugins.load_cpp_component_plugin_from_manifest(&manifest, package_dir, &host)
+            } else {
+                plugins.load_wasm_plugin(&manifest, package_dir, &host)
+            };
+            loaded.map_err(|error| format!("插件 {plugin_id} WASM 装载失败: {error}"))?;
+            eprintln!("[plugin] wasm-component 已装载: {plugin_id}");
+            Ok(())
+        }
+        other => Err(format!(
+            "插件 {plugin_id} 的 runtime.kind={other:?} 不支持从安装包装载（rust-static 需内置）"
+        )),
+    }
 }
 
 /// 自检：external-process 插件产品路径（安装 → profile 装载 → 工具调用 → 卸载 → 重载）。
@@ -10389,7 +11166,7 @@ fn selftest_external_plugin() -> i32 {
 
     let cancel = Arc::new(AtomicBool::new(false));
     let approvals = ApprovalBroker::new();
-    let mut state = ChatState::open(
+    let mut state = ChatState::open_diagnostics_with_options(
         root.join("session.jsonl"),
         SESSION_ID,
         &cancel,
@@ -11008,7 +11785,7 @@ fn selftest_adc_panel() -> i32 {
         return 1;
     };
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::open(
+    let mut state = ChatState::open_diagnostics_with_options(
         root.join("session.jsonl"),
         SESSION_ID,
         &cancel,
@@ -11339,7 +12116,7 @@ fn selftest_tree() -> i32 {
 
     // 1) 父会话派发一次子会话；子会话同步跑完一轮并回写父子日志。
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut parent = ChatState::new(
+    let mut parent = ChatState::open_diagnostics(
         dir.join("s-parent.jsonl"),
         "s-parent",
         &cancel,
@@ -11401,7 +12178,7 @@ fn selftest_tree() -> i32 {
         && parent_index < child_index;
 
     // 2) 子会话不再派发（默认单层）。
-    let mut child_state = ChatState::open(
+    let mut child_state = ChatState::open_diagnostics_with_options(
         store.path_for(&child_id),
         &child_id,
         &cancel,
@@ -11418,7 +12195,7 @@ fn selftest_tree() -> i32 {
 
     // 2b) 产品链路：mock 模型选择 spawn_child → 执行器派发 → 子会话回写 → 模型拿到结果。
     let cancel3 = Arc::new(AtomicBool::new(false));
-    let mut parent3 = ChatState::new(
+    let mut parent3 = ChatState::open_diagnostics(
         dir.join("s-parent3.jsonl"),
         "s-parent3",
         &cancel3,
@@ -11441,7 +12218,7 @@ fn selftest_tree() -> i32 {
 
     // 3) 中断传播：父取消后派发 → 父 session.interrupted + 子 interrupted_by_parent。
     let cancel2 = Arc::new(AtomicBool::new(false));
-    let mut parent2 = ChatState::new(
+    let mut parent2 = ChatState::open_diagnostics(
         dir.join("s-parent2.jsonl"),
         "s-parent2",
         &cancel2,
@@ -11549,7 +12326,7 @@ fn selftest_export() -> i32 {
 
     let cancel = Arc::new(AtomicBool::new(false));
     let path = sessions.join("s-export.jsonl");
-    let mut state = ChatState::new(path.clone(), "s-export", &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), "s-export", &cancel, ApprovalBroker::new());
     let big = format!("{}导出附件标记", "外部化内容".repeat(6_000));
     let _ = state.log.append(EventSpec::durable(
         "tool.call",
@@ -11902,7 +12679,15 @@ fn live_chat(script: &[String]) -> i32 {
     let _ = std::fs::create_dir_all(".tmp");
     reset_session_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_with_settings(
+        path.clone(),
+        SESSION_ID,
+        &cancel,
+        ApprovalBroker::new(),
+        true,
+        true,
+        DesktopSettings::from_env(&configured_models()),
+    );
 
     let mut failed = false;
     for (index, text) in script.iter().enumerate() {
@@ -11956,7 +12741,7 @@ fn selftest_live_20() -> i32 {
     let cancel = Arc::new(AtomicBool::new(false));
     // 这一步只统计"网络 + 模型 + 工具执行"链路；审批链由 --selftest-approval 覆盖。
     std::env::set_var("DSHR_APPROVAL_MODE", "allow");
-    let mut state = ChatState::new(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
+    let mut state = ChatState::open_diagnostics(path.clone(), SESSION_ID, &cancel, ApprovalBroker::new());
 
     let count = |state: &ChatState, kind: &str| {
         state
@@ -12266,7 +13051,7 @@ fn selftest_parallel_tools() -> i32 {
     let path = PathBuf::from(".tmp/chat-parallel-tools.jsonl");
     let _ = std::fs::remove_file(&path);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut state = ChatState::open(
+    let mut state = ChatState::open_diagnostics_with_options(
         path,
         "s-parallel",
         &cancel,
@@ -12286,16 +13071,24 @@ fn selftest_parallel_tools() -> i32 {
     )));
     let mut executor = ChatExecutor {
         plugins: &mut state.plugins,
-        host: state.host.as_mut(),
+        host: &mut state.host,
         approvals: &state.approvals,
+        creator: None,
+        step: ToolStep::default(),
+        headless: state.headless,
+        diagnostics: state.diagnostics,
         log: log_cell.clone(),
         sessions_dir: &state.sessions_dir,
         parent_id: "s-parallel",
         cancel: &cancel,
         settings: &state.settings,
+        preset_inputs: &state.preset_inputs,
+        published_presets: &mut state.published_presets,
         allow_spawn: false,
         l2_access: state.l2_access.clone(),
     };
+
+    executor.prepare_step();
 
     // 1) 顺序证据：3 个 probe_echo（fast），并行批返回顺序必须等于调用顺序。
     let order_calls: Vec<ToolCallRequest> = (0..3)
@@ -12428,6 +13221,22 @@ fn main() {
     // 2. 数据根必须在崩溃 hook 之前解析：hook 通过 DSHR_CRASH_LOG 写日志。
     prepare_data_env();
     install_crash_hook();
+    if let Some(index) = args.iter().position(|arg| arg == "--install-runtime-component") {
+        let result = args.get(index + 1)
+            .and_then(|name| runtime_components::Component::parse(name))
+            .ok_or_else(|| "用法：--install-runtime-component <python|creator-build>".to_owned())
+            .and_then(runtime_components::install);
+        match result {
+            Ok(path) => {
+                println!("{}", path.display());
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     // 3. 自检的 `.tmp` 相对路径与用户 CWD 解耦（只读 CWD 下也能跑）。
     prepare_selftest_cwd(&args);
     if let Some(index) = args.iter().position(|arg| arg == "--live-chat") {
@@ -12603,7 +13412,6 @@ fn main() {
         std::process::exit(selftest_dsh_write());
     }
     if std::env::args().any(|arg| arg == "--selftest-dsh") {
-        std::env::set_var("DSHR_SIDECAR", "dsh");
         std::env::set_var("DSHR_FORCE_MOCK", "1");
         std::process::exit(selftest_dsh());
     }
@@ -12669,7 +13477,12 @@ fn main() {
     let (mut sessions, mut session_depths) = ordered_sessions(&store);
     if sessions.is_empty() {
         let id = store.new_id();
-        if let Err(err) = store.create_root(&id, &workspace_root().to_string_lossy(), &now_ts()) {
+        let default = read_agent_presets()
+            .ok()
+            .and_then(|catalog| catalog.default);
+        let created =
+            SessionCreated::root(workspace_root().to_string_lossy()).with_optional_preset(default);
+        if let Err(err) = store.create_with_created(&id, &created, &now_ts()) {
             eprintln!("[chat] 无法创建初始会话: {err}");
             std::process::exit(1);
         }
@@ -12686,13 +13499,8 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".tmp/profile"));
     // 两种来源：Loader bundle+patch（只读派生视图），或 plugins.json（可编辑）。
-    let profile = if let Ok(bundle) = std::env::var("DSHR_LOADER_BUNDLE") {
-        let patches: Vec<PathBuf> = std::env::var("DSHR_LOADER_PATCH")
-            .ok()
-            .filter(|path| !path.is_empty())
-            .map(|path| vec![PathBuf::from(path)])
-            .unwrap_or_default();
-        Profile::from_loader(&profile_dir, &PathBuf::from(bundle), &patches).unwrap_or_else(|err| {
+    let profile = if let Some((bundle, patches)) = loader_inputs() {
+        Profile::from_loader(&profile_dir, &bundle, &patches).unwrap_or_else(|err| {
             eprintln!("[chat] 加载 Loader bundle 失败（使用默认值）: {err}");
             Profile::defaults(&profile_dir)
         })
@@ -12702,7 +13510,7 @@ fn main() {
             Profile::defaults(&profile_dir)
         })
     };
-    std::env::set_var("DSHR_DSH_PLUGINS", profile.sidecar_json());
+    prepare_desktop_sidecar(&profile);
 
     let path = store.path_for(&active);
     // G2 真窗口恢复流需要知道恢复目标：`ChatState::open` 会消费 path，
@@ -12710,7 +13518,10 @@ fn main() {
     let recovery_path = path.clone();
     let cancel = Arc::new(AtomicBool::new(false));
     let approvals = ApprovalBroker::new();
+    #[cfg(all(test, windows))]
+    creator::live_test::drive_notes_panel_approval(&approvals);
     let model_options = configured_models();
+    let model_settings = model_settings::ModelSettings::new(&data_root(), model_options.clone());
     let preferences = settings_view::Preferences::load(&data_root());
     let mut settings = DesktopSettings::from_env(&model_options);
     preferences.apply(&mut settings, &model_options);
@@ -12723,6 +13534,7 @@ fn main() {
         true,
         settings.clone(),
     )));
+    let preset_updates = preset_reload::start(&state);
     let app_cancel = cancel.clone();
     // 已安装的 external-process 插件：按 profile 的 enabled 条目在启动时装载；
     // 单个插件失败会在窗口上报。
@@ -12736,7 +13548,7 @@ fn main() {
         // external-process 面板也在这里取一次树（之后渲染只读缓存）。
         guard.refresh_adc_panels();
     }
-    let (rows, plugin_errors, adc_panels, active_workspace) = {
+    let (rows, plugin_errors, adc_panels, active_workspace, creator_mode, active_preset, blank_root) = {
         let guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -12745,6 +13557,9 @@ fn main() {
             guard.load_errors(),
             guard.adc_panels.clone(),
             guard.workspace.clone(),
+            creator::is_creator_session(&guard.log),
+            guard.log.created().and_then(|created| created.preset.clone()),
+            blank_root_created(&guard.log).is_some(),
         )
     };
 
@@ -12810,6 +13625,10 @@ fn main() {
                         let activity_scroll = ScrollHandle::new();
                         activity_scroll.scroll_to_bottom();
                         ChatApp {
+                            creator_mode,
+                            active_preset,
+                            blank_root,
+                            preset_notice: None,
                             state,
                             rows,
                             input: input.clone(),
@@ -12819,6 +13638,7 @@ fn main() {
                             activity_scroll,
                             settings,
                             model_options,
+                            model_settings,
                             composer_menu: None,
                             #[cfg(target_os = "windows")]
                             window_menu: None,
@@ -12839,6 +13659,8 @@ fn main() {
                             theme_kind: preferences.theme,
                             preferences,
                             settings_tab: None,
+                            runtime_installing: None,
+                            runtime_notice: None,
                             settings_focus: cx.focus_handle(),
                             settings_restore_focus: None,
                             settings_notice: None,
@@ -12878,6 +13700,7 @@ fn main() {
                             plugin_errors,
                             sidecar_reload_pending: false,
                             adc_panels,
+                            trial_panels_collapsed: false,
                         }
                     });
                     // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
@@ -12904,15 +13727,45 @@ fn main() {
                     // 首次 IME 组合前刷新一次坐标，缓解候选窗落到屏幕角落（issue 0001）。
                     window.invalidate_character_coordinates();
                     // 调试钩子：绕过输入法/鼠标，直接发一条消息（验证审批卡片等）。
-                    if let Ok(text) = std::env::var("DSHR_UI_AUTOSEND") {
-                        app.update(cx, |chat, cx| {
-                            chat.on_submit(&text, window, cx);
-                        });
-                    }
+                    let autosend = std::env::var("DSHR_UI_AUTOSEND").ok();
+                    app.update(cx, |chat, cx| chat.load_model_settings(autosend, window, cx));
                     app
                 },
             )
             .expect("failed to open window");
+        if let Some(updates) = preset_updates {
+            cx.spawn(async move |cx| {
+                let mut dirty = false;
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(200))
+                        .await;
+                    match updates.try_recv() {
+                        Ok(()) => dirty = true,
+                        Err(TryRecvError::Empty) => {}
+                        Err(TryRecvError::Disconnected) => break,
+                    }
+                    if !dirty {
+                        continue;
+                    }
+                    match window_handle.update(cx, |app, _, cx| {
+                        let Ok(state) = app.state.try_lock() else {
+                            return false;
+                        };
+                        let errors = state.load_errors();
+                        if errors != app.plugin_errors {
+                            app.plugin_errors = errors;
+                            cx.notify();
+                        }
+                        true
+                    }) {
+                        Ok(applied) => dirty = !applied,
+                        Err(_) => break,
+                    }
+                }
+            })
+            .detach();
+        }
         if std::env::var("DSHR_COMPOSER_FLOW").as_deref() == Ok("1") {
             composer_flow::run(window_handle, cx);
         }
@@ -13138,17 +13991,16 @@ mod tests {
             .create_root("second", &second.to_string_lossy(), &now_ts())
             .unwrap();
 
-        let mut state = ChatState::open_with_settings(
+        let mut state = ChatState::open_in(
             store.path_for("first"),
             "first",
             &Arc::new(AtomicBool::new(false)),
             ApprovalBroker::new(),
-            false,
-            false,
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::DangerFullAccess),
             },
+            ChatRuntime::Desktop { allow_spawn: false, sidecar: false, diagnostics: true },
         );
         assert_eq!(state.workspace, first);
         state
@@ -13458,17 +14310,16 @@ mod tests {
             now_ts().replace(':', "-")
         ));
         let approvals = ApprovalBroker::new();
-        let mut state = ChatState::open_with_settings(
+        let mut state = ChatState::open_in(
             root.join("test.jsonl"),
             "test",
             &Arc::new(AtomicBool::new(false)),
             approvals.clone(),
-            false,
-            false,
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::WorkspaceWrite),
             },
+            ChatRuntime::Desktop { allow_spawn: false, sidecar: false, diagnostics: true },
         );
         let args = json!({ "path": "probe.txt", "content": "fixture" });
         assert!(matches!(

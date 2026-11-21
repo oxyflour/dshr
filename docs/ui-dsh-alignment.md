@@ -17,6 +17,8 @@
 | 插件管理（0.2.2-rc.5） | `dsh-client-ui-plugin-manager/src/client/PluginManagerPage.tsx` | 主内容区的已安装列表、开关和设置详情 |
 | 工作区（0.2.2-rc.5） | `dsh-client-ui-workspace/src/client/rows/WorkspaceBrowser.tsx`、`src/client/WorkspacePicker.tsx` | 可折叠分组和新会话的工作区选择器 |
 | 用户设置（0.2.2-rc.5） | `dsh-client-ui-settings-general/src/client/SettingsRoot.tsx` | 左下角入口、居中模态、分类导航 |
+| 新会话模式（0.2.2-rc.5） | `dsh-client-ui-agent-preset/src/client/AgentPresetSeat.tsx`、`seat-store.ts` | 工作区旁选择模式，首轮前允许改选 |
+| 模型设置（0.2.2-rc.5） | `dsh-client-ui-settings-models/src/client/ModelsSection.tsx`、`ProviderEditor.tsx`、`ApiKeyInput.tsx`、`ModelListEditor.tsx` | 连接列表、新增模型、就地编辑与掩码密钥输入 |
 
 提取步骤（可复现）：
 
@@ -52,7 +54,9 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
 
 - 侧栏「插件」打开主内容区管理页。已安装列表支持搜索和启停，文件工具提供独立的权限开关和 JSON 编辑。其他侧车插件可编辑配置 JSON，Loader 配置可查看。外置插件详情显示清单路径，启停在重启后生效。已注册的 ADC 视图位于「插件面板」。
 - 侧栏按工作区折叠会话。工作区行首使用文件夹图标，点击行即可展开或收起。新会话的工作区选择器在输入卡左上方，菜单从选择器下缘打开（参考 `ConversationContent.tsx` 的 `heroWorkspaceRow`）。会话记录工作区，切换会话时工具目录随之恢复。
+- 新会话输入卡上方的模式菜单紧邻工作区选择器。标准模式、创造模式和已发布的其他可用预设可在首轮前改选，保留会话和草稿。输入区继续使用 dshr 的菜单样式。[模式与绑定](spec/agent-presets.md)
 - 左下角「设置」打开本地设置，侧栏折叠时保留齿轮入口。通用和模型页保存外观、工具权限和模型选择，插件页提供管理入口。
+- 模型页可在已有 OpenAI 兼容连接上沿用同一服务的密钥来添加模型，也可填写独立连接。输入区菜单用 API 根地址区分同名模型。见[桌面模型连接设置](plan/desktop-model-settings.md)。
 
 ## 未对齐（明确边界）
 
@@ -64,8 +68,9 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
    会话置顶、按时间分组、跨会话正文搜索待实现。
    会话操作见 [`m2-sessions.md`](m2-sessions.md)。
 3. **聊天与输入区**：顶部有「对话」「轨迹」和插件面板入口。输入区可切换本机配置的模型
-   和工具权限，设置作用于当前窗口后续轮次及派发的子会话。`DSHR_FORCE_MOCK=1`
-   限定为本地模拟。`DSHR_TOOL_POLICY=ask-all` 锁定逐次审批。选择只读时，官方侧车
+   和工具权限，设置作用于当前窗口后续轮次及派发的子会话。没有可用模型时，「配置模型」直达模型设置。
+   测试可用 `DSHR_PROVIDER=mock` 选择本地模拟，或用 `DSHR_FORCE_MOCK=1` 限定为本地模拟。
+   `DSHR_TOOL_POLICY=ask-all` 锁定逐次审批。选择只读时，官方侧车
    在下一次运行前撤销写入能力。可用文件选择器、拖入输入区或粘贴文件和剪贴板图片来添加附件，每条消息最多 4 个，
    UTF-8 文本总计 32 KiB，PNG、JPEG、GIF、WebP 和 PDF 总计 12 MiB。图片和 PDF
    需要 DeepSeek Flash 或支持对应内容类型的 OpenAI 兼容模型。会话日志保留文件名和引用，

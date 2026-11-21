@@ -389,6 +389,8 @@ pub const ERROR_CODES: &[&str] = &[
     "E_VERSION",
     "E_UNKNOWN_PLUGIN",
     "E_DUPLICATE_REG",
+    "E_TOOL_UNAVAILABLE",
+    "E_PRESET",
     "E_SCHEMA",
     "E_TIMEOUT",
     "E_CANCELLED",
@@ -713,6 +715,9 @@ pub const KNOWN_KINDS: &[&str] = &[
     "plugin.unloaded",
     "tool.register",
     "tool.unregister",
+    "preset.sync",
+    "preset.bind",
+    "preset.release",
     "tool.invoke",
     "tool.chunk",
     "tool.result",
@@ -1081,6 +1086,9 @@ mod tests {
             "runtime.hello",
             "tool.invoke",
             "tool.result",
+            "preset.sync",
+            "preset.bind",
+            "preset.release",
             "fs.write.request",
         ] {
             let envelope = Envelope::host(kind, "req-1", json!({}));
@@ -1090,7 +1098,7 @@ mod tests {
                 "kind `{kind}`"
             );
         }
-        assert_eq!(KNOWN_KINDS.len(), 36);
+        assert_eq!(KNOWN_KINDS.len(), 39);
     }
 
     /// RPC-L2-004：协商为 1 时 v2-only kind / `service_key` → `E_PROTOCOL`（§3.2 规则 3）。

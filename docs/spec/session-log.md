@@ -67,7 +67,7 @@
 
 | type | durability | 载荷要点 |
 |---|---|---|
-| `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`), `registration_id?`, `presentation?` |
+| `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`/`unknown`), `registration_id?`, `plugin_id?`, `generation?`, `presentation?` |
 | `tool.chunk` | ephemeral | `call_id`, `seq`, `text` |
 | `tool.result` | durable | `call_id`, `is_error`, `content[]`, `value`, `meta?`, `metadata`；`meta.ui` 可带受限 ADC 附加区（M4 W3，仅展示，不参与模型输入） |
 | `tool.aborted` | durable | `call_id`, `reason`(`crash`/`cancel`/`timeout`/`unload`) |
@@ -163,6 +163,8 @@
 
 回放 MUST NOT 触发 LLM 请求或工具执行。所有展示元数据（tool card 的 `presentation`）随事件持久化，不依赖插件当前版本。
 
+桌面模型步骤的 `tool.call` 从该步提供的定义获取来源、卡片类型与 Sidecar 注册身份。模型请求中没有公开该工具时，事件使用 `origin: "unknown"`，并记录配对的工具错误。
+
 ### 6.1 工具卡片的折叠规则
 
 卡片是**事件的确定函数**：`(presentation, value, content, 终态)` → 卡片，不读插件、不读当前时间、不随机。
@@ -207,6 +209,9 @@ v1 语义（PLAN §6.5，实现见 `crates/session-store` 与 `crates/agent-core
 - 子会话是完整会话：自己的 `seq` 空间、自己的日志文件、可独立导出回放。
 - `parent_session_id` / `spawn_source` / `preset` 只在子会话的第一条 `session.created` 写入一次，
   不可修改；父会话**不保存**子会话树结构，只通过 `child.spawned` 留引用痕迹。
+- 桌面根会话仅含 `session.created` 时，可在写锁下原子更新该事件的 `preset`。会话开始后按原预设执行。官方 Sidecar 的创造根会话写入 `preset: "cordis"`，旧版和诊断入口使用 `"dshr-creator"`。
+  进程存续期间保留该会话的试用实例，删除会话或退出应用时清理。预设会话持久化的是 ID，进程内修订由 Sidecar 保留。
+  [创造模式](creator-mode.md) · [Agent 预设](agent-presets.md)
 - 深度从 0 开始（根 0 / 子 1 / 孙 2），默认上限为 2；上限可配置，子会话只能收紧不能放大。
 - 子会话继承父的工作区与策略，且只允许收紧（更小的深度上限、工具白名单子集、黑名单追加）；
   放宽必须走显式审批，v1 不支持。

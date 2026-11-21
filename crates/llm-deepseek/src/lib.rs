@@ -98,6 +98,11 @@ impl DeepSeekProvider {
         self
     }
 
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
     /// 显式设置采样温度；`None` = 不发送（服务端默认，对齐 DSH）。
     pub fn with_temperature(mut self, temperature: Option<f64>) -> Self {
         self.temperature = temperature;

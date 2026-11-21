@@ -43,12 +43,22 @@ import {
   SERVICE_KEYS,
 } from './lib/host-services.mjs'
 import { createSessionProjectionsShim } from './lib/session-projections.mjs'
+import { createAgentPresets } from './lib/agent-presets.mjs'
 
 const PROTOCOL_MAX = 2
 // 协商结果：min(host, sidecar)。v1 宿主（M2 及以前）保持纯 v1 行为。
 let negotiatedProtocol = 1
 let generation = 'node-0001'
-const tools = new Map()
+const globalTools = new Map()
+const sessionTools = new Map()
+const revisionTools = new Map()
+const presets = createAgentPresets(mountPreset)
+let bootComplete = Promise.resolve()
+let presetOperations = Promise.resolve()
+const toolsByRequest = new Map()
+const toolsById = new Map()
+let toolRegistrationSeq = 0
+const TOOL_OWNER = 'dsh-official'
 const inflight = new Map()
 
 // 握手协商出的 host_caps；`fs.write` 是官方写工具的唯一门闩。
@@ -120,15 +130,58 @@ const log = (level, message, extra = {}) =>
 // 这里只做"定义 → 协议"与"调用 → execute"的翻译，不复制 DSH 的执行管线。
 // ---------------------------------------------------------------------------
 
+function removeTool(binding, notifyHost) {
+  const { scope, sessionId, revision, definition, requestId, registrationId } = binding
+  if (scope.get(definition.name) !== binding) return
+  scope.delete(definition.name)
+  if (sessionId && scope.size === 0) sessionTools.delete(sessionId)
+  toolsByRequest.delete(requestId)
+  if (registrationId) toolsById.delete(registrationId)
+  if (notifyHost) {
+    send(
+      'tool.unregister',
+      `tool-unreg-${++toolRegistrationSeq}`,
+      {
+        ...(registrationId ? {} : { register_request_id: requestId }),
+        ...(revision ? { preset_revision: revision } : {}),
+      },
+      {
+        plugin_id: TOOL_OWNER,
+        ...(sessionId ? { session_id: sessionId } : {}),
+        ...(registrationId ? { registration_id: registrationId } : {}),
+      },
+    )
+  }
+}
+
 const toolsService = {
-  register(definition) {
+  register(definition, { sessionId } = {}, revision) {
     if (!definition?.name) throw new Error('tool definition without name')
-    tools.set(definition.name, definition)
+    if (sessionId != null && (typeof sessionId !== 'string' || !sessionId)) {
+      throw new Error('invalid tool registration session')
+    }
+    if (revision && sessionId) throw new Error('preset tools cannot declare a session scope')
+    const revisionScope = revision && revisionTools.get(revision)
+    if (revision && !revisionScope) throw new Error('preset revision is no longer active')
+    let scope = revisionScope || globalTools
+    if (sessionId) {
+      scope = sessionTools.get(sessionId)
+      if (!scope) {
+        scope = new Map()
+        sessionTools.set(sessionId, scope)
+      }
+    }
+    if (scope.has(definition.name)) throw new Error(`duplicate tool ${definition.name} in scope`)
+    const requestId = `tool-reg-${++toolRegistrationSeq}`
+    const binding = { definition, sessionId, revision, scope, requestId }
+    scope.set(definition.name, binding)
+    toolsByRequest.set(requestId, binding)
     send(
       'tool.register',
-      `reg-${definition.name}`,
+      requestId,
       {
         name: definition.name,
+        ...(revision ? { preset_revision: revision } : {}),
         description: definition.description ?? '',
         input_schema: definition.parameters ?? { type: 'object' },
         output_schema: definition.output?.schema ?? null,
@@ -139,21 +192,23 @@ const toolsService = {
           ? { timeout_ms: definition.timeoutMs }
           : {}),
       },
-      { plugin_id: 'dsh-official' },
+      { plugin_id: TOOL_OWNER, ...(sessionId ? { session_id: sessionId } : {}) },
     )
-    return () => {
-      tools.delete(definition.name)
-    }
+    return () => removeTool(binding, true)
   },
-  get(name) {
-    return tools.get(name)
+  get(name, { sessionId } = {}, revision) {
+    return (sessionTools.get(sessionId)?.get(name)
+      ?? revisionTools.get(revision ?? presets.binding(sessionId))?.get(name)
+      ?? globalTools.get(name))?.definition
   },
   // 官方插件在注册阶段可能触到这些方法；装载期没有对应能力，先做成空实现。
   presentAs() {},
   restrict() {},
   guard() {},
-  unregister(name) {
-    tools.delete(name)
+  unregister(name, { sessionId } = {}, revision) {
+    const scope = revision ? revisionTools.get(revision) : sessionId ? sessionTools.get(sessionId) : globalTools
+    const binding = scope?.get(name)
+    if (binding) removeTool(binding, true)
   },
 }
 
@@ -640,9 +695,14 @@ function createSystemPromptService() {
   }
 }
 
-async function bootPlugins(entries) {
+function createPluginContext(revision) {
   const root = new Context()
-  root.provide('tools', toolsService)
+  root.provide('tools', revision ? {
+    ...toolsService,
+    register: (definition, options) => toolsService.register(definition, options, revision),
+    get: (name, options) => toolsService.get(name, options, revision),
+    unregister: (name, options) => toolsService.unregister(name, options, revision),
+  } : toolsService)
   root.provide('fs', createFsService())
   root.provide('systemPrompt', createSystemPromptService())
   if (hostServices) {
@@ -658,12 +718,20 @@ async function bootPlugins(entries) {
     const storageBackend = storageHub.backend.get('storage-kv')
     root.provide('storage.backend.storage-kv', storageBackend)
   }
+  return root
+}
+
+async function bootPlugins(entries, root = createPluginContext(), strict = false) {
+  const fibers = []
   for (const entry of entries) {
+    if (entry.enabled === false) continue
     try {
-      const module = await import(entry.name)
+      const enabledEntry = gateEntry(entry, writeEnabled)
+      const module = await import(enabledEntry.name)
+      if (typeof module.apply !== 'function') throw new Error('plugin must export apply')
       // Schemastery 的默认值必须显式解析：Cordis 直接收原始 config 时不会补默认，
       // 官方插件随后会因 `undefined` 的配置项在 apply 里抛错。
-      const config = module.Config ? module.Config(entry.config ?? {}) : (entry.config ?? {})
+      const config = module.Config ? module.Config(enabledEntry.config ?? {}) : (enabledEntry.config ?? {})
       // 官方插件只导出它"声明"的 inject；但部分插件在 apply 里直接访问未声明的服务
       // （DSH 的 Loader 用 entry 级 inject 覆盖补上）。这里用同样的方式包一层。
       const plugin = {
@@ -673,12 +741,15 @@ async function bootPlugins(entries) {
         apply: module.apply,
       }
       // 等待插件装载完成：官方插件的 apply 可能是异步的，错误也在这里冒出来。
-      await root.plugin(plugin, config)
+      const handle = root.plugin(plugin, config)
+      const fiber = await handle
+      fibers.push({ handle, fiber, name: entry.name })
       send('log.emit', `boot-${entry.name}`, {
         level: 'info',
-        message: `loaded official plugin ${entry.name} (tools now: ${[...tools.keys()].join(', ') || '<none>'})`,
+        message: `loaded official plugin ${entry.name} (tools now: ${[...globalTools.keys()].join(', ') || '<none>'})`,
       })
     } catch (error) {
+      if (strict) throw new Error(`${entry.name}: ${String(error?.message ?? error)}`)
       // 单个插件失败不拖垮整台侧车：其余插件照常可用，诊断走 log.emit。
       send('log.emit', `boot-failed-${entry.name}`, {
         level: 'error',
@@ -686,7 +757,35 @@ async function bootPlugins(entries) {
       })
     }
   }
+  if (strict) {
+    for (const { handle, fiber, name } of fibers) {
+      await handle.await()
+      const missing = Object.keys(fiber.inject).filter(key => fiber.ctx.get(key) === undefined)
+      if (missing.length) throw new Error(`${name}: missing services ${missing.join(', ')}`)
+    }
+  }
   return root
+}
+
+async function mountPreset(revision, entries) {
+  const scope = new Map()
+  revisionTools.set(revision, scope)
+  const root = createPluginContext(revision)
+  const dispose = async () => {
+    try {
+      await root.fiber.dispose()
+    } finally {
+      for (const binding of scope.values()) removeTool(binding, true)
+      revisionTools.delete(revision)
+    }
+  }
+  try {
+    await bootPlugins(entries, root, true)
+    return dispose
+  } catch (error) {
+    await dispose()
+    throw error
+  }
 }
 
 async function runTool(definition, msg) {
@@ -880,6 +979,7 @@ async function handle(msg) {
         sidecar_caps: [
           'tool.cancel',
           'dsh-official',
+          'agent.presets',
           ...(writeEnabled ? ['fs.write'] : []),
           ...(hostServices ? ['service.proxy'] : []),
         ],
@@ -887,7 +987,8 @@ async function handle(msg) {
         generation,
       })
       // 必须在 ready 之后装载：否则 registration 带着握手前的占位 generation 被丢弃。
-      cordisRoot = await bootPlugins(loadPluginConfig())
+      bootComplete = bootPlugins(loadPluginConfig()).then((root) => { cordisRoot = root })
+      await bootComplete
       send('log.emit', 'boot-capabilities', {
         level: 'info',
         message: `host_caps=[${[...hostCaps].join(', ')}] fs.write=${writeEnabled} protocol=${negotiatedProtocol} host_services=${Boolean(hostServices)} workspace=${WORKSPACE_ROOT}`,
@@ -915,8 +1016,68 @@ async function handle(msg) {
       )
       return
     }
+    case 'preset.sync':
+    case 'preset.bind':
+    case 'preset.release': {
+      if (msg.runtime_generation !== generation) return
+      const operation = presetOperations.then(async () => {
+        await bootComplete
+        if (msg.kind === 'preset.sync') {
+          return { presets: await presets.sync(msg.payload?.definitions) }
+        }
+        if (msg.kind === 'preset.bind') {
+          const bound = presets.bind(msg.session_id, msg.payload)
+          return { preset: bound.id, revision: bound.key }
+        }
+        await presets.release(msg.session_id)
+        return {}
+      })
+      presetOperations = operation.catch(() => {})
+      try {
+        send(msg.kind, msg.request_id, await operation)
+      } catch (error) {
+        send(msg.kind, msg.request_id, {}, {
+          error: { code: 'E_PRESET', message: String(error?.message ?? error), retryable: false },
+        })
+      }
+      return
+    }
+    case 'tool.register': {
+      const binding = toolsByRequest.get(msg.request_id)
+      if (!binding || msg.runtime_generation !== generation) return
+      if (msg.error) {
+        removeTool(binding, false)
+        log('error', `could not register tool ${binding.definition.name}: ${msg.error.message}`)
+        return
+      }
+      const id = msg.registration_id ?? msg.payload?.registration_id
+      if (id) {
+        binding.registrationId = id
+        toolsByRequest.delete(msg.request_id)
+        toolsById.set(id, binding)
+      }
+      return
+    }
+    case 'tool.unregister': {
+      const binding = toolsById.get(msg.registration_id)
+      if (binding?.sessionId && binding.sessionId === msg.session_id &&
+          msg.plugin_id === TOOL_OWNER && msg.runtime_generation === generation) {
+        removeTool(binding, false)
+      }
+      return
+    }
     case 'tool.invoke': {
-      const definition = tools.get(msg.payload?.name)
+      const name = msg.payload?.name
+      const binding = toolsById.get(msg.registration_id)
+      const definition = msg.registration_id
+        ? (msg.runtime_generation === generation &&
+           msg.plugin_id === TOOL_OWNER &&
+           binding?.definition.name === name &&
+           (!binding.sessionId || binding.sessionId === msg.session_id) &&
+           (!binding.revision || binding.revision === presets.binding(msg.session_id))
+          ? binding.definition
+          : undefined)
+        : toolsService.get(name, { sessionId: msg.session_id })
       if (!definition) {
         send(
           'tool.result',
@@ -924,7 +1085,7 @@ async function handle(msg) {
           { call_id: msg.call_id, is_error: true },
           {
             call_id: msg.call_id,
-            error: { code: 'E_UNKNOWN_PLUGIN', message: `unknown tool ${msg.payload?.name}`, retryable: false },
+            error: { code: 'E_TOOL_UNAVAILABLE', message: `unavailable tool ${name}`, retryable: false },
           },
         )
         return

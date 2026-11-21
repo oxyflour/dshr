@@ -513,6 +513,38 @@ fn rpc_l2_502_official_tool_execute_closes_with_agent_facade() {
         2,
         "execute 成功后仍保持 v2 会话"
     );
+    let roster = fixture
+        .host
+        .sync_presets(&json!({
+            "cordis": [{ "name": "@deepseek-ai/dsh-tool-working-directory" }]
+        }))
+        .unwrap();
+    assert!(roster["cordis"]["error"].is_null(), "{roster}");
+    fixture.host.bind_preset("s-probe", "cordis", None).unwrap();
+    let tool = fixture
+        .host
+        .preset_tool_definitions("s-probe")
+        .into_iter()
+        .find(|tool| tool.name == "working_directory")
+        .unwrap();
+    let result = fixture.host.invoke_batch(
+        &[dshr_compat_dsh_host::BatchInvokeCall::new(
+            "cwd-preset",
+            "working_directory",
+            json!({"cd": fixture.workspace.to_string_lossy()}),
+            Duration::from_secs(5),
+        )
+        .with_session("s-probe")
+        .with_binding(tool.origin)],
+        1,
+        None,
+    );
+    let terminal = &result[0].as_ref().unwrap().terminal;
+    assert!(!terminal.is_error(), "{terminal:?}");
+    assert_eq!(
+        terminal.payload["value"]["cwd"],
+        json!(norm(&fixture.workspace))
+    );
     fixture.cleanup();
 }
 
@@ -692,4 +724,188 @@ fn rpc_l2_505_official_storage_is_a_service_class_not_a_plugin() {
     assert_eq!(shape["hasApply"], false);
     assert_eq!(shape["hasInject"], false);
     assert_eq!(shape["hasDefaultClass"], true);
+}
+
+
+// RPC-REG-001
+#[test]
+#[ignore = "requires the official sidecar's vendored Node dependencies"]
+fn scoped_tool_bindings_are_revoked_and_never_retargeted() {
+    use dshr_compat_dsh_host::BatchInvokeCall;
+
+    let root = repo_root();
+    let script = root.join("sidecar/dsh-official/sidecar-dsh.mjs");
+    let plugin = root.join("crates/compat-dsh-host/tests/fixtures/scoped-tool-plugin.mjs");
+    let options = HostOptions::default()
+        .with_env(
+            "DSHR_DSH_PLUGINS",
+            json!([{ "name": file_url(&plugin) }]).to_string(),
+        )
+        .with_registration_window(Duration::from_secs(2));
+    let mut host = SidecarHost::spawn_with(&script, &plugin, options).unwrap();
+    let binding = |host: &SidecarHost, session| {
+        host.tool_definitions_at_scope(session)
+            .into_iter()
+            .find(|tool| tool.name == "scoped_echo")
+            .unwrap()
+    };
+    let a = binding(&host, Some("s-1")).origin;
+    let b = binding(&host, Some("s-2")).origin;
+    let global = binding(&host, None).origin;
+    let timeout = Duration::from_secs(5);
+    let make_call = |session: &str| {
+        BatchInvokeCall::new(format!("call-{session}"), "scoped_echo", json!({}), timeout)
+            .with_session(session)
+    };
+    let label = |outcome: &dshr_compat_dsh_host::InvokeOutcome| {
+        outcome.terminal.payload["value"]["label"].clone()
+    };
+
+    let result = host.invoke_batch(
+        &[
+            make_call("s-1").with_binding(a.clone()),
+            make_call("s-2").with_binding(b.clone()),
+            make_call("s-3").with_binding(global),
+            make_call("s-2").with_binding(a.clone()),
+        ],
+        4,
+        None,
+    );
+    assert_eq!(label(result[0].as_ref().unwrap()), "A");
+    assert_eq!(label(result[1].as_ref().unwrap()), "B");
+    assert_eq!(label(result[2].as_ref().unwrap()), "global");
+    assert!(result[3]
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("E_TOOL_UNAVAILABLE"));
+
+    let result = host
+        .invoke("replace_scoped_echo", json!({}), timeout)
+        .unwrap();
+    assert_eq!(
+        result.terminal.payload["value"],
+        json!({ "before": "A", "duplicateRejected": true })
+    );
+    host.refresh_registrations().unwrap();
+    let replacement = binding(&host, Some("s-1")).origin;
+    assert_ne!(a, replacement);
+    assert!(host.tool_definitions_at_scope(Some("s-3")).is_empty());
+
+    let result = host.invoke_batch(
+        &[
+            make_call("s-1").with_binding(a),
+            make_call("s-1").with_binding(replacement),
+            make_call("s-2").with_binding(b),
+        ],
+        3,
+        None,
+    );
+    assert!(result[0]
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("E_TOOL_UNAVAILABLE"));
+    assert_eq!(label(result[1].as_ref().unwrap()), "A replacement");
+    assert_eq!(label(result[2].as_ref().unwrap()), "B");
+
+    host.retire_session("s-1").unwrap();
+    assert!(host.tool_definitions_at_scope(Some("s-1")).is_empty());
+    assert_eq!(
+        label(
+            &host
+                .invoke_in_session("retired", Some("s-1"), "scoped_echo", json!({}), timeout)
+                .unwrap()
+        ),
+        "global"
+    );
+}
+
+
+// M3-PRESET-002 / M3-PRESET-003
+#[test]
+#[ignore = "requires the official sidecar's vendored Node dependencies"]
+fn agent_presets_keep_bound_revisions_and_collect_retired_plugins() {
+    let root = repo_root();
+    let script = root.join("sidecar/dsh-official/sidecar-dsh.mjs");
+    let plugin = file_url(&root.join("crates/compat-dsh-host/tests/fixtures/preset-counter.mjs"));
+    let directory = temp_dir("preset-revisions");
+    let disposed = directory.join("disposed.txt");
+    let options = HostOptions::default()
+        .with_env(
+            "DSHR_DSH_PLUGINS",
+            json!([{
+                "name": &plugin, "config": { "label": "global" }
+            }])
+            .to_string(),
+        )
+        .with_registration_window(Duration::from_secs(2));
+    let mut host = SidecarHost::spawn_with(&script, &script, options).unwrap();
+    assert!(host.supports_agent_presets());
+    let catalog = |label| {
+        json!({
+            "cordis": [{ "name": &plugin, "config": { "label": label, "disposed": &disposed } }]
+        })
+    };
+    let rev1 = host.sync_presets(&catalog("v1")).unwrap()["cordis"]["revision"].clone();
+    assert_eq!(
+        host.sync_presets(&catalog("v1")).unwrap()["cordis"]["revision"],
+        rev1
+    );
+    for session in ["s-1", "s-2"] {
+        host.bind_preset(session, "cordis", None).unwrap();
+    }
+
+    let count = |host: &mut SidecarHost, session: &str| {
+        host.invoke_in_session(
+            "preset-call",
+            Some(session),
+            "preset_counter",
+            json!({}),
+            Duration::from_secs(3),
+        )
+        .unwrap()
+        .terminal
+        .payload["value"]
+            .clone()
+    };
+    assert_eq!(count(&mut host, "s-1"), json!({"label": "v1", "count": 1}));
+    assert_eq!(count(&mut host, "s-2"), json!({"label": "v1", "count": 2}));
+    assert_eq!(
+        count(&mut host, "s-9"),
+        json!({"label": "global", "count": 1})
+    );
+    let rev2 = host.sync_presets(&catalog("v2")).unwrap()["cordis"]["revision"].clone();
+    assert_ne!(rev1, rev2);
+
+    host.bind_preset("s-3", "cordis", None).unwrap();
+    host.bind_preset("s-4", "cordis", Some("s-1")).unwrap();
+    assert_eq!(count(&mut host, "s-1"), json!({"label": "v1", "count": 3}));
+    assert_eq!(count(&mut host, "s-4"), json!({"label": "v1", "count": 4}));
+    assert_eq!(count(&mut host, "s-3"), json!({"label": "v2", "count": 1}));
+    assert!(host.preset_tool_definitions("s-9").is_empty());
+
+    host.retire_session("s-1").unwrap();
+    host.retire_session("s-2").unwrap();
+    assert!(!disposed.exists());
+    host.retire_session("s-4").unwrap();
+    assert_eq!(std::fs::read_to_string(&disposed).unwrap(), "v1\n");
+    assert!(!host
+        .registrations()
+        .iter()
+        .any(|r| r.preset_revision.as_deref() == rev1.as_str()));
+
+    let broken = json!({"cordis": [{"name": "@dshr-fixture/missing-preset-plugin"}]});
+    let roster = host.sync_presets(&broken).unwrap();
+    assert!(roster["cordis"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("missing-preset-plugin"));
+    assert!(host.bind_preset("s-5", "cordis", None).is_err());
+    assert!(host.bind_preset("s-5", "missing", None).is_err());
+    assert_eq!(count(&mut host, "s-3"), json!({"label": "v2", "count": 2}));
+
+    host.sync_presets(&json!({})).unwrap();
+    host.retire_session("s-3").unwrap();
+    assert_eq!(std::fs::read_to_string(&disposed).unwrap(), "v1\nv2\n");
 }

@@ -18,6 +18,11 @@ path = "src/bin/console.rs"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+serde.workspace = true
+url = "=2.5.8"
+tempfile = "=3.27.0"
+ureq = "=3.5.1"
+zip = { version = "=4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dependencies.dshr-conversation-model]
 path = "../../crates/conversation-model"

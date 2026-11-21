@@ -475,6 +475,16 @@ impl ToolRegistry {
             .get(name)
             .ok_or_else(|| RegistryError::NotFound(name.to_owned()))?;
 
+        self.authorize_definition(tool, arguments)
+    }
+
+    /// Apply this registry's policy to a definition resolved by the caller's scope.
+    pub fn authorize_definition<'a>(
+        &self,
+        tool: &'a ToolDefinition,
+        arguments: &Value,
+    ) -> Result<&'a ToolDefinition, RegistryError> {
+        let name = &tool.name;
         match self.policy.check(tool, arguments) {
             PolicyDecision::Allow => {}
             PolicyDecision::Ask => {
@@ -490,12 +500,7 @@ impl ToolRegistry {
             }
         }
 
-        validate(&tool.input_schema, arguments).map_err(|reason| {
-            RegistryError::InvalidArguments {
-                tool: name.to_owned(),
-                reason,
-            }
-        })?;
+        Self::validate_definition(tool, arguments)?;
         Ok(tool)
     }
 
@@ -512,13 +517,18 @@ impl ToolRegistry {
             .tools
             .get(name)
             .ok_or_else(|| RegistryError::NotFound(name.to_owned()))?;
-        validate(&tool.input_schema, arguments).map_err(|reason| {
-            RegistryError::InvalidArguments {
-                tool: name.to_owned(),
-                reason,
-            }
-        })?;
+        Self::validate_definition(tool, arguments)?;
         Ok(tool)
+    }
+
+    pub fn validate_definition(
+        tool: &ToolDefinition,
+        arguments: &Value,
+    ) -> Result<(), RegistryError> {
+        validate(&tool.input_schema, arguments).map_err(|reason| RegistryError::InvalidArguments {
+            tool: tool.name.clone(),
+            reason,
+        })
     }
 }
 

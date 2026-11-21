@@ -28,7 +28,7 @@ use dshr_plugin_api::manifest::RuntimeKind;
 use dshr_plugin_api::{
     HostVersion, Manifest, PanelContribution, Plugin, PluginContext, PluginError,
 };
-use dshr_tool_runtime::{RegistryError, ToolOrigin, ToolPolicy, ToolRegistry};
+use dshr_tool_runtime::{RegistryError, ToolDefinition, ToolOrigin, ToolPolicy, ToolRegistry};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -84,42 +84,69 @@ impl PluginHost {
         let mut ctx = PluginContext::new(id.clone());
         plugin.apply(&mut ctx)?;
         let (tools, panels) = ctx.take_registrations();
+        self.commit(plugin, tools, panels, false)
+    }
 
-        // 2) panel id 全局唯一（review P2-3）：在提交任何东西之前拒绝覆盖。
-        //    同一插件内重复声明也算冲突（否则 BTreeMap 会静默丢弃后一条）。
-        let mut declared_panels: Vec<String> = Vec::new();
+    /// Move a validated candidate from a temporary host. Check collisions before
+    /// unloading an older instance and retain the destination's tool policy.
+    pub fn adopt_candidate(
+        &mut self,
+        mut staged: Self,
+        plugin_id: &str,
+    ) -> Result<(), HostError> {
+        let plugin = staged.plugins.remove(plugin_id)
+            .ok_or_else(|| HostError::NotFound(plugin_id.to_owned()))?;
+        let tools = staged.registry.list().into_iter()
+            .filter(|tool| matches!(&tool.origin, ToolOrigin::Native { plugin_id: owner } if owner == plugin_id))
+            .cloned()
+            .collect();
+        let panels = staged.panels.into_values()
+            .filter(|registration| registration.plugin_id == plugin_id)
+            .map(|registration| registration.panel)
+            .collect();
+        self.commit(plugin, tools, panels, true)
+    }
+
+    fn commit(
+        &mut self,
+        plugin: Box<dyn Plugin>,
+        tools: Vec<ToolDefinition>,
+        panels: Vec<PanelContribution>,
+        replace: bool,
+    ) -> Result<(), HostError> {
+        let id = plugin.id().to_owned();
+        let mut declared_panels = std::collections::BTreeSet::new();
         for panel in &panels {
-            if let Some(existing) = self.panels.get(&panel.id) {
+            if let Some(existing) = self.panels.get(&panel.id)
+                .filter(|existing| !replace || existing.plugin_id != id)
+            {
                 return Err(HostError::PanelConflict {
                     panel_id: panel.id.clone(),
                     owner: existing.plugin_id.clone(),
                 });
             }
-            if declared_panels.contains(&panel.id) {
+            if !declared_panels.insert(&panel.id) {
                 return Err(HostError::PanelConflict {
                     panel_id: panel.id.clone(),
                     owner: id,
                 });
             }
-            declared_panels.push(panel.id.clone());
         }
-
-        // 3) 原子提交工具：逐个注册，失败则回滚已提交的部分。
-        let mut committed: Vec<String> = Vec::new();
+        for tool in &tools {
+            if self.registry.get(&tool.name).is_some_and(|existing| {
+                !(replace && matches!(&existing.origin, ToolOrigin::Native { plugin_id } if plugin_id == &id))
+            }) {
+                return Err(RegistryError::Duplicate(tool.name.clone()).into());
+            }
+        }
+        if replace && self.plugins.contains_key(&id) {
+            self.unload(&id)?;
+        }
         for mut tool in tools {
             tool.origin = ToolOrigin::Native {
                 plugin_id: id.clone(),
             };
-            let name = tool.name.clone();
-            match self.registry.register(tool) {
-                Ok(()) => committed.push(name),
-                Err(err) => {
-                    for name in committed {
-                        self.registry.unregister(&name);
-                    }
-                    return Err(HostError::Registry(err));
-                }
-            }
+            self.registry.register(tool)?;
         }
 
         for panel in panels {

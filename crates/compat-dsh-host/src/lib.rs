@@ -26,7 +26,7 @@ pub use services::{
 };
 pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -45,6 +45,7 @@ use dshr_compat_dsh_protocol::{
 /// 集成方（chat.rs）构造 v2 Router 需要的协议常量；避免直接依赖 protocol crate。
 pub use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
 use dshr_sidecar_guard::{GuardLimits, GuardedChild};
+use dshr_tool_runtime::ToolOrigin;
 use serde_json::{json, Value};
 use thiserror::Error;
 
@@ -161,6 +162,10 @@ impl HostOptions {
 pub struct Registration {
     pub name: String,
     pub description: String,
+    pub input_schema: Option<Value>,
+    pub session_id: Option<String>,
+    pub preset_revision: Option<String>,
+    register_request_id: String,
     /// 对齐 DSH 的 `output.schema`；L1 暂不校验，但必须能穿过协议。
     pub output_schema: Option<serde_json::Value>,
     /// 对齐 DSH 的 `presentResult` 卡片类型。
@@ -183,6 +188,9 @@ impl Registration {
                 generation: generation.to_owned(),
             },
         );
+        if let Some(schema) = &self.input_schema {
+            definition.input_schema = schema.clone();
+        }
         if let Some(schema) = &self.output_schema {
             definition = definition.with_output_schema(schema.clone());
         }
@@ -211,6 +219,13 @@ pub fn parse_tool_registration(
             .as_str()
             .unwrap_or_default()
             .to_owned(),
+        input_schema: payload
+            .get("input_schema")
+            .filter(|value| value.is_object())
+            .cloned(),
+        session_id: None,
+        preset_revision: None,
+        register_request_id: String::new(),
         output_schema: payload
             .get("output_schema")
             .cloned()
@@ -247,6 +262,7 @@ pub struct BatchInvokeCall {
     pub timeout: Duration,
     /// 会话身份（信封 `session_id`）；`None` = 兼容旧的 `s-probe` 占位。
     pub session_id: Option<String>,
+    binding: Option<ToolOrigin>,
 }
 
 impl BatchInvokeCall {
@@ -262,7 +278,13 @@ impl BatchInvokeCall {
             arguments,
             timeout,
             session_id: None,
+            binding: None,
         }
+    }
+
+    pub fn with_binding(mut self, binding: ToolOrigin) -> Self {
+        self.binding = Some(binding);
+        self
     }
 
     /// 显式透传会话 id（L2 服务方法按会话授权时必需）。
@@ -301,6 +323,11 @@ pub struct SidecarHost {
     plugin: PathBuf,
     seq: u64,
     registrations: Vec<Registration>,
+    retired_sessions: HashSet<String>,
+    agent_presets_supported: bool,
+    preset_definitions: Option<Value>,
+    preset_status: Value,
+    preset_bindings: HashMap<String, (String, String)>,
     ready: Duration,
     host_caps: Vec<String>,
     fs_write: Option<Arc<FsWriteService>>,
@@ -487,6 +514,11 @@ impl SidecarHost {
             plugin,
             seq: 0,
             registrations: Vec::new(),
+            retired_sessions: HashSet::new(),
+            agent_presets_supported: false,
+            preset_definitions: None,
+            preset_status: Value::Null,
+            preset_bindings: HashMap::new(),
             ready: Duration::ZERO,
             host_caps: options.effective_caps(),
             fs_write: options.fs_write.clone(),
@@ -511,7 +543,7 @@ impl SidecarHost {
         };
         hello.payload["generation"] = json!(generation);
         host.write(&hello)?;
-        let ready = host.wait_for("runtime.ready", Duration::from_secs(10))?;
+        let ready = host.wait_for("runtime.ready", None, Duration::from_secs(10))?;
         if let Some(err) = ready.error {
             return Err(HostError::Rpc {
                 code: err.code,
@@ -606,6 +638,9 @@ impl SidecarHost {
         } else {
             reported.clamp(1, PROTOCOL_VERSION)
         };
+        self.agent_presets_supported = ready.payload["sidecar_caps"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|cap| cap == "agent.presets"));
         let sidecar_proxy = ready
             .payload
             .get("sidecar_caps")
@@ -637,10 +672,173 @@ impl SidecarHost {
     /// 这是 slice 2 的关键：sidecar 工具与原生工具进入**同一个**注册表，
     /// 由同一个 `authorize` 闸门放行。
     pub fn tool_definitions(&self) -> Vec<dshr_tool_runtime::ToolDefinition> {
+        self.tool_definitions_at_scope(None)
+    }
+
+    pub fn tool_definitions_at_scope(
+        &self,
+        session_id: Option<&str>,
+    ) -> Vec<dshr_tool_runtime::ToolDefinition> {
         self.registrations
             .iter()
+            .filter(|registration| {
+                registration.preset_revision.is_none()
+                    && registration.session_id.as_deref() == session_id
+            })
             .map(|registration| registration.to_tool_definition(&self.generation))
             .collect()
+    }
+
+    pub fn preset_tool_definitions(&self, session: &str) -> Vec<dshr_tool_runtime::ToolDefinition> {
+        let Some((_, revision)) = self.preset_bindings.get(session) else {
+            return Vec::new();
+        };
+        self.registrations
+            .iter()
+            .filter(|registration| registration.preset_revision.as_ref() == Some(revision))
+            .map(|registration| registration.to_tool_definition(&self.generation))
+            .collect()
+    }
+
+    pub fn supports_agent_presets(&self) -> bool {
+        self.agent_presets_supported
+    }
+
+    pub fn sync_presets(&mut self, definitions: &Value) -> Result<&Value, HostError> {
+        if self.preset_definitions.as_ref() != Some(definitions) {
+            let response =
+                self.preset_request("preset.sync", None, json!({ "definitions": definitions }))?;
+            self.preset_status = response["presets"].clone();
+            self.preset_definitions = Some(definitions.clone());
+        }
+        Ok(&self.preset_status)
+    }
+
+    pub fn preset_status(&self) -> &Value {
+        &self.preset_status
+    }
+
+    pub fn bound_preset(&self, session_id: &str) -> Option<&str> {
+        self.preset_bindings.get(session_id).map(|(id, _)| id.as_str())
+    }
+
+    pub fn release_preset(&mut self, session_id: &str) -> Result<(), HostError> {
+        if self.preset_bindings.contains_key(session_id) {
+            self.preset_request("preset.release", Some(session_id), json!({}))?;
+            self.preset_bindings.remove(session_id);
+        }
+        Ok(())
+    }
+
+    pub fn bind_preset(
+        &mut self,
+        session: &str,
+        preset: &str,
+        parent: Option<&str>,
+    ) -> Result<(), HostError> {
+        if self.retired_sessions.contains(session) {
+            return Err(HostError::Protocol(
+                "session no longer accepts a preset binding".to_owned(),
+            ));
+        }
+        if let Some((bound, _)) = self.preset_bindings.get(session) {
+            return if bound == preset {
+                Ok(())
+            } else {
+                Err(HostError::Protocol(format!(
+                    "session already uses preset {bound}"
+                )))
+            };
+        }
+        let response = self.preset_request(
+            "preset.bind",
+            Some(session),
+            json!({ "preset": preset, "parent_session_id": parent }),
+        )?;
+        let revision = response["revision"]
+            .as_str()
+            .ok_or_else(|| HostError::Protocol("missing preset revision".to_owned()))?;
+        self.preset_bindings
+            .insert(session.to_owned(), (preset.to_owned(), revision.to_owned()));
+        Ok(())
+    }
+
+    fn preset_request(
+        &mut self,
+        kind: &str,
+        session: Option<&str>,
+        data: Value,
+    ) -> Result<Value, HostError> {
+        if !self.agent_presets_supported {
+            return Err(HostError::Protocol(
+                "sidecar does not support agent.presets".to_owned(),
+            ));
+        }
+        self.seq += 1;
+        let request = format!("req-preset-{}", self.seq);
+        let mut envelope = Envelope::host(kind, &request, data)
+            .with_version(self.negotiated_protocol)
+            .with_generation(self.generation.clone());
+        envelope.session_id = session.map(str::to_owned);
+        self.write(&envelope)?;
+        let response = self.wait_for(kind, Some(&request), Duration::from_secs(10))?;
+        match response.error {
+            Some(error) => Err(HostError::Protocol(format!(
+                "{}: {}",
+                error.code, error.message
+            ))),
+            None => Ok(response.payload),
+        }
+    }
+
+    /// Consume lifecycle messages that arrived while no tool call was in flight.
+    pub fn refresh_registrations(&mut self) -> Result<(), HostError> {
+        if !self.active_calls.is_empty() {
+            return Ok(());
+        }
+        loop {
+            match self.rx.try_recv() {
+                Ok(envelope) => self.process_background_message(&envelope)?,
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.registrations.clear();
+                    return Err(HostError::Closed);
+                }
+            }
+        }
+    }
+
+    pub fn retire_session(&mut self, session_id: &str) -> Result<(), HostError> {
+        self.retired_sessions.insert(session_id.to_owned());
+        let release = if self.preset_bindings.remove(session_id).is_some() {
+            self.preset_request("preset.release", Some(session_id), json!({}))
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let mut revocations = Vec::new();
+        self.registrations.retain(|registration| {
+            if registration.session_id.as_deref() != Some(session_id) {
+                return true;
+            }
+            revocations.push((
+                registration.registration_id.clone(),
+                registration.plugin_id.clone(),
+            ));
+            false
+        });
+        for (id, plugin) in revocations {
+            self.seq += 1;
+            let mut envelope =
+                Envelope::host("tool.unregister", format!("retire-{}", self.seq), json!({}))
+                    .with_version(self.negotiated_protocol)
+                    .with_generation(self.generation.clone())
+                    .with_plugin(plugin)
+                    .with_session(session_id);
+            envelope.registration_id = Some(id);
+            self.write(&envelope)?;
+        }
+        release
     }
 
     pub fn script(&self) -> &Path {
@@ -675,31 +873,78 @@ impl SidecarHost {
         self.seq += 1;
         let call_id = format!("call-{}", self.seq);
         let request_id = format!("req-invoke-{}", self.seq);
-        self.send_invoke(request_id, &call_id, session_id, tool, arguments)?;
+        self.refresh_registrations()?;
+        let mut call = BatchInvokeCall::new(&call_id, tool, arguments, Duration::ZERO);
+        call.session_id = session_id.map(str::to_owned);
+        self.send_invoke(request_id, &call)?;
         Ok(call_id)
     }
 
-    fn send_invoke(
-        &mut self,
-        request_id: String,
-        call_id: &str,
-        session_id: Option<&str>,
-        tool: &str,
-        arguments: Value,
-    ) -> Result<(), HostError> {
-        let envelope = Envelope::host(
+    fn send_invoke(&mut self, request_id: String, call: &BatchInvokeCall) -> Result<(), HostError> {
+        let session_id = call.session_id.as_deref();
+        let revision = session_id
+            .and_then(|session| self.preset_bindings.get(session))
+            .map(|(_, revision)| revision);
+        let matches_call = |registration: &&Registration| {
+            registration.name == call.tool
+                && (registration.session_id.is_none()
+                    || registration.session_id.as_deref() == session_id)
+                && (registration.preset_revision.is_none()
+                    || registration.preset_revision.as_ref() == revision)
+        };
+        let binding = match &call.binding {
+            Some(ToolOrigin::Sidecar {
+                plugin_id,
+                registration_id,
+                generation,
+            }) => self
+                .registrations
+                .iter()
+                .filter(matches_call)
+                .find(|registration| {
+                    generation == &self.generation
+                        && plugin_id == &registration.plugin_id
+                        && registration_id == &registration.registration_id
+                })
+                .ok_or_else(|| {
+                    HostError::Protocol(format!(
+                        "E_TOOL_UNAVAILABLE: {} ({registration_id})",
+                        call.tool
+                    ))
+                })
+                .map(Some)?,
+            Some(_) => return Err(HostError::Protocol("invalid sidecar binding".to_owned())),
+            None => self
+                .registrations
+                .iter()
+                .filter(matches_call)
+                .max_by_key(|registration| {
+                    (
+                        registration.session_id.is_some(),
+                        registration.preset_revision.is_some(),
+                    )
+                }),
+        };
+        let mut envelope = Envelope::host(
             "tool.invoke",
             &request_id,
-            json!({ "name": tool, "arguments": arguments }),
+            json!({ "name": call.tool, "arguments": call.arguments }),
         )
+        .with_version(self.negotiated_protocol)
         .with_generation(self.generation.clone())
-        .with_call(call_id)
+        .with_call(&call.call_id)
         .with_session(session_id.unwrap_or("s-probe"));
+        if let Some(binding) = binding {
+            envelope.registration_id = Some(binding.registration_id.clone());
+            if !binding.plugin_id.is_empty() {
+                envelope.plugin_id = Some(binding.plugin_id.clone());
+            }
+        }
         self.write(&envelope)?;
         self.active_calls.insert(
             request_id,
             ActiveCall {
-                call_id: call_id.to_owned(),
+                call_id: call.call_id.clone(),
                 cancelled: false,
             },
         );
@@ -750,7 +995,10 @@ impl SidecarHost {
     ) -> Result<InvokeOutcome, HostError> {
         self.seq += 1;
         let request_id = format!("req-invoke-{}", self.seq);
-        self.send_invoke(request_id.clone(), call_id, session_id, tool, arguments)?;
+        self.refresh_registrations()?;
+        let mut call = BatchInvokeCall::new(call_id, tool, arguments, timeout);
+        call.session_id = session_id.map(str::to_owned);
+        self.send_invoke(request_id.clone(), &call)?;
         self.finish_call(&request_id, call_id, timeout, cancel)
     }
 
@@ -837,6 +1085,12 @@ impl SidecarHost {
         let parallel = max_parallel.max(1);
         let mut next = 0usize;
         'outer: while next < calls.len() {
+            if let Err(error) = self.refresh_registrations() {
+                for result in &mut results[next..] {
+                    *result = Some(Err(HostError::Protocol(error.to_string())));
+                }
+                break;
+            }
             let end = (next + parallel).min(calls.len());
             let mut slots: Vec<BatchSlot> = Vec::with_capacity(end - next);
             let mut by_request: HashMap<String, usize> = HashMap::new();
@@ -846,13 +1100,7 @@ impl SidecarHost {
                 let started = Instant::now();
                 self.seq += 1;
                 let request_id = format!("req-batch-{}", self.seq);
-                let write = self.send_invoke(
-                    request_id.clone(),
-                    &call.call_id,
-                    call.session_id.as_deref(),
-                    &call.tool,
-                    call.arguments.clone(),
-                );
+                let write = self.send_invoke(request_id.clone(), call);
                 let done = write.is_err();
                 if let Err(error) = write {
                     results[next + offset] = Some(Err(error));
@@ -927,6 +1175,14 @@ impl SidecarHost {
                 }
                 match self.rx.recv_timeout(wait) {
                     Ok(envelope) => {
+                        match self.process_tool_lifecycle(&envelope) {
+                            Ok(true) => continue,
+                            Ok(false) => {}
+                            Err(error) => {
+                                fatal = Some(error.to_string());
+                                break;
+                            }
+                        }
                         let served = match self.maybe_serve_fs_write(&envelope) {
                             Ok(served) => served,
                             Err(err) => {
@@ -1094,6 +1350,10 @@ impl SidecarHost {
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             };
 
+            if self.process_tool_lifecycle(&envelope)? {
+                continue;
+            }
+
             // 关键：等待 tool.result 期间必须同时服务 sidecar 的写入请求，
             // 否则 sidecar 等 fs.write.result、宿主等 tool.result，双向死锁。
             if self.maybe_serve_fs_write(&envelope)? {
@@ -1143,39 +1403,105 @@ impl SidecarHost {
                 return Ok(());
             }
             match self.rx.recv_timeout(remaining) {
-                Ok(envelope) if envelope.kind == KIND_FS_WRITE_REQUEST => {
-                    self.maybe_serve_fs_write(&envelope)?;
-                }
-                Ok(envelope) if envelope.kind == "log.emit" => {
-                    self.note_log_emit(&envelope);
-                }
-                Ok(envelope) if envelope.kind == "tool.register" => {
-                    let plugin_id = envelope.plugin_id.clone().unwrap_or_default();
-                    self.seq += 1;
-                    let registration_id = format!("reg-{}", self.seq);
-                    let registration = parse_tool_registration(
-                        &envelope.payload,
-                        &plugin_id,
-                        registration_id.clone(),
-                    );
-                    let ack = envelope.reply(
-                        "tool.register",
-                        json!({ "registration_id": registration_id, "name": registration.name }),
-                    );
-                    self.write(&ack)?;
-                    self.registrations.push(registration);
-                }
-                Ok(envelope) => {
-                    self.maybe_serve_host_service(&envelope)?;
-                    continue;
-                }
+                Ok(envelope) => self.process_background_message(&envelope)?,
                 Err(RecvTimeoutError::Timeout) => return Ok(()),
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             }
         }
     }
 
-    fn wait_for(&mut self, kind: &str, timeout: Duration) -> Result<Envelope, HostError> {
+    fn process_background_message(&mut self, envelope: &Envelope) -> Result<(), HostError> {
+        if self.process_tool_lifecycle(envelope)? || self.maybe_serve_fs_write(envelope)? {
+            return Ok(());
+        }
+        if envelope.kind == "log.emit" {
+            self.note_log_emit(envelope);
+        } else {
+            self.maybe_serve_host_service(envelope)?;
+        }
+        Ok(())
+    }
+
+    fn process_tool_lifecycle(&mut self, envelope: &Envelope) -> Result<bool, HostError> {
+        if !matches!(envelope.kind.as_str(), "tool.register" | "tool.unregister") {
+            return Ok(false);
+        }
+        if envelope.runtime_generation != self.generation {
+            return Ok(true);
+        }
+        let owner = envelope.plugin_id.as_deref().unwrap_or_default();
+        let scope = &envelope.session_id;
+        let revision = envelope.payload["preset_revision"].as_str();
+        if envelope.kind == "tool.unregister" {
+            self.registrations.retain(|registration| {
+                let identity_matches = match &envelope.registration_id {
+                    Some(id) => id == &registration.registration_id,
+                    None => {
+                        envelope.payload["register_request_id"].as_str()
+                            == Some(registration.register_request_id.as_str())
+                    }
+                };
+                !(identity_matches
+                    && owner == registration.plugin_id
+                    && scope == &registration.session_id
+                    && revision == registration.preset_revision.as_deref())
+            });
+            return Ok(true);
+        }
+
+        self.seq += 1;
+        let id = format!("reg-{}", self.seq);
+        let mut registration = parse_tool_registration(&envelope.payload, owner, &id);
+        registration.session_id = scope.clone();
+        registration.preset_revision = revision.map(str::to_owned);
+        registration.register_request_id = envelope.request_id.clone();
+        let mut ack = envelope.reply("tool.register", json!({ "name": registration.name }));
+        let error = if scope.is_some() && revision.is_some() {
+            Some((
+                "E_SCHEMA",
+                "a registration cannot have both session and preset scope",
+            ))
+        } else if scope
+            .as_ref()
+            .is_some_and(|id| self.retired_sessions.contains(id))
+        {
+            Some(("E_TOOL_UNAVAILABLE", "tool registration session has ended"))
+        } else if registration.name.is_empty() {
+            Some(("E_SCHEMA", "tool name is required"))
+        } else if self.registrations.iter().any(|item| {
+            item.session_id == registration.session_id
+                && item.preset_revision == registration.preset_revision
+                && item.name == registration.name
+        }) {
+            Some((
+                "E_DUPLICATE_REG",
+                "tool name already registered in this scope",
+            ))
+        } else {
+            None
+        };
+        if let Some((code, message)) = error {
+            ack.error = Some(RpcError {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                retryable: false,
+            });
+            self.write(&ack)?;
+        } else {
+            ack.registration_id = Some(id.clone());
+            ack.payload["registration_id"] = json!(id);
+            self.write(&ack)?;
+            self.registrations.push(registration);
+        }
+        Ok(true)
+    }
+
+    fn wait_for(
+        &mut self,
+        kind: &str,
+        request: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Envelope, HostError> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1189,17 +1515,22 @@ impl SidecarHost {
                 Ok(envelope) if envelope.kind == "log.emit" => {
                     self.note_log_emit(&envelope);
                 }
-                Ok(envelope) if envelope.kind == kind => return Ok(envelope),
+                Ok(envelope)
+                    if envelope.kind == kind
+                        && request.is_none_or(|id| {
+                            envelope.request_id == id
+                                && envelope.runtime_generation == self.generation
+                        }) =>
+                {
+                    return Ok(envelope)
+                }
                 Ok(envelope) if envelope.kind == "runtime.reject" => {
                     return Err(HostError::Protocol(format!(
                         "handshake rejected: {}",
                         envelope.payload
                     )))
                 }
-                Ok(envelope) => {
-                    self.maybe_serve_host_service(&envelope)?;
-                    continue;
-                }
+                Ok(envelope) => self.process_background_message(&envelope)?,
                 Err(RecvTimeoutError::Timeout) => return Err(HostError::Timeout(kind.to_owned())),
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
             }

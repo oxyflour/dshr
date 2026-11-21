@@ -34,8 +34,10 @@ dshr --profile headless --session-id s-123 "把上次的总结压缩成两点"
 
 - 复用 DSHR 的 provider、模型、重试和上下文配置，沿用 DeepSeek 优先、OpenAI 兼容 provider 次之的选择顺序。显式指定 `DSHR_PROVIDER` 时必须使用指定 provider，未知值或缺少凭据直接报错。没有可用真实 provider 时也报错。Mock 仅在显式选择 `DSHR_PROVIDER=mock` 或现有测试开关 `DSHR_FORCE_MOCK=1` 时启用，两者有冲突时报告配置错误。
 - 有效工具工作区为 `DSHR_WORKSPACE` 指定的目录或调用进程的当前目录。解析为实际存在的绝对目录，供会话、工具和 sidecar 共同使用。工作区无效时退出 `1`。数据目录由 `DSHR_HOME` 和现有目录覆盖变量控制，与工作区分别解析。
-- 复用已支持的 Rust 工具、DSHR 插件配置和 Node sidecar 能力协商。官方 DSH 工具可通过现有 `DSHR_SIDECAR=dsh` 启用，并使用发行包中的运行时或已准备的开发依赖。显式选择的运行时或插件配置加载失败时退出 `1`。默认探针侧车不可用时，可以在 stderr 提示并仅使用其余可用工具。
+- 复用已支持的 Rust 工具、DSHR 插件配置和 Node sidecar 能力协商。默认尝试发行包中的官方 DSH Sidecar 或已准备的开发依赖。未显式选择 Sidecar 时，启动失败会在 stderr 提示，本轮继续使用其余可用工具。显式设置 `DSHR_SIDECAR=dsh` 时要求 Sidecar 成功启动。插件配置加载失败时退出 `1`。
 - `DSHR_PERMISSION_MODE` 可选 `read-only` 或 `workspace-write`，默认 `workspace-write`，其余值报配置错误。任何需要交互审批的调用立即拒绝，按正常工具错误返回给模型并记录审批结果。Rust 工具和 sidecar 的写服务必须使用同一决定，继承的 `DSHR_APPROVAL_MODE=allow` 不得改变此行为。暂缓支持 `danger-full-access`、通用 shell 执行、会话树新建和外部进程插件自动装载。
+
+正常 headless 入口保留 `probe_*` 前缀给诊断工具。运行时使用官方 Sidecar，显式选择 `probe` 或 `cordis` 会返回 `E_CONFIG`。
 
 ## 4. 输出、终态与退出
 
@@ -85,7 +87,7 @@ Windows 发行包提供 `bin/dshr.exe` 控制台入口，与包根的桌面入�
 |---|---|
 | `CLI-INPUT-001` | argv 与 stdin 均可提交 Unicode、多行和含选项字面量的任务，验证保留换行。无任务的 TTY、空输入、参数错误和帮助均不启动运行时。 |
 | `CLI-OUTPUT-001` | 捕获 stdout 和 stderr，验证文本无启动前缀。JSON 每行能独立解析，工具调用可对应终态，成功、参数错误、轮次失败与保存失败均有对应的终端记录和退出码。 |
-| `CLI-TOOLS-001` | 经已配置 sidecar 运行一次读工具。审批拒绝直接返回并留痕，继承 `DSHR_APPROVAL_MODE=allow` 时也无文件写入。 |
+| `CLI-TOOLS-001` | 经已配置 sidecar 运行读工具，写入审批拒绝直接返回并留痕，继承 `DSHR_APPROVAL_MODE=allow` 时也无文件写入。模型清单排除 `probe_*`，伪造调用返回错误。 |
 | `CLI-SESSION-001` | 新任务并行创建不同 ID。用同一 ID 续跑能读到旧上下文，仅输出新轮次。错误 ID、不同工作区、桌面或 CLI 持有同会话写入权时，历史保持完整。 |
 | `CLI-CANCEL-001` | 在模型或工具执行途中取消，验证保存为 `cancelled`、退出非零、回收 sidecar。分别在运行中与结果写出时关闭管道，验证退出非零且已保存终态可回放。 |
 | `CLI-PACKAGE-001` | 在实际 release 包验证管道、重定向、退出码、无显示环境及从任意工作目录解析资源。Windows 覆盖 PowerShell、cmd 和无父控制台的重定向子进程。桌面入口与现有 CLI 路径通过回归检查。 |

@@ -209,6 +209,26 @@ fn negotiated_write_capability_edits_and_patches_via_approval() {
         assert!(names.iter().any(|name| name == expected), "缺少 {expected}");
     }
 
+    // 缺少父目录时按官方桥接的既有契约返回错误，且不请求审批。
+    let outcome = host
+        .invoke_as(
+            "call-missing-parent",
+            "write",
+            json!({ "file_path": "missing/src/hello.txt", "content": "x" }),
+            Duration::from_secs(10),
+        )
+        .expect("missing parent invoke");
+    assert_eq!(outcome.terminal.payload["is_error"], true);
+    assert!(
+        outcome.terminal.payload["content"]
+            .to_string()
+            .contains("parent directory does not exist"),
+        "{:?}",
+        outcome.terminal.payload
+    );
+    assert!(broker.take_records().is_empty());
+    assert!(!workspace.join("missing").exists());
+
     // 1) 官方 write：创建文件。
     let resolver = Resolver::spawn(broker.clone(), ApprovalOutcome::AllowOnce);
     let outcome = host

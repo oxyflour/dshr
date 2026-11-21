@@ -425,6 +425,11 @@ impl ToolOutcome {
 
 pub trait ToolExecutor {
     fn specs(&self) -> Vec<ToolSpec>;
+
+    /// Refresh the tool inventory immediately before handing it to the model.
+    fn prepare_step(&mut self) -> Vec<ToolSpec> {
+        self.specs()
+    }
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome;
 
     /// 一个 step 内**同一批**工具调用：返回顺序必须与 `calls` 一一对应。
@@ -757,7 +762,7 @@ impl<P: ModelProvider> Agent<P> {
 
             let request = CompletionRequest {
                 messages: messages.clone(),
-                tool_specs: executor.specs(),
+                tool_specs: executor.prepare_step(),
             };
 
             // provider 边流边回调；这里只负责把 delta 转成事件并累计全文。
@@ -1012,7 +1017,9 @@ impl ModelProvider for MockProvider {
 
         let user_text = request.last_user_text().to_owned();
         let lower = user_text.to_lowercase();
-        if user_text.contains("原生") || lower.contains("native") {
+        if (user_text.contains("原生") || lower.contains("native"))
+            && request.tool_specs.iter().any(|spec| spec.name == "probe_native")
+        {
             return Ok(tool_reply(request, "probe_native", &user_text));
         }
 

@@ -210,8 +210,8 @@ fn settings() -> Result<DesktopSettings, CliError> {
 
 fn prepare_plugins(args: &Args) -> Result<bool, CliError> {
     let mode = std::env::var("DSHR_SIDECAR").unwrap_or_default();
-    if !matches!(mode.as_str(), "" | "probe" | "dsh" | "cordis") {
-        return Err(CliError::config("DSHR_SIDECAR 需为 probe、dsh 或 cordis"));
+    if !matches!(mode.as_str(), "" | "dsh") {
+        return Err(CliError::config("headless 的 DSHR_SIDECAR 仅支持 dsh"));
     }
     let declared = load(&data_root(), &args.name, &args.patches).map_err(CliError::config)?;
     let loader_bundle = non_empty_env_path("DSHR_LOADER_BUNDLE");

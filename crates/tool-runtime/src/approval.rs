@@ -104,7 +104,7 @@ impl ApprovalBroker {
         arguments: &Value,
         timeout: Duration,
     ) -> ApprovalOutcome {
-        self.request_inner(call_id, tool, arguments, timeout, None)
+        self.request_inner(call_id, tool, arguments, timeout, None, true)
     }
 
     /// 可取消的审批：等待期间每 [`CANCEL_POLL_INTERVAL`] 轮询一次 `cancel`。
@@ -120,7 +120,19 @@ impl ApprovalBroker {
         timeout: Duration,
         cancel: &AtomicBool,
     ) -> ApprovalOutcome {
-        self.request_inner(call_id, tool, arguments, timeout, Some(cancel))
+        self.request_inner(call_id, tool, arguments, timeout, Some(cancel), true)
+    }
+
+    /// Requires a decision from the interactive user, including in automation environments.
+    pub fn request_user_cancellable(
+        &self,
+        call_id: &str,
+        tool: &str,
+        arguments: &Value,
+        timeout: Duration,
+        cancel: &AtomicBool,
+    ) -> ApprovalOutcome {
+        self.request_inner(call_id, tool, arguments, timeout, Some(cancel), false)
     }
 
     fn request_inner(
@@ -130,13 +142,17 @@ impl ApprovalBroker {
         arguments: &Value,
         timeout: Duration,
         cancel: Option<&AtomicBool>,
+        allow_automatic: bool,
     ) -> ApprovalOutcome {
         if self.noninteractive {
             self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "headless");
             return ApprovalOutcome::Deny;
         }
         // 非交互模式：自检/CI 不应卡在审批上。
-        if let Ok(mode) = std::env::var("DSHR_APPROVAL_MODE") {
+        if let Some(mode) = std::env::var("DSHR_APPROVAL_MODE")
+            .ok()
+            .filter(|_| allow_automatic)
+        {
             let outcome = match mode.as_str() {
                 "allow" => ApprovalOutcome::AllowOnce,
                 "deny" => ApprovalOutcome::Deny,

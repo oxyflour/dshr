@@ -5,24 +5,44 @@
 
 ---
 
-## 1. 插件形态：先选一种
+## 1. 选择插件入口
 
-| 形态 | 运行时 | 适合 | 本文 |
-|---|---|---|---|
-| **external-process（推荐首次尝试）** | 独立子进程，NDJSON over stdio（`cpp-process/v1`） | 任意语言/任意构建产物；崩溃不拖垮宿主；有内存/超时/配额隔离 | ✅ 本文 |
-| rust-static / wasm-component | 进程内 / WASM | 官方或深度集成插件；WASM 主机 M3 尚未就绪 | 规范见 [`cpp-v1.md`](spec/cpp-v1.md) §3 |
-| DSH JS 插件 | Node sidecar | 复用 DSH 生态的 JS 工具包 | 走 sidecar 加载，另见 [`spec/dsh-compat-mapping.md`](spec/dsh-compat-mapping.md) |
+| 形态 | 运行时 | 接入方式 |
+|---|---|---|
+| CPP-v1 `external-process` | 独立子进程，通过 stdio 交换 NDJSON（`cpp-process/v1`） | 用 `plugin.toml` 声明可执行入口，打包后通过 `dshr --install-plugin` 安装。本文其余步骤使用这条路径 |
+| CPP-v1 `wasm-component` | Wasmtime，组件接口由 `cpp-v1.wit` 定义 | 构建组件并通过 `dshr --install-plugin` 安装。[WASM Component 作者指南](m4-component-authoring.md) |
+| CPP-v1 `rust-static` | 宿主进程内 | 与 dshr 一起编译并由宿主注册。[CPP-v1 规范](spec/cpp-v1.md) |
+| 已有 DSH JS 工具包 | 桌面默认的 DSH sidecar | 准备包及其依赖，按包名和配置加入 profile。可执行的操作取决于包版本和宿主提供的服务。[DSH 插件兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵) |
 
-本文走 **external-process**：一个可执行文件 + 一份 manifest，宿主拉起进程、按行交换 JSON。
-它提供两类落点：
+外部进程插件可提供两类扩展。
 
 1. **Tool**：模型可调用的工具（名字/描述/JSON Schema/结果），会被注册进工具表。
-2. **Panel**：挂在 ADC-v1 slot 上的只读面板（例如 `workspace.panel`），元素树由 `ui.render` 提供。
+2. **Panel**：挂在 ADC-v1 slot 上的面板（例如 `workspace.panel`），由 `ui.render` 返回声明式元素树。
 
-> **M4 W3 边界**：`dshr --install-plugin` 安装链路已可跑；external-process 的**装载/调用/卸载**
-> 已接进 chat 产品路径；**Panel 的产品渲染**（`ui.render` → GPUI 右栏）已接，Button 的
-> `copy` 与 `call`/`command`（`ui.action`）已接线；`openExternal` 确认、`onChange`、
-> tool card extra 仍属后续。工具调用链路可用。
+桌面宿主支持面板动作、表单 `onChange` 和 `meta.ui` 工具卡附加区。移植 DSH 客户端 UI 时，
+用 ADC-v1 重建挂载点和元素树。[面板与工具卡支持范围](m4-adc.md) · [ADC-v1 slot 目录](spec/adc-v1.md#5-slot-目录-v1)
+
+### 在创造会话中预览和试用
+
+开始写包前可调用 `creator_inspect`，获取可直接套用的 `plugin.toml`。清单至少包含 `[plugin]` 和 `[runtime]`。Windows 的 `external-process` 入口指向包内编译好的 `.exe`，例如 `bin/hello-world.exe`。可选的 `[[ui]].view` 填运行时渲染标识。静态 ADC 树可以先在对话中预览，正式面板通过 SDK 注册并渲染。[CPP-v1 清单字段](spec/cpp-v1.md#33-字段表)
+
+默认流程为 `creator_inspect` → 写包 → `creator_build_plugin` → `creator_try_plugin` → 调用插件工具验证。构建阶段为 Rust 插件的 `path = "sdk"` 依赖提供同版本 SDK。Windows x64 可从「设置 → 运行组件」安装创造模式构建组件，组件附带 Cargo、链接器和 SDK 依赖。构建和试用分别在应用内审批。开发者也可在数据根的 `creator-toolchain.json` 指定已有 `cargo` 和 `cargo_home` 的绝对路径。安装组件或保存配置后可在当前会话重试。已有编译产物可直接试用。[构建工具契约](spec/creator-mode.md#对话内构建) · [运行组件](spec/runtime-components.md)
+
+带界面的插件可从 `creator_inspect.workspace_panel` 里的三份文件开始。预览会显示 Button 和 Input 的外观，实际动作在试用面板执行。构建后调用 `creator_try_plugin` 并传 `expect_panel: true`，确认返回的 `panels` 包含面板标题。这一轮结束后，面板会直接出现在当前会话的消息列表上方，可以折叠。修改并重建后，在同一会话用同一路径再试用即可。新实例校验通过后会替换旧面板和工具。[面板示例](../apps/desktop-gpui/src/bin/chat/creator/panel-example.rs) · [试用规则](spec/creator-mode.md#试用与失败条件)
+
+从空工作区开始时，用创造根会话提供的 `creator_write_file` 将清单与源码写到同一个新子目录，例如 `hello-world/plugin.toml` 和 `hello-world/src/main.rs`。获准写入时，宿主会补齐缺失的父目录。官方 `write` 用于父目录已存在的文件。`probe_*` 前缀保留给仓库诊断。
+
+在新会话输入卡上方，打开工作区旁的模式菜单并选择「创造模式」，或在插件页面选择「新建创造会话」。可以描述想要的面板，请 Agent 用 `creator_preview_panel`
+把静态 ADC-v1 草稿显示在结果卡中。清单校验失败时，试用错误会指出原始清单路径，可按诊断修正后再试。
+
+构建插件后，把含 `plugin.toml` 和可执行入口的包目录放在当前工作区内。例如，告诉 Agent「试用 `dist/component-demo`
+中的插件并调用它的 `echo` 工具」。在审批面板确认包名、版本、运行时和声明权限后，选择「允许一次」。成功后工具可在当前会话调用，
+插件提供的 `workspace.panel` 可在当前创造会话的插件面板查看。工具从下一次模型请求起可见，同名试用工具优先于继承的全局工具。
+切换会话会保留试用实例，删除所属会话或退出应用会清理试用。要在以后使用，按正常流程用 `dshr --install-plugin`
+安装构建产物，并重启桌面端加载。[创造模式契约](spec/creator-mode.md) · [安装、升级、卸载](#63-安装升级卸载)
+
+官方 Sidecar 的 `cordis` 预设可以通过 Loader 声明子插件。桌面自动发布配置变更，新建创造会话使用新修订。返回已打开的创造会话可继续使用原修订。
+[预设配置示例](m3-loader.md#声明创造预设)
 
 ## 2. 5 分钟快速开始
 
@@ -262,7 +282,7 @@ fn panel_tree() -> serde_json::Value {
                 "props": {
                     "label": "刷新",
                     "a11yLabel": "刷新面板",
-                    "onPress": { "call": "refresh" }   // → ui.action call；params 由宿主写入 payload
+                    "onPress": { "call": "refresh" }   // → ui.action call，payload 含 method 和 args
                 }
             }
         ]
@@ -281,6 +301,8 @@ fn panel_tree() -> serde_json::Value {
 
 `ui.action` **没有 result envelope**：宿主发完立刻重新 `ui.render`；插件应在 handler 里
 更新内部状态，让新树反映结果。`call` 的 `args` 必须来自元素树，不能由模型注入。
+
+输入框用 `onChange: {"call":"set_name","args":{}}`。提交时宿主把输入写入 `payload.args.value`。`command` 的载荷只含命令 ID。使用 `serde_json::Value` 或 `json!` 的插件需要在自己的 `Cargo.toml` 直接声明 `serde_json`。创造模式示例给出了可离线解析的版本。
 
 要点：
 

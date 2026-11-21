@@ -55,6 +55,15 @@ impl Fixture {
         )
     }
 
+    fn install_sidecar(&self, tool: &str, presentation: &str) {
+        let dir = self.root.join("no-sidecar/sidecar/dsh-official");
+        fs::create_dir_all(dir.join("node_modules")).unwrap();
+        let script = include_str!("fixtures/headless-sidecar.mjs")
+            .replace("FIXTURE_TOOL", tool)
+            .replace("FIXTURE_PRESENTATION", presentation);
+        fs::write(dir.join("sidecar-dsh.mjs"), script).unwrap();
+    }
+
     fn log(&self, id: &str) -> PathBuf {
         self.home().join("sessions").join(format!("{id}.jsonl"))
     }
@@ -207,7 +216,8 @@ fn cli_output_001_frames_tools_and_startup_errors() {
         assert_eq!(events[0]["type"], "error");
         assert_eq!(events[0]["code"], code);
     }
-    let output = fixture.run(&["--profile", "headless", "--json", "原生"], b"");
+    fixture.install_sidecar("read", "text");
+    let output = fixture.run(&["--profile", "headless", "--json", "工具"], b"");
     assert_success(&output);
     let events = records(&output.stdout);
     assert_eq!(
@@ -217,6 +227,7 @@ fn cli_output_001_frames_tools_and_startup_errors() {
             .collect::<Vec<_>>(),
         ["session", "tool_call", "tool_result", "final"]
     );
+    assert_eq!(events[1]["tool"], "read");
     assert_eq!(events[1]["callSeq"], events[2]["callSeq"]);
     assert_eq!(events[2]["status"], "completed");
     assert_eq!(events[3]["reason"]["kind"], "completed");
@@ -492,6 +503,7 @@ fn cli_profile_001_loads_dsh_manifest_and_reports_patch_origin() {
 #[test]
 fn cli_tools_001_denies_approval_even_when_environment_allows() {
     let fixture = Fixture::new();
+    fixture.install_sidecar("write", "diff");
     let output = invoke(
         fixture
             .command(Path::new(env!("CARGO_BIN_EXE_dshr")))
@@ -502,7 +514,7 @@ fn cli_tools_001_denies_approval_even_when_environment_allows() {
     assert_success(&output);
     let events = records(&output.stdout);
     let id = events[0]["sessionId"].as_str().unwrap();
-    assert_eq!(events[1]["tool"], "probe_write");
+    assert_eq!(events[1]["tool"], "write");
     assert_eq!(events[2]["status"], "error");
     let log = records(&fs::read(fixture.log(id)).unwrap());
     let approval = log
@@ -511,6 +523,61 @@ fn cli_tools_001_denies_approval_even_when_environment_allows() {
         .unwrap();
     assert_eq!(approval["payload"]["outcome"], "deny");
     assert_eq!(approval["payload"]["answerer"], "headless");
+}
+
+#[test]
+fn cli_tools_excludes_diagnostics_from_the_model_and_dispatch() {
+    let fixture = Fixture::new();
+    for mode in ["probe", "cordis"] {
+        let output = invoke(
+            fixture
+                .command(Path::new(env!("CARGO_BIN_EXE_dshr")))
+                .env("DSHR_SIDECAR", mode)
+                .args(["--profile", "headless", "--json", "test"]),
+            b"",
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(records(&output.stdout)[0]["code"], "E_CONFIG");
+    }
+
+    fixture.install_sidecar("read", "text");
+    let (endpoint, worker) = local_model(
+        "200 OK",
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "forged-diagnostic",
+                        "type": "function",
+                        "function": { "name": "probe_fixture", "arguments": "{}" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        None,
+    );
+    let output = invoke(
+        openai_command(&fixture, &endpoint).args(["--profile", "headless", "--json", "test"]),
+        b"",
+    );
+    let request = worker.join().unwrap();
+    let tools = request["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["function"]["name"], "read");
+    let events = records(&output.stdout);
+    assert_eq!(events[1]["tool"], "probe_fixture");
+    assert_eq!(events[2]["status"], "error");
+    let id = events[0]["sessionId"].as_str().unwrap();
+    let log = records(&fs::read(fixture.log(id)).unwrap());
+    let result = log
+        .iter()
+        .find(|event| event["type"] == "tool.result")
+        .unwrap();
+    assert!(result["payload"]["content"]
+        .to_string()
+        .contains("was not offered"));
 }
 
 #[cfg(windows)]

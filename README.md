@@ -3,13 +3,16 @@
 
 # Native Agent Desktop — workspace
 
-Rust 是唯一权威运行时；GPUI 是原生渲染底座；DSH 通过 Node Sidecar 兼容；UI 扩展走 ADC-v1。
+Rust 管理 Agent、会话和工具执行，GPUI 渲染桌面界面。dshr 自有插件使用 CPP-v1，界面扩展使用 ADC-v1。
+已有 DSH 工具包可通过 Node sidecar 复用，具体取决于包版本、所需的 `ctx` 服务和实际调用路径。
+已验证的操作、启用条件和已知限制见 [DSH 插件兼容矩阵](docs/spec/dsh-compat-mapping.md#兼容矩阵)。
 
 ## 文档地图
 
 | 文件 | 内容 |
 |---|---|
 | [`docs/PLAN.md`](docs/PLAN.md) | 实施计划：目标、架构决策、里程碑、估算 |
+| [插件作者指南](docs/plugin-authoring.md) | 选择插件入口，开发、打包和安装插件 |
 | [`docs/spec/`](docs/spec/README.md) | 设计规范：ADC-v1、CPP-v1、Sidecar RPC、Session Log |
 | [`docs/decisions/`](docs/decisions/README.md) | ADR：版本 pin、Cordis 选型、不走 Web 壳 |
 | [`docs/product-difference.md`](docs/product-difference.md) | 与上游 DSH 桌面端的差异（待核实假设） |
@@ -36,6 +39,8 @@ tools/                   构建环境脚本与 GPUI 编译探针
 
 ## 快速开始
 
+解压桌面发行包后直接启动 `dshr.exe` 或 `dshr`。桌面默认加载随包提供的官方 DSH sidecar 和文件工具。
+
 ```powershell
 # 契约校验（只需 Node）
 node schema/check.mjs
@@ -45,19 +50,34 @@ node tools/check-links.mjs
 tools\build-env.cmd cargo build --workspace
 
 # Windows 主程序为 target\debug\dshr.exe，release 构建输出到 target\release\dshr.exe
-# 基本对话（输入框 + 会话流 + 真实 sidecar 工具 + 落盘恢复 + SSE 流式）
+# 启动桌面，使用默认的官方 DSH sidecar
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest          # 无窗口自检
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest          # 探针自检
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-stream   # 流式自检
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --live "一句话"      # 真实 LLM（需 key）
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --live-chat "第一句" "第二句"  # 多轮记忆验证
 
-# 官方 DSH 插件（需要本机安装 DeepSeek Harness 桌面版）
-node tools/dsh-vendor.mjs                     # 从本机 app.asar 抽取官方插件依赖（gitignored）
+# 只读自检，验证 load_workspace_dependencies 和 read
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh
-$env:DSHR_SIDECAR = 'dsh'                       # 用官方插件运行时（tools + 只读 fs + 官方 read 工具）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
 ```
+
+默认 profile 包含 `load_workspace_dependencies` 和 `read`。桌面宿主协商 `fs.write` 后可注册
+`write`、`edit` 和 `apply_patch`，写入仍经过宿主审批。`probe_*` 只供仓库自检使用。
+如果源码运行时提示官方依赖缺失，可用 `node tools/dsh-vendor.mjs` 从本机 DeepSeek Harness 提取依赖。
+[启用条件与验证记录](docs/spec/dsh-compat-mapping.md#兼容矩阵)
+
+在桌面新会话界面，点工作区旁的模式菜单并选择「创造模式」。用 `creator_inspect` 查看清单样例，用 `creator_write_file` 从空工作区写入插件文件。可预览 ADC-v1 面板草稿。Windows x64 可在「设置 → 运行组件」安装创造模式构建组件，随后审批构建和试用 Rust 外部进程插件。[创造模式规范](docs/spec/creator-mode.md)
+每个创造会话保有自己的试用实例。切换会话后可以回来继续试用，删除会话或退出应用会释放实例。工具注册后从下一次模型请求起可用。
+官方 Sidecar 的创造会话使用 `cordis` 预设。桌面后台发布 Loader 预设配置变更，新会话使用当前修订，已绑定会话保留原修订。
+[插件创作和试用指南](docs/plugin-authoring.md#在创造会话中预览和试用) · [Agent 预设](docs/spec/agent-presets.md)
+
+## 在桌面配置真实模型
+
+打开左下角的「设置」，进入「模型」。可以编辑 DeepSeek，或点击「添加 OpenAI 兼容模型」来配置一个或多个模型。每条连接填写 API 根地址、模型 ID 和 API Key，再点「保存并使用」。在已有 OpenAI 兼容连接上点击「添加模型」，会预填 API 根地址，API Key 留空即可沿用该服务的密钥。输入卡右下角的模型菜单显示各模型的连接地址，便于切换同名模型。
+
+每条连接独立保存在系统凭据库，并随 DSHR 数据根隔离。编辑同一服务时，API Key 留空可继续使用已保存的密钥。更换协议、主机或端口时，填写新服务的 API Key。可在编辑页用「移除配置」删除单条连接。重启会恢复设置中选定的模型。通过环境变量提供的模型仍可在模型列表中选择。显式设置 `DSHR_PROVIDER` 时，启动时优先选择指定类型下可用的环境模型。终端任务沿用下面的配置方式。
+
+没有可用模型时，输入区的「配置模型」直达模型设置，草稿可在模型配置好后发送。测试时可设置 `DSHR_FORCE_MOCK=1` 或 `DSHR_PROVIDER=mock` 显示本地模拟。
 
 ## 从终端运行一次性任务
 
@@ -83,7 +103,7 @@ Get-Content -Raw .\prompt.txt | .\bin\dshr.exe --profile headless --json
 | GPUI | zed `d2a4fb6` | 同上 |
 | GPUI Kit | `dbb0b9a`（0.9.0） | 同上 |
 | Rust Cordis | `jincdream/cordis-rs` | [`ADR-0002`](docs/decisions/0002-cordis-rs-selection.md) |
-| DSH | 本机安装副本（采样 `0.2.2-rc.1` / Cordis `4.1.0`） | [`ADR-0003`](docs/decisions/0003-dsh-pin.md)（含 2026-11-11 版本漂移复核；license 待补） |
+| DSH 插件测试基线 | `0.2.2-rc.1`，Cordis `4.1.0` | 抽取版本取决于本机安装副本。各版本的测试范围见 [兼容矩阵](docs/spec/dsh-compat-mapping.md#兼容矩阵) |
 
 ## 当前状态
 
@@ -120,7 +140,7 @@ WSL Linux 上核心 6 crate、`dshr-desktop-gpui` 构建与 ADC/recovery/crash �
 macOS target 上 `dshr-ui-gpui` 在 x86_64/aarch64 均类型检查 PASS，桌面二进制因本机无 macOS SDK 在 C 依赖处未过。
 Windows Authenticode 管线已用一次性自签证书验证（`status=UnknownError`，见 [m4-signing.md](docs/m4-signing.md)），
 CI 已有可选 PFX/codesign 步骤；真实证书/时间戳/notarization 仍未接。
-`package-desktop.ps1/sh` 已生成自带 `runtime/node`、probe 与 `dsh-official`（含 node_modules）的
+`package-desktop.ps1/sh` 生成自带 `runtime/node` 与 `dsh-official`（含 node_modules）的
 Windows zip（59.7MB）与 Linux tar.gz（197.1MB）；`verify-package.ps1/sh` 校验 sha256、解压并跑
 sidecar/official 自检，双平台 PASS，仍不含签名/安装器。
 官方包 gate 之前先用 `official-provenance.mjs` 校验版本/SHA-256（lock 已提交）。
@@ -150,8 +170,10 @@ conformance 544 ID / `--full` 在 Lead 环境 exit 0（67 suites/837 passed/0 fa
 经 Cordis 4.1.0 注册进 Rust Registry；能力协商 `fs.write` 后，官方
 `write`/`edit`/`apply_patch` 的写盘请求回到 Rust → 沙箱边界 → 审批 → 写前快照 →
 原子写（`--selftest-dsh-write`；[`docs/m2-official-write.md`](docs/m2-official-write.md)）。
-依赖由 `tools/dsh-vendor.mjs` 从本机安装的 `app.asar` 抽取（不提交仓库），
-Node 运行时可由 `tools/vendor-node.mjs` 捆绑到 `runtime/node`，sidecar 以
+插件依赖随桌面包提供，可用 `tools/dsh-vendor.mjs` 从本机安装的 `app.asar` 更新。
+基础发行包在 `runtime/node` 内置 Node。自建包可用 `tools/vendor-node.mjs` 准备它。Windows x64 可在「设置 → 运行组件」另外安装 Python 解释器和标准库。[运行组件规范](docs/spec/runtime-components.md)
+
+Sidecar 以
 Windows Job Object 包裹（进程/内存上限、随宿主退出、环境变量清洗）。
 
 **界面：按 DSH Desktop 的设计 token 对齐。** 侧栏 280、内容列 748、输入卡片圆角 28 /
@@ -179,7 +201,7 @@ draw p95 ≈ 3 ms、0 次超预算；进程 RSS ≈ 80 MB + sidecar 37 MB
 
 **插件与稳定性。** profile（`plugins.json`）可持久化启停，侧栏插件面板切换后重启 sidecar，
 装载失败的错误会显示在面板顶部；支持 `cordis.yml` + `cordis.patch.yml` 只读派生
-（[`docs/m2-loader.md`](docs/m2-loader.md)）；`dshr --install-plugin <目录|.tgz>` 离线安装
+（[Loader 支持的配置](docs/m3-loader.md)）；`dshr --install-plugin <目录|.tgz>` 离线安装
 并写安装审计日志（[`docs/m2-plugins.md`](docs/m2-plugins.md)）。
 provider 已有 DeepSeek 与 OpenAI 兼容两家，统一重试/退避；真实网络 20 步工具调用
 成功率 20/20（[`docs/m2-stability.md`](docs/m2-stability.md)）。

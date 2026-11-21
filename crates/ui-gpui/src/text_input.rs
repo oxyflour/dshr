@@ -52,6 +52,7 @@ pub struct TextInput {
     content: SharedString,
     placeholder: SharedString,
     draft: Option<DraftInput>,
+    password: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -76,6 +77,7 @@ impl TextInput {
             content: SharedString::default(),
             placeholder: placeholder.into(),
             draft: None,
+            password: false,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -84,6 +86,16 @@ impl TextInput {
             on_submit: None,
             on_paste: None,
         }
+    }
+
+    /// Mask single-line ASCII credentials and prevent copying them out of the editor.
+    pub fn password(mut self) -> Self {
+        self.password = true;
+        self
+    }
+
+    fn accepts_text(&self, text: &str) -> bool {
+        !self.password || text.bytes().all(|byte| byte.is_ascii_graphic())
     }
 
     /// Enable wrapping and a bounded scrolling viewport for the chat draft.
@@ -150,7 +162,11 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.content = text.into();
+        let text = text.into();
+        if !self.accepts_text(&text) {
+            return;
+        }
+        self.content = text;
         let len = self.content.len();
         self.selected_range = len..len;
         self.selection_reversed = false;
@@ -310,7 +326,9 @@ impl TextInput {
             return;
         }
         if let Some(text) = item.text() {
-            let text = if self.draft.is_some() {
+            let text = if self.password {
+                text.trim().to_owned()
+            } else if self.draft.is_some() {
                 text.replace("\r\n", "\n").replace('\r', "\n")
             } else {
                 text.replace("\n", " ")
@@ -320,7 +338,7 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.password && !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -328,9 +346,7 @@ impl TextInput {
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
+            self.copy(&Copy, window, cx);
             self.replace_text_in_range(None, "", window, cx)
         }
     }
@@ -439,7 +455,11 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        Some(if self.password {
+            "*".repeat(range.len())
+        } else {
+            self.content[range].to_string()
+        })
     }
 
     fn selected_text_range(
@@ -497,6 +517,9 @@ impl EntityInputHandler for TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.accepts_text(new_text) {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -521,6 +544,9 @@ impl EntityInputHandler for TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.accepts_text(new_text) {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -647,6 +673,9 @@ impl Element for TextElement {
                 .as_ref()
                 .map_or(style.color.opacity(0.65), |draft| draft.placeholder_color);
             (input.placeholder.clone(), color)
+        } else if input.password {
+            // ASCII credentials keep the same byte offsets for the caret and selections.
+            ("*".repeat(input.content.len()).into(), style.color)
         } else {
             (input.content.clone(), style.color)
         };
@@ -795,7 +824,11 @@ impl Render for TextInput {
             .flex_col()
             .w_full()
             .id("text-input")
-            .role(Role::TextInput)
+            .role(if self.password {
+                Role::PasswordInput
+            } else {
+                Role::TextInput
+            })
             .aria_label(if self.draft.is_some() {
                 "消息草稿".into()
             } else {
