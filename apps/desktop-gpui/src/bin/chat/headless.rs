@@ -205,6 +205,7 @@ fn settings() -> Result<DesktopSettings, CliError> {
     Ok(DesktopSettings {
         model,
         permission: Some(permission),
+        reasoning: None,
     })
 }
 

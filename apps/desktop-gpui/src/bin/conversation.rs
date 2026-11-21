@@ -38,6 +38,8 @@ fn describe(item: &Item) -> Row {
             }),
         ),
         Item::Assistant { text } => (SharedString::from(format!("AGENT   · {text}")), None),
+        Item::Reasoning(text) => (SharedString::from("REASONING"), Some(text.clone().into())),
+        Item::Stopped => (SharedString::from("STOPPED"), None),
         Item::Tool(tool) => {
             let state = match &tool.state {
                 ToolState::Pending => "pending".to_owned(),

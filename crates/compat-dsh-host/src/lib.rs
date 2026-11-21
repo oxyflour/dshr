@@ -263,6 +263,7 @@ pub struct BatchInvokeCall {
     /// 会话身份（信封 `session_id`）；`None` = 兼容旧的 `s-probe` 占位。
     pub session_id: Option<String>,
     binding: Option<ToolOrigin>,
+    approval_key: Option<String>,
 }
 
 impl BatchInvokeCall {
@@ -279,11 +280,17 @@ impl BatchInvokeCall {
             timeout,
             session_id: None,
             binding: None,
+            approval_key: None,
         }
     }
 
     pub fn with_binding(mut self, binding: ToolOrigin) -> Self {
         self.binding = Some(binding);
+        self
+    }
+
+    pub fn with_approval_key(mut self, key: Option<String>) -> Self {
+        self.approval_key = key;
         self
     }
 
@@ -346,6 +353,7 @@ pub struct SidecarHost {
 struct ActiveCall {
     call_id: String,
     cancelled: bool,
+    approval_key: Option<String>,
 }
 
 /// 侧车进程句柄：普通 spawn 或 Job Object 包裹（Windows 隔离）。
@@ -946,6 +954,7 @@ impl SidecarHost {
             ActiveCall {
                 call_id: call.call_id.clone(),
                 cancelled: false,
+                approval_key: call.approval_key.clone(),
             },
         );
         Ok(())
@@ -1582,7 +1591,18 @@ impl SidecarHost {
             FsWriteResult::error("E_CANCELLED", "tool request is no longer active")
         } else {
             match &self.fs_write {
-                Some(service) => service.handle_payload(&envelope.payload),
+                Some(service) => {
+                    let approval_key = envelope.payload["tool_request_id"]
+                        .as_str()
+                        .and_then(|id| self.active_calls.get(id))
+                        .filter(|call| {
+                            envelope.call_id.as_deref() == Some(call.call_id.as_str())
+                                && envelope.payload["call_id"].as_str()
+                                    == Some(call.call_id.as_str())
+                        })
+                        .and_then(|call| call.approval_key.as_deref());
+                    service.handle_tool_payload(&envelope.payload, approval_key)
+                }
                 None => FsWriteResult::error(
                     "E_FS_CAPABILITY",
                     "fs.write.request received but fs.write was not negotiated in runtime.hello",

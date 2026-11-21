@@ -252,6 +252,8 @@ Sidecar ◄──fs.write.result────────── Rust
 3. Rust 的审批/写盘是同步阻塞的：宿主侧 approval timeout（默认 60 s）必须小于
    `tool.invoke` 的 `timeout_ms`（默认 120 s），否则工具超时后答复无人消费。
 4. 未协商 `fs.write` 时 Rust 一律回 `E_FS_CAPABILITY`，不做任何写入。
+   桌面可预先协商，以便在同一轮切换权限。「工具免审批」允许工作区内写入，正在等待审批的写入也按新模式裁决。「只读」拒绝正在等待的写入和新的写入请求。宿主在批准后再次核对权限，拒绝返回 `FS_SANDBOX_DENIED`。所有模式均执行路径、版本、大小和快照检查。
+   「始终允许」适用于宿主已绑定到活动工具调用的写入请求。授权范围由宿主派发时确定，通过 `tool_request_id` 与活动调用关联。Sidecar 自报的工具名和调用 ID 不能授予权限。
 5. Sidecar 的写方法只在 `host_caps` 含 `fs.write` 时对插件可见（写工具未注册）；
    即使被直接调用也返回结构化错误。
 
@@ -404,7 +406,7 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
 | `RPC-HANDSHAKE-*` | 版本协商、拒绝路径、超时 |
 | `RPC-REG-001` | 跨会话同名注册、全局回退、运行期撤销、旧身份失效和会话清理 |
 | `RPC-EXEC-*` | invoke/chunk/result 顺序、幂等、大小上限 |
-| `RPC-WRITE-*` | `fs.write` 能力协商、审批/越界/版本/快照、读循环不死锁 |
+| `RPC-WRITE-*` | `fs.write` 能力协商、审批及权限切换、越界/版本/快照、读循环不死锁 |
 | `RPC-CANCEL-*` | 取消传播、迟到结果、已结算 |
 | `RPC-CRASH-*` | 崩溃检测、在途 aborted、重注册 |
 | `RPC-LIMIT-*` | 背压、depth、帧上限 |

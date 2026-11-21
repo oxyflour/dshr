@@ -209,6 +209,9 @@ impl ModelProvider for OpenAiProvider {
             return Err(String::from("cancelled"));
         }
         let body = self.send(&self.request_body(request))?;
+        if is_cancelled(self.cancel.as_deref()) {
+            return Err(String::from("cancelled"));
+        }
         parse_reply(&body)
     }
 }
@@ -239,7 +242,9 @@ fn message_json(message: &ChatMessage) -> Value {
             }
             json!({ "role": "user", "content": content })
         }
-        ChatMessage::Assistant { text, tool_calls } => {
+        ChatMessage::Assistant {
+            text, tool_calls, ..
+        } => {
             let mut object = json!({ "role": "assistant", "content": text });
             if !tool_calls.is_empty() {
                 object["tool_calls"] = Value::Array(
@@ -302,7 +307,14 @@ fn parse_reply(body: &Value) -> Result<ModelReply, String> {
             });
         }
     }
-    Ok(ModelReply { text, tool_calls })
+    Ok(ModelReply {
+        reasoning: message["reasoning_content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        text,
+        tool_calls,
+    })
 }
 
 #[cfg(test)]
@@ -333,6 +345,7 @@ mod tests {
         let body = provider.request_body(&request(vec![
             ChatMessage::System("自定义".to_owned()),
             ChatMessage::Assistant {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: vec![ModelToolCall {
                     id: "c1".to_owned(),

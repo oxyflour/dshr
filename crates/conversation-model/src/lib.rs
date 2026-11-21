@@ -53,6 +53,8 @@ pub enum Item {
     Assistant {
         text: String,
     },
+    Reasoning(String),
+    Stopped,
     Tool(ToolItem),
     Compaction {
         from_seq: u64,
@@ -136,6 +138,13 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                     text: text_of(&event.payload),
                 })
             }
+            "message.assistant.reasoning" => {
+                let text = str_of(&event.payload, "text");
+                if !text.is_empty() {
+                    items.push(Item::Reasoning(text));
+                }
+            }
+            "turn.ended" if event.payload["reason"] == "cancelled" => items.push(Item::Stopped),
             "tool.call" => {
                 let call_id = str_of(&event.payload, "call_id");
                 tool_index.insert(ToolCallKey::from_payload(&event.payload), items.len());
@@ -229,6 +238,7 @@ pub fn stats(items: &[Item]) -> Stats {
         match item {
             Item::User { .. } => stats.user += 1,
             Item::Assistant { .. } => stats.assistant += 1,
+            Item::Reasoning(_) | Item::Stopped => {}
             Item::Tool(tool) => {
                 stats.tools += 1;
                 match tool.state {

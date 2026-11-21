@@ -4,6 +4,8 @@
 > 关联：[`m2-dsh-official.md`](m2-dsh-official.md)、[`spec/sidecar-rpc.md`](spec/sidecar-rpc.md) §7.5、
 > [`m2-closeout.md`](m2-closeout.md) Gate 4
 
+桌面切换「工具免审批」后的裁决见[桌面对话控制](spec/desktop-conversation.md)。以下记录 M2 的默认工作区写入审批流程。
+
 **结论**：官方 `@deepseek-ai/dsh-tool-fs@0.2.2-rc.1` 的 `write` / `edit` / `apply_patch`
 在**不改官方源码**的前提下打开了。写入不发生在 Node 进程：Sidecar 只把官方 `ctx.fs`
 的写意图翻译成 `fs.write.request`，由 Rust（`crates/compat-dsh-fs`）完成

@@ -82,8 +82,8 @@ use dshr_session_store::{
 };
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
-    AllowAll, ApprovalBroker, ApprovalOutcome, ApprovalPolicy, PermissionMode, PolicyDecision,
-    RegistryError, ToolDefinition, ToolOrigin, ToolPolicy,
+    AllowAll, ApprovalBroker, ApprovalOutcome, ApprovalPolicy, LiveApproval, PendingApproval,
+    PermissionMode, PolicyDecision, RegistryError, ToolDefinition, ToolOrigin, ToolPolicy,
 };
 use dshr_ui_contributions::parse_action;
 use dshr_ui_gpui::{
@@ -109,6 +109,7 @@ mod window_bar;
 
 #[path = "chat/composer_flow.rs"]
 mod composer_flow;
+
 #[path = "chat/composer_surface.rs"]
 mod composer_surface;
 #[path = "chat/model_settings.rs"]
@@ -127,6 +128,8 @@ mod plugins_view;
 mod popover;
 #[path = "chat/settings_view.rs"]
 mod settings_view;
+#[path = "chat/tool_approvals.rs"]
+mod tool_approvals;
 #[path = "chat/workspace_view.rs"]
 mod workspace_view;
 
@@ -1070,7 +1073,9 @@ fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
                     .join("、");
                 ("user", format!("{text}\n附件：{names}"))
             }
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant {
+                text, tool_calls, ..
+            } => {
                 let mut body = text.clone();
                 if !tool_calls.is_empty() {
                     let names: Vec<&str> =
@@ -1122,6 +1127,7 @@ struct ChatState {
     /// Agent 在窗口内复用，会话上下文由当前日志重建。
     agent: Agent<Box<dyn ModelProvider>>,
     settings: DesktopSettings,
+    permission: LivePermission,
     seq: u64,
     /// 审批 broker：工作线程阻塞等待 UI 决定；不属于大锁保护范围。
     approvals: Arc<ApprovalBroker>,
@@ -1149,7 +1155,7 @@ struct ChatState {
 }
 
 enum TurnUpdate<'a> {
-    Preview(&'a SessionLog, Option<&'a str>),
+    Preview(&'a SessionLog, Option<&'a str>, Option<&'a str>),
     Call { seq: u64, tool: &'a str },
     Result { seq: u64, status: &'static str },
 }
@@ -1428,7 +1434,7 @@ fn spawn_sidecar(
     approvals: Option<Arc<ApprovalBroker>>,
     l2_access: Option<Arc<ChatSessionAccess>>,
 ) -> Option<SidecarHost> {
-    spawn_sidecar_in(&workspace_root(), approvals, l2_access, true)
+    spawn_sidecar_in(&workspace_root(), approvals, None, l2_access, true)
         .inspect_err(|error| eprintln!("[chat] {error}"))
         .ok()
 }
@@ -1436,6 +1442,7 @@ fn spawn_sidecar(
 fn spawn_sidecar_in(
     workspace: &Path,
     approvals: Option<Arc<ApprovalBroker>>,
+    live_controls: Option<(LivePermission, Arc<AtomicBool>)>,
     l2_access: Option<Arc<ChatSessionAccess>>,
     diagnostics: bool,
 ) -> Result<SidecarHost, String> {
@@ -1501,7 +1508,14 @@ fn spawn_sidecar_in(
     if mode == "dsh" && write_enabled {
         if let Some(approvals) = approvals {
             match FsWriteService::open(workspace, approvals) {
-                Ok(service) => options = options.with_fs_write(Arc::new(service)),
+                Ok(service) => {
+                    let service = if let Some((permission, cancel)) = live_controls {
+                        service.with_live_controls(move || permission.file_write_policy(), cancel)
+                    } else {
+                        service
+                    };
+                    options = options.with_fs_write(Arc::new(service));
+                }
                 Err(err) => eprintln!("[chat] 官方写工具不可用（沙箱初始化失败）: {err}"),
             }
         }
@@ -1666,7 +1680,29 @@ impl DesktopModel {
         }
     }
 
-    fn provider(&self, cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
+    fn reasoning_levels(&self) -> &'static [ReasoningEffort] {
+        use ReasoningEffort::{High, Low, Max, Off};
+        match self {
+            Self::DeepSeek(_) => &[Off, Low, High, Max],
+            Self::OpenAi(_) => &[Low, High, Max],
+            Self::Unconfigured | Self::Mock => &[],
+        }
+    }
+
+    fn provider_reasoning(&self) -> Option<ReasoningEffort> {
+        match self {
+            Self::DeepSeek(provider) => provider.reasoning_effort(),
+            Self::OpenAi(provider) => provider.reasoning_effort(),
+            Self::Unconfigured | Self::Mock => None,
+        }
+    }
+
+    fn provider(
+        &self,
+        cancel: &Arc<AtomicBool>,
+        reasoning: Option<ReasoningEffort>,
+    ) -> Box<dyn ModelProvider> {
+        let reasoning = reasoning.or_else(|| self.provider_reasoning());
         let (name, configured): (&str, Box<dyn ModelProvider>) = match self {
             Self::Unconfigured => return Box::new(UnconfiguredProvider),
             Self::Mock => {
@@ -1675,11 +1711,21 @@ impl DesktopModel {
             }
             Self::DeepSeek(provider) => (
                 "deepseek",
-                Box::new(provider.clone().with_cancel(cancel.clone())),
+                Box::new(
+                    provider
+                        .clone()
+                        .with_reasoning_effort(reasoning)
+                        .with_cancel(cancel.clone()),
+                ),
             ),
             Self::OpenAi(provider) => (
                 "openai",
-                Box::new(provider.clone().with_cancel(cancel.clone())),
+                Box::new(
+                    provider
+                        .clone()
+                        .with_reasoning_effort(reasoning)
+                        .with_cancel(cancel.clone()),
+                ),
             ),
         };
         let retry = RetryPolicy::from_env();
@@ -1734,6 +1780,7 @@ fn configured_models() -> Vec<Arc<DesktopModel>> {
 struct DesktopSettings {
     model: Arc<DesktopModel>,
     permission: Option<PermissionMode>,
+    reasoning: Option<ReasoningEffort>,
 }
 
 impl DesktopSettings {
@@ -1759,17 +1806,71 @@ impl DesktopSettings {
         Self {
             model,
             permission: desktop_permission_mode(),
+            reasoning: None,
         }
     }
 
-    fn approval_policy(&self) -> ApprovalPolicy {
-        self.permission
-            .map_or_else(ApprovalPolicy::ask_all, ApprovalPolicy::for_mode)
+}
+
+#[derive(Clone)]
+struct LivePermission(Arc<Mutex<Option<PermissionMode>>>);
+
+impl LivePermission {
+    fn new(mode: Option<PermissionMode>) -> Self {
+        Self(Arc::new(Mutex::new(mode)))
     }
 
-    fn write_approvals(&self, approvals: &Arc<ApprovalBroker>) -> Option<Arc<ApprovalBroker>> {
-        (self.permission != Some(PermissionMode::ReadOnly)).then(|| approvals.clone())
+    fn mode(&self) -> Option<PermissionMode> {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner())
     }
+
+    fn set(&self, mode: PermissionMode) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(mode);
+    }
+
+    fn can_write(&self) -> bool {
+        self.mode() != Some(PermissionMode::ReadOnly)
+    }
+
+    fn file_write_policy(&self) -> PolicyDecision {
+        match self.mode() {
+            Some(PermissionMode::DangerFullAccess) => PolicyDecision::Allow,
+            Some(PermissionMode::ReadOnly) => {
+                PolicyDecision::Deny("file write denied in read-only mode".to_owned())
+            }
+            Some(PermissionMode::WorkspaceWrite) | None => PolicyDecision::Ask,
+        }
+    }
+}
+
+impl ToolPolicy for LivePermission {
+    fn check(&self, tool: &ToolDefinition, arguments: &serde_json::Value) -> PolicyDecision {
+        self.mode()
+            .map_or_else(ApprovalPolicy::ask_all, ApprovalPolicy::for_mode)
+            .check(tool, arguments)
+    }
+}
+
+fn tool_approval_key(session: &str, workspace: &Path, tool: &ToolDefinition) -> Option<String> {
+    let owner = match &tool.origin {
+        ToolOrigin::Native { plugin_id } | ToolOrigin::Sidecar { plugin_id, .. } => plugin_id,
+        ToolOrigin::Mcp { .. } => return None,
+    };
+    if owner.is_empty() {
+        return None;
+    }
+    let scope = json!([
+        session,
+        workspace.to_string_lossy(),
+        tool.origin.kind(),
+        owner,
+        tool.name,
+        tool.input_schema,
+        tool.presentation,
+    ]);
+    Some(hex_lower(
+        ring::digest::digest(&ring::digest::SHA256, scope.to_string().as_bytes()).as_ref(),
+    ))
 }
 
 /// sidecar 工具调用超时：按工具声明（`ToolDefinition.timeout_ms`，对齐 DSH 的 `timeoutMs`）
@@ -2135,9 +2236,11 @@ struct ChatExecutor<'a> {
     sessions_dir: &'a std::path::Path,
     /// 父会话 id。
     parent_id: &'a str,
+    workspace: &'a Path,
     /// 父会话取消句柄：子轮次共享，用户停止会同时停掉子会话。
     cancel: &'a Arc<AtomicBool>,
     settings: &'a DesktopSettings,
+    permission: &'a LivePermission,
     preset_inputs: &'a Option<(PathBuf, Vec<PathBuf>)>,
     published_presets: &'a mut Option<ParsedAgentPresets>,
     /// 是否允许派生子会话（子会话本身不再派发，默认单层）。
@@ -2289,12 +2392,9 @@ impl ToolExecutor for ChatExecutor<'_> {
                                 .then(|| name.clone())
                         })
                         .collect();
-                    outcomes[index] = self.creator.as_mut().expect("creator step").execute(
-                        call,
-                        &names,
-                        self.approvals,
-                        self.cancel,
-                    );
+                    let creator = self.creator.as_mut().expect("creator step");
+                    creator.read_only = !self.permission.can_write();
+                    outcomes[index] = creator.execute(call, &names, self.approvals, self.cancel);
                     if call.tool == creator::TRY_PLUGIN_TOOL
                         && outcomes[index].value["replaced"] == true
                     {
@@ -2310,7 +2410,15 @@ impl ToolExecutor for ChatExecutor<'_> {
                 }
                 ToolLocation::Global | ToolLocation::Trial => {}
             }
-            if let Err(outcome) = self.authorize_call(call, &definition) {
+            let grant_key = if !self.headless
+                && matches!(location, ToolLocation::Global)
+                && self.permission.mode().is_some()
+            {
+                tool_approval_key(self.parent_id, self.workspace, &definition)
+            } else {
+                None
+            };
+            if let Err(outcome) = self.authorize_call(call, &definition, grant_key.as_deref()) {
                 outcomes[index] = outcome;
                 continue;
             }
@@ -2325,7 +2433,8 @@ impl ToolExecutor for ChatExecutor<'_> {
                             sidecar_tool_timeout(&definition),
                         )
                         .with_session(self.parent_id)
-                        .with_binding(definition.origin),
+                        .with_binding(definition.origin)
+                        .with_approval_key(grant_key),
                     );
                 }
                 ToolOrigin::Native { .. } => {
@@ -2411,20 +2520,29 @@ impl ChatExecutor<'_> {
         &self,
         call: &ToolCallRequest,
         definition: &ToolDefinition,
+        grant_key: Option<&str>,
     ) -> Result<(), ToolOutcome> {
         let registry = self.plugins.registry();
         match registry.authorize_definition(definition, &call.arguments) {
             Ok(_) => Ok(()),
             Err(RegistryError::NeedsApproval { tool }) => {
-                let outcome = self.approvals.request_cancellable(
+                let policy = || self.permission.check(definition, &call.arguments);
+                let outcome = self.approvals.request_with_policy(
                     &call.call_id,
                     &tool,
                     &call.arguments,
                     Duration::from_secs(300),
                     self.cancel.as_ref(),
+                    LiveApproval {
+                        decide: &policy,
+                        grant_key,
+                    },
                 );
+                if let PolicyDecision::Deny(reason) = policy() {
+                    return Err(ToolOutcome::failure(reason));
+                }
                 match outcome {
-                    ApprovalOutcome::AllowOnce => {
+                    ApprovalOutcome::AllowOnce | ApprovalOutcome::AllowAlways => {
                         dshr_tool_runtime::ToolRegistry::validate_definition(
                             definition,
                             &call.arguments,
@@ -2550,19 +2668,26 @@ impl TreeCoordinator {
         if let Err(err) = store.write_log(&spawned.log) {
             return ToolOutcome::failure(format!("写入子会话失败: {err}"));
         }
+        let mut settings = executor.settings.clone();
+        settings.permission = executor.permission.mode();
         let mut child = ChatState::from_log(
             child_path,
             spawned.log,
             session_workspace(log),
             cancel,
             executor.approvals.clone(),
-            executor.settings.clone(),
+            settings,
             ChatRuntime::Desktop {
                 allow_spawn: false,
                 sidecar: false,
                 diagnostics: executor.diagnostics,
             },
         );
+        child.permission = executor.permission.clone();
+        child
+            .plugins
+            .registry_mut()
+            .set_policy(child.permission.clone());
         let uses_preset = child
             .log
             .created()
@@ -2904,10 +3029,12 @@ impl ChatState {
         } else {
             None
         };
+        let permission = LivePermission::new(settings.permission);
         let (host, sidecar_start_error) = if with_sidecar {
             match spawn_sidecar_in(
                 &workspace,
-                settings.write_approvals(&approvals),
+                (!headless || permission.can_write()).then(|| approvals.clone()),
+                (!headless).then(|| (permission.clone(), cancel.clone())),
                 l2_access.clone(),
                 diagnostics,
             ) {
@@ -2923,7 +3050,7 @@ impl ChatState {
         if let Some(mode) = settings.permission {
             eprintln!("[chat] approval mode={}", mode.as_str());
         }
-        let mut plugins = PluginHost::new(settings.approval_policy());
+        let mut plugins = PluginHost::new(permission.clone());
         if diagnostics {
             if let Err(err) = plugins.load(Box::new(ProbeNativePlugin)) {
                 eprintln!("[chat] 诊断插件加载失败: {err}");
@@ -2949,8 +3076,9 @@ impl ChatState {
             published_presets: None,
             sidecar_start_error,
             plugins,
-            agent: Agent::new(settings.model.provider(cancel)),
+            agent: Agent::new(settings.model.provider(cancel, settings.reasoning)),
             settings,
+            permission,
             seq,
             approvals,
             spill: SpillStore::new(spill_dir_for(&path)),
@@ -3299,7 +3427,8 @@ impl ChatState {
     fn start_sidecar(&mut self) -> bool {
         let host = match spawn_sidecar_in(
             &self.workspace,
-            self.settings.write_approvals(&self.approvals),
+            (!self.headless || self.permission.can_write()).then(|| self.approvals.clone()),
+            (!self.headless).then(|| (self.permission.clone(), self.cancel.clone())),
             self.l2_access.clone(),
             self.diagnostics,
         ) {
@@ -3320,19 +3449,10 @@ impl ChatState {
         self.sidecar_start_error = None;
     }
 
-    fn set_model(&mut self, model: Arc<DesktopModel>) {
-        *self.agent.provider_mut() = model.provider(&self.cancel);
+    fn set_model(&mut self, model: Arc<DesktopModel>, reasoning: Option<ReasoningEffort>) {
+        *self.agent.provider_mut() = model.provider(&self.cancel, reasoning);
         self.settings.model = model;
-    }
-
-    /// A change in write capability takes effect when the sidecar renegotiates.
-    fn set_permission(&mut self, permission: PermissionMode) -> bool {
-        let previous_write = self.settings.permission != Some(PermissionMode::ReadOnly);
-        self.settings.permission = Some(permission);
-        self.plugins
-            .registry_mut()
-            .set_policy(self.settings.approval_policy());
-        previous_write != (permission != PermissionMode::ReadOnly)
+        self.settings.reasoning = reasoning;
     }
 
     fn save(&self) {
@@ -3385,8 +3505,8 @@ impl ChatState {
             return None;
         }
         match self.run_turn(text, attachments, &mut |update| {
-            if let TurnUpdate::Preview(log, streaming) = update {
-                emit(rows_snapshot(log, streaming));
+            if let TurnUpdate::Preview(log, streaming, reasoning) = update {
+                emit(rows_with_preview(log, streaming, reasoning));
             }
         }) {
             Ok(result) => Some(result.reply),
@@ -3442,7 +3562,7 @@ impl ChatState {
             "turn.started", &ts, json!({ "turn_id": turn_id, "prompt_message_id": user_id })
         )).map_err(|error| error.to_string())?;
         self.save_checked()?;
-        emit(TurnUpdate::Preview(&self.log, None));
+        emit(TurnUpdate::Preview(&self.log, None, None));
 
         // 历史从 durable 事件重建：多轮记忆靠它，重开应用也能接上。
         // 上下文预算在这里做：超大结果先外部化、超长工具结果头尾裁剪、超预算丢最旧，且不拆配对。
@@ -3479,7 +3599,7 @@ impl ChatState {
                 "[chat] 已压缩 seq {from_seq}..{to_seq}：{} -> {} tokens",
                 plan.tokens_before, plan.tokens_after
             );
-            emit(TurnUpdate::Preview(&self.log, None));
+            emit(TurnUpdate::Preview(&self.log, None, None));
         }
         let _ = self.log.append(EventSpec::durable(
             "context.measured",
@@ -3508,7 +3628,7 @@ impl ChatState {
                 plan.dropped_messages
             );
         }
-        emit(TurnUpdate::Preview(&self.log, None));
+        emit(TurnUpdate::Preview(&self.log, None, None));
         let mut history = plan.messages;
         // 预算计入刚落盘的用户输入。Agent 会单独追加本轮消息，避免在模型请求中发送两份。
         if history.last() == Some(&current) {
@@ -3530,6 +3650,7 @@ impl ChatState {
             .and_then(|created| created.preset.clone());
         let step = ToolStep::default();
         let mut reply = String::new();
+        let mut reasoning = String::new();
         let mut reason = TurnReason::Error;
         let mut event_error = None;
         // 非失败结束原因（用户取消）：决定 TurnEnded 后写 session.interrupted 而不是“处理失败”。
@@ -3556,8 +3677,10 @@ impl ChatState {
                     scope: self
                         .creator_trials
                         .entry(self.session_id.clone())
-                        .or_insert_with(|| creator::TrialScope::new(&self.settings, &self.workspace)),
-                    read_only: self.settings.permission == Some(PermissionMode::ReadOnly),
+                        .or_insert_with(|| {
+                            creator::TrialScope::new(self.permission.clone(), &self.workspace)
+                        }),
+                    read_only: !self.permission.can_write(),
                 }),
                 step: step.clone(),
                 headless: self.headless,
@@ -3565,8 +3688,10 @@ impl ChatState {
                 log: log_cell.clone(),
                 sessions_dir: &self.sessions_dir,
                 parent_id: &self.session_id,
+                workspace: &self.workspace,
                 cancel: &self.cancel,
                 settings: &self.settings,
+                permission: &self.permission,
                 preset_inputs: &self.preset_inputs,
                 published_presets: &mut self.published_presets,
                 allow_spawn: self.allow_spawn,
@@ -3581,7 +3706,13 @@ impl ChatState {
                 &mut |event| match event {
                     AgentEvent::TextDelta(delta) => {
                         reply.push_str(delta);
-                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), Some(&reasoning)));
+                    }
+                    AgentEvent::ReasoningDelta(delta) => {
+                        reasoning.push_str(delta);
+                        if !self.headless {
+                            emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), Some(&reasoning)));
+                        }
                     }
                     AgentEvent::ToolCall(call) => {
                         let tools = step.borrow();
@@ -3609,6 +3740,9 @@ impl ChatState {
                         drop(tools);
                         {
                             let mut log = log_for_events.borrow_mut();
+                            if let Err(error) = record_reasoning(&mut log, &ts, &mut reasoning) {
+                                event_error.get_or_insert_with(|| error.to_string());
+                            }
                             let call_seq = log.len() as u64 + 1;
                             data["call_seq"] = json!(call_seq);
                             match log.append(EventSpec::durable("tool.call", &ts, data)) {
@@ -3619,7 +3753,7 @@ impl ChatState {
                                 Err(error) => { event_error.get_or_insert_with(|| error.to_string()); }
                             }
                         }
-                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), None));
                     }
                     AgentEvent::ToolResult { call_id, outcome } => {
                         let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
@@ -3665,7 +3799,7 @@ impl ChatState {
                         if let Some(status) = status {
                             emit(TurnUpdate::Result { seq: call_seq, status });
                         }
-                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), None));
                     }
                     AgentEvent::ToolCancelled { call_id, reason } => {
                         let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
@@ -3683,17 +3817,17 @@ impl ChatState {
                             Ok(_) => emit(TurnUpdate::Result { seq: call_seq, status: "aborted" }),
                             Err(error) => { event_error.get_or_insert_with(|| error.to_string()); }
                         }
-                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), None));
                     }
                     AgentEvent::TurnCancelled { reason } => {
                         cancelled = Some(reason.clone());
-                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), Some(&reasoning)));
                     }
                     AgentEvent::TurnFailed(err) => {
                         if !self.headless {
                             reply.push_str(&format!("处理失败：{err}"));
                         }
-                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), Some(&reasoning)));
                     }
                     AgentEvent::TurnEnded { .. } => reason = TurnReason::Completed,
                     AgentEvent::TurnStarted { .. } | AgentEvent::StepStarted { .. } => {}
@@ -3766,6 +3900,7 @@ impl ChatState {
 
         self.seq += 1;
         let ts = now_ts();
+        record_reasoning(&mut self.log, &ts, &mut reasoning).map_err(|error| error.to_string())?;
         // 取消且没有任何产出时不写空的 assistant 消息（避免 UI 出现空白气泡）。
         let cancelled_turn = cancelled_by_flag || cancelled.is_some();
         if cancelled_turn {
@@ -3788,7 +3923,7 @@ impl ChatState {
             ))
             .map_err(|error| error.to_string())?;
         self.save_checked()?;
-        emit(TurnUpdate::Preview(&self.log, None));
+        emit(TurnUpdate::Preview(&self.log, None, None));
         Ok(TurnResult { reply, reason })
     }
 
@@ -3828,8 +3963,10 @@ impl ChatState {
                 scope: self
                     .creator_trials
                     .entry(self.session_id.clone())
-                    .or_insert_with(|| creator::TrialScope::new(&self.settings, &self.workspace)),
-                read_only: self.settings.permission == Some(PermissionMode::ReadOnly),
+                    .or_insert_with(|| {
+                        creator::TrialScope::new(self.permission.clone(), &self.workspace)
+                    }),
+                read_only: !self.permission.can_write(),
             }),
             step: step.clone(),
             headless: self.headless,
@@ -3837,8 +3974,10 @@ impl ChatState {
             log: log_cell.clone(),
             sessions_dir: &self.sessions_dir,
             parent_id: &self.session_id,
+            workspace: &self.workspace,
             cancel: &self.cancel,
             settings: &self.settings,
+            permission: &self.permission,
             preset_inputs: &self.preset_inputs,
             published_presets: &mut self.published_presets,
             allow_spawn: self.allow_spawn,
@@ -4071,6 +4210,8 @@ struct AdcEditor {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerMenu {
     Model,
+    ModelList,
+    Reasoning,
     Permission,
     Preset,
     Commands,
@@ -4140,12 +4281,22 @@ fn permission_label(mode: PermissionMode) -> &'static str {
     }
 }
 
+fn reasoning_label(effort: Option<ReasoningEffort>) -> &'static str {
+    match effort {
+        None => "默认",
+        Some(ReasoningEffort::Off) => "关闭",
+        Some(ReasoningEffort::Low) => "低",
+        Some(ReasoningEffort::High) => "高",
+        Some(ReasoningEffort::Max) => "最高",
+    }
+}
+
 const EDITABLE_PERMISSIONS: [(PermissionMode, &str); 3] = [
     (PermissionMode::ReadOnly, "拒绝写入和执行类工具"),
     (PermissionMode::WorkspaceWrite, "写入和执行需要确认"),
     (
         PermissionMode::DangerFullAccess,
-        "跳过工具审批，官方文件写入仍需确认",
+        "普通工具和工作区内写入直接执行",
     ),
 ];
 
@@ -4166,6 +4317,8 @@ struct ChatApp {
     state: Arc<Mutex<ChatState>>,
     /// 当前渲染用的整份快照（由工作线程推送）。
     rows: Vec<Row>,
+    open_processes: std::collections::HashSet<usize>,
+    copied_message: Option<(String, usize, std::time::Instant)>,
     /// 真正的文本输入组件（实现 EntityInputHandler，中文 IME 组合输入可用）。
     input: Entity<TextInput>,
     scroll: ScrollHandle,
@@ -4173,6 +4326,7 @@ struct ChatApp {
     activity_open: bool,
     activity_scroll: ScrollHandle,
     settings: DesktopSettings,
+    permission: LivePermission,
     model_options: Vec<Arc<DesktopModel>>,
     model_settings: model_settings::ModelSettings,
     composer_menu: Option<ComposerMenu>,
@@ -4228,6 +4382,9 @@ struct ChatApp {
     approvals: Arc<ApprovalBroker>,
     /// 上一次渲染时的 pending 数，用于只在变化时触发重绘。
     pending_approvals: usize,
+    approval_error: Option<(PendingApproval, String)>,
+    approval_saving: Option<PendingApproval>,
+    tool_approvals_loading: bool,
     /// 插件 profile（启停状态持久化）。
     profile: Profile,
     /// 主内容区的插件管理页。
@@ -4261,10 +4418,9 @@ struct ChatApp {
 impl ChatApp {
     /// 请求停止生成：provider 在下一个 SSE 行边界返回已生成的部分。
     fn stop(&mut self, cx: &mut Context<Self>) {
-        if !self.busy {
+        if !self.busy || self.cancel.swap(true, Ordering::Relaxed) {
             return;
         }
-        self.cancel.store(true, Ordering::Relaxed);
         // 审批等待中的调用立即结束（否则 UI 的审批条会一直挂到 300s 超时）。
         self.approvals.cancel_pending();
         self.pending_approvals = 0;
@@ -4276,6 +4432,7 @@ impl ChatApp {
     /// 返回 `true` 表示已受理，输入框随后自行清空；生成中返回 `false`，内容保留。
     fn on_submit(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.busy
+            || self.tool_approvals_loading
             || self.model_settings.pending
             || !self.settings.model.is_configured()
             || self.attachment_preview.is_some()
@@ -4857,7 +5014,11 @@ impl ChatApp {
         let Some(first) = self.approvals.pending().first().cloned() else {
             return false;
         };
+        if self.approval_saving.as_ref() == Some(&first) {
+            return false;
+        }
         self.approvals.resolve(&first.call_id, outcome);
+        self.approval_error = None;
         self.pending_approvals = self.approvals.pending().len();
         cx.notify();
         true
@@ -4954,6 +5115,12 @@ impl ChatApp {
         if self.adc_editor.is_some() {
             self.cancel_adc_edit(cx);
         } else if self.pending_external.take().is_some() {
+            cx.notify();
+        } else if matches!(
+            self.composer_menu,
+            Some(ComposerMenu::ModelList | ComposerMenu::Reasoning)
+        ) {
+            self.composer_menu = Some(ComposerMenu::Model);
             cx.notify();
         } else if self.composer_menu.take().is_some() {
             self.focus_composer(window, cx);
@@ -5069,6 +5236,8 @@ impl ChatApp {
             index_changed
         };
         self.session_id = id;
+        self.open_processes.clear();
+        self.copied_message = None;
         self.trial_panels_collapsed = false;
         self.preset_notice = None;
         self.workspace_picker_open = false;
@@ -6390,19 +6559,42 @@ impl ChatApp {
     }
 
     fn copy_message_button(
+        &self,
         index: usize,
         text: &str,
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let text = text.to_owned();
-        toolbar_icon_button(("copy-message", index), "复制消息", "\u{e8c8}", "⧉", t)
+        let copied = self
+            .copied_message
+            .as_ref()
+            .is_some_and(|(session, row, _)| session == &self.session_id && *row == index);
+        let (label, glyph, fallback) = if copied {
+            ("已复制", "\u{e73e}", "✓")
+        } else {
+            ("复制消息", "\u{e8c8}", "⧉")
+        };
+        toolbar_icon_button(("copy-message", index), label, glyph, fallback, t)
             .size(px(24.0))
-            .opacity(0.0)
+            .opacity(if copied { 1.0 } else { 0.0 })
             .group_hover("message-row", |style| style.opacity(1.0))
             .focus_visible(|style| style.opacity(1.0))
-            .on_click(cx.listener(move |_, _, _, cx| {
+            .on_click(cx.listener(move |chat, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                let copied = (chat.session_id.clone(), index, std::time::Instant::now());
+                chat.copied_message = Some(copied.clone());
+                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    let _ = this.update(cx, |chat, cx| {
+                        if chat.copied_message.as_ref() == Some(&copied) {
+                            chat.copied_message = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
             }))
     }
 
@@ -6706,11 +6898,11 @@ impl ChatApp {
                                 p.color(p.business_primary).into(),
                             )),
                     )
-                    .child(Self::copy_message_button(index, text, t, cx))
+                    .child(self.copy_message_button(index, text, t, cx))
                 })
                 .into_any_element(),
-            Row::Assistant(text) => {
-                let streaming = text.ends_with('▌');
+            Row::Assistant(text) | Row::Streaming(text) => {
+                let streaming = is_streaming_row(row);
                 div()
                     .group("message-row")
                     .flex()
@@ -6725,23 +6917,106 @@ impl ChatApp {
                         &self.message_selection,
                         index,
                     ))
-                    .when(streaming, |el| {
+                    .when(streaming && !self.cancel.load(Ordering::Relaxed), |el| {
                         el.child(
                             div()
                                 .text_size(t.type_scale.small)
                                 .text_color(p.color(p.label_caption))
-                                .child("正在生成 · 可点击右侧停止"),
+                                .child("正在生成"),
                         )
                     })
                     .when(!streaming && !text.is_empty(), |el| {
                         el.child(
                             div()
                                 .flex()
-                                .child(Self::copy_message_button(index, text, t, cx)),
+                                .child(self.copy_message_button(index, text, t, cx)),
                         )
                     })
                     .into_any_element()
             }
+            Row::Process(steps) => {
+                let open = self.open_processes.contains(&index);
+                let tools = steps
+                    .iter()
+                    .filter(|row| matches!(row, Row::Tool { .. }))
+                    .count();
+                let thinking = steps.iter().any(|row| matches!(row, Row::Reasoning { .. }));
+                let active = steps.iter().any(|row| {
+                    matches!(
+                        row,
+                        Row::Tool { pending: true, .. }
+                            | Row::Reasoning {
+                                streaming: true,
+                                ..
+                            }
+                    )
+                });
+                let label = match (active, thinking, tools) {
+                    (true, true, 0) => "正在思考".to_owned(),
+                    (_, true, 0) => "思考过程".to_owned(),
+                    (true, _, _) => format!("进行中 · {tools} 次工具调用"),
+                    (_, true, _) => format!("思考过程 · {tools} 次工具调用"),
+                    _ => format!("{tools} 次工具调用"),
+                };
+                div()
+                    .id(("turn-process", index))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .id("process-toggle")
+                            .role(Role::Button)
+                            .aria_expanded(open)
+                            .focusable()
+                            .cursor_pointer()
+                            .w_full()
+                            .h(px(26.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .rounded(t.radii.sm)
+                            .px(px(4.0))
+                            .text_size(t.type_scale.secondary)
+                            .text_color(p.color(p.label_secondary))
+                            .hover(|style| style.bg(p.color(p.interactive_hover)))
+                            .child(label)
+                            .child(
+                                desktop_icon(
+                                    if open { "\u{e70e}" } else { "\u{e70d}" },
+                                    if open { "▴" } else { "▾" },
+                                )
+                                .text_size(px(10.0)),
+                            )
+                            .on_click(cx.listener(move |chat, _, _, cx| {
+                                if !chat.open_processes.remove(&index) {
+                                    chat.open_processes.insert(index);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .when(open, |group| {
+                        group.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .pl(px(10.0))
+                                .border_l_1()
+                                .border_color(p.color(p.border_l2))
+                                .children(steps.iter().map(|row| {
+                                    self.render_row(row, index, t, base_font, window, cx)
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            }
+            Row::Reasoning { text, .. } => div()
+                .text_size(t.type_scale.secondary)
+                .line_height(t.type_scale.body_line)
+                .text_color(p.color(p.label_secondary))
+                .child(text.clone())
+                .into_any_element(),
             Row::Tool {
                 name,
                 origin,
@@ -6851,6 +7126,11 @@ impl ChatApp {
                         .child(text.clone()),
                 )
                 .into_any_element(),
+            Row::Stopped => div()
+                .text_size(t.type_scale.secondary)
+                .text_color(p.color(p.label_secondary))
+                .child("已停止")
+                .into_any_element(),
         }
     }
 
@@ -6871,7 +7151,11 @@ impl ChatApp {
         let activity = self.activity_open.then(|| {
             self.rows
                 .iter()
-                .filter(|row| matches!(row, Row::Tool { .. } | Row::Meta(_)))
+                .flat_map(|row| match row {
+                    Row::Process(steps) => steps.as_slice(),
+                    row => std::slice::from_ref(row),
+                })
+                .filter(|row| matches!(row, Row::Tool { .. } | Row::Meta(_) | Row::Stopped))
                 .collect::<Vec<_>>()
         });
         let total = activity.as_ref().map_or(self.rows.len(), Vec::len);
@@ -6955,7 +7239,17 @@ impl ChatApp {
         cumulative.push(0.0f32);
         for index in 0..visible {
             let gap = if index == 0 { 0.0 } else { row_gap };
-            let next = cumulative[index] + estimated_row_height(row_at(start + index)) + gap;
+            let row_index = start + index;
+            let height = match row_at(row_index) {
+                Row::Process(steps) if self.open_processes.contains(&row_index) => {
+                    26.0 + steps
+                        .iter()
+                        .map(|step| estimated_row_height(step) + 6.0)
+                        .sum::<f32>()
+                }
+                row => estimated_row_height(row),
+            };
+            let next = cumulative[index] + height + gap;
             cumulative.push(next);
         }
         let total_height = cumulative[visible];
@@ -7063,6 +7357,14 @@ impl ChatApp {
         let call_id_deny = call_id.clone();
         let approvals_allow = self.approvals.clone();
         let approvals_deny = self.approvals.clone();
+        let can_remember = first.supports_always_allow();
+        let saving = self.approval_saving.as_ref() == Some(first);
+        let remember_request = first.clone();
+        let approval_error = self
+            .approval_error
+            .as_ref()
+            .filter(|(request, _)| request == first)
+            .map(|(_, error)| error.clone());
         Some(
             div()
                 .flex()
@@ -7128,16 +7430,21 @@ impl ChatApp {
                                 .text_color(p.color(p.label_tertiary))
                                 .child(preview),
                         )
+                        .when_some(approval_error, |card, error| {
+                            card.child(div().text_size(t.type_scale.small).child(error))
+                        })
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .justify_end()
                                 .gap(px(8.0))
+                                .when(saving, |row| row.opacity(0.5))
                                 .child(
                                     div()
                                         .id("approval-deny")
                                         .role(Role::Button)
+                                        .focusable()
                                         .aria_label("拒绝这次工具调用")
                                         .px(px(12.0))
                                         .py(px(5.0))
@@ -7150,8 +7457,14 @@ impl ChatApp {
                                         .text_color(p.color(p.label_primary))
                                         .child("拒绝")
                                         .on_click(cx.listener(move |this, _, _window, cx| {
+                                            if this.approval_saving.as_ref().is_some_and(
+                                                |request| request.call_id == call_id_deny,
+                                            ) {
+                                                return;
+                                            }
                                             approvals_deny
                                                 .resolve(&call_id_deny, ApprovalOutcome::Deny);
+                                            this.approval_error = None;
                                             this.pending_approvals = 0;
                                             cx.notify();
                                         })),
@@ -7160,24 +7473,73 @@ impl ChatApp {
                                     div()
                                         .id("approval-allow")
                                         .role(Role::Button)
+                                        .focusable()
                                         .aria_label("允许一次工具调用")
                                         .px(px(12.0))
                                         .py(px(5.0))
                                         .rounded(t.radii.sm)
-                                        .bg(p.color(p.button_info))
+                                        .bg(p.color(if can_remember {
+                                            p.button_elevated
+                                        } else {
+                                            p.button_info
+                                        }))
+                                        .when(can_remember, |button| {
+                                            button.border_1().border_color(p.color(p.border_l2))
+                                        })
                                         .cursor_pointer()
                                         .text_size(t.type_scale.small)
-                                        .text_color(p.color(p.bg_base))
+                                        .text_color(p.color(if can_remember {
+                                            p.label_primary
+                                        } else {
+                                            p.bg_base
+                                        }))
                                         .child("允许一次")
                                         .on_click(cx.listener(move |this, _, _window, cx| {
+                                            if this.approval_saving.as_ref().is_some_and(
+                                                |request| request.call_id == call_id_allow,
+                                            ) {
+                                                return;
+                                            }
                                             approvals_allow.resolve(
                                                 &call_id_allow,
                                                 ApprovalOutcome::AllowOnce,
                                             );
+                                            this.approval_error = None;
                                             this.pending_approvals = 0;
                                             cx.notify();
                                         })),
-                                ),
+                                )
+                                .when(can_remember, |actions| {
+                                    actions.child(
+                                        div()
+                                            .id("approval-always")
+                                            .role(Role::Button)
+                                            .focusable()
+                                            .aria_label("始终允许当前会话中的此工具")
+                                            .px(px(12.0))
+                                            .py(px(5.0))
+                                            .rounded(t.radii.sm)
+                                            .bg(p.color(p.button_info))
+                                            .cursor_pointer()
+                                            .text_size(t.type_scale.small)
+                                            .text_color(p.color(p.bg_base))
+                                            .child(if saving {
+                                                "正在保存…"
+                                            } else {
+                                                "始终允许"
+                                            })
+                                            .tooltip(toolbar_tooltip(
+                                                "仅对当前会话中的此工具生效",
+                                                *t,
+                                            ))
+                                            .on_click(cx.listener(move |chat, _, _, cx| {
+                                                chat.allow_tool_always(
+                                                    remember_request.clone(),
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                }),
                         ),
                 )
                 .into_any_element(),
@@ -7185,9 +7547,15 @@ impl ChatApp {
     }
 
     fn toggle_composer_menu(&mut self, menu: ComposerMenu, cx: &mut Context<Self>) {
-        if !self.busy {
+        if !self.busy || menu == ComposerMenu::Permission {
             self.turn_menu_open = false;
-            self.composer_menu = (self.composer_menu != Some(menu)).then_some(menu);
+            let current = match self.composer_menu {
+                Some(ComposerMenu::ModelList | ComposerMenu::Reasoning) => {
+                    Some(ComposerMenu::Model)
+                }
+                current => current,
+            };
+            self.composer_menu = (current != Some(menu)).then_some(menu);
             cx.notify();
         }
     }
@@ -7220,14 +7588,69 @@ impl ChatApp {
         if self.busy || self.model_settings.pending {
             return false;
         }
-        if !Arc::ptr_eq(&model, &self.settings.model) {
+        let reasoning = self
+            .preferences
+            .reasoning
+            .get(&self.model_settings.reasoning_key(&model))
+            .and_then(|value| ReasoningEffort::parse(value))
+            .filter(|effort| model.reasoning_levels().contains(effort));
+        if !Arc::ptr_eq(&model, &self.settings.model) || reasoning != self.settings.reasoning {
             let Ok(mut state) = self.state.try_lock() else {
                 return false;
             };
-            state.set_model(model.clone());
+            state.set_model(model.clone(), reasoning);
             self.settings.model = model;
+            self.settings.reasoning = reasoning;
             self.attachment_error = None;
         }
+        true
+    }
+
+    fn select_reasoning(
+        &mut self,
+        reasoning: Option<ReasoningEffort>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.model_settings.pending {
+            return;
+        }
+        let model = self.settings.model.clone();
+        let Ok(mut state) = self.state.try_lock() else {
+            return;
+        };
+        if reasoning != self.settings.reasoning {
+            state.set_model(model.clone(), reasoning);
+            self.settings.reasoning = reasoning;
+        }
+        drop(state);
+        let key = self.model_settings.reasoning_key(&model);
+        if let Some(effort) = reasoning {
+            self.preferences
+                .reasoning
+                .insert(key, effort.as_str().to_owned());
+        } else {
+            self.preferences.reasoning.remove(&key);
+        }
+        self.save_preferences();
+        self.composer_menu = None;
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    fn reasoning_label(&self) -> &'static str {
+        reasoning_label(
+            self.settings
+                .reasoning
+                .or_else(|| self.settings.model.provider_reasoning()),
+        )
+    }
+
+    fn change_permission(&mut self, permission: PermissionMode) -> bool {
+        if self.permission.mode().is_none() {
+            return false;
+        }
+        self.permission.set(permission);
         true
     }
 
@@ -7237,15 +7660,8 @@ impl ChatApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || self.settings.permission.is_none() {
+        if !self.change_permission(permission) {
             return;
-        }
-        if self.settings.permission != Some(permission) {
-            let Ok(mut state) = self.state.try_lock() else {
-                return;
-            };
-            self.sidecar_reload_pending |= state.set_permission(permission);
-            self.settings.permission = Some(permission);
         }
         self.composer_menu = None;
         self.focus_composer(window, cx);
@@ -7268,7 +7684,9 @@ impl ChatApp {
             .id("composer-options")
             .role(Role::Menu)
             .aria_label(match menu {
-                ComposerMenu::Model => "选择模型",
+                ComposerMenu::Model => "模型和推理等级",
+                ComposerMenu::ModelList => "选择模型",
+                ComposerMenu::Reasoning => "推理等级",
                 ComposerMenu::Permission => "选择工具权限",
                 ComposerMenu::Preset => "选择会话模式",
                 ComposerMenu::Commands => "选择指令",
@@ -7285,8 +7703,84 @@ impl ChatApp {
             .border_color(p.color(p.border_l2))
             .bg(p.color(p.bg_layer_1))
             .shadow_sm();
+        if let Some(label) = match menu {
+            ComposerMenu::ModelList => Some("模型"),
+            ComposerMenu::Reasoning => Some("推理等级"),
+            _ => None,
+        } {
+            options = options.child(
+                chrome_button("model-menu-back", "", t)
+                    .role(Role::MenuItem)
+                    .aria_label("返回模型菜单")
+                    .focusable()
+                    .w_full()
+                    .px(px(9.0))
+                    .gap(px(8.0))
+                    .child(desktop_icon("\u{e76b}", "‹").text_size(px(10.0)))
+                    .child(label)
+                    .on_click(cx.listener(|chat, _, _, cx| {
+                        chat.composer_menu = Some(ComposerMenu::Model);
+                        cx.notify();
+                    })),
+            );
+        }
         match menu {
-            ComposerMenu::Model => {
+            ComposerMenu::Model if !self.settings.model.reasoning_levels().is_empty() => {
+                for (label, value, pane) in [
+                    ("模型", self.settings.model.name(), ComposerMenu::ModelList),
+                    ("推理等级", self.reasoning_label(), ComposerMenu::Reasoning),
+                ] {
+                    options = options.child(
+                        chrome_button(label, label, t)
+                            .role(Role::MenuItem)
+                            .focusable()
+                            .w_full()
+                            .px(px(9.0))
+                            .gap(px(8.0))
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(value.to_owned()),
+                            )
+                            .child(desktop_icon("\u{e76c}", "›").text_size(px(10.0)))
+                            .on_click(cx.listener(move |chat, _, _, cx| {
+                                chat.composer_menu = Some(pane);
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
+            ComposerMenu::Reasoning => {
+                for (index, effort) in std::iter::once(None)
+                    .chain(
+                        self.settings
+                            .model
+                            .reasoning_levels()
+                            .iter()
+                            .copied()
+                            .map(Some),
+                    )
+                    .enumerate()
+                {
+                    options = options.child(
+                        chrome_button(("reasoning-level", index), reasoning_label(effort), t)
+                            .role(Role::MenuItemRadio)
+                            .aria_selected(self.settings.reasoning == effort)
+                            .focusable()
+                            .w_full()
+                            .px(px(9.0))
+                            .justify_between()
+                            .when(self.settings.reasoning == effort, |row| row.child("✓"))
+                            .on_click(cx.listener(move |chat, _, window, cx| {
+                                chat.select_reasoning(effort, window, cx);
+                            })),
+                    );
+                }
+            }
+            ComposerMenu::Model | ComposerMenu::ModelList => {
                 for (index, model) in self.model_options.iter().enumerate() {
                     let option = model.clone();
                     let description = match model.kind() {
@@ -7301,6 +7795,7 @@ impl ChatApp {
                             Arc::ptr_eq(model, &self.settings.model),
                             t,
                         )
+                        .focusable()
                         .when(model.kind() != ModelKind::Mock, |row| {
                             row.aria_label(format!("{}，{description}", model.name()))
                                 .tooltip(toolbar_tooltip(description, *t))
@@ -7338,7 +7833,7 @@ impl ChatApp {
                             ("permission", index),
                             permission_label(mode),
                             description,
-                            self.settings.permission == Some(mode),
+                            self.permission.mode() == Some(mode),
                             t,
                         )
                         .on_click(cx.listener(
@@ -7607,32 +8102,39 @@ impl ChatApp {
         let compact_toolbar = row_width <= px(560.0);
         let model_icon_only = row_width < px(300.0);
         let choosing_command = self.composer_menu == Some(ComposerMenu::Commands);
-        let can_choose_permission = !self.busy && self.settings.permission.is_some();
-        let permission = self
-            .settings
-            .permission
-            .map_or("所有工具需审批", permission_label);
+        let current_permission = self.permission.mode();
+        let can_choose_permission = current_permission.is_some();
+        let permission = current_permission.map_or("所有工具需审批", permission_label);
         let has_models = !self.model_options.is_empty();
         let model = if has_models {
             self.settings.model.name()
         } else {
             "配置模型"
         };
-        let model_label = if has_models {
+        let effort =
+            (!self.settings.model.reasoning_levels().is_empty()).then(|| self.reasoning_label());
+        let model_label = if let Some(effort) = effort {
+            format!("选择模型 · {model} · 推理等级 {effort}")
+        } else if has_models {
             format!("选择模型 · {model}")
         } else {
             "配置模型".to_owned()
         };
         let can_add = !self.busy && self.attachment_load.is_none();
         let model_ready = self.settings.model.is_configured();
-        let can_submit = choosing_command || (model_ready && !self.model_settings.pending);
-        let can_send = self.busy
-            || (can_submit
-                && self.attachment_load.is_none()
-                && (!self.attachments.is_empty()
-                    || !self.input.read(cx).content().trim().is_empty()));
-        let (button_label, button_glyph, button_fallback) = if self.busy {
-            ("停止生成", "\u{e73b}", "■")
+        let can_submit = choosing_command
+            || (model_ready && !self.model_settings.pending && !self.tool_approvals_loading);
+        let stopping = self.busy && self.cancel.load(Ordering::Relaxed);
+        let can_send = !stopping
+            && (self.busy
+                || (can_submit
+                    && self.attachment_load.is_none()
+                    && (!self.attachments.is_empty()
+                        || !self.input.read(cx).content().trim().is_empty())));
+        let (button_label, button_glyph, button_fallback) = if stopping {
+            ("正在停止…", "", "")
+        } else if self.busy {
+            ("停止生成", "", "")
         } else if choosing_command {
             ("运行所选指令", "\u{e768}", "▶")
         } else if !model_ready {
@@ -7705,7 +8207,13 @@ impl ChatApp {
                         chat.toggle_composer_menu(ComposerMenu::Permission, cx);
                     }))
             });
-        let model_open = self.composer_menu == Some(ComposerMenu::Model);
+        let model_menu = self.composer_menu.filter(|menu| {
+            matches!(
+                menu,
+                ComposerMenu::Model | ComposerMenu::ModelList | ComposerMenu::Reasoning
+            )
+        });
+        let model_open = model_menu.is_some();
         let model_picker = div()
             .id("model-picker")
             .flex()
@@ -7724,13 +8232,22 @@ impl ChatApp {
                 button.child(desktop_icon("\u{e950}", "◇"))
             })
             .when(!model_icon_only, |button| {
-                button.child(
-                    div()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(model.to_owned()),
-                )
+                button
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(model.to_owned()),
+                    )
+                    .when_some(effort, |button, effort| {
+                        button.child(
+                            div()
+                                .flex_none()
+                                .text_color(p.color(p.label_caption))
+                                .child(effort),
+                        )
+                    })
             })
             .when(!self.busy && !self.model_settings.pending, |button| {
                 button
@@ -7742,7 +8259,7 @@ impl ChatApp {
                     .focusable()
                     .cursor_pointer()
                     .hover(|style| style.bg(p.color(p.interactive_hover)))
-                    .when(has_models || model_icon_only, |button| {
+                    .when(!model_open && (has_models || model_icon_only), |button| {
                         button.tooltip(toolbar_tooltip(model_label, *t))
                     })
                     .on_click(cx.listener(move |chat, _, window, cx| {
@@ -7801,11 +8318,20 @@ impl ChatApp {
             .child(div().flex_1().min_w(px(0.0)))
             .child(popover::attach_dismissible(
                 model_picker,
-                menu(ComposerMenu::Model, cx),
+                model_menu.and_then(|kind| menu(kind, cx)),
                 gpui::Anchor::TopRight,
                 gpui::Anchor::BottomRight,
                 cx.listener(Self::dismiss_composer_menu),
             ))
+            .when(stopping, |toolbar| {
+                toolbar.child(
+                    div()
+                        .flex_none()
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(p.label_secondary))
+                        .child("正在停止…"),
+                )
+            })
             .child(
                 div()
                     .id("send-button")
@@ -7819,13 +8345,18 @@ impl ChatApp {
                     .rounded_full()
                     .bg(p.color(p.button_info))
                     .text_color(gpui::white())
-                    .child(desktop_icon(button_glyph, button_fallback).text_size(px(16.0)))
+                    .child(if self.busy {
+                        div().size(px(10.0)).rounded(px(3.0)).bg(gpui::white())
+                    } else {
+                        desktop_icon(button_glyph, button_fallback).text_size(px(16.0))
+                    })
                     .when(!can_send, |button| button.opacity(0.4))
                     .when(can_send, |button| {
                         button
                             .focusable()
                             .cursor_pointer()
                             .hover(|style| style.bg(p.color(p.button_info_hover)))
+                            .tooltip(toolbar_tooltip(button_label, *t))
                             .on_click(
                                 cx.listener(|chat, _, window, cx| chat.button_click(window, cx)),
                             )
@@ -8070,6 +8601,12 @@ enum Row {
         attachments: Vec<UserAttachment>,
     },
     Assistant(String),
+    Streaming(String),
+    Process(Vec<Row>),
+    Reasoning {
+        text: String,
+        streaming: bool,
+    },
     Tool {
         name: String,
         origin: String,
@@ -8081,13 +8618,16 @@ enum Row {
         card: Option<ToolCard>,
     },
     Meta(String),
+    Stopped,
 }
 
 impl Row {
     fn main_text(&self) -> String {
         match self {
             Self::User { text, .. } => format!("你 · {text}"),
-            Self::Assistant(text) => format!("助手 · {text}"),
+            Self::Assistant(text) | Self::Streaming(text) => format!("助手 · {text}"),
+            Self::Process(_) => "思考过程".to_owned(),
+            Self::Reasoning { text, .. } => text.clone(),
             Self::Tool {
                 name,
                 origin,
@@ -8095,6 +8635,7 @@ impl Row {
                 ..
             } => format!("工具 · {name} [{origin}] · {status}"),
             Self::Meta(text) => text.clone(),
+            Self::Stopped => "已停止".to_owned(),
         }
     }
 
@@ -8106,9 +8647,8 @@ impl Row {
     }
 }
 
-/// 判断一行是否是"正在生成的助手回复"（以光标块结尾）。
 fn is_streaming_row(row: &Row) -> bool {
-    matches!(row, Row::Assistant(text) if text.contains('▌'))
+    matches!(row, Row::Streaming(_))
 }
 
 fn turn_preview(row: &Row) -> Option<&str> {
@@ -8161,9 +8701,9 @@ fn estimated_row_height(row: &Row) -> f32 {
                 .sum();
             text_height + attachment_height
         }
-        Row::Assistant(text) => {
+        Row::Assistant(text) | Row::Streaming(text) => {
             let chars = text.chars().count() as f32;
-            let actions = if text.ends_with('▌') {
+            let actions = if is_streaming_row(row) {
                 22.0
             } else if text.is_empty() {
                 0.0
@@ -8176,13 +8716,18 @@ fn estimated_row_height(row: &Row) -> f32 {
             let chars = detail.chars().count() as f32;
             46.0 + (chars / 60.0).ceil() * 18.0
         }
-        Row::Meta(_) => 30.0,
+        Row::Process(_) => 26.0,
+        Row::Reasoning { text, .. } => text
+            .lines()
+            .map(|line| (line.chars().count() as f32 / 42.0).ceil().max(1.0) * LINE)
+            .sum(),
+        Row::Meta(_) | Row::Stopped => 30.0,
     }
 }
 
 fn streaming_text(row: &Row) -> &str {
     match row {
-        Row::Assistant(text) => text,
+        Row::Streaming(text) => text,
         _ => "",
     }
 }
@@ -8194,6 +8739,11 @@ fn describe(item: &Item) -> Row {
             attachments: attachments.clone(),
         },
         Item::Assistant { text } => Row::Assistant(text.clone()),
+        Item::Reasoning(text) => Row::Reasoning {
+            text: text.clone(),
+            streaming: false,
+        },
+        Item::Stopped => Row::Stopped,
         Item::Tool(tool) => {
             let (status, pending) = match &tool.state {
                 ToolState::Pending => ("运行中".to_owned(), true),
@@ -8285,11 +8835,55 @@ impl ChatApp {
 ///
 /// 快照而不是增量：UI 只做覆盖，不用维护事件合并逻辑，也不会因为丢一条消息就错位。
 fn rows_snapshot(log: &SessionLog, streaming: Option<&str>) -> Vec<Row> {
-    let mut rows: Vec<Row> = build_from_log(log).iter().map(describe).collect();
-    if let Some(text) = streaming {
-        rows.push(Row::Assistant(format!("{text}▌")));
+    rows_with_preview(log, streaming, None)
+}
+
+fn rows_with_preview(
+    log: &SessionLog,
+    streaming: Option<&str>,
+    reasoning: Option<&str>,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut steps = Vec::new();
+    for item in build_from_log(log) {
+        let row = describe(&item);
+        if matches!(row, Row::Tool { .. } | Row::Reasoning { .. }) {
+            steps.push(row);
+        } else {
+            if !steps.is_empty() {
+                rows.push(Row::Process(std::mem::take(&mut steps)));
+            }
+            rows.push(row);
+        }
+    }
+    if let Some(text) = reasoning.filter(|text| !text.is_empty()) {
+        steps.push(Row::Reasoning {
+            text: text.to_owned(),
+            streaming: true,
+        });
+    }
+    if !steps.is_empty() {
+        rows.push(Row::Process(steps));
+    }
+    if let Some(text) = streaming.filter(|text| !text.is_empty()) {
+        rows.push(Row::Streaming(text.to_owned()));
     }
     rows
+}
+
+fn record_reasoning(
+    log: &mut SessionLog,
+    timestamp: &str,
+    reasoning: &mut String,
+) -> Result<(), dshr_session_store::LogError> {
+    if !reasoning.is_empty() {
+        log.append(EventSpec::durable(
+            "message.assistant.reasoning",
+            timestamp,
+            json!({ "text": std::mem::take(reasoning) }),
+        ))?;
+    }
+    Ok(())
 }
 
 impl Render for ChatApp {
@@ -8578,6 +9172,7 @@ fn selftest() -> i32 {
             self.0 = !self.0;
             if self.0 {
                 Ok(ModelReply {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: vec![ModelToolCall {
                         id: RAW_ID.to_owned(),
@@ -11906,6 +12501,7 @@ impl ModelProvider for RepeatProbeProvider {
             return Ok(ModelReply::text_only("done"));
         }
         Ok(ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: vec![ModelToolCall {
                 id: format!("repeat-{executed}"),
@@ -12478,11 +13074,13 @@ impl ModelProvider for FlakyProvider {
         let saw_tool_result = matches!(request.messages.last(), Some(ChatMessage::Tool { .. }));
         if saw_tool_result {
             Ok(dshr_agent_core::ModelReply {
+                reasoning: String::new(),
                 text: format!("ok-{call}"),
                 tool_calls: Vec::new(),
             })
         } else {
             Ok(dshr_agent_core::ModelReply {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: vec![dshr_agent_core::ModelToolCall {
                     id: format!("call-{call}"),
@@ -13080,8 +13678,10 @@ fn selftest_parallel_tools() -> i32 {
         log: log_cell.clone(),
         sessions_dir: &state.sessions_dir,
         parent_id: "s-parallel",
+        workspace: &state.workspace,
         cancel: &cancel,
         settings: &state.settings,
+        permission: &state.permission,
         preset_inputs: &state.preset_inputs,
         published_presets: &mut state.published_presets,
         allow_spawn: false,
@@ -13548,7 +14148,16 @@ fn main() {
         // external-process 面板也在这里取一次树（之后渲染只读缓存）。
         guard.refresh_adc_panels();
     }
-    let (rows, plugin_errors, adc_panels, active_workspace, creator_mode, active_preset, blank_root) = {
+    let (
+        rows,
+        plugin_errors,
+        adc_panels,
+        active_workspace,
+        creator_mode,
+        active_preset,
+        blank_root,
+        permission,
+    ) = {
         let guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -13560,6 +14169,7 @@ fn main() {
             creator::is_creator_session(&guard.log),
             guard.log.created().and_then(|created| created.preset.clone()),
             blank_root_created(&guard.log).is_some(),
+            guard.permission.clone(),
         )
     };
 
@@ -13631,12 +14241,15 @@ fn main() {
                             preset_notice: None,
                             state,
                             rows,
+                            open_processes: Default::default(),
+                            copied_message: None,
                             input: input.clone(),
                             scroll: ScrollHandle::new(),
                             message_selection: MessageSelection::new(cx.focus_handle()),
                             activity_open: false,
                             activity_scroll,
                             settings,
+                            permission,
                             model_options,
                             model_settings,
                             composer_menu: None,
@@ -13682,6 +14295,9 @@ fn main() {
                             pending_delete: None,
                             approvals,
                             pending_approvals: 0,
+                            approval_error: None,
+                            approval_saving: None,
+                            tool_approvals_loading: false,
                             profile,
                             plugins_open: false,
                             plugin_focus: cx.focus_handle(),
@@ -13728,7 +14344,9 @@ fn main() {
                     window.invalidate_character_coordinates();
                     // 调试钩子：绕过输入法/鼠标，直接发一条消息（验证审批卡片等）。
                     let autosend = std::env::var("DSHR_UI_AUTOSEND").ok();
-                    app.update(cx, |chat, cx| chat.load_model_settings(autosend, window, cx));
+                    app.update(cx, |chat, cx| {
+                        chat.load_tool_approvals(autosend, window, cx)
+                    });
                     app
                 },
             )
@@ -13999,6 +14617,7 @@ mod tests {
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::DangerFullAccess),
+                reasoning: None,
             },
             ChatRuntime::Desktop { allow_spawn: false, sidecar: false, diagnostics: true },
         );
@@ -14090,6 +14709,7 @@ mod tests {
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::ReadOnly),
+                reasoning: None,
             },
         );
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -14196,6 +14816,7 @@ mod tests {
                 DesktopSettings {
                     model: Arc::new(DesktopModel::Mock),
                     permission: Some(PermissionMode::ReadOnly),
+                    reasoning: None,
                 },
             );
             state.spill = SpillStore::new(root.join("blobs"));
@@ -14304,13 +14925,13 @@ mod tests {
     }
 
     #[test]
-    fn permission_change_reauthorizes_tools_and_renegotiates_write_access() {
+    fn permission_changes_are_visible_without_the_chat_state_lock() {
         let root = std::env::temp_dir().join(format!(
             "dshr-permission-test-{}",
             now_ts().replace(':', "-")
         ));
         let approvals = ApprovalBroker::new();
-        let mut state = ChatState::open_in(
+        let state = Mutex::new(ChatState::open_in(
             root.join("test.jsonl"),
             "test",
             &Arc::new(AtomicBool::new(false)),
@@ -14318,32 +14939,116 @@ mod tests {
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::WorkspaceWrite),
+                reasoning: None,
             },
             ChatRuntime::Desktop { allow_spawn: false, sidecar: false, diagnostics: true },
-        );
+        ));
+        let permission = state.lock().unwrap().permission.clone();
+        let state = state.lock().unwrap();
         let args = json!({ "path": "probe.txt", "content": "fixture" });
         assert!(matches!(
             state.plugins.registry().authorize("probe_write", &args),
             Err(RegistryError::NeedsApproval { .. })
         ));
-        assert!(state.set_permission(PermissionMode::ReadOnly));
+        permission.set(PermissionMode::ReadOnly);
         assert!(matches!(
             state.plugins.registry().authorize("probe_write", &args),
             Err(RegistryError::Denied { .. })
         ));
-        assert!(state.settings.write_approvals(&approvals).is_none());
-        assert!(state.set_permission(PermissionMode::WorkspaceWrite));
-        assert!(!state.set_permission(PermissionMode::DangerFullAccess));
+        assert!(!permission.can_write());
+        permission.set(PermissionMode::DangerFullAccess);
         assert!(state
             .plugins
             .registry()
             .authorize("probe_write", &args)
             .is_ok());
-        assert!(state.settings.write_approvals(&approvals).is_some());
+        assert!(permission.can_write());
         drop(state);
         SessionIndex::new(&root).delete("test").unwrap();
         std::fs::remove_file(root.join("test.jsonl.lock")).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn always_allow_keys_scope_the_tool_to_its_workspace_and_session() {
+        let workspace = Path::new("workspace");
+        let tool = ToolDefinition::new(
+            "write",
+            "test",
+            ToolOrigin::Native {
+                plugin_id: "fixture".to_owned(),
+            },
+        );
+        let key = tool_approval_key("session-a", workspace, &tool);
+        assert!(key.is_some());
+        assert_ne!(key, tool_approval_key("session-b", workspace, &tool));
+        assert_ne!(
+            key,
+            tool_approval_key("session-a", Path::new("other"), &tool)
+        );
+        let new_schema = tool.clone().with_schema(json!({ "type": "object" }));
+        assert_ne!(key, tool_approval_key("session-a", workspace, &new_schema));
+        let other_provider = ToolDefinition::new(
+            "write",
+            "test",
+            ToolOrigin::Native {
+                plugin_id: "other".to_owned(),
+            },
+        );
+        assert_ne!(
+            key,
+            tool_approval_key("session-a", workspace, &other_provider)
+        );
+    }
+
+    #[test]
+    fn reasoning_and_consecutive_tool_calls_replay_as_one_process() {
+        let mut log = SessionLog::new("process");
+        let ts = now_ts();
+        for (kind, payload) in [
+            (
+                "message.user",
+                json!({ "message_id": "u", "text": "question" }),
+            ),
+            (
+                "message.assistant.reasoning",
+                json!({ "text": "check both" }),
+            ),
+            ("tool.call", json!({ "call_id": "a", "tool": "read" })),
+            ("tool.call", json!({ "call_id": "b", "tool": "read" })),
+            ("tool.result", json!({ "call_id": "a", "content": [] })),
+            ("tool.result", json!({ "call_id": "b", "content": [] })),
+            (
+                "message.assistant.reasoning",
+                json!({ "text": "summarize" }),
+            ),
+            (
+                "message.assistant.settled",
+                json!({ "message_id": "a", "text": "answer" }),
+            ),
+        ] {
+            log.append(EventSpec::durable(kind, &ts, payload)).unwrap();
+        }
+        let rows = rows_snapshot(&log, None);
+        assert!(matches!(
+            rows.as_slice(),
+            [Row::User { .. }, Row::Process(steps), Row::Assistant(text)]
+                if text == "answer" && matches!(steps.as_slice(), [
+                    Row::Reasoning { text: first, streaming: false },
+                    Row::Tool { pending: false, .. }, Row::Tool { pending: false, .. },
+                    Row::Reasoning { text: last, streaming: false },
+                ] if first == "check both" && last == "summarize")
+        ));
+        let history = history_from_log(&log);
+        assert!(matches!(
+            history.as_slice(),
+            [
+                ChatMessage::User(_),
+                ChatMessage::Assistant { reasoning: first, tool_calls, .. },
+                ChatMessage::Tool { .. }, ChatMessage::Tool { .. },
+                ChatMessage::Assistant { reasoning: last, text, .. },
+            ] if first == "check both" && tool_calls.len() == 2 && last == "summarize" && text == "answer"
+        ));
     }
 
     fn args(values: &[&str]) -> Vec<String> {

@@ -111,6 +111,7 @@ fn run_live_creator(with_panel: bool) {
         DesktopSettings {
             model: Arc::new(DesktopModel::DeepSeek(model)),
             permission: Some(PermissionMode::WorkspaceWrite),
+            reasoning: None,
         },
     );
     if managed {

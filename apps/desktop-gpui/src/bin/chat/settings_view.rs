@@ -5,6 +5,7 @@ use super::{
 use gpui::prelude::*;
 use gpui::{deferred, div, px, rgba, AnyElement, Context, FontWeight, Role, Window};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use super::runtime_components::{self, Component};
@@ -31,6 +32,7 @@ pub(super) struct Preferences {
     pub(super) theme: ThemeKind,
     pub(super) model: Option<String>,
     pub(super) model_connection: Option<super::model_settings::ConnectionId>,
+    pub(super) reasoning: BTreeMap<String, String>,
     permission: Option<PermissionMode>,
 }
 
@@ -50,6 +52,7 @@ impl Preferences {
             },
             model: data["model"].as_str().map(str::to_owned),
             model_connection: serde_json::from_value(data["model_connection"].clone()).ok(),
+            reasoning: serde_json::from_value(data["reasoning"].clone()).unwrap_or_default(),
             permission: data["permission"].as_str().and_then(PermissionMode::parse),
         }
     }
@@ -73,6 +76,7 @@ impl Preferences {
             "theme": if self.theme == ThemeKind::Dark { "dark" } else { "light" },
             "model": self.model,
             "model_connection": self.model_connection,
+            "reasoning": self.reasoning,
             "permission": self.permission.map(PermissionMode::as_str),
         });
         save_atomic(&self.path, data.to_string().as_bytes())
@@ -357,8 +361,8 @@ impl ChatApp {
                 .child(container().child(heading("工具权限")).children(
                     EDITABLE_PERMISSIONS.iter().enumerate().map(
                         |(index, &(permission, description))| {
-                            let selected = self.settings.permission == Some(permission);
-                            let editable = !self.busy && self.settings.permission.is_some();
+                            let selected = self.permission.mode() == Some(permission);
+                            let editable = self.permission.mode().is_some();
                             chrome_button(("settings-permission", index), "", t)
                                 .aria_label(permission_label(permission))
                                 .aria_selected(selected)
@@ -385,12 +389,7 @@ impl ChatApp {
                                 .when(editable, |button| {
                                     button.focusable().on_click(cx.listener(
                                         move |chat, _, _, cx| {
-                                            if let Ok(mut state) = chat.state.try_lock() {
-                                                chat.sidecar_reload_pending |=
-                                                    state.set_permission(permission);
-                                                chat.settings.permission = Some(permission);
-                                            }
-                                            if chat.settings.permission == Some(permission) {
+                                            if chat.change_permission(permission) {
                                                 chat.preferences.permission = Some(permission);
                                                 chat.save_preferences();
                                                 cx.notify();

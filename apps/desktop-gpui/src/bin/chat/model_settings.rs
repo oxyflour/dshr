@@ -8,6 +8,7 @@ use gpui::{div, px, relative, AnyElement, Context, Div, Entity, Focusable, FontW
 use ring::digest::{digest, SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -254,6 +255,23 @@ impl ModelSettings {
         } else {
             "环境配置"
         }
+    }
+
+    pub(super) fn reasoning_key(&self, model: &Arc<DesktopModel>) -> String {
+        if let Some((id, _)) = self.saved_entry(model) {
+            return format!("saved:{}", id.key());
+        }
+        let endpoint = match model.as_ref() {
+            DesktopModel::DeepSeek(provider) => provider.base_url(),
+            DesktopModel::OpenAi(provider) => provider.base_url(),
+            _ => "",
+        };
+        json!([
+            model.kind().label(),
+            endpoint.trim_end_matches('/'),
+            model.name()
+        ])
+        .to_string()
     }
 
     pub(super) fn close_editor(&mut self) {

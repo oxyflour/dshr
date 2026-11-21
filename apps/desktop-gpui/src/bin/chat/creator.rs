@@ -312,8 +312,8 @@ pub(super) struct TrialScope {
 }
 
 impl TrialScope {
-    pub(super) fn new(settings: &super::DesktopSettings, workspace: &Path) -> Self {
-        let mut plugins = PluginHost::new(settings.approval_policy());
+    pub(super) fn new(permission: super::LivePermission, workspace: &Path) -> Self {
+        let mut plugins = PluginHost::new(permission);
         let result = super::WorkspaceWritePlugin::new(
             workspace,
             WRITE_FILE_TOOL,
@@ -604,6 +604,7 @@ mod tests {
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::DangerFullAccess),
+                reasoning: None,
             },
         )
     }
@@ -772,6 +773,7 @@ mod tests {
                     return Ok(ModelReply::text_only("已生成预览"));
                 }
                 Ok(ModelReply {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: vec![ModelToolCall {
                         id: "preview".to_owned(),
@@ -836,10 +838,10 @@ entry = "plugin.wasm"
         let broker = ApprovalBroker::new();
         let mut state = state(root.path(), broker.clone());
         let try_plugin = call(TRY_PLUGIN_TOOL, json!({ "path": "plugin" }));
-        state.settings.permission = Some(PermissionMode::ReadOnly);
+        state.permission.set(PermissionMode::ReadOnly);
         assert!(state.execute_tool(&try_plugin).is_error);
         assert!(broker.take_records().is_empty());
-        state.settings.permission = Some(PermissionMode::DangerFullAccess);
+        state.permission.set(PermissionMode::DangerFullAccess);
         assert!(
             state
                 .execute_tool(&call(TRY_PLUGIN_TOOL, json!({ "path": "../plugin" })))
@@ -1006,7 +1008,14 @@ entry = "plugin.wasm"
         let created = SessionCreated::root(second_workspace.to_string_lossy()).with_preset(PRESET);
         store.create_with_created("second", &created, "1").unwrap();
         for (id, count) in [("creator", 0), ("second", 100)] {
-            let mut scope = TrialScope::new(&state.settings, if id == "creator" { root.path() } else { &second_workspace });
+            let mut scope = TrialScope::new(
+                state.permission.clone(),
+                if id == "creator" {
+                    root.path()
+                } else {
+                    &second_workspace
+                },
+            );
             scope.plugins.load(Box::new(Counter(count))).unwrap();
             state.creator_trials.insert(id.to_owned(), scope);
         }
@@ -1046,14 +1055,14 @@ entry = "plugin.wasm"
         let mut state = state(root.path(), ApprovalBroker::noninteractive());
         let target = "hello-world/src/main.rs";
         assert!(!root.path().join("hello-world").exists());
-        state.set_permission(PermissionMode::ReadOnly);
+        state.permission.set(PermissionMode::ReadOnly);
         let request = call(
             WRITE_FILE_TOOL,
             json!({ "path": target, "content": "fn main() {}" }),
         );
         assert!(state.execute_tool(&request).is_error);
         assert!(!root.path().join("hello-world").exists());
-        state.set_permission(PermissionMode::DangerFullAccess);
+        state.permission.set(PermissionMode::DangerFullAccess);
         let result = state.execute_tool(&request);
         assert!(!result.is_error, "{:?}", result.content);
         assert_eq!(
@@ -1146,6 +1155,7 @@ entry = "plugin.wasm"
                     }
                 };
                 Ok(ModelReply {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls,
                 })
@@ -1224,6 +1234,7 @@ entry = "plugin.wasm"
             DesktopSettings {
                 model: Arc::new(DesktopModel::Mock),
                 permission: Some(PermissionMode::DangerFullAccess),
+                reasoning: None,
             },
         );
         state.preset_inputs = Some((bundle.clone(), vec![]));

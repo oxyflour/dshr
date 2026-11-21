@@ -296,6 +296,7 @@ pub enum ChatMessage {
         attachments: Vec<MediaAttachment>,
     },
     Assistant {
+        reasoning: String,
         text: String,
         tool_calls: Vec<ModelToolCall>,
     },
@@ -481,6 +482,7 @@ impl CompletionRequest {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelReply {
+    pub reasoning: String,
     pub text: String,
     /// 一次回复可以有多个工具调用（OpenAI 的 parallel tool calls）。
     pub tool_calls: Vec<ModelToolCall>,
@@ -489,10 +491,16 @@ pub struct ModelReply {
 impl ModelReply {
     pub fn text_only(text: impl Into<String>) -> Self {
         Self {
+            reasoning: String::new(),
             text: text.into(),
             tool_calls: Vec::new(),
         }
     }
+}
+
+pub enum ModelDelta<'a> {
+    Text(&'a str),
+    Reasoning(&'a str),
 }
 
 pub trait ModelProvider: Send {
@@ -523,6 +531,14 @@ pub trait ModelProvider: Send {
         }
         Ok(reply)
     }
+
+    fn complete_streaming_with_reasoning(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(ModelDelta<'_>),
+    ) -> Result<ModelReply, String> {
+        self.complete_streaming(request, &mut |text| on_delta(ModelDelta::Text(text)))
+    }
 }
 
 /// 让 `Agent<Box<dyn ModelProvider>>` 成为可用类型（运行时选择 provider）。
@@ -542,6 +558,14 @@ impl ModelProvider for Box<dyn ModelProvider> {
     ) -> Result<ModelReply, String> {
         (**self).complete_streaming(request, on_delta)
     }
+
+    fn complete_streaming_with_reasoning(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(ModelDelta<'_>),
+    ) -> Result<ModelReply, String> {
+        (**self).complete_streaming_with_reasoning(request, on_delta)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -554,6 +578,7 @@ pub enum AgentEvent {
         step: u32,
     },
     TextDelta(String),
+    ReasoningDelta(String),
     ToolCall(ToolCallRequest),
     ToolResult {
         call_id: String,
@@ -767,16 +792,24 @@ impl<P: ModelProvider> Agent<P> {
 
             // provider 边流边回调；这里只负责把 delta 转成事件并累计全文。
             let mut streamed_any = false;
+            let mut streamed_reasoning = false;
             let reply = {
-                let mut forward = |delta: &str| {
-                    if delta.is_empty() {
-                        return;
+                let mut forward = |delta: ModelDelta<'_>| match delta {
+                    ModelDelta::Text(delta) if !delta.is_empty() => {
+                        streamed_any = true;
+                        text.push_str(delta);
+                        on_event(&AgentEvent::TextDelta(delta.to_owned()));
                     }
-                    streamed_any = true;
-                    text.push_str(delta);
-                    on_event(&AgentEvent::TextDelta(delta.to_owned()));
+                    ModelDelta::Reasoning(delta) if !delta.is_empty() => {
+                        streamed_reasoning = true;
+                        on_event(&AgentEvent::ReasoningDelta(delta.to_owned()));
+                    }
+                    _ => {}
                 };
-                match self.provider.complete_streaming(&request, &mut forward) {
+                match self
+                    .provider
+                    .complete_streaming_with_reasoning(&request, &mut forward)
+                {
                     Ok(reply) => reply,
                     Err(err) => {
                         // provider 在取消后返回 Err（如 openai 非流式的 cancelled）不算失败：
@@ -793,6 +826,9 @@ impl<P: ModelProvider> Agent<P> {
                 }
             };
 
+            if !streamed_reasoning && !reply.reasoning.is_empty() {
+                on_event(&AgentEvent::ReasoningDelta(reply.reasoning.clone()));
+            }
             // provider 没走流式（或实现有 bug 只返回值）：补发一次，保证 UI 不空白。
             if !streamed_any && !reply.text.is_empty() {
                 text.push_str(&reply.text);
@@ -802,6 +838,7 @@ impl<P: ModelProvider> Agent<P> {
             // 无论有没有工具调用，assistant 这一步都要进历史（协议要求配对）。
             if !reply.text.is_empty() || !reply.tool_calls.is_empty() {
                 messages.push(ChatMessage::Assistant {
+                    reasoning: reply.reasoning,
                     text: reply.text.clone(),
                     tool_calls: reply.tool_calls.clone(),
                 });
@@ -1031,6 +1068,7 @@ impl ModelProvider for MockProvider {
                 .any(|spec| spec.name == "spawn_child")
         {
             return Ok(ModelReply {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: vec![ModelToolCall {
                     id: format!("mock-call-spawn-{}", request.messages.len()),
@@ -1074,6 +1112,7 @@ impl ModelProvider for MockProvider {
 /// 构造一个工具调用。id 用消息条数做序号：同一轮内唯一、跨轮不冲突。
 fn tool_reply(request: &CompletionRequest, name: &str, user_text: &str) -> ModelReply {
     ModelReply {
+        reasoning: String::new(),
         text: String::new(),
         tool_calls: vec![ModelToolCall {
             id: format!("mock-call-{}-{name}", request.messages.len()),
@@ -1224,6 +1263,7 @@ mod tests {
                 return Ok(ModelReply::text_only("done"));
             }
             Ok(ModelReply {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: (0..self.per_reply)
                     .map(|call| ModelToolCall {
@@ -1794,6 +1834,7 @@ mod tests {
                 self.token.store(true, Ordering::Relaxed);
             }
             Ok(ModelReply {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: (0..self.per_reply)
                     .map(|call| ModelToolCall {
@@ -2105,6 +2146,7 @@ mod tests {
             messages: vec![
                 ChatMessage::user("跑一下工具"),
                 ChatMessage::Assistant {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: vec![ModelToolCall {
                         id: "c1".to_owned(),
@@ -2117,6 +2159,7 @@ mod tests {
                     content: "旧结果".to_owned(),
                 },
                 ChatMessage::Assistant {
+                    reasoning: String::new(),
                     text: "做完了".to_owned(),
                     tool_calls: Vec::new(),
                 },
@@ -2137,6 +2180,7 @@ mod tests {
         let history = vec![
             ChatMessage::user("我叫小张"),
             ChatMessage::Assistant {
+                reasoning: String::new(),
                 text: "记住了".to_owned(),
                 tool_calls: Vec::new(),
             },
@@ -2157,6 +2201,7 @@ mod tests {
     #[test]
     fn assistant_tool_calls_and_tool_role_are_paired_by_id() {
         let script = vec![ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: vec![ModelToolCall {
                 id: "call-abc".to_owned(),
@@ -2176,7 +2221,7 @@ mod tests {
         assert_eq!(second.len(), 3);
         assert!(matches!(
             &second[1],
-            ChatMessage::Assistant { text, tool_calls }
+            ChatMessage::Assistant { text, tool_calls, .. }
                 if text.is_empty() && tool_calls.len() == 1 && tool_calls[0].id == "call-abc"
         ));
         assert!(matches!(
@@ -2189,6 +2234,7 @@ mod tests {
     #[test]
     fn multiple_tool_calls_in_one_reply_are_all_executed() {
         let script = vec![ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: vec![
                 ModelToolCall {
@@ -2238,6 +2284,7 @@ mod tests {
         }
 
         let script = vec![ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: vec![ModelToolCall {
                 id: "c1".to_owned(),
@@ -2312,6 +2359,7 @@ mod tests {
 
     fn repeated_calls(count: usize, arguments: Value) -> ModelReply {
         ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: (0..count)
                 .map(|index| ModelToolCall {
@@ -2371,6 +2419,7 @@ mod tests {
             })
             .collect();
         let script = vec![ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: calls,
         }];
@@ -2393,6 +2442,7 @@ mod tests {
             })
             .collect();
         let script = vec![ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: calls,
         }];

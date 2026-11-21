@@ -19,6 +19,7 @@
 | 用户设置（0.2.2-rc.5） | `dsh-client-ui-settings-general/src/client/SettingsRoot.tsx` | 左下角入口、居中模态、分类导航 |
 | 新会话模式（0.2.2-rc.5） | `dsh-client-ui-agent-preset/src/client/AgentPresetSeat.tsx`、`seat-store.ts` | 工作区旁选择模式，首轮前允许改选 |
 | 模型设置（0.2.2-rc.5） | `dsh-client-ui-settings-models/src/client/ModelsSection.tsx`、`ProviderEditor.tsx`、`ApiKeyInput.tsx`、`ModelListEditor.tsx` | 连接列表、新增模型、就地编辑与掩码密钥输入 |
+| 对话交互（0.2.2-rc.5） | `dsh-client-ui-chat/src/client/chat/TurnProcessNodeView.tsx`、`ReasoningRow.tsx`、`MessageIconActions.tsx`，`dsh-client-ui-model-selection/src/client/ModelSelect.tsx`，`dsh-client-ui-conversation/src/client/skeleton/InputBar.tsx` | 过程折叠、推理等级、停止图标、生成中权限选择和复制反馈 |
 
 提取步骤（可复现）：
 
@@ -42,8 +43,8 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
 | 输入卡片 | 同尺寸桌面窗口实测约 713 px，圆角 28 | 桌面目标宽 712 px，窄窗随内容收缩 |
 | 发送键 | 34×34 圆形、向上箭头 | 圆形图标键，发送、停止与执行指令沿用现有操作 |
 | 用户消息 | 右对齐气泡、深蓝 50 底、圆角 16、最宽 70.2% 内容宽 | `bubble` + `radii.lg` |
-| 消息操作 | `0.2.2-rc.5` 的 `MessageIconActions.module.css` 支持按消息状态在悬停或聚焦时显示操作行 | 用户消息和已完成的助手回复在悬停或复制键获得键盘焦点时显示复制 |
-| 工具调用 | 圆角 8 的紧凑行 + 来源标签 + 状态色 | 工具卡片行 |
+| 消息操作 | 悬停或聚焦时显示操作行，复制后显示勾选 | 用户消息和已完成的助手回复支持复制原文并短暂显示勾选反馈 |
+| 思考与工具调用 | 过程可展开，工具行显示状态 | 连续工具调用与推理文本默认收起，展开后可查看工具卡片，轨迹页可直接查看工具调用 |
 | 头部 | `min-height: 76px`、会话标题、下划线标签页 | 会话标题、下划线标签页和带提示的工具栏图标 |
 | 字体/行高 | 正文 14/24、secondary 13/20、small 12/18 | `Typography::DSH` |
 | 消息正文 | Markdown（标题/列表/表格/代码块/引用/行内样式） | `ui-gpui::markdown` 子集渲染：标题 h1–h4、段落、粗体/斜体/行内代码/链接、围栏代码块、列表、引用、表格、分隔线 |
@@ -57,6 +58,7 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
 - 新会话输入卡上方的模式菜单紧邻工作区选择器。标准模式、创造模式和已发布的其他可用预设可在首轮前改选，保留会话和草稿。输入区继续使用 dshr 的菜单样式。[模式与绑定](spec/agent-presets.md)
 - 左下角「设置」打开本地设置，侧栏折叠时保留齿轮入口。通用和模型页保存外观、工具权限和模型选择，插件页提供管理入口。
 - 模型页可在已有 OpenAI 兼容连接上沿用同一服务的密钥来添加模型，也可填写独立连接。输入区菜单用 API 根地址区分同名模型。见[桌面模型连接设置](plan/desktop-model-settings.md)。
+- 对话过程、模型推理等级、生成中权限、停止与复制的发布窗口验收见[桌面对话交互对齐](plan/desktop-conversation-alignment.md)。
 
 ## 未对齐（明确边界）
 
@@ -68,10 +70,10 @@ node tools/asar.mjs cat dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/cl
    会话置顶、按时间分组、跨会话正文搜索待实现。
    会话操作见 [`m2-sessions.md`](m2-sessions.md)。
 3. **聊天与输入区**：顶部有「对话」「轨迹」和插件面板入口。输入区可切换本机配置的模型
-   和工具权限，设置作用于当前窗口后续轮次及派发的子会话。没有可用模型时，「配置模型」直达模型设置。
+   和推理等级。生成中可更改工具权限，新授权和派发的子会话读取当前值。没有可用模型时，「配置模型」直达模型设置。
    测试可用 `DSHR_PROVIDER=mock` 选择本地模拟，或用 `DSHR_FORCE_MOCK=1` 限定为本地模拟。
-   `DSHR_TOOL_POLICY=ask-all` 锁定逐次审批。选择只读时，官方侧车
-   在下一次运行前撤销写入能力。可用文件选择器、拖入输入区或粘贴文件和剪贴板图片来添加附件，每条消息最多 4 个，
+   `DSHR_TOOL_POLICY=ask-all` 锁定逐次审批。只读模式即时拒绝新的官方侧车写入请求。
+   可用文件选择器、拖入输入区或粘贴文件和剪贴板图片来添加附件，每条消息最多 4 个，
    UTF-8 文本总计 32 KiB，PNG、JPEG、GIF、WebP 和 PDF 总计 12 MiB。图片和 PDF
    需要 DeepSeek Flash 或支持对应内容类型的 OpenAI 兼容模型。会话日志保留文件名和引用，
    原始图片和 PDF 随会话导出。在构建多轮模型请求时，优先恢复较新的图片和 PDF。

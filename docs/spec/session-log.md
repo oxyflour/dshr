@@ -57,7 +57,10 @@
 |---|---|---|
 | `message.user` | durable | `message_id`, `content[]`（引用附件用 `$attachment`） |
 | `message.assistant.delta` | ephemeral | `message_id`, `text`（流式，可丢） |
+| `message.assistant.reasoning` | durable | `text`（模型返回的推理文本，对应本轮接下来的工具批次或助手回复） |
 | `message.assistant.settled` | durable | `message_id`, `content[]`, `finish_reason` |
+
+推理事件按生成顺序展示，单独于助手正文。重建模型请求时，将该事件关联到同一轮接下来的工具批次或助手回复。轮次终止时，仍未配对的推理只用于展示。旧日志可以省略该事件。导出和 headless 标准输出的助手正文仍按原有正文事件生成。
 | `model.request` | durable | `step_id`, `provider`, `model`, `token_estimate` |
 | `model.response.meta` | durable | `usage{input,output,cached}`, `latency_ms` |
 
@@ -89,8 +92,11 @@
 | type | durability | 载荷要点 |
 |---|---|---|
 | `approval.asked` | durable | `call_id`, `request`, `policy` |
-| `approval.answered` | durable | `call_id`, `outcome`(`allow`/`deny`/`allow_once`), `answerer` |
+| `approval.answered` | durable | `call_id`, `outcome`(`allow`/`deny`/`allow_once`/`allow_always`), `answerer` |
 | `policy.changed` | durable | `scope`, `from`, `to`, `by` |
+
+桌面普通审批因权限模式变化而完成时，`answerer` 写为 `permission_mode`。按当前模式直接授权的调用用工具事件留痕。
+用户选择「始终允许」时写 `allow_always`。后续使用已保存授权时，`answerer` 写为 `tool_grant`。运行时授权来自本地授权设置，会话日志仅用于审计。
 
 ### 3.5 上下文工程（见 §5）
 

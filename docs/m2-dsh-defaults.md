@@ -16,8 +16,7 @@ temperature / max_tokens / retry / context window 的默认值。压缩、裁剪
 > `crates/agent-core` 的 `ReasoningEffort`/重复提醒、`crates/llm-retry` 的 `EMPTY_RESPONSE`、
 > `crates/agent-context` 的 `retainRatio=0.16`、`crates/tool-runtime` 的 `PermissionMode`/
 > `ApprovalPolicy::from_env`、`crates/llm-openai` 的 `reasoning_effort`）。仍差：
-> **每步并行工具数仍是 1**（工具并发改造未做）、DeepSeek Chat Completions 无
-> `reasoning_effort` 字段（已解析但不发送）、compaction 的 `headroomTokens`/
+> **每步并行工具数仍是 1**（工具并发改造未做）、compaction 的 `headroomTokens`/
 > `compactionRetries`/`maxOverflowRetries` 未对齐。逐项状态以表 1 的"M3 状态"列与
 > `docs/m3-status.md` 为准。
 
@@ -45,7 +44,7 @@ assistant 文本：12345678处理失败：tool call budget exhausted (8)
 | context window | `deepseek-flash` / `deepseek-v4-pro`：`1_048_576`；`DEFAULT_CONTEXT_WINDOW = 1_000_000` | 固定 `64_000`（`DSHR_CONTEXT_WINDOW` 才能改） | `DSHR_CONTEXT_WINDOW` 优先；否则按模型名：`flash`/`v4-pro`/`v4.1` → 1M，`deepseek-chat`/`reasoner` → 128K，`gpt-4o`/`gpt-4.1`/`o3`/`o4` → 128K，其余 / 未配置模型 → 128K（两家默认模型口径） | 默认模型 `deepseek-chat` 不再被低估到 64K；选 1M 模型时自动吃满窗口 |
 | output max tokens | `DEFAULT_MAX_TOKENS = 256_000`，每个请求都发 `max_tokens` | 不发送（provider 默认） | **仍默认不发送**；新增 `DEEPSEEK_MAX_TOKENS` / `OPENAI_MAX_TOKENS` 显式开启 | 有意差异：dshr 默认模型 `deepseek-chat` 与 DSH desktop 的 `deepseek-flash` 不同，不盲目照抄 256k |
 | temperature | 默认**不发送**（`temperature === void 0 ? {} : { temperature }`） | 硬编码 `0.3` | 默认不发送；`DEEPSEEK_TEMPERATURE` / `OPENAI_TEMPERATURE` 显式设置才发送 | 采样行为回到服务端默认，与 DSH 一致 |
-| reasoning effort | `off` / `low` / `high` / `max`；desktop profile 配 `high` | 不支持 | **M3 已实现**：`agent-core::ReasoningEffort`（共享档位/`DSHR_REASONING_EFFORT`/非法值警告）；OpenAI 请求体发 `reasoning_effort`（off 不发）；DeepSeek Chat Completions 无该字段 → 解析但不发送（`SUPPORTS_REASONING_EFFORT=false`）。**无显式配置时默认不发送**（不假设账号权限） | 与 DSH desktop `high` 的口径差异保留为"默认不发送"，显式 `DSHR_REASONING_EFFORT=high` 可对齐 |
+| reasoning effort | `off` / `low` / `high` / `max`，desktop profile 配 `high` | 不支持 | 支持桌面模型菜单和 `DSHR_REASONING_EFFORT`。DeepSeek 显式关闭时发送 `thinking.type=disabled`，显式等级发送 `reasoning_effort`。OpenAI 兼容端点接收显式等级，`off` 沿用省略字段的行为。 | 默认沿用服务端设置，见[桌面对话控制](spec/desktop-conversation.md) |
 | retry | `maxRetries=5`（总尝试 **6**）、`initialDelayMs=500`、`maxDelayMs=10000`、`jitterRatio=0.1`；可重试码含 `EMPTY_RESPONSE`/`RATE_LIMIT`/`SERVER`/`TIMEOUT`/`TRANSPORT` | 3 次尝试、200ms 起、2s 封顶、无抖动 | **6 次尝试、500ms 起、10s 封顶、±10% 抖动**；`DSHR_RETRY_*` 可覆盖；**M3 补 `EMPTY_RESPONSE`**（无 text 且无 tool_calls 归一化为可重试，受 `max_attempts` 上限；流式仅未交付 delta 时重试） | 瞬时错误更耐扛；抖动降低多客户端同刻重试风暴 |
 | 历史条数 | 无条数上限（按 token 触发压缩） | `DEFAULT_MAX_MESSAGES = 60` 兜底 | 未改（兜底仍在，正常路径先按 token 触发裁剪） | 保持既有回放语义 |
 | 压缩触发 / 保留 | `thresholdRatio=0.8`、`headroomTokens=65536`、`maxTokens=headroomTokens`、`retainRatio=0.16`（保留约 16% 消息）+ LLM 摘要；`compactionRetries=1`、`maxOverflowRetries=1` | 触发 `0.8`、裁到 `0.6`，**有 LLM 摘要**（`chat.rs summarize_dropped` 生成摘要消息 + `context.compacted` 留痕） | **M3 对齐 retainRatio=0.16**（`agent-context` 的 `DSH_RETAIN_RATIO`，可用 `DSHR_CONTEXT_RETAIN_RATIO` 覆盖/回退 0.6）；触发 0.8 不变；**headroomTokens/compactionRetries/maxOverflowRetries 未对齐** | 保留比与 DSH 一致；`headroom/retries` 仍差 |

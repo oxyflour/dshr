@@ -62,7 +62,7 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh
 ```
 
 默认 profile 包含 `load_workspace_dependencies` 和 `read`。桌面宿主协商 `fs.write` 后可注册
-`write`、`edit` 和 `apply_patch`，写入仍经过宿主审批。`probe_*` 只供仓库自检使用。
+`write`、`edit` 和 `apply_patch`，写入由宿主按当前权限和工作区边界裁决。`probe_*` 只供仓库自检使用。
 如果源码运行时提示官方依赖缺失，可用 `node tools/dsh-vendor.mjs` 从本机 DeepSeek Harness 提取依赖。
 [启用条件与验证记录](docs/spec/dsh-compat-mapping.md#兼容矩阵)
 
@@ -78,6 +78,14 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh
 每条连接独立保存在系统凭据库，并随 DSHR 数据根隔离。编辑同一服务时，API Key 留空可继续使用已保存的密钥。更换协议、主机或端口时，填写新服务的 API Key。可在编辑页用「移除配置」删除单条连接。重启会恢复设置中选定的模型。通过环境变量提供的模型仍可在模型列表中选择。显式设置 `DSHR_PROVIDER` 时，启动时优先选择指定类型下可用的环境模型。终端任务沿用下面的配置方式。
 
 没有可用模型时，输入区的「配置模型」直达模型设置，草稿可在模型配置好后发送。测试时可设置 `DSHR_FORCE_MOCK=1` 或 `DSHR_PROVIDER=mock` 显示本地模拟。
+
+打开输入区的模型菜单，进入「推理等级」，可为当前连接保存强度。DeepSeek 提供关闭、低、高和最高。OpenAI 兼容模型可选的强度由服务端支持情况决定。选择「默认」可沿用环境变量和服务端设置。
+
+消息上方的「思考过程」可展开查看模型返回的推理内容和连续工具调用。点击停止时会先显示「正在停止…」，结束后显示「已停止」并保留已生成的内容。悬停消息后点击复制，按钮会短暂显示勾选。
+
+生成或等待审批时，可在输入区切换工具权限。选择「工具免审批」会放行当前等待的普通工具，并直接处理后续工作区内写入。插件构建和试用仍需单独确认。[桌面对话控制](docs/spec/desktop-conversation.md)
+
+要只放行当前会话中的某个工具，可在它的审批卡片上选择「始终允许」。重启后仍可在同一会话使用这项授权，其他工具继续按当前模式审批。
 
 ## 从终端运行一次性任务
 

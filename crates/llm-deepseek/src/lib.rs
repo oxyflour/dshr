@@ -5,8 +5,7 @@
 //!   UI 因此可以"边收边显示"，而不是等整段响应回来。
 //! - 工具调用按 OpenAI 兼容格式累积：`delta.tool_calls[].function.name/arguments`
 //!   是分片到达的，必须拼完再解析。
-//! - 工具结果的第二轮请求用 `role: user` 传递（简化）。严格的 OpenAI 兼容做法要求
-//!   回放 assistant 的 `tool_calls` + `role: tool` + `tool_call_id`，留作后续修正。
+//! - 工具轮次回传模型返回的 `reasoning_content`，并保留调用与结果的配对。
 //! - API key 只从环境变量或 `~/.dsh/.env` 读取，绝不打印、不写日志。
 //! - 采样参数对齐官方 DSH 0.2.2-rc.1：**默认不发送 temperature / max_tokens**，
 //!   让服务的默认值生效；只有显式设置 `DEEPSEEK_TEMPERATURE` / `DEEPSEEK_MAX_TOKENS`
@@ -25,21 +24,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dshr_agent_core::{
-    AttachmentFormat, ChatMessage, CompletionRequest, MediaAttachment, ModelProvider, ModelReply,
-    ModelToolCall, ReasoningEffort,
+    AttachmentFormat, ChatMessage, CompletionRequest, MediaAttachment, ModelDelta, ModelProvider,
+    ModelReply, ModelToolCall, ReasoningEffort,
 };
 use serde_json::{json, Value};
 
 const DEFAULT_BASE: &str = "https://api.deepseek.com";
 const DEFAULT_MODEL: &str = "deepseek-chat";
 
-/// DeepSeek Chat Completions 当前**没有** `reasoning_effort` 字段。
-///
-/// DSH 的 DeepSeek 适配器把 `reasoningEffort` 作为自己的配置项（desktop profile
-/// 配 `high`），线上映射由厂商适配层决定；dshr 的 DeepSeek provider 直连官方
-/// Chat Completions API，因此这里**记录差异并跳过**发送（档位仍被解析/暴露，
-/// 便于将来 API 支持或换兼容端点时打开，见 [`DeepSeekProvider::reasoning_effort`]）。
-pub const SUPPORTS_REASONING_EFFORT: bool = false;
+pub const SUPPORTS_REASONING_EFFORT: bool = true;
 
 const SYSTEM_PROMPT: &str = "你是一个桌面 Agent。回答简洁；需要外部能力时调用提供的工具。";
 
@@ -53,7 +46,6 @@ pub struct DeepSeekProvider {
     /// 显式输出上限；`None` = 不发送（保持 provider 默认）。
     max_tokens: Option<u64>,
     /// DSH reasoning effort 档位（`off/low/high/max`）；来自 `DSHR_REASONING_EFFORT`。
-    /// DeepSeek Chat Completions 无该字段，暂不发送（见 [`SUPPORTS_REASONING_EFFORT`]）。
     reasoning_effort: Option<ReasoningEffort>,
     timeout: Duration,
     /// UI 置 true 即请求停止生成。
@@ -122,7 +114,6 @@ impl DeepSeekProvider {
     /// 显式设置 reasoning effort（未配置时沿用 `DSHR_REASONING_EFFORT`）。
     ///
     /// `off` 与 `None` 都不发送；DeepSeek Chat Completions 暂不支持该字段，
-    /// 这里只保留档位供将来打开（见 [`SUPPORTS_REASONING_EFFORT`]）。
     pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
         self.reasoning_effort = effort;
         self
@@ -169,8 +160,21 @@ impl DeepSeekProvider {
         if !has_system {
             messages.push(json!({ "role": "system", "content": SYSTEM_PROMPT }));
         }
+        let replay_reasoning =
+            !request.tool_specs.is_empty() && self.reasoning_effort != Some(ReasoningEffort::Off);
+        let require_reasoning = self.reasoning_effort.is_some()
+            || matches!(
+                self.model(),
+                "deepseek-flash" | "deepseek-v4-pro" | "deepseek-reasoner"
+            );
         messages.extend(request.messages.iter().map(|message| {
-            message_json(message, self.supports_attachments(), &self.uploaded_pdfs)
+            let mut wire = message_json(message, self.supports_attachments(), &self.uploaded_pdfs);
+            if let ChatMessage::Assistant { reasoning, .. } = message {
+                if replay_reasoning && (require_reasoning || !reasoning.is_empty()) {
+                    wire["reasoning_content"] = json!(reasoning);
+                }
+            }
+            wire
         }));
 
         let tools: Vec<Value> = request
@@ -199,9 +203,14 @@ impl DeepSeekProvider {
         if let Some(max_tokens) = self.max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }
-        // DeepSeek Chat Completions 没有 `reasoning_effort` 字段：明确记录差异并跳过。
-        // 将来官方 API（或兼容端点）支持时，把 SUPPORTS_REASONING_EFFORT 打开并写
-        // `body["reasoning_effort"] = effort.wire_value()` 即可。
+        if let Some(effort) = self.reasoning_effort {
+            if let Some(value) = effort.wire_value() {
+                body["thinking"] = json!({ "type": "enabled" });
+                body["reasoning_effort"] = json!(value);
+            } else {
+                body["thinking"] = json!({ "type": "disabled" });
+            }
+        }
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
             body["tool_choice"] = json!("auto");
@@ -326,10 +335,14 @@ fn message_json(
             }
             json!({ "role": "user", "content": content })
         }
-        ChatMessage::Assistant { text, tool_calls } if tool_calls.is_empty() => {
+        ChatMessage::Assistant {
+            text, tool_calls, ..
+        } if tool_calls.is_empty() => {
             json!({ "role": "assistant", "content": text })
         }
-        ChatMessage::Assistant { text, tool_calls } => {
+        ChatMessage::Assistant {
+            text, tool_calls, ..
+        } => {
             let calls: Vec<Value> = tool_calls
                 .iter()
                 .map(|call| {
@@ -399,22 +412,29 @@ fn is_cancelled(cancel: Option<&AtomicBool>) -> bool {
 fn read_sse_stream(
     reader: impl BufRead,
     cancel: Option<&AtomicBool>,
-    on_delta: &mut dyn FnMut(&str),
+    on_delta: &mut dyn FnMut(ModelDelta<'_>),
 ) -> Result<ModelReply, String> {
     let mut decoder = SseDecoder::default();
-    for line in reader.lines() {
+    let mut lines = reader.lines();
+    while !is_cancelled(cancel) {
+        let Some(line) = lines.next() else {
+            break;
+        };
         if is_cancelled(cancel) {
             break;
         }
         let line = line.map_err(|err| format!("deepseek stream read failed: {err}"))?;
-        if let Some(chunk) = decoder.feed(&line)? {
-            on_delta(&chunk);
+        let previous_reasoning = decoder.reasoning.len();
+        let text = decoder.feed(&line)?;
+        if decoder.reasoning.len() > previous_reasoning {
+            on_delta(ModelDelta::Reasoning(
+                &decoder.reasoning[previous_reasoning..],
+            ));
+        }
+        if let Some(text) = text {
+            on_delta(ModelDelta::Text(&text));
         }
         if decoder.is_done() {
-            break;
-        }
-        // chunk 之后立即检查：取消后不再读下一行（不阻塞在网络等待上）。
-        if is_cancelled(cancel) {
             break;
         }
     }
@@ -445,14 +465,23 @@ impl ModelProvider for DeepSeekProvider {
         request: &CompletionRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelReply, String> {
+        self.complete_streaming_with_reasoning(request, &mut |delta| {
+            if let ModelDelta::Text(text) = delta {
+                on_delta(text);
+            }
+        })
+    }
+
+    fn complete_streaming_with_reasoning(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(ModelDelta<'_>),
+    ) -> Result<ModelReply, String> {
         // 取消 token 只由 UI 在每轮开始时清零，provider 绝不清零（P1-2）：
         // 否则上一轮/工具执行期间的停止请求会被这一次请求悄悄吞掉。
         // 已置位时不再发起 HTTP 请求，直接返回"已生成的部分"（这里为空）。
         if is_cancelled(self.cancel.as_deref()) {
-            return Ok(ModelReply {
-                text: String::new(),
-                tool_calls: Vec::new(),
-            });
+            return Ok(ModelReply::text_only(""));
         }
         self.prepare_pdf_uploads(request)?;
         if is_cancelled(self.cancel.as_deref()) {
@@ -501,7 +530,14 @@ pub fn parse_reply(body: &str) -> Result<ModelReply, String> {
         })
         .unwrap_or_default();
 
-    Ok(ModelReply { text, tool_calls })
+    Ok(ModelReply {
+        reasoning: message["reasoning_content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        text,
+        tool_calls,
+    })
 }
 
 /// 解析单个 `tool_calls[]` 元素。缺少 name 视为无效调用（跳过而非整包失败）。
@@ -540,6 +576,7 @@ fn error_message(error: &Value) -> String {
 /// 是"分片拼接"、"多工具按 index 归并"与"[DONE] 边界"，不是 HTTP 本身。
 #[derive(Debug, Default)]
 pub struct SseDecoder {
+    reasoning: String,
     text: String,
     /// 按 `tool_calls[].index` 归并：多个工具调用是交织到达的。
     tool_calls: BTreeMap<u64, ToolCallBuilder>,
@@ -585,6 +622,9 @@ impl SseDecoder {
             return Ok(None);
         };
 
+        if let Some(reasoning) = delta["reasoning_content"].as_str() {
+            self.reasoning.push_str(reasoning);
+        }
         let mut chunk = String::new();
         if let Some(content) = delta.get("content").and_then(Value::as_str) {
             if !content.is_empty() {
@@ -650,6 +690,7 @@ impl SseDecoder {
             })
             .collect();
         ModelReply {
+            reasoning: self.reasoning,
             text: self.text,
             tool_calls,
         }
@@ -922,6 +963,7 @@ mod tests {
             &request(vec![
                 ChatMessage::user("hi"),
                 ChatMessage::Assistant {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: vec![ModelToolCall {
                         id: "c1".to_owned(),
@@ -996,7 +1038,7 @@ mod tests {
         assert_eq!(body["max_tokens"], json!(8_192));
     }
 
-    // M3-DEFAULT-030..032：DeepSeek 的 reasoning effort 差异（记录并跳过）。
+    // M3-DEFAULT-030..032：DeepSeek 的 reasoning effort 配置与请求字段。
     #[test]
     fn m3_default_030_deepseek_parses_reasoning_effort_from_env() {
         const VAR: &str = ReasoningEffort::ENV;
@@ -1011,21 +1053,20 @@ mod tests {
     }
 
     #[test]
-    fn m3_default_031_deepseek_does_not_send_reasoning_effort_field() {
-        let provider = DeepSeekProvider::new("test-key")
-            .with_reasoning_effort(Some(ReasoningEffort::Max))
-            .with_temperature(None)
-            .with_max_tokens(None);
-        let body = provider.request_body(&request(vec![ChatMessage::user("hi")]), false);
-        assert!(
-            body.get("reasoning_effort").is_none(),
-            "DeepSeek Chat Completions 无该字段，应记录差异并跳过: {body}"
-        );
-        const {
-            assert!(
-                !SUPPORTS_REASONING_EFFORT,
-                "DeepSeek 目前不发 reasoning_effort"
-            );
+    fn serializes_reasoning_effort_and_disable_switch() {
+        let request = request(vec![ChatMessage::user("hi")]);
+        for (choice, mode, level) in [
+            (None, Value::Null, Value::Null),
+            (Some(ReasoningEffort::Off), json!("disabled"), Value::Null),
+            (Some(ReasoningEffort::Low), json!("enabled"), json!("low")),
+            (Some(ReasoningEffort::High), json!("enabled"), json!("high")),
+            (Some(ReasoningEffort::Max), json!("enabled"), json!("max")),
+        ] {
+            let body = DeepSeekProvider::new("test-key")
+                .with_reasoning_effort(choice)
+                .request_body(&request, false);
+            assert_eq!(body["thinking"]["type"], mode);
+            assert_eq!(body["reasoning_effort"], level);
         }
     }
 
@@ -1097,10 +1138,12 @@ mod tests {
         let reply = read_sse_stream(
             BufReader::new(std::io::Cursor::new(sse)),
             Some(&token),
-            &mut |chunk| {
-                deltas.push(chunk.to_owned());
-                // 第一段文本到达后用户按停止：后续 chunk 不能再回调。
-                token.store(true, Ordering::Relaxed);
+            &mut |delta| {
+                if let ModelDelta::Text(chunk) = delta {
+                    deltas.push(chunk.to_owned());
+                    // 第一段文本到达后用户按停止：后续 chunk 不能再回调。
+                    token.store(true, Ordering::Relaxed);
+                }
             },
         )
         .expect("部分成功");
@@ -1113,19 +1156,26 @@ mod tests {
     #[test]
     fn streaming_without_cancel_reads_every_chunk() {
         let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"分析\"}}]}\n",
             "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n",
             "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n",
             "data: [DONE]\n",
         );
         let mut deltas: Vec<String> = Vec::new();
+        let mut reasoning = String::new();
         let reply = read_sse_stream(
             BufReader::new(std::io::Cursor::new(sse)),
             None,
-            &mut |chunk| deltas.push(chunk.to_owned()),
+            &mut |delta| match delta {
+                ModelDelta::Text(chunk) => deltas.push(chunk.to_owned()),
+                ModelDelta::Reasoning(chunk) => reasoning.push_str(chunk),
+            },
         )
         .expect("正常读完");
         assert_eq!(deltas, vec!["你", "好"]);
         assert_eq!(reply.text, "你好");
+        assert_eq!(reply.reasoning, "分析");
+        assert_eq!(reasoning, reply.reasoning);
     }
 
     #[test]

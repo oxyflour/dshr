@@ -6,16 +6,28 @@
 //!
 //! 非交互环境（自检/CI）用 `DSHR_APPROVAL_MODE=allow|deny` 自动决定，不再等待。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-/// 可取消审批的轮询间隔：`Condvar` 没有"watch token"能力，用 100ms 片段轮询
-/// `cancel`，保证用户按停止后审批最多再阻塞一个片段（需求：<300ms 返回）。
-const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+use crate::PolicyDecision;
+
+/// 轮询停止信号与当前权限，避免没有手动答复时一直等待。
+const APPROVAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+enum ApprovalSource<'a> {
+    Tool,
+    LivePolicy(LiveApproval<'a>),
+    UserOnly,
+}
+
+pub struct LiveApproval<'a> {
+    pub decide: &'a dyn Fn() -> PolicyDecision,
+    pub grant_key: Option<&'a str>,
+}
 
 /// 一条等待用户确认的工具调用。
 #[derive(Debug, Clone, PartialEq)]
@@ -25,12 +37,21 @@ pub struct PendingApproval {
     pub arguments: Value,
     /// 请求时间（Unix 秒），UI 可显示"等待了多久"。
     pub requested_at: u64,
+    request_id: u64,
+    grant_key: Option<String>,
+}
+
+impl PendingApproval {
+    pub fn supports_always_allow(&self) -> bool {
+        self.grant_key.is_some()
+    }
 }
 
 /// 审批结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalOutcome {
     AllowOnce,
+    AllowAlways,
     Deny,
 }
 
@@ -38,6 +59,7 @@ impl ApprovalOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AllowOnce => "allow_once",
+            Self::AllowAlways => "allow_always",
             Self::Deny => "deny",
         }
     }
@@ -58,6 +80,8 @@ struct BrokerState {
     pending: Vec<PendingApproval>,
     decisions: HashMap<String, ApprovalOutcome>,
     records: Vec<ApprovalRecord>,
+    next_request_id: u64,
+    grants: HashSet<String>,
 }
 
 /// 审批 broker：工作线程 `request` 阻塞，UI 线程 `resolve` 唤醒。
@@ -104,10 +128,17 @@ impl ApprovalBroker {
         arguments: &Value,
         timeout: Duration,
     ) -> ApprovalOutcome {
-        self.request_inner(call_id, tool, arguments, timeout, None, true)
+        self.request_inner(
+            call_id,
+            tool,
+            arguments,
+            timeout,
+            None,
+            ApprovalSource::Tool,
+        )
     }
 
-    /// 可取消的审批：等待期间每 [`CANCEL_POLL_INTERVAL`] 轮询一次 `cancel`。
+    /// 可取消的审批：等待期间定期检查 `cancel`。
     ///
     /// `cancel` 置位时立刻移除 pending、记一条 `answerer = "cancelled"` 的 Deny
     /// 痕迹并返回 Deny——用户按"停止"后不会继续卡在最多 300s 的审批条上
@@ -120,7 +151,35 @@ impl ApprovalBroker {
         timeout: Duration,
         cancel: &AtomicBool,
     ) -> ApprovalOutcome {
-        self.request_inner(call_id, tool, arguments, timeout, Some(cancel), true)
+        self.request_inner(
+            call_id,
+            tool,
+            arguments,
+            timeout,
+            Some(cancel),
+            ApprovalSource::Tool,
+        )
+    }
+
+    /// Reevaluate a tool's policy while it waits. A manual answer already submitted
+    /// takes priority. The policy callback must not call back into the broker.
+    pub fn request_with_policy(
+        &self,
+        call_id: &str,
+        tool: &str,
+        arguments: &Value,
+        timeout: Duration,
+        cancel: &AtomicBool,
+        policy: LiveApproval<'_>,
+    ) -> ApprovalOutcome {
+        self.request_inner(
+            call_id,
+            tool,
+            arguments,
+            timeout,
+            Some(cancel),
+            ApprovalSource::LivePolicy(policy),
+        )
     }
 
     /// Requires a decision from the interactive user, including in automation environments.
@@ -132,7 +191,14 @@ impl ApprovalBroker {
         timeout: Duration,
         cancel: &AtomicBool,
     ) -> ApprovalOutcome {
-        self.request_inner(call_id, tool, arguments, timeout, Some(cancel), false)
+        self.request_inner(
+            call_id,
+            tool,
+            arguments,
+            timeout,
+            Some(cancel),
+            ApprovalSource::UserOnly,
+        )
     }
 
     fn request_inner(
@@ -142,7 +208,7 @@ impl ApprovalBroker {
         arguments: &Value,
         timeout: Duration,
         cancel: Option<&AtomicBool>,
-        allow_automatic: bool,
+        source: ApprovalSource<'_>,
     ) -> ApprovalOutcome {
         if self.noninteractive {
             self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "headless");
@@ -151,7 +217,7 @@ impl ApprovalBroker {
         // 非交互模式：自检/CI 不应卡在审批上。
         if let Some(mode) = std::env::var("DSHR_APPROVAL_MODE")
             .ok()
-            .filter(|_| allow_automatic)
+            .filter(|_| !matches!(source, ApprovalSource::UserOnly))
         {
             let outcome = match mode.as_str() {
                 "allow" => ApprovalOutcome::AllowOnce,
@@ -162,48 +228,58 @@ impl ApprovalBroker {
             return outcome;
         }
 
-        let entry = PendingApproval {
-            call_id: call_id.to_owned(),
-            tool: tool.to_owned(),
-            arguments: arguments.clone(),
-            requested_at: unix_secs(),
+        let grant_key = match &source {
+            ApprovalSource::LivePolicy(policy) => policy.grant_key,
+            _ => None,
         };
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.pending.push(entry);
+        state.next_request_id += 1;
+        let request_id = state.next_request_id;
+        state.pending.push(PendingApproval {
+            call_id: call_id.to_owned(),
+            tool: tool.to_owned(),
+            arguments: arguments.clone(),
+            requested_at: unix_secs(),
+            request_id,
+            grant_key: grant_key.map(str::to_owned),
+        });
 
         let deadline = Instant::now() + timeout;
-        loop {
+        let (outcome, answerer) = loop {
             if let Some(outcome) = state.decisions.remove(call_id) {
-                state.pending.retain(|item| item.call_id != call_id);
-                drop(state);
-                self.record(call_id, tool, arguments, outcome, "user");
-                return outcome;
+                break (outcome, "user");
             }
-            // 取消优先于超时：每 100ms 醒来检查一次 token。
             if cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
-                state.pending.retain(|item| item.call_id != call_id);
-                drop(state);
-                self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "cancelled");
-                return ApprovalOutcome::Deny;
+                break (ApprovalOutcome::Deny, "cancelled");
             }
             let now = Instant::now();
             if now >= deadline {
-                state.pending.retain(|item| item.call_id != call_id);
-                drop(state);
-                self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "timeout");
-                return ApprovalOutcome::Deny;
+                break (ApprovalOutcome::Deny, "timeout");
             }
-            // 即使没人 resolve 也要周期性醒来检查 cancel（阻塞等待会被 condvar 打断）。
-            let wait = (deadline - now).min(CANCEL_POLL_INTERVAL);
+            if let ApprovalSource::LivePolicy(policy) = &source {
+                match (policy.decide)() {
+                    PolicyDecision::Allow => break (ApprovalOutcome::AllowOnce, "permission_mode"),
+                    PolicyDecision::Deny(_) => break (ApprovalOutcome::Deny, "permission_mode"),
+                    PolicyDecision::Ask => {}
+                }
+            }
+            if grant_key.is_some_and(|key| state.grants.contains(key)) {
+                break (ApprovalOutcome::AllowOnce, "tool_grant");
+            }
+            let wait = (deadline - now).min(APPROVAL_POLL_INTERVAL);
             let (guard, _) = self
                 .wake
                 .wait_timeout(state, wait)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state = guard;
-        }
+        };
+        state.pending.retain(|item| item.call_id != call_id);
+        drop(state);
+        self.record(call_id, tool, arguments, outcome, answerer);
+        outcome
     }
 
     /// UI 线程调用：允许一次 / 拒绝。
@@ -211,6 +287,9 @@ impl ApprovalBroker {
     /// 只接受**仍在 pending** 的 call_id：过期或跨轮重复的 call_id 不能写入决定，
     /// 否则下一轮同 id 的调用会吃到旧决定被误放行（M2 review P2-6）。
     pub fn resolve(&self, call_id: &str, outcome: ApprovalOutcome) {
+        if outcome == ApprovalOutcome::AllowAlways {
+            return;
+        }
         let mut state = self
             .state
             .lock()
@@ -219,6 +298,40 @@ impl ApprovalBroker {
             return;
         }
         state.decisions.insert(call_id.to_owned(), outcome);
+        self.wake.notify_all();
+    }
+
+    /// Only the currently pending, unanswered ordinary request can issue a grant.
+    pub fn always_allow_key(&self, pending: &PendingApproval) -> Option<String> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.decisions.contains_key(&pending.call_id) || !state.pending.contains(pending) {
+            return None;
+        }
+        pending.grant_key.clone()
+    }
+
+    pub fn restore_grants(&self, keys: impl IntoIterator<Item = String>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .grants
+            .extend(keys);
+        self.wake.notify_all();
+    }
+
+    /// The desktop calls this after the user-selected grant has been saved.
+    pub fn resolve_always(&self, pending: &PendingApproval) {
+        let Some(key) = pending.grant_key.clone() else {
+            return;
+        };
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.grants.insert(key);
+        if state.pending.contains(pending) {
+            state
+                .decisions
+                .entry(pending.call_id.clone())
+                .or_insert(ApprovalOutcome::AllowAlways);
+        }
         self.wake.notify_all();
     }
 
@@ -364,6 +477,134 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "pending({call_id}) 未出现");
             std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn pending_tool_reevaluates_while_user_only_approval_keeps_waiting() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let broker = ApprovalBroker::new();
+        let explicit = broker.clone();
+        let user_only = std::thread::spawn(move || {
+            explicit.request_user_cancellable(
+                "explicit",
+                "creator_try_plugin",
+                &json!({}),
+                Duration::from_secs(5),
+                &AtomicBool::new(false),
+            )
+        });
+        wait_until_pending(&broker, "explicit");
+
+        for (decision, expected) in [
+            (PolicyDecision::Allow, ApprovalOutcome::AllowOnce),
+            (
+                PolicyDecision::Deny("read-only".to_owned()),
+                ApprovalOutcome::Deny,
+            ),
+        ] {
+            let policy = Arc::new(Mutex::new(PolicyDecision::Ask));
+            let live_policy = policy.clone();
+            let tool = broker.clone();
+            let worker = std::thread::spawn(move || {
+                tool.request_with_policy(
+                    "ordinary",
+                    "write",
+                    &json!({}),
+                    Duration::from_secs(3),
+                    &AtomicBool::new(false),
+                    LiveApproval {
+                        decide: &|| live_policy.lock().unwrap().clone(),
+                        grant_key: None,
+                    },
+                )
+            });
+            wait_until_pending(&broker, "ordinary");
+            *policy.lock().unwrap() = decision;
+            assert_eq!(worker.join().unwrap(), expected);
+            let records = broker.take_records();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].answerer, "permission_mode");
+            let pending = broker.pending();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].call_id, "explicit");
+        }
+
+        broker.resolve("explicit", ApprovalOutcome::Deny);
+        assert_eq!(user_only.join().unwrap(), ApprovalOutcome::Deny);
+        assert_eq!(broker.take_records()[0].answerer, "user");
+    }
+
+    #[test]
+    fn always_allow_reuses_only_the_saved_key_after_reopening() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let broker = ApprovalBroker::new();
+        let requester = broker.clone();
+        let active = std::thread::spawn(move || {
+            requester.request_with_policy(
+                "first",
+                "write",
+                &json!({}),
+                Duration::from_secs(3),
+                &AtomicBool::new(false),
+                LiveApproval {
+                    decide: &|| PolicyDecision::Ask,
+                    grant_key: Some("session-a:write"),
+                },
+            )
+        });
+        wait_until_pending(&broker, "first");
+        let pending = broker.pending().pop().unwrap();
+        let saved = broker.always_allow_key(&pending).unwrap();
+        broker.resolve_always(&pending);
+        assert_eq!(active.join().unwrap(), ApprovalOutcome::AllowAlways);
+        assert_eq!(broker.take_records()[0].outcome.as_str(), "allow_always");
+        assert!(broker.always_allow_key(&pending).is_none());
+
+        let reopened = ApprovalBroker::new();
+        reopened.restore_grants([saved]);
+        for (key, decision, outcome, answerer) in [
+            (
+                "session-a:write",
+                PolicyDecision::Ask,
+                ApprovalOutcome::AllowOnce,
+                "tool_grant",
+            ),
+            (
+                "session-a:edit",
+                PolicyDecision::Ask,
+                ApprovalOutcome::Deny,
+                "timeout",
+            ),
+            (
+                "session-b:write",
+                PolicyDecision::Ask,
+                ApprovalOutcome::Deny,
+                "timeout",
+            ),
+            (
+                "session-a:write",
+                PolicyDecision::Deny("read-only".to_owned()),
+                ApprovalOutcome::Deny,
+                "permission_mode",
+            ),
+        ] {
+            assert_eq!(
+                reopened.request_with_policy(
+                    "next",
+                    "write",
+                    &json!({}),
+                    Duration::from_millis(50),
+                    &AtomicBool::new(false),
+                    LiveApproval {
+                        decide: &|| decision.clone(),
+                        grant_key: Some(key)
+                    },
+                ),
+                outcome,
+            );
+            assert_eq!(reopened.take_records()[0].answerer, answerer);
+            assert!(reopened.pending().is_empty());
         }
     }
 

@@ -193,8 +193,13 @@ pub fn estimate_history_tokens(messages: &[ChatMessage]) -> usize {
                         })
                         .sum::<usize>()
             }
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant {
+                reasoning,
+                text,
+                tool_calls,
+            } => {
                 estimate_tokens(text)
+                    + estimate_tokens(reasoning)
                     + tool_calls
                         .iter()
                         .map(|call| {
@@ -541,6 +546,7 @@ fn history_with_seqs_spilled(
     let mut messages: Vec<SeqMessage> = Vec::new();
     let mut pending = HashSet::new();
     let mut settled = HashSet::new();
+    let mut reasoning = String::new();
 
     for event in log.events() {
         if event.durability == Durability::Ephemeral || in_range(event.seq) {
@@ -548,6 +554,7 @@ fn history_with_seqs_spilled(
         }
         match event.event_type.as_str() {
             "message.user" => {
+                reasoning.clear();
                 if let Some(message) = user_message_from_payload(&event.payload) {
                     messages.push(SeqMessage {
                         start_seq: event.seq,
@@ -556,6 +563,8 @@ fn history_with_seqs_spilled(
                     });
                 }
             }
+            "message.assistant.reasoning" => reasoning = str_of(&event.payload, "text"),
+            "turn.ended" => reasoning.clear(),
             "message.assistant.settled" => {
                 let message_id = str_of(&event.payload, "message_id");
                 // 摘要消息只经 context.compacted 还原，不重复出现。
@@ -569,6 +578,7 @@ fn history_with_seqs_spilled(
                         start_seq: event.seq,
                         end_seq: event.seq,
                         message: ChatMessage::Assistant {
+                            reasoning: std::mem::take(&mut reasoning),
                             text,
                             tool_calls: Vec::new(),
                         },
@@ -593,7 +603,14 @@ fn history_with_seqs_spilled(
                 // 工具调用必须挂在 assistant 消息上；若上一条不是 assistant，补一条空的。
                 match messages.last_mut() {
                     Some(wrapped) => match &mut wrapped.message {
-                        ChatMessage::Assistant { tool_calls, .. } => {
+                        ChatMessage::Assistant {
+                            reasoning: current,
+                            tool_calls,
+                            ..
+                        } => {
+                            if !reasoning.is_empty() {
+                                *current = std::mem::take(&mut reasoning);
+                            }
                             tool_calls.push(call);
                             wrapped.end_seq = event.seq;
                         }
@@ -601,6 +618,7 @@ fn history_with_seqs_spilled(
                             start_seq: event.seq,
                             end_seq: event.seq,
                             message: ChatMessage::Assistant {
+                                reasoning: std::mem::take(&mut reasoning),
                                 text: String::new(),
                                 tool_calls: vec![call],
                             },
@@ -610,6 +628,7 @@ fn history_with_seqs_spilled(
                         start_seq: event.seq,
                         end_seq: event.seq,
                         message: ChatMessage::Assistant {
+                            reasoning: std::mem::take(&mut reasoning),
                             text: String::new(),
                             tool_calls: vec![call],
                         },
@@ -1013,6 +1032,7 @@ mod tests {
             vec![
                 ChatMessage::user("跑一下"),
                 ChatMessage::Assistant {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: vec![ModelToolCall {
                         id: "c1".to_owned(),
@@ -1025,6 +1045,7 @@ mod tests {
                     content: "main.rs".to_owned()
                 },
                 ChatMessage::Assistant {
+                    reasoning: String::new(),
                     text: "目录里只有 main.rs".to_owned(),
                     tool_calls: Vec::new()
                 },
@@ -1084,6 +1105,7 @@ mod tests {
         let mut messages = vec![
             ChatMessage::user("u0"),
             ChatMessage::Assistant {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: vec![ModelToolCall {
                     id: "c1".to_owned(),

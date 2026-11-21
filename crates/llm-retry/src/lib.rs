@@ -15,11 +15,11 @@
 
 #![forbid(unsafe_code)]
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dshr_agent_core::{CompletionRequest, ModelProvider, ModelReply};
+use dshr_agent_core::{CompletionRequest, ModelDelta, ModelProvider, ModelReply};
 
 /// 空响应的稳定标记（DSH retryableCodes 之一）。
 pub const EMPTY_RESPONSE: &str = "EMPTY_RESPONSE";
@@ -224,18 +224,39 @@ impl ModelProvider for RetryingProvider {
         request: &CompletionRequest,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelReply, String> {
+        self.complete_streaming_with_reasoning(request, &mut |delta| {
+            if let ModelDelta::Text(text) = delta {
+                on_delta(text);
+            }
+        })
+    }
+
+    fn complete_streaming_with_reasoning(
+        &mut self,
+        request: &CompletionRequest,
+        on_delta: &mut dyn FnMut(ModelDelta<'_>),
+    ) -> Result<ModelReply, String> {
+        let cancel = self.inner.cancel_token();
+        let cancelled = || {
+            cancel
+                .as_ref()
+                .is_some_and(|token| token.load(Ordering::Relaxed))
+        };
         let mut attempt = 0u32;
         loop {
             attempt += 1;
             let mut delivered = false;
-            let mut forward = |delta: &str| {
+            let mut forward = |delta: ModelDelta<'_>| {
                 delivered = true;
                 on_delta(delta);
             };
-            match self.inner.complete_streaming(request, &mut forward) {
+            match self
+                .inner
+                .complete_streaming_with_reasoning(request, &mut forward)
+            {
                 Ok(reply) => {
                     // 空响应且尚未交付任何 delta：可安全重试（有上限）。
-                    if is_empty_reply(&reply) && !delivered {
+                    if is_empty_reply(&reply) && !delivered && !cancelled() {
                         if attempt < self.policy.max_attempts {
                             self.sleep_before_retry(attempt);
                             continue;
@@ -248,7 +269,7 @@ impl ModelProvider for RetryingProvider {
                 }
                 Err(error) => {
                     // 已经交付过 delta 就不能重试：会重复显示。
-                    let safe_to_retry = !delivered && is_retryable_error(&error);
+                    let safe_to_retry = !delivered && !cancelled() && is_retryable_error(&error);
                     if !safe_to_retry || attempt >= self.policy.max_attempts {
                         self.last_attempts = attempt;
                         return Err(error);
@@ -292,6 +313,7 @@ mod tests {
             match self.failures.get(self.calls - 1).cloned().flatten() {
                 Some(error) => Err(error),
                 None => Ok(ModelReply {
+                    reasoning: String::new(),
                     text: String::from("ok"),
                     tool_calls: Vec::new(),
                 }),
@@ -502,6 +524,7 @@ mod tests {
             self.calls += 1;
             if self.tool_call_only {
                 return Ok(ModelReply {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: vec![dshr_agent_core::ModelToolCall {
                         id: "call-1".to_owned(),
@@ -512,6 +535,7 @@ mod tests {
             }
             if self.calls <= self.empties {
                 Ok(ModelReply {
+                    reasoning: String::new(),
                     text: String::new(),
                     tool_calls: Vec::new(),
                 })
@@ -535,12 +559,14 @@ mod tests {
     #[test]
     fn m3_default_021_is_empty_reply_detects_only_truly_empty_replies() {
         assert!(is_empty_reply(&ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: Vec::new(),
         }));
         assert!(is_empty_reply(&ModelReply::text_only("   ")));
         assert!(!is_empty_reply(&ModelReply::text_only("hi")));
         assert!(!is_empty_reply(&ModelReply {
+            reasoning: String::new(),
             text: String::new(),
             tool_calls: vec![dshr_agent_core::ModelToolCall {
                 id: "c1".to_owned(),
