@@ -20,6 +20,7 @@
 
 pub mod archive;
 pub mod install;
+pub mod headless;
 pub mod loader;
 pub mod trust;
 pub mod uninstall;

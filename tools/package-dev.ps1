@@ -50,15 +50,16 @@ if (-not (Test-Path $sidecarModules)) {
 
 if (-not $SkipBuild) {
   Write-Step "cargo build -p dshr-desktop-gpui --bin dshr ($Configuration)"
-  $cargoArgs = @('cargo', 'build', '-p', 'dshr-desktop-gpui', '--bin', 'dshr')
+  $cargoArgs = @('cargo', 'build', '-p', 'dshr-desktop-gpui', '--bin', 'dshr', '--bin', 'dshr-cli')
   if ($Configuration -eq 'release') { $cargoArgs += '--release' }
   & (Join-Path $PSScriptRoot 'build-env.cmd') @cargoArgs
   if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
 }
 
 $exe = Join-Path $root "target/$Configuration/dshr.exe"
-if (-not (Test-Path $exe)) {
-  throw "missing $exe; run again without -SkipBuild"
+$console = Join-Path $root "target/$Configuration/dshr-cli.exe"
+if (-not (Test-Path $exe) -or -not (Test-Path $console)) {
+  throw "missing $exe or $console; run again without -SkipBuild"
 }
 if ($Configuration -eq 'debug') {
   Write-Step "note: debug build uses the Console subsystem; double-click will show a console window (release is GUI-only)"
@@ -71,6 +72,8 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Write-Step "staging -> $stage"
 
 Copy-Item $exe (Join-Path $stage 'dshr.exe')
+New-Item -ItemType Directory -Path (Join-Path $stage 'bin') | Out-Null
+Copy-Item -LiteralPath $console (Join-Path $stage 'bin/dshr.exe')
 Copy-Item (Join-Path $root 'sidecar') (Join-Path $stage 'sidecar') -Recurse
 Copy-Item (Join-Path $root 'runtime') (Join-Path $stage 'runtime') -Recurse
 Copy-Item (Join-Path $root 'docs') (Join-Path $stage 'docs') -Recurse
@@ -124,7 +127,8 @@ $running = @(
   "   确认来源可信后，可右键文件属性勾选「解除锁定」，或在 PowerShell 执行 Unblock-File .\dshr.exe 后重试。",
   "   不要关闭系统的安全防护。",
   "4. 命令行自检：在 PowerShell 中进入本目录，运行 .\dshr.exe --selftest，",
-  "   应看到 [selftest] PASS（CLI 用法会挂到当前控制台输出）。"
+  "   应看到 [selftest] PASS（CLI 用法会挂到当前控制台输出）。",
+  "5. 从脚本运行任务使用 .\bin\dshr.exe --profile headless --help。"
 )
 Set-Content -Path (Join-Path $stage 'RUNNING.txt') -Value $running -Encoding UTF8
 

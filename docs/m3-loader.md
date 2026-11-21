@@ -18,6 +18,8 @@
 
 ## 2. 与真实 DSH Loader 的差异（必须明示）
 
+具名 headless 使用静态声明入口，覆盖优先级和支持字段见 [Headless CLI 规范](spec/headless-profile.md#7-dsh-profile-声明兼容)。
+
 1. **`!!js` 不求值**：原文透传；`disabled: !!js` 按"真值"处理。**风险**：真实 `dsh-base` patch
    里有多处 `!!js` 条件禁用，会被全部判为 disabled；M3 建议只用于**自有 bundle**，DSH 官方
    bundle 的 `!!js` 仍交给 Node sidecar 处理（ADR-0007 的边界）。

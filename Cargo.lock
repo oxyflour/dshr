@@ -1521,6 +1521,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "image",
+ "libc",
  "ring",
  "serde_json",
  "windows-sys 0.61.2",

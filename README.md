@@ -59,6 +59,22 @@ $env:DSHR_SIDECAR = 'dsh'                       # 用官方插件运行时（too
 tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
 ```
 
+## 从终端运行一次性任务
+
+Windows 发行包使用 `bin\dshr.exe`，也可以把包内的 `bin` 目录加入 PATH。Linux 和 macOS 使用发行包的 `dshr`。
+先配置 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`，运行时可从参数或 stdin 接收任务。
+
+```powershell
+.\bin\dshr.exe --profile headless "总结这个工作区"
+Get-Content -Raw .\prompt.txt | .\bin\dshr.exe --profile headless --json
+.\bin\dshr.exe --profile headless --session-id s-123 "继续上一轮"
+```
+
+用 JSON 输出首行的 `sessionId` 续跑，并保持原工作区。`0` 表示本轮已完成并保存，`1` 表示运行失败或被取消。
+具名 profile 从数据根的 `profiles/<name>/package.json` 读取，可使用 DSH 的 headless 清单和受支持的静态补丁。
+可用 `DSHR_HOME` 指定数据根，并用 `--patch <path>` 叠加本次运行的配置。
+[输入、退出码与 profile 示例](docs/spec/headless-profile.md)
+
 ## 已固定的版本
 
 | 组件 | 版本 | 记录 |

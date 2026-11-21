@@ -9,6 +9,10 @@ default-run = "dshr"
 name = "dshr"
 path = "src/bin/chat.rs"
 
+[[bin]]
+name = "dshr-cli"
+path = "src/bin/console.rs"
+
 [dependencies]
 # Pinned per docs/decisions/0001-gpui-pin.md. Do not bump without a migration note.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b", features = ["profiler"] }
@@ -76,11 +80,16 @@ path = "../../crates/plugin-host"
 [dependencies.dshr-tool-runtime]
 path = "../../crates/tool-runtime"
 
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
 # release GUI 子系统没有控制台，CLI 子命令要 AttachConsole 接回父控制台。
 # 版本与 crates/sidecar-guard 保持一致（workspace 未统一锁定 windows-sys）。
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_Threading",
 ] }

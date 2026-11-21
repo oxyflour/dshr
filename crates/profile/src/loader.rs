@@ -90,6 +90,53 @@ pub fn parse_patch(yaml: &str) -> Result<Vec<PatchOp>, String> {
     parse_patch_document(document)
 }
 
+/// Read the subset of DSH row overrides that the headless host can apply.
+pub(crate) fn parse_static_overrides(yaml: &str) -> Result<Vec<PatchOp>, String> {
+    let document = parse_document(yaml)?;
+    let items = match &document {
+        Yaml::Null => return Ok(Vec::new()),
+        Yaml::List(items) => items,
+        _ => return Err("patch 顶层必须是列表".into()),
+    };
+    for item in items {
+        let Yaml::Map(fields) = item else {
+            return Err("patch 项必须是映射".into());
+        };
+        let id = fields
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("id", Yaml::Str(id)) if !id.is_empty() => Some(id.as_str()),
+                _ => None,
+            })
+            .ok_or("patch 条目需要字符串 id")?;
+        let mut seen = std::collections::HashSet::new();
+        for (key, value) in fields {
+            if !seen.insert(key) {
+                return Err(format!("条目 `{id}` 重复声明 `{key}`"));
+            }
+            if count_js_expressions(value) != 0 {
+                return Err(format!("条目 `{id}` 的 `{key}` 不支持 !!js"));
+            }
+            match (key.as_str(), value) {
+                ("id", Yaml::Str(_)) | ("disabled", Yaml::Bool(_)) => {}
+                ("config", Yaml::Map(values)) => {
+                    let mut keys = std::collections::HashSet::new();
+                    for (name, _) in values {
+                        if !keys.insert(name) {
+                            return Err(format!("条目 `{id}` 的 config 重复声明 `{name}`"));
+                        }
+                    }
+                }
+                ("disabled" | "config", _) => {
+                    return Err(format!("条目 `{id}` 的 `{key}` 类型错误"));
+                }
+                _ => return Err(format!("条目 `{id}` 不支持字段 `{key}`")),
+            }
+        }
+    }
+    parse_patch_document(document)
+}
+
 /// 应用 patch 层；返回 warning（目标不存在、group 目标不匹配等）。
 pub fn apply_patch(rows: &mut Vec<LoaderRow>, ops: &[PatchOp]) -> Vec<String> {
     let mut warnings = Vec::new();
@@ -875,6 +922,9 @@ fn parse_scalar(text: &str) -> Result<Yaml, String> {
     if let Some(rest) = text.strip_prefix("!!js ") {
         // 不求值：保留表达式原文（含引号），由上层决定如何处理。
         return Ok(Yaml::Js(rest.trim().to_owned()));
+    }
+    if text == "{}" {
+        return Ok(Yaml::Map(Vec::new()));
     }
     if text.starts_with('[') && text.ends_with(']') {
         let inner = &text[1..text.len() - 1];

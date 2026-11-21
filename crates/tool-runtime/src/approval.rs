@@ -64,13 +64,24 @@ struct BrokerState {
 pub struct ApprovalBroker {
     state: Mutex<BrokerState>,
     wake: Condvar,
+    noninteractive: bool,
 }
 
 impl ApprovalBroker {
     pub fn new() -> Arc<Self> {
+        Self::with_interaction(true)
+    }
+
+    /// Headless runs have no approval answerer.
+    pub fn noninteractive() -> Arc<Self> {
+        Self::with_interaction(false)
+    }
+
+    fn with_interaction(interactive: bool) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(BrokerState::default()),
             wake: Condvar::new(),
+            noninteractive: !interactive,
         })
     }
 
@@ -120,6 +131,10 @@ impl ApprovalBroker {
         timeout: Duration,
         cancel: Option<&AtomicBool>,
     ) -> ApprovalOutcome {
+        if self.noninteractive {
+            self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "headless");
+            return ApprovalOutcome::Deny;
+        }
         // 非交互模式：自检/CI 不应卡在审批上。
         if let Ok(mode) = std::env::var("DSHR_APPROVAL_MODE") {
             let outcome = match mode.as_str() {

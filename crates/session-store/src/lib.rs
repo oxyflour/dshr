@@ -22,7 +22,7 @@ pub mod session_index;
 pub mod session_tree;
 
 pub use session_index::{
-    quarantine_corrupt, recover_backup, save_atomic, SessionIndex, SessionMeta,
+    quarantine_corrupt, recover_backup, save_atomic, try_lock_session, SessionIndex, SessionMeta,
 };
 pub use session_tree::{SessionNode, SessionTree, TreeError, DEFAULT_MAX_DEPTH};
 

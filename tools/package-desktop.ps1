@@ -10,17 +10,21 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$cargoArgs = @("build", "-p", "dshr-desktop-gpui", "--bin", "dshr")
+$cargoArgs = @("build", "-p", "dshr-desktop-gpui", "--bin", "dshr", "--bin", "dshr-cli")
 if ($Configuration -eq "release") { $cargoArgs += "--release" }
 & (Join-Path $root "tools\build-env.cmd") @(@("cargo") + $cargoArgs)
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $LASTEXITCODE" }
 
 $binary = Join-Path $root "target/$Configuration/dshr.exe"
+$console = Join-Path $root "target/$Configuration/dshr-cli.exe"
 if (-not (Test-Path $binary)) { throw "missing $binary" }
+if (-not (Test-Path $console)) { throw "missing $console" }
 $stage = Join-Path $root "$OutDir/dshr-$Configuration-windows-x64"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item $binary (Join-Path $stage "dshr.exe")
+New-Item -ItemType Directory -Path (Join-Path $stage "bin") | Out-Null
+Copy-Item -LiteralPath $console (Join-Path $stage "bin/dshr.exe")
 
 $nodeExe = "$root\runtime\node\node.exe"
 Write-Host "[package-desktop] node=$nodeExe"
@@ -77,6 +81,7 @@ if (-not $commit) { $commit = "dirty" }
     "built: $((Get-Item $binary).LastWriteTime.ToString('o'))"
     ""
     "Run dshr.exe --selftest-adc-panel / --selftest-recovery / --selftest-crash-recovery / --selftest-cpp-component."
+    "Run bin/dshr.exe --profile headless --help for the console entry."
     "Includes runtime/node, probe sidecar, vendored dsh-official sidecar, and components/cpp-component."
     "No installer, code signing, or auto-update in this package."
 ) | Set-Content -Encoding UTF8 (Join-Path $stage "README.txt")

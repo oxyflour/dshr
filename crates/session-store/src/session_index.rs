@@ -146,6 +146,7 @@ impl SessionIndex {
     pub fn create(&self, id: &str) -> io::Result<SessionMeta> {
         self.ensure_dir()?;
         let path = self.path_for(id);
+        let _writer = try_lock_session(&path)?;
         if !path.exists() {
             fs::write(&path, b"")?;
         }
@@ -196,7 +197,8 @@ impl SessionIndex {
     ) -> io::Result<SessionMeta> {
         self.ensure_dir()?;
         let path = self.path_for(id);
-        if path.exists() {
+        let _writer = try_lock_session(&path)?;
+        if path.try_exists()? || backup_path_for(&path).try_exists()? {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("会话 `{id}` 已存在，拒绝覆盖事件日志"),
@@ -206,7 +208,7 @@ impl SessionIndex {
         log.append_created(ts, created)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))?;
         let jsonl = log.to_jsonl();
-        fs::write(&path, &jsonl)?;
+        save_atomic(&path, jsonl.as_bytes())?;
         let summary = summarize(&jsonl);
         Ok(SessionMeta {
             id: id.to_owned(),
@@ -294,6 +296,10 @@ impl SessionIndex {
 
     pub fn delete(&self, id: &str) -> io::Result<()> {
         let path = self.path_for(id);
+        if !self.dir.try_exists()? {
+            return Ok(());
+        }
+        let _writer = try_lock_session(&path)?;
         remove_if_exists(&path)?;
         // 只删主文件会留下 `.bak`，而 scan 会把孤儿 `.bak` 重新当成会话；
         // 删除必须连备份一起清掉，否则下一次启动会话“复活”。
@@ -330,6 +336,21 @@ impl SessionIndex {
             suffix += 1;
         }
         candidate
+    }
+}
+
+/// Hold the returned handle across load, mutation, and commit. Keep the lock
+/// file itself in place so all processes acquire the same underlying lock.
+pub fn try_lock_session(path: &Path) -> io::Result<fs::File> {
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(with_suffix(path, ".lock"))?;
+    match writer.try_lock() {
+        Ok(()) => Ok(writer),
+        Err(std::fs::TryLockError::WouldBlock) => Err(io::ErrorKind::WouldBlock.into()),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
     }
 }
 
@@ -763,7 +784,11 @@ mod tests {
     fn scan_ignores_backup_when_main_exists() {
         let index = temp_index("backup-with-main");
         seed(&index, "s-1", &[&user_event("current")]);
-        fs::copy(index.path_for("s-1"), backup_path_for(&index.path_for("s-1"))).unwrap();
+        fs::copy(
+            index.path_for("s-1"),
+            backup_path_for(&index.path_for("s-1")),
+        )
+        .unwrap();
 
         let sessions = index.scan().unwrap();
         assert_eq!(sessions.len(), 1);
@@ -784,7 +809,10 @@ mod tests {
 
         assert!(!main.exists());
         assert!(!backup.exists(), "删除会话必须同时清掉 .bak");
-        assert!(index.scan().unwrap().is_empty(), "删除后不能让会话从备份复活");
+        assert!(
+            index.scan().unwrap().is_empty(),
+            "删除后不能让会话从备份复活"
+        );
         fs::remove_dir_all(index.dir()).ok();
     }
 

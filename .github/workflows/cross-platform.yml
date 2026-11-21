@@ -149,6 +149,9 @@ jobs:
       - name: Build desktop chat
         run: cargo build --offline -p dshr-desktop-gpui --bin dshr
 
+      - name: Headless CLI contracts
+        run: cargo test --offline -p dshr-desktop-gpui --test headless_cli
+
       # Linux/macOS 运行无窗口自检：ADC 面板、恢复、真实子进程崩溃恢复。
       - name: Windows runtime selftests
         if: runner.os == 'Windows'

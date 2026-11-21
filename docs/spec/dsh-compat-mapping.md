@@ -4,6 +4,8 @@
 > 用途：回答"我们的协议和 DSH 一致吗"，并把"哪些必须对齐、哪些刻意不对齐"钉死。
 > 证据来源：本机运行中的 DSH 0.2.1-rc.3（`ctx.tools` 服务契约、`hostProtocolVersion: 4`）+ 仓库内探针实现。
 
+具名 headless 的 DSH 清单和补丁规则见 [Headless CLI 规范](headless-profile.md#7-dsh-profile-声明兼容)。
+
 ## 1. 结论
 
 **不一致，而且不应一致。**

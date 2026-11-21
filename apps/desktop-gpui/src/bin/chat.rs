@@ -76,8 +76,8 @@ use dshr_profile::{
 use dshr_sandbox::Workspace;
 use dshr_session_export::{export_session, verify_export, ExportOptions, SpillStoreSource};
 use dshr_session_store::{
-    quarantine_corrupt, recover_backup, save_atomic, EventSpec, SessionCreated, SessionIndex,
-    SessionLog, SessionMeta, ToolState,
+    quarantine_corrupt, recover_backup, save_atomic, try_lock_session, EventSpec, SessionCreated,
+    SessionIndex, SessionLog, SessionMeta, ToolState,
 };
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
@@ -110,6 +110,8 @@ mod window_bar;
 mod composer_flow;
 #[path = "chat/composer_surface.rs"]
 mod composer_surface;
+#[path = "chat/headless.rs"]
+mod headless;
 #[path = "chat/plugins_view.rs"]
 mod plugins_view;
 #[path = "chat/popover.rs"]
@@ -1115,6 +1117,40 @@ struct ChatState {
     save_blocked: Option<String>,
     /// 插件 ADC 面板缓存（`workspace.panel` 的 view → 元素树 JSON）。
     adc_panels: Vec<AdcPanelView>,
+    headless: bool,
+}
+
+enum TurnUpdate<'a> {
+    Preview(&'a SessionLog, Option<&'a str>),
+    Call { seq: u64, tool: &'a str },
+    Result { seq: u64, status: &'static str },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnReason {
+    Completed,
+    Error,
+    Cancelled,
+}
+
+impl TurnReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Error => "error",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+struct TurnResult {
+    reply: String,
+    reason: TurnReason,
+}
+
+enum ChatRuntime {
+    Desktop { allow_spawn: bool, sidecar: bool },
+    Headless,
 }
 /// 一个最小的 Rust 原生插件：注册 `probe_native` 工具 + 一个 Panel。
 struct ProbeNativePlugin;
@@ -1528,7 +1564,7 @@ impl DesktopModel {
     fn provider(&self, cancel: &Arc<AtomicBool>) -> Box<dyn ModelProvider> {
         let (name, configured): (&str, Box<dyn ModelProvider>) = match self {
             Self::Mock => {
-                println!("[chat] provider=mock");
+                eprintln!("[chat] provider=mock");
                 return cancel_aware(MockProvider, cancel);
             }
             Self::DeepSeek(provider) => (
@@ -1541,7 +1577,7 @@ impl DesktopModel {
             ),
         };
         let retry = RetryPolicy::from_env();
-        println!(
+        eprintln!(
             "[chat] provider={name} model={} retries={}",
             self.name(),
             retry.max_attempts
@@ -2302,6 +2338,14 @@ impl TreeCoordinator {
         };
         let store = SessionIndex::new(sessions_dir);
         let child_id = store.new_id();
+        let child_path = store.path_for(&child_id);
+        let _writer = match try_lock_session(&child_path) {
+            Ok(writer) => writer,
+            Err(error) => return ToolOutcome::failure(format!("无法取得子会话写入权：{error}")),
+        };
+        if child_path.exists() || child_path.with_extension("jsonl.bak").exists() {
+            return ToolOutcome::failure("子会话 ID 已被使用");
+        }
         let ts = now_ts();
 
         let mut logs: Vec<SessionLog> = Vec::new();
@@ -2336,15 +2380,14 @@ impl TreeCoordinator {
         if let Err(err) = store.write_log(&spawned.log) {
             return ToolOutcome::failure(format!("写入子会话失败: {err}"));
         }
-        let child_path = store.path_for(&child_id);
-        let mut child = ChatState::open_with_settings(
+        let mut child = ChatState::from_log(
             child_path,
-            &child_id,
+            spawned.log,
+            session_workspace(log),
             cancel,
             approvals.clone(),
-            false,
-            false,
             settings.clone(),
+            ChatRuntime::Desktop { allow_spawn: false, sidecar: false },
         );
         let reply = child.stream_turn(&args.prompt, &mut |_| {});
         child.save();
@@ -2409,6 +2452,23 @@ struct OpenedSessionLog {
 }
 
 fn open_session_log(path: &std::path::Path, session_id: &str) -> OpenedSessionLog {
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let _writer = match std::fs::create_dir_all(parent).and_then(|_| try_lock_session(path)) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let message = format!("无法取得会话写入权：{error}");
+            let log = std::fs::read_to_string(path).ok()
+                .and_then(|text| SessionLog::from_jsonl(session_id, &text).ok())
+                .unwrap_or_else(|| SessionLog::new(session_id));
+            return OpenedSessionLog {
+                log,
+                errors: vec![message.clone()],
+                save_blocked: Some(message),
+                wrote_created: false,
+                recovered: false,
+            };
+        }
+    };
     let mut errors = Vec::new();
     let mut recovered = false;
     // 上次保存若在 Windows remove→rename 窗口崩溃，主文件会缺失而 .bak 完整：
@@ -2477,6 +2537,13 @@ fn open_session_log(path: &std::path::Path, session_id: &str) -> OpenedSessionLo
         }
     }
 
+    if wrote_created && save_blocked.is_none() {
+        if let Err(error) = save_atomic(path, log.to_jsonl().as_bytes()) {
+            let message = format!("保存会话失败：{error}");
+            errors.push(message.clone());
+            save_blocked = Some(message);
+        }
+    }
     OpenedSessionLog {
         log,
         errors,
@@ -2573,11 +2640,31 @@ impl ChatState {
             log,
             errors: session_errors,
             save_blocked,
-            wrote_created,
             ..
         } = open_session_log(&path, session_id);
         let workspace = session_workspace(&log);
+        let mut state = Self::from_log(
+            path, log, workspace, cancel, approvals, settings,
+            ChatRuntime::Desktop { allow_spawn, sidecar: with_sidecar },
+        );
+        state.session_errors = session_errors;
+        state.save_blocked = save_blocked;
+        state
+    }
 
+    fn from_log(
+        path: PathBuf,
+        log: SessionLog,
+        workspace: PathBuf,
+        cancel: &Arc<AtomicBool>,
+        approvals: Arc<ApprovalBroker>,
+        settings: DesktopSettings,
+        runtime: ChatRuntime,
+    ) -> Self {
+        let (headless, allow_spawn, with_sidecar) = match runtime {
+            ChatRuntime::Desktop { allow_spawn, sidecar } => (false, allow_spawn, sidecar),
+            ChatRuntime::Headless => (true, false, true),
+        };
         let sessions_dir = path
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -2606,9 +2693,20 @@ impl ChatState {
         }
         register_probe_write(&mut plugins, &workspace);
         if let Some(sidecar) = &host {
-            register_sidecar_tools(&mut plugins, sidecar);
+            if headless {
+                for definition in sidecar.tool_definitions() {
+                    if definition.presentation.as_deref() != Some("terminal")
+                        && !matches!(definition.name.as_str(), "bash" | "pwsh" | "shell" | "powershell" | "exec")
+                    {
+                        let _ = plugins.registry_mut().register(definition);
+                    }
+                }
+            } else {
+                register_sidecar_tools(&mut plugins, sidecar);
+            }
         }
         let seq = last_message_seq(&log);
+        let session_id = log.session_id().to_owned();
         let mut state = Self {
             log,
             path: path.clone(),
@@ -2620,21 +2718,19 @@ impl ChatState {
             seq,
             approvals,
             spill: SpillStore::new(spill_dir_for(&path)),
-            session_id: session_id.to_owned(),
+            session_id,
             sessions_dir,
             l2_access,
             cancel: cancel.clone(),
             allow_spawn,
             external_plugin_errors: Vec::new(),
-            session_errors,
-            save_blocked,
+            session_errors: Vec::new(),
+            save_blocked: None,
             adc_panels: Vec::new(),
+            headless,
         };
-        // 原生面板在构造期就取一次树；external-process 面板由启动流程装载后再刷新。
-        state.refresh_adc_panels();
-        // 新建的会话立刻落盘：索引/侧栏/树查询都从磁盘扫描，不能等第一轮才可见。
-        if wrote_created {
-            state.save();
+        if !headless {
+            state.refresh_adc_panels();
         }
         state
     }
@@ -2662,9 +2758,6 @@ impl ChatState {
         self.session_id = session_id.to_owned();
         self.session_errors = opened.errors;
         self.save_blocked = opened.save_blocked;
-        if opened.wrote_created {
-            self.save();
-        }
         opened.wrote_created || opened.recovered
     }
 
@@ -2785,18 +2878,32 @@ impl ChatState {
     }
 
     fn save(&self) {
-        if let Some(reason) = &self.save_blocked {
-            eprintln!("[chat] 跳过保存（{reason}）: {}", self.path.display());
-            return;
+        if let Err(error) = self.save_checked() {
+            eprintln!("[chat] {error}");
         }
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    }
+
+    fn save_checked(&self) -> Result<(), String> {
+        if let Some(reason) = &self.save_blocked {
+            return Err(format!("跳过保存（{reason}）: {}", self.path.display()));
         }
         // 临时文件 + 替换 + 上一版 .bak：崩溃/断电不会留下半截文件；
         // Windows 上 remove→rename 的极短窗口由 recover_backup 兜底。
-        if let Err(err) = save_atomic(&self.path, self.log.to_jsonl().as_bytes()) {
-            eprintln!("[chat] 保存会话失败: {err}");
-        }
+        save_atomic(&self.path, self.log.to_jsonl().as_bytes())
+            .map_err(|error| format!("保存会话 {} 失败：{error}", self.path.display()))
+    }
+
+    fn lock_and_refresh(&mut self) -> Result<std::fs::File, String> {
+        let writer = try_lock_session(&self.path)
+            .map_err(|error| format!("无法取得会话写入权：{error}"))?;
+        let text = std::fs::read_to_string(&self.path)
+            .map_err(|error| format!("读取会话日志失败：{error}"))?;
+        let log = SessionLog::from_jsonl(&self.session_id, &text)
+            .map_err(|error| format!("解析会话日志失败：{error}"))?;
+        self.seq = last_message_seq(&log);
+        self.log = log;
+        self.save_blocked = None;
+        Ok(writer)
     }
 
     /// 跑一轮对话：用户消息 → Agent（模型 + 工具）→ 助手消息落库。
@@ -2819,20 +2926,32 @@ impl ChatState {
         if text.is_empty() && attachments.is_empty() {
             return None;
         }
-
-        let ts = now_ts();
-        self.seq += 1;
-        let user_id = format!("m-u{}", self.seq);
-        let (payload, blobs) = match user_message_payload(&user_id, text, attachments, &self.spill)
-        {
-            Ok(prepared) => prepared,
+        match self.run_turn(text, attachments, &mut |update| {
+            if let TurnUpdate::Preview(log, streaming) = update {
+                emit(rows_snapshot(log, streaming));
+            }
+        }) {
+            Ok(result) => Some(result.reply),
             Err(error) => {
                 let mut rows = rows_snapshot(&self.log, None);
                 rows.push(Row::Meta(format!("消息未发送：{error}")));
                 emit(rows);
-                return None;
+                None
             }
-        };
+        }
+    }
+
+    fn run_turn(
+        &mut self,
+        text: &str,
+        attachments: &[DraftAttachment],
+        emit: &mut dyn FnMut(TurnUpdate<'_>),
+    ) -> Result<TurnResult, String> {
+        let ts = now_ts();
+        self.seq += 1;
+        let user_id = format!("m-u{}", self.seq);
+        let turn_id = format!("turn-{}", self.seq);
+        let (payload, blobs) = user_message_payload(&user_id, text, attachments, &self.spill)?;
         if !blobs.is_empty() {
             let mut recorded: std::collections::HashSet<_> = self
                 .log
@@ -2845,29 +2964,23 @@ impl ChatState {
                 .collect();
             for blob in blobs {
                 if recorded.insert(blob.id.clone()) {
-                    if let Err(error) = self.log.append(EventSpec::durable(
+                    self.log.append(EventSpec::durable(
                         "spill.created",
                         &ts,
                         blob.user_attachment_payload(),
-                    )) {
-                        let mut rows = rows_snapshot(&self.log, None);
-                        rows.push(Row::Meta(format!("消息未发送：无法记录附件（{error}）")));
-                        emit(rows);
-                        return None;
-                    }
+                    )).map_err(|error| error.to_string())?;
                 }
             }
         }
         let current = user_message_from_payload(&payload).expect("nonempty user message");
-        if let Err(err) = self
-            .log
+        self.log
             .append(EventSpec::durable("message.user", &ts, payload))
-        {
-            eprintln!("[chat] 写入用户消息失败: {err}");
-            return None;
-        }
-        self.save();
-        emit(rows_snapshot(&self.log, None));
+            .map_err(|error| error.to_string())?;
+        self.log.append(EventSpec::durable(
+            "turn.started", &ts, json!({ "turn_id": turn_id, "prompt_message_id": user_id })
+        )).map_err(|error| error.to_string())?;
+        self.save_checked()?;
+        emit(TurnUpdate::Preview(&self.log, None));
 
         // 历史从 durable 事件重建：多轮记忆靠它，重开应用也能接上。
         // 上下文预算在这里做：超大结果先外部化、超长工具结果头尾裁剪、超预算丢最旧，且不拆配对。
@@ -2898,13 +3011,13 @@ impl ChatState {
                     "tokens_after": tokens_after,
                 }),
             ));
-            self.save();
+            self.save_checked()?;
             plan = self.plan_with_spill();
             eprintln!(
                 "[chat] 已压缩 seq {from_seq}..{to_seq}：{} -> {} tokens",
                 plan.tokens_before, plan.tokens_after
             );
-            emit(rows_snapshot(&self.log, None));
+            emit(TurnUpdate::Preview(&self.log, None));
         }
         let _ = self.log.append(EventSpec::durable(
             "context.measured",
@@ -2922,7 +3035,7 @@ impl ChatState {
                 "spilled_tool_results": plan.spilled_tool_results(),
             }),
         ));
-        self.save();
+        self.save_checked()?;
         if plan.triggered() {
             eprintln!(
                 "[chat] 上下文裁剪: {} -> {} tokens（窗口 {}，裁剪工具结果 {} 条，丢弃消息 {} 条）",
@@ -2933,7 +3046,7 @@ impl ChatState {
                 plan.dropped_messages
             );
         }
-        emit(rows_snapshot(&self.log, None));
+        emit(TurnUpdate::Preview(&self.log, None));
         let mut history = plan.messages;
         // 预算计入刚落盘的用户输入。Agent 会单独追加本轮消息，避免在模型请求中发送两份。
         if history.last() == Some(&current) {
@@ -2969,6 +3082,8 @@ impl ChatState {
             .collect();
 
         let mut reply = String::new();
+        let mut reason = TurnReason::Error;
+        let mut event_error = None;
         // 非失败结束原因（用户取消）：决定 TurnEnded 后写 session.interrupted 而不是“处理失败”。
         let mut cancelled: Option<String> = None;
         // 父日志临时放进 Rc<RefCell>：流式回调（tool.* 事件）与 spawn_child 执行器
@@ -2999,7 +3114,7 @@ impl ChatState {
                 &mut |event| match event {
                     AgentEvent::TextDelta(delta) => {
                         reply.push_str(delta);
-                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::ToolCall(call) => {
                         let (origin, presentation) = presentations
@@ -3009,7 +3124,7 @@ impl ChatState {
                         {
                             let mut log = log_for_events.borrow_mut();
                             let call_seq = log.len() as u64 + 1;
-                            if let Ok(seq) = log.append(EventSpec::durable(
+                            match log.append(EventSpec::durable(
                                 "tool.call",
                                 &ts,
                                 json!({
@@ -3023,21 +3138,25 @@ impl ChatState {
                                     "arguments": call.arguments
                                 }),
                             )) {
-                                pending_call_seqs.entry(call.call_id.clone()).or_default().push_back(seq);
+                                Ok(seq) => {
+                                    pending_call_seqs.entry(call.call_id.clone()).or_default().push_back(seq);
+                                    emit(TurnUpdate::Call { seq, tool: &call.tool });
+                                }
+                                Err(error) => { event_error.get_or_insert_with(|| error.to_string()); }
                             }
                         }
-                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::ToolResult { call_id, outcome } => {
                         let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
                             return;
                         };
-                        {
+                        let status = {
                             let mut log = log_for_events.borrow_mut();
                             // P1-3：普通工具失败（拒绝/报错/预算耗尽）必须写 tool.result(is_error)，
                             // 只有“真正被取消”的调用才写 tool.aborted（reason 用 spec 枚举）。
-                            if outcome.is_error && self.cancel.load(Ordering::Relaxed) {
-                                let _ = log.append(EventSpec::durable(
+                            let (event, status) = if outcome.is_error && self.cancel.load(Ordering::Relaxed) {
+                                (EventSpec::durable(
                                     "tool.aborted",
                                     &ts,
                                     json!({
@@ -3045,9 +3164,9 @@ impl ChatState {
                                         "call_seq": call_seq,
                                         "reason": "cancel"
                                     }),
-                                ));
+                                ), "aborted")
                             } else {
-                                let _ = log.append(EventSpec::durable(
+                                (EventSpec::durable(
                                     "tool.result",
                                     &ts,
                                     json!({
@@ -3059,36 +3178,51 @@ impl ChatState {
                                         "value": outcome.value,
                                         "meta": outcome.meta,
                                     }),
-                                ));
+                                ), if outcome.is_error { "error" } else { "completed" })
+                            };
+                            match log.append(event) {
+                                Ok(_) => Some(status),
+                                Err(error) => {
+                                    event_error.get_or_insert_with(|| error.to_string());
+                                    None
+                                }
                             }
+                        };
+                        if let Some(status) = status {
+                            emit(TurnUpdate::Result { seq: call_seq, status });
                         }
-                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::ToolCancelled { call_id, reason } => {
                         let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
                             return;
                         };
-                        {
+                        let aborted = {
                             let mut log = log_for_events.borrow_mut();
-                            let _ = log.append(EventSpec::durable(
+                            log.append(EventSpec::durable(
                                 "tool.aborted",
                                 &ts,
                                 json!({ "call_id": call_id, "call_seq": call_seq, "reason": reason }),
-                            ));
+                            ))
+                        };
+                        match aborted {
+                            Ok(_) => emit(TurnUpdate::Result { seq: call_seq, status: "aborted" }),
+                            Err(error) => { event_error.get_or_insert_with(|| error.to_string()); }
                         }
-                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::TurnCancelled { reason } => {
                         cancelled = Some(reason.clone());
-                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
                     AgentEvent::TurnFailed(err) => {
-                        reply.push_str(&format!("处理失败：{err}"));
-                        emit(rows_snapshot(&log_for_events.borrow(), Some(&reply)));
+                        if !self.headless {
+                            reply.push_str(&format!("处理失败：{err}"));
+                        }
+                        emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply)));
                     }
-                    AgentEvent::TurnStarted { .. }
-                    | AgentEvent::StepStarted { .. }
-                    | AgentEvent::TurnEnded { .. } => {}
+                    AgentEvent::TurnEnded { .. } => reason = TurnReason::Completed,
+                    AgentEvent::TurnStarted { .. } | AgentEvent::StepStarted { .. } => {}
                 },
             );
         }
@@ -3105,6 +3239,9 @@ impl ChatState {
         self.log = std::rc::Rc::try_unwrap(log_cell)
             .map(|cell| cell.into_inner())
             .unwrap_or_else(|cell| cell.borrow().clone());
+        if let Some(error) = event_error {
+            return Err(error);
+        }
         // 用户中断留痕（回放/审计可见；子会话的中断由 TreeCoordinator 传播）。
         // 取消可能由 Agent 的 TurnCancelled 上报，也可能发生在工具返回后，两个来源都覆盖。
         let cancelled_by_flag = self.cancel.load(Ordering::Relaxed);
@@ -3147,16 +3284,22 @@ impl ChatState {
         let ts = now_ts();
         // 取消且没有任何产出时不写空的 assistant 消息（避免 UI 出现空白气泡）。
         let cancelled_turn = cancelled_by_flag || cancelled.is_some();
+        if cancelled_turn {
+            reason = TurnReason::Cancelled;
+        }
         if !(cancelled_turn && reply.trim().is_empty()) {
-            let _ = self.log.append(EventSpec::durable(
+            self.log.append(EventSpec::durable(
                 "message.assistant.settled",
                 &ts,
                 json!({ "message_id": format!("m-a{}", self.seq), "text": reply }),
-            ));
+            )).map_err(|error| error.to_string())?;
         }
-        self.save();
-        emit(rows_snapshot(&self.log, None));
-        Some(reply)
+        self.log.append(EventSpec::durable(
+            "turn.ended", &ts, json!({ "turn_id": turn_id, "reason": reason.as_str() })
+        )).map_err(|error| error.to_string())?;
+        self.save_checked()?;
+        emit(TurnUpdate::Preview(&self.log, None));
+        Ok(TurnResult { reply, reason })
     }
 
     /// 同步版本（自检与无 UI 场景使用）：丢弃 UI 快照。
@@ -3664,6 +3807,15 @@ impl ChatApp {
             let mut guard = state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _writer = match guard.lock_and_refresh() {
+                Ok(writer) => writer,
+                Err(error) => {
+                    let mut rows = rows_snapshot(&guard.log, None);
+                    rows.push(Row::Meta(format!("消息未发送：{error}")));
+                    let _ = tx.send(rows);
+                    return;
+                }
+            };
             if reload_sidecar || guard.host.as_mut().is_some_and(SidecarHost::has_exited) {
                 let _ = guard.restart_sidecar();
             }
@@ -12097,6 +12249,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     // 1. 先把命令行用法的输出来路接好（release GUI 子系统没有控制台）。
     prepare_cli_console(is_cli_invocation(&args));
+    if headless::selected(&args[1..]) {
+        std::process::exit(headless::main(&args[1..]));
+    }
     // 2. 数据根必须在崩溃 hook 之前解析：hook 通过 DSHR_CRASH_LOG 写日志。
     prepare_data_env();
     install_crash_hook();
@@ -12331,8 +12486,10 @@ fn main() {
         && legacy.exists()
     {
         let target = store.path_for(SESSION_ID);
-        if !target.exists() {
-            let _ = std::fs::copy(&legacy, &target);
+        if let Ok(_writer) = try_lock_session(&target) {
+            if !target.exists() {
+                let _ = std::fs::copy(&legacy, &target);
+            }
         }
     }
 
@@ -12944,6 +13101,7 @@ mod tests {
         );
         drop(state);
         index.delete("test").unwrap();
+        std::fs::remove_file(root.join("test.jsonl.lock")).unwrap();
         std::fs::remove_dir(&root).unwrap();
     }
 
@@ -13159,6 +13317,7 @@ mod tests {
         assert!(state.settings.write_approvals(&approvals).is_some());
         drop(state);
         SessionIndex::new(&root).delete("test").unwrap();
+        std::fs::remove_file(root.join("test.jsonl.lock")).unwrap();
         std::fs::remove_dir(&root).unwrap();
     }
 
