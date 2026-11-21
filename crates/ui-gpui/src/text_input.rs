@@ -863,6 +863,11 @@ impl Focusable for TextInput {
 
 /// 注册文本输入的按键绑定（应用启动时调用一次）。
 pub fn init(cx: &mut App) {
+    let (select_all, paste, copy, cut) = if cfg!(target_os = "macos") {
+        ("cmd-a", "cmd-v", "cmd-c", "cmd-x")
+    } else {
+        ("ctrl-a", "ctrl-v", "ctrl-c", "ctrl-x")
+    };
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("TextInput")),
         KeyBinding::new("delete", Delete, Some("TextInput")),
@@ -870,11 +875,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("right", Right, Some("TextInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
         KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
-        KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
-        KeyBinding::new("cmd-v", Paste, Some("TextInput")),
-        KeyBinding::new("cmd-c", Copy, Some("TextInput")),
-        KeyBinding::new("cmd-c", Copy, Some("TranscriptSelection")),
-        KeyBinding::new("cmd-x", Cut, Some("TextInput")),
+        KeyBinding::new(select_all, SelectAll, Some("TextInput")),
+        KeyBinding::new(paste, Paste, Some("TextInput")),
+        KeyBinding::new(copy, Copy, Some("TextInput")),
+        KeyBinding::new(copy, Copy, Some("TranscriptSelection")),
+        KeyBinding::new(cut, Cut, Some("TextInput")),
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
         KeyBinding::new("enter", Submit, Some("TextInput")),
@@ -883,4 +888,32 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("down", Down, Some("DraftInput")),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("TextInput")),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn paste_shortcut_replaces_selected_draft_with_multiline_text(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (draft, cx) = cx.add_window_view(|window, cx| {
+            let mut input = TextInput::new("消息草稿", cx).multiline();
+            input.set_content("旧草稿", window, cx);
+            window.focus(&input.focus_handle(cx), cx);
+            input
+        });
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                "第一行\r\nSecond line".to_owned(),
+            ));
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a cmd-v"
+        } else {
+            "ctrl-a ctrl-v"
+        });
+        cx.read(|cx| assert_eq!(draft.read(cx).content(), "第一行\nSecond line"));
+    }
 }

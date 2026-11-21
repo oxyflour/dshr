@@ -393,7 +393,12 @@ mod tests {
                 cx,
             );
             window.draw(cx).clear(cx);
-            window.dispatch_keystroke(Keystroke::parse("cmd-c").unwrap(), cx);
+            let copy = if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            };
+            window.dispatch_keystroke(Keystroke::parse(copy).unwrap(), cx);
         })
         .unwrap();
         assert_eq!(
