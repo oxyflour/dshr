@@ -41,27 +41,44 @@ const FAULT_FIXTURE_EXE: &str = env!("CARGO_BIN_EXE_plugin-fault-fixture");
 // 测试脚手架
 // ---------------------------------------------------------------------------
 
-struct TempDir(PathBuf);
+struct TempDir {
+    path: PathBuf,
+    #[cfg(target_os = "linux")]
+    _fixture_guard: std::sync::MutexGuard<'static, ()>,
+}
 
 impl TempDir {
     fn new(name: &str) -> Self {
+        // A concurrent fork can inherit the writable descriptor of a fixture another
+        // test is copying, causing its exec to fail with ETXTBSY even after the copy returns.
+        #[cfg(target_os = "linux")]
+        let fixture_guard = {
+            static FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            FIXTURES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        };
         let path = std::env::temp_dir().join(format!(
             "dshr-cpp-iso-{name}-{}-{}",
             std::process::id(),
             nanos()
         ));
         fs::create_dir_all(&path).expect("create temp dir");
-        Self(path)
+        Self {
+            path,
+            #[cfg(target_os = "linux")]
+            _fixture_guard: fixture_guard,
+        }
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 

@@ -105,7 +105,6 @@ jobs:
           -p dshr-session-export
           -p dshr-session-store
           -p dshr-sidecar-guard
-          -p dshr-sidecar-guard
           -p dshr-tool-runtime
           -p dshr-ui-contributions
 

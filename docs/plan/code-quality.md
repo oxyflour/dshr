@@ -1,6 +1,6 @@
 # 代码质量与合并门禁计划
 
-> 2026-11-22 完成评估，整改进行中。源码盘点基线为 `bfd1035`。
+> 2026-11-22 完成热点拆分和门禁实现。源码盘点基线为 `bfd1035`。GitHub PR 和 `master` 必过规则待验收。
 
 先建立可复现的合并检查，再按改动影响分批拆分。优先理清桌面与 headless 共享的运行逻辑，以及 DSH 宿主和 Sidecar 之间的请求归属。保留现有 CLI、Rust 公开接口、会话日志、RPC 语义和插件行为。若整改需要修改公开契约，先更新对应规范、Schema 和契约用例。 [工程质量门槛](../PLAN.md#102-工程质量门槛) · [规范索引](../spec/README.md)
 
@@ -92,11 +92,13 @@ tools\build-env.cmd cargo test --locked --workspace
 
 - 2026-11-22 完成源文件盘点、关键模块职责与依赖检查，核对本地格式、Node 和 quick conformance 基线。
 - 2026-11-22 提交独立格式清理（`f3e8628`），Rust 格式检查通过。加上本地质量入口、`code quality` 工作流、Sidecar 测试发现和跨平台 `dshr-compat-acp` 测试。临时仓库通过三组用例，覆盖格式、长度、依赖、JS 语法、限时例外、重命名和删除。GitHub PR 与 `master` 必过规则尚待实跑验证。
-- 2026-11-22 独立构建目录的 workspace 测试找出 RPC 类型数量断言过时。保留未知类型拒绝测试，改为直接比较协议枚举和 Schema，补齐跨平台 `dshr-compat-dsh-fs` 和 `dshr-sidecar-guard`。两个契约 crate 通过严格 Clippy。
+- 2026-11-22 独立构建目录的 workspace 测试找出 RPC 类型数量断言过时。保留未知类型拒绝测试，改为直接比较协议枚举和 Schema。跨平台测试清单补入 `dshr-compat-dsh-fs`。`dshr-compat-dsh-fs` 和 `dshr-sidecar-guard` 通过严格 Clippy。
 - 2026-11-22 迁出桌面 CLI 分发和诊断，入口从格式化后的 18,431 行降至 14,090 行。协议、桌面和 headless 三个目标共 69 个测试通过。审批、取消、崩溃恢复、Sidecar 恢复及 CPP 组件自检全部通过。共享会话运行、工具执行和 GPUI 视图待拆分。
 - 2026-11-22 桌面和 headless 共用 `chat/runtime` 中的状态、轮次、模型、会话访问和工具执行。附件数据由运行模块处理，GPUI 缩略图由输入界面负责。入口内联测试按场景迁出，`chat.rs` 降至 8,369 行。Windows workspace 961 通过、42 跳过，其中包括独立官方包和真实窗口用例。GPUI 视图拆分及专项验收继续进行。
 - 2026-11-22 Conformance 的进程执行和报告移为独立模块，CLI 入口降至 959 行。对照拆分前后的 quick 输出，JSON 测试结果、Markdown 结果行与 `--list` 一致。
 - 2026-11-22 桌面启动、命令实现及 GPUI 视图完成拆分，`chat.rs` 降至 274 行并移除存量豁免。共享运行模块的 GPUI 依赖检查已纳入质量入口。Windows workspace 再次通过 961 项测试，42 项留给独立环境。审批、取消、两类进程恢复、ADC、真实窗口恢复、键盘和剪贴板自检通过。阶段 2 的 Windows 本地验收完成。
 - 2026-11-22 Rust 宿主按传输、注册、调用和回调拆分，入口降至 560 行。官方 Sidecar 按文件服务、工具注册及执行拆分，进程入口降至 923 行。两个入口移除存量豁免，门禁拦截 Sidecar 库反向导入入口。Windows 宿主回归通过 92 项，官方 `rc.1` 和 `rc.5` 来源与专项测试分别通过 10 项和 27 项。
 - 2026-11-22 ADC、Agent Core 和 Fiber 的入口分别降至 661、571、832 行。迁出另外 13 个超限文件的内联用例，保留原测试模块名。Windows workspace 严格 Clippy 通过。对现有 DSH 结构化错误、公开对话枚举及 GPUI 不捕获 App 借用的 future 保留有原因的局部 lint 例外。质量工作流配置三平台严格 Clippy。
+- 2026-11-22 Windows 完整 conformance 通过 596/596 个已实现检查，workspace 通过 961 项测试，42 项标记为忽略。另行验证的桌面审批、取消、日志恢复、两类子进程恢复、ADC、真实窗口及键盘、剪贴板均通过。来源锁定的官方 `rc.1` 和 `rc.5` 在 Windows 复跑通过 10 项和 27 项。ADC 最慢典型树 P95 为 13.028 ms（上限 50 ms），满配额树 P95 为 2.481 ms（上限 16.7 ms）。
+- 2026-11-22 Linux（WSL）通过源码门禁、workspace 严格 Clippy、360 项宿主与核心回归及 10 项 headless CLI 测试。ADC 面板、日志恢复和子进程崩溃恢复自检通过。外部进程夹具在 Linux 串行运行，避免并行复制与 fork 导致的 `ETXTBSY`，复跑通过全部 23 项。按来源锁定提取官方 `rc.5` 包，并用夹具中的 `node-pty` 源码构建 Linux 扩展后，通过 Bash、后台任务和真实 PTY 的 3 项专项。
 - 2026-11-22 GitHub 连接返回该仓库的读取权限。实际 PR 状态检查、macOS runner 和 `master` 必过规则仍需通过具有推送和分支规则权限的仓库会话验证。
