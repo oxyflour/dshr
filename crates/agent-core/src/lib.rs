@@ -569,3 +569,5 @@ pub use tools::*;
 
 #[cfg(test)]
 mod tests;
+
+const   _ :() = ();

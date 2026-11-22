@@ -1025,3 +1025,4 @@ pub fn tools_by_name(tools: &[McpTool]) -> BTreeMap<&str, &McpTool> {
     }
     index
 }
+// Intentional code-quality length regression.
