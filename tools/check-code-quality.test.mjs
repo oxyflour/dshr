@@ -56,6 +56,7 @@ test('quality check reports code violations in a tracked change', (t) => {
   write(legacyFile, '// legacy\n'.repeat(1003))
   write('sidecar/new.mjs', '// new\n'.repeat(1001))
   write('sidecar/broken.mjs', 'const =')
+  write('sidecar/dsh-official/lib/entry-import.mjs', "import '../sidecar-dsh.mjs'\n")
   write('crates/dshr-tool-runtime/src/lib.rs', 'pub fn   example() {}\n')
   write('apps/desktop-gpui/src/bin/chat/runtime/turn.rs', 'use gpui::Window;\n')
   const crate = 'dshr-compat-dsh-protocol'
@@ -70,6 +71,7 @@ test('quality check reports code violations in a tracked change', (t) => {
   assert.match(output, /\[Rust formatting\]/)
   assert.match(output, /\[dependency direction\] dshr-compat-dsh-protocol -> dshr-tool-runtime \(build, cfg\(unix\)\)/)
   assert.match(output, /turn\.rs: the shared runtime cannot import the desktop view or GPUI/)
+  assert.match(output, /entry-import\.mjs: Sidecar libraries cannot import the process entry point/)
 })
 
 test('the baseline shrinks and temporary exceptions expire', (t) => {

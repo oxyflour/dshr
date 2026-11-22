@@ -11,6 +11,8 @@ const rustPath = /^(apps|crates)\/[^/]+\/(src|tests)\/.+\.rs$/
 const nodePath = /^(sidecar|tools|schema)\/.+\.(cjs|mjs|js)$/
 const desktopRuntime = /^apps\/desktop-gpui\/src\/bin\/chat\/runtime\/.*\.rs$/
 const windowReferences = /\b(?:gpui|gpui_platform|dshr_ui_gpui)\s*(?:::|as\b|[,};])|\b(?:ChatApp|DesktopTurnUpdate|ComposerAttachment|RenderImage)\b|^\s*use\s+crate::\*/m
+const officialSidecarLibrary = /^sidecar\/dsh-official\/lib\/.*\.(cjs|mjs|js)$/
+const importsSidecarEntry = /\b(?:from\s+|import\s*(?:\(\s*)?|require\s*\(\s*)['"][^'"]*\/sidecar-dsh\.mjs['"]/
 const testScript = /\.test\.(cjs|mjs|js)$/
 const implementationLimit = 1000
 const testLimit = 1500
@@ -150,6 +152,9 @@ function main(args) {
     const source = readFileSync(resolve(root, file), 'utf8')
     if (desktopRuntime.test(file) && windowReferences.test(source)) {
       report('dependency direction', `${file}: the shared runtime cannot import the desktop view or GPUI`)
+    }
+    if (officialSidecarLibrary.test(file) && importsSidecarEntry.test(source)) {
+      report('dependency direction', `${file}: Sidecar libraries cannot import the process entry point`)
     }
     return [file, { lines: physicalLines(source), limit: sourceLimit(file, source) }]
   }))

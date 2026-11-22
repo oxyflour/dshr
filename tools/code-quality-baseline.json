@@ -5,7 +5,6 @@
     "crates/agent-context/src/lib.rs": 1553,
     "crates/agent-core/src/lib.rs": 2619,
     "crates/agent-core/src/session_tree.rs": 1722,
-    "crates/compat-dsh-host/src/lib.rs": 2355,
     "crates/compat-dsh-host/src/service.rs": 1367,
     "crates/compat-dsh-host/src/services.rs": 1486,
     "crates/compat-dsh-host/src/storage_kv.rs": 1487,
@@ -22,8 +21,7 @@
     "crates/tool-runtime/src/lib.rs": 1020,
     "crates/ui-contributions/src/element.rs": 1549,
     "crates/ui-gpui/src/adc.rs": 3147,
-    "crates/ui-gpui/src/diff.rs": 1095,
-    "sidecar/dsh-official/sidecar-dsh.mjs": 1967
+    "crates/ui-gpui/src/diff.rs": 1095
   },
   "exceptions": {}
 }

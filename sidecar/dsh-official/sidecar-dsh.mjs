@@ -26,16 +26,12 @@
 
 import { createInterface } from 'node:readline'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { existsSync, lstatSync } from 'node:fs'
-import { open, readFile, readdir, realpath, stat as fsStat, lstat as fsLstat } from 'node:fs/promises'
-import {
-  isAbsolute,
-  join,
-  relative as relativePath,
-  resolve as resolvePath,
-  sep,
-} from 'node:path'
+import { existsSync } from 'node:fs'
+import { join, resolve as resolvePath } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import { createFsService, officeOutputPath } from './lib/file-service.mjs'
+import { createToolRegistry, TOOL_OWNER } from './lib/tool-registry.mjs'
+import { createToolExecution, AGENT_TOOL_CONTEXT_CAP } from './lib/tool-execution.mjs'
 import {
   createHostServicesRuntime,
   handleHostEventEmit,
@@ -44,7 +40,6 @@ import {
 } from './lib/host-services.mjs'
 import { createSessionProjectionsShim } from './lib/session-projections.mjs'
 import { createAgentPresets } from './lib/agent-presets.mjs'
-import { collectAgentStep } from './lib/agent-step.mjs'
 import { createImageAttachments, IMAGE_ATTACHMENT_CAP } from './lib/image-attachments.mjs'
 import {
   createUserQuestions,
@@ -59,24 +54,19 @@ import {
 } from './lib/tool-processes.mjs'
 import { BACKGROUND_JOBS_CAP, createToolJobs, JOBS_CATALOG } from './lib/tool-jobs.mjs'
 import { TERMINAL_CAP, createToolTerminals, TERMINAL_CATALOG } from './lib/tool-terminals.mjs'
-import { GOALS_CAP, GOALS_CATALOG, GOAL_TOOLS, createToolGoals, goalTurnSnapshot } from './lib/tool-goals.mjs'
-import { SESSION_QUERY_CAP, SESSION_QUERY_CATALOG, SESSION_QUERY_TOOLS, createSessionQuery } from './lib/session-query.mjs'
-import { SUBAGENT_CAP, SUBAGENT_CATALOG, SUBAGENT_TOOLS, SUBAGENT_PLUGINS, createSubagents } from './lib/subagents.mjs'
-import { TEAM_CAP, TEAM_CATALOG, TEAM_TOOLS, TEAM_PLUGIN, createAgentTeams } from './lib/agent-teams.mjs'
-import { WORKFLOW_TOOLS, WORKFLOW_PLUGIN, RALPH_PLUGIN, mountWorkflowEngine } from './lib/workflow-runtime.mjs'
-import { SCHEDULE_CAP, SCHEDULE_CATALOG, SCHEDULE_TOOLS, SCHEDULE_PLUGIN, createSchedules } from './lib/schedules.mjs'
-import { INSPECT_PLUGIN, INSPECT_TOOLS, mountCordisInspection } from './lib/cordis-inspect.mjs'
-import { NATIVE_EXECUTOR_PLUGIN, PTC_EXECUTOR_PLUGIN, PROGRAM_TOOL, PROGRAM_CAP, PROGRAM_SERVICE, PROGRAM_CATALOG,
-  executeWithHooks, executeWithOfficialExecutor } from './lib/executors.mjs'
+import { GOALS_CAP, GOALS_CATALOG, createToolGoals } from './lib/tool-goals.mjs'
+import { SESSION_QUERY_CAP, SESSION_QUERY_CATALOG, createSessionQuery } from './lib/session-query.mjs'
+import { SUBAGENT_CAP, SUBAGENT_CATALOG, SUBAGENT_PLUGINS, createSubagents } from './lib/subagents.mjs'
+import { TEAM_CAP, TEAM_CATALOG, TEAM_PLUGIN, createAgentTeams } from './lib/agent-teams.mjs'
+import { WORKFLOW_PLUGIN, RALPH_PLUGIN, mountWorkflowEngine } from './lib/workflow-runtime.mjs'
+import { SCHEDULE_CAP, SCHEDULE_CATALOG, SCHEDULE_PLUGIN, createSchedules } from './lib/schedules.mjs'
+import { INSPECT_PLUGIN, mountCordisInspection } from './lib/cordis-inspect.mjs'
+import { NATIVE_EXECUTOR_PLUGIN, PTC_EXECUTOR_PLUGIN, PROGRAM_TOOL, PROGRAM_CAP, PROGRAM_CATALOG } from './lib/executors.mjs'
 
 const PROTOCOL_MAX = 2
-const AGENT_TOOL_CONTEXT_CAP = 'agent.tool-context'
 // 协商结果：min(host, sidecar)。v1 宿主（M2 及以前）保持纯 v1 行为。
 let negotiatedProtocol = 1
 let generation = 'node-0001'
-const globalTools = new Map()
-const sessionTools = new Map()
-const revisionTools = new Map()
 const revisionContexts = new Map()
 const jobBridges = new WeakMap()
 const terminalBridges = new WeakMap()
@@ -85,16 +75,10 @@ const queryBridges = new WeakMap()
 const subagentBridges = new WeakMap()
 const teamBridges = new WeakMap()
 const scheduleBridges = new WeakMap()
-const stepScopes = new Map()
 const executorScopes = new WeakMap()
 const presets = createAgentPresets(mountPreset)
 let bootComplete = Promise.resolve()
 let presetOperations = Promise.resolve()
-const toolsByRequest = new Map()
-const toolsById = new Map()
-let toolRegistrationSeq = 0
-const TOOL_OWNER = 'dsh-official'
-const inflight = new Map()
 
 // 握手协商出的 host_caps；`fs.write` 是官方写工具的唯一门闩。
 const hostCaps = new Set()
@@ -106,22 +90,6 @@ let hostServices = null
 let sessionProjections = null
 // 当前工具调用上下文（callId/sessionId/depth）：服务代理用它关联 tool.cancel 与 session_id。
 const callStore = new AsyncLocalStorage()
-const agentActors = new Map()
-const OFFICE_TOOLS = new Set(['office_convert', 'office_recalculate', 'office_render'])
-// 只有这些官方工具使用最小的会话与模型接口。
-const AGENT_FACADE_TOOLS = new Set([
-  'working_directory', 'todo_write', 'read_image', 'glob', 'grep', 'pwsh', 'bash', 'present',
-  'skill', 'web_search', 'web_fetch', 'job_list', 'job_output', 'job_kill', ...OFFICE_TOOLS,
-  'terminal_open', 'terminal_send', 'terminal_read', 'terminal_signal', 'terminal_list', 'terminal_close',
-  ...GOAL_TOOLS,
-  ...SESSION_QUERY_TOOLS,
-  ...SUBAGENT_TOOLS,
-  ...TEAM_TOOLS,
-  ...WORKFLOW_TOOLS,
-  ...SCHEDULE_TOOLS,
-  ...INSPECT_TOOLS,
-  PROGRAM_TOOL,
-])
 const TERMINAL_PLUGIN_NAMES = new Set([
   '@deepseek-ai/dsh-tool-terminal',
   '@deepseek-ai/dsh-tool-bash-persistent',
@@ -152,7 +120,6 @@ const HOST_REQUEST_TIMEOUT_MS = 120_000
 
 // 工具调用的执行上下文：官方 fs 方法的签名里没有 call_id，用 AbortSignal 关联
 // 到发起它的 tool.invoke（审批审计需要同一个 call_id）。
-const callContexts = new WeakMap()
 
 const send = (kind, requestId, payload, extra = {}) => {
   process.stdout.write(
@@ -187,644 +154,23 @@ const sendEnvelope = (envelope) =>
 const log = (level, message, extra = {}) =>
   send('log.emit', `log-${Date.now()}`, { level, message }, extra)
 
-// ---------------------------------------------------------------------------
-// 官方插件的入口：ctx.tools.register(definition)。
-// 这里只做"定义 → 协议"与"调用 → execute"的翻译，不复制 DSH 的执行管线。
-// ---------------------------------------------------------------------------
-
-function removeTool(binding, notifyHost) {
-  const { scope, sessionId, revision, definition, requestId, registrationId } = binding
-  if (scope.get(definition.name) !== binding) return
-  scope.delete(definition.name)
-  if (sessionId && scope.size === 0) sessionTools.delete(sessionId)
-  toolsByRequest.delete(requestId)
-  if (registrationId) toolsById.delete(registrationId)
-  if (notifyHost) {
-    send(
-      'tool.unregister',
-      `tool-unreg-${++toolRegistrationSeq}`,
-      {
-        ...(registrationId ? {} : { register_request_id: requestId }),
-        ...(revision ? { preset_revision: revision } : {}),
-      },
-      {
-        plugin_id: TOOL_OWNER,
-        ...(sessionId ? { session_id: sessionId } : {}),
-        ...(registrationId ? { registration_id: registrationId } : {}),
-      },
-    )
-  }
-}
-
-const toolsService = {
-  register(definition, { sessionId, when } = {}, revision) {
-    if (!definition?.name) throw new Error('tool definition without name')
-    if (sessionId != null && (typeof sessionId !== 'string' || !sessionId)) {
-      throw new Error('invalid tool registration session')
-    }
-    if (revision && sessionId) throw new Error('preset tools cannot declare a session scope')
-    const revisionScope = revision && revisionTools.get(revision)
-    if (revision && !revisionScope) throw new Error('preset revision is no longer active')
-    let scope = revisionScope || globalTools
-    if (sessionId) {
-      scope = sessionTools.get(sessionId)
-      if (!scope) {
-        scope = new Map()
-        sessionTools.set(sessionId, scope)
-      }
-    }
-    if (scope.has(definition.name)) throw new Error(`duplicate tool ${definition.name} in scope`)
-    const requestId = `tool-reg-${++toolRegistrationSeq}`
-    const binding = {
-      definition, sessionId, revision, scope, requestId,
-      when: definition.name === 'office_render' ? selection => (
-        hostCaps.has(IMAGE_ATTACHMENT_CAP) && selection.modelSelection.image_input === true
-          && when(selection)
-      ) : when,
-    }
-    scope.set(definition.name, binding)
-    toolsByRequest.set(requestId, binding)
-    send(
-      'tool.register',
-      requestId,
-      {
-        name: definition.name,
-        ...(revision ? { preset_revision: revision } : {}),
-        description: definition.description ?? '',
-        input_schema: definition.parameters ?? { type: 'object' },
-        output_schema: definition.output?.schema ?? null,
-        presentation: 'generic',
-        // 每个工具自己的超时（DSH `ToolDefinition.timeoutMs`；未声明则不设限）。
-        // 宿主按它执行（Rust 侧 clamp 到 1s..=600s），不再统一写死 5s。
-        ...(Number.isFinite(definition.timeoutMs) && definition.timeoutMs > 0
-          ? { timeout_ms: definition.timeoutMs }
-          : {}),
-      },
-      { plugin_id: TOOL_OWNER, ...(sessionId ? { session_id: sessionId } : {}) },
-    )
-    return () => removeTool(binding, true)
-  },
-  get(name, scope = {}, revision) {
-    const active = callStore.getStore()
-    const sessionId = scope.sessionId ?? scope.session?.id
-    if (active?.stepBindings && (!sessionId || active.sessionId === sessionId)) {
-      return active.stepBindings[name]?.definition
-    }
-    return (sessionTools.get(sessionId)?.get(name)
-      ?? revisionTools.get(revision ?? presets.binding(sessionId))?.get(name)
-      ?? globalTools.get(name))?.definition
-  },
-  schemas(scope) {
-    const active = callStore.getStore()
-    if (!active?.agent || (scope && scope !== active.agent)) return []
-    const names = active.tool === PROGRAM_TOOL ? active.programDefinitions : active.stepBindings
-    return Object.values(names ?? {}).map(({ definition }) => ({
-      name: definition.name, description: definition.description ?? '', parameters: definition.parameters,
-    }))
-  },
-  // 官方插件在注册阶段可能触到这些方法；装载期没有对应能力，先做成空实现。
-  presentAs() {},
-  restrict() {},
-  guard() {},
-  unregister(name, { sessionId } = {}, revision) {
-    const scope = revision ? revisionTools.get(revision) : sessionId ? sessionTools.get(sessionId) : globalTools
-    const binding = scope?.get(name)
-    if (binding) removeTool(binding, true)
-  },
-}
+const toolRegistry = createToolRegistry({
+  send, log, hostCaps,
+  currentCall: () => callStore.getStore(),
+  boundRevision: sessionId => presets.binding(sessionId),
+})
+const toolsService = toolRegistry.service
+const toolExecution = createToolExecution({
+  send, log, callStore, toolRegistry, hostCaps, revisionContexts, executorScopes,
+  getHostServices: () => hostServices,
+  getRootContext: () => cordisRoot,
+  boundRevision: sessionId => presets.binding(sessionId),
+  bridges: { jobBridges, terminalBridges, goalBridges, queryBridges, subagentBridges, teamBridges, scheduleBridges },
+})
 
 // ---------------------------------------------------------------------------
 // 最小服务子集：官方插件通过 `inject`/`ctx.<service>` 使用这些 seam。
 // ---------------------------------------------------------------------------
-
-/**
- * 构造一个官方 `FsError`。用真实包是为了让 dsh-tool-fs 的 `instanceof FsError`
- * 判定成立（否则 FS_STALE_VERSION 的"re-read the file"补救提示不会出现）。
- * 包不存在时退回带 `code` 的普通 Error。
- */
-async function makeFsError(message, code) {
-  try {
-    const { FsError } = await import('@deepseek-ai/dsh-fs')
-    return new FsError(message, code)
-  } catch {
-    const error = new Error(message)
-    error.code = code
-    return error
-  }
-}
-
-/**
- * Rust 裁决层的错误码 → 官方 dsh-fs 词表。
- *
- * 注意 `FS_SANDBOX_DENIED`：官方 dsh-tool-fs 的 `FsSandboxController.mapError`
- * 只在"挂载了 confining 后端"（`ctx.fs.sandboxMode !== undefined`）时才有 policy；
- * 本侧车是非 confining 后端（真实约束在 Rust），收到 `FS_SANDBOX_DENIED` 会
- * 解引用 undefined 的 policy 而崩溃。因此把 Rust 的沙箱/审批拒绝翻译成
- * `FS_PERMISSION_DENIED`（消息里保留"denied / approval"细节）。
- */
-function officialFsErrorCode(code) {
-  switch (code) {
-    case 'FS_SANDBOX_DENIED':
-    case 'E_FS_CAPABILITY':
-      return 'FS_PERMISSION_DENIED'
-    case 'E_FS_REQUEST':
-    case 'E_PROTOCOL':
-      return 'FS_IO_ERROR'
-    default:
-      return code
-  }
-}
-
-function versionOf(info) {
-  // 与 Rust 侧 FsWriteService 的 version_of 同格式：floor(mtime_ms):size。
-  return `${Math.floor(info.mtimeMs)}:${info.size}`
-}
-
-function officeOutputPath(root, path) {
-  if (typeof path !== 'string' || !isAbsolute(path)) return undefined
-  const relative = relativePath(root, path)
-  if (!relative || relative === '..' || relative.startsWith(`..${sep}`) || isAbsolute(relative)) {
-    return undefined
-  }
-  let current = root
-  for (const segment of relative.split(sep)) {
-    current = join(current, segment)
-    try {
-      if (lstatSync(current).isSymbolicLink()) return undefined
-    } catch (error) {
-      if (error.code !== 'ENOENT') return undefined
-      break
-    }
-  }
-  return resolvePath(path)
-}
-
-function createFsService(options = {}) {
-  const root = resolvePath(options.root ?? WORKSPACE_ROOT)
-  const targetMeta = new WeakMap()
-
-  const describeTarget = (absolutePath) => {
-    const target = { targetKey: absolutePath, displayPath: absolutePath }
-    targetMeta.set(target, withinRoot(absolutePath))
-    return target
-  }
-
-  const withinRoot = (absolutePath) => {
-    const rel = relativePath(root, absolutePath)
-    const inside =
-      rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
-    return { inside, relative: rel }
-  }
-
-  const metaOf = (target) => {
-    const known = targetMeta.get(target)
-    if (known) return known
-    const absolute = resolvePath(String(target?.targetKey ?? target))
-    return withinRoot(absolute)
-  }
-
-  const sessionDirectory = async () => {
-    const call = callStore.getStore()
-    if (!call?.sessionId || !options.workingDirectory) return root
-    call.workingDirectory ??= options.workingDirectory.ensure(undefined, call.controller.signal)
-    return await call.workingDirectory || root
-  }
-
-  const targetOf = async (requestedPath, callOptions) => {
-    callOptions.signal?.throwIfAborted()
-    const requested = String(requestedPath)
-    if (isAbsolute(requested)) return describeTarget(resolvePath(requested))
-    const base = typeof callOptions.cwd === 'string' && callOptions.cwd.length > 0
-      ? callOptions.cwd
-      : await sessionDirectory()
-    callOptions.signal?.throwIfAborted()
-    return describeTarget(resolvePath(base, requested))
-  }
-
-  const checkScopedFile = async (target) => {
-    const tool = callStore.getStore()?.tool
-    if (tool !== 'present' && !OFFICE_TOOLS.has(tool)) return target.targetKey
-    if (!metaOf(target).inside) {
-      throw await makeFsError('file path is outside the workspace', 'FS_PERMISSION_DENIED')
-    }
-    const actual = await realpath(target.targetKey).catch(error => {
-      if (error.code !== 'ENOENT') throw error
-      return null
-    })
-    if (!actual) return target.targetKey
-    const relative = relativePath(await realpath(root), actual)
-    if (!relative || relative === '..' || relative.startsWith(`..${sep}`) || isAbsolute(relative)) {
-      throw await makeFsError('file path is outside the workspace', 'FS_PERMISSION_DENIED')
-    }
-    return actual
-  }
-
-  async function readOfficeBytes(target, signal, offset, length, wholeFile) {
-    signal?.throwIfAborted()
-    const file = await open(await checkScopedFile(target), 'r')
-    try {
-      const info = await file.stat()
-      if (!info.isFile()) throw await makeFsError('Office source must be a regular file', 'FS_NOT_REGULAR_FILE')
-      if (wholeFile && info.size > length) {
-        throw await makeFsError('Office source exceeds the file size limit', 'FS_TOO_LARGE')
-      }
-      const data = Buffer.alloc(Math.max(0, Math.min(length, info.size - offset)))
-      let position = 0
-      while (position < data.length) {
-        signal?.throwIfAborted()
-        const { bytesRead } = await file.read(data, position, data.length - position, offset + position)
-        if (bytesRead === 0) throw await makeFsError('Office source changed during read', 'FS_STALE_VERSION')
-        position += bytesRead
-      }
-      signal?.throwIfAborted()
-      return data
-    } finally {
-      await file.close()
-    }
-  }
-
-  const callOf = (signal) => {
-    const call = callContexts.get(signal) ?? callStore.getStore()
-    if (!call) throw new Error('filesystem mutation requires an active tool call')
-    return call
-  }
-
-  const readIfExists = async (target) => {
-    try {
-      return await readFile(target.targetKey, 'utf8')
-    } catch (error) {
-      if (error?.code === 'ENOENT') return null
-      throw error
-    }
-  }
-
-  const currentVersion = async (target) => {
-    const info = await fsStat(target.targetKey)
-    return versionOf(info)
-  }
-
-  /**
-   * 所有写操作的唯一出口：把官方 fs 语义翻译成 fs.write.request。
-   * 路径以"工作区相对路径"发送，Rust 再做一次归一化/边界校验与审批。
-   */
-  const performWrite = async ({ operation, target, content, expectedVersion, call, intent }) => {
-    if (!writeEnabled) {
-      throw await makeFsError(
-        'filesystem write is not enabled: host did not negotiate fs.write',
-        'FS_PERMISSION_DENIED',
-      )
-    }
-    const meta = metaOf(target)
-    if (!meta.inside) {
-      throw await makeFsError(
-        `path escapes the workspace root "${root}": ${target.displayPath}`,
-        'FS_PERMISSION_DENIED',
-      )
-    }
-    const payload = {
-      call_id: call.callId,
-      tool_request_id: call.toolRequestId,
-      tool: call.tool,
-      operation,
-      path: meta.relative,
-      workspace_root: root,
-      content: operation === 'write' ? content : undefined,
-      expected_version: expectedVersion ?? undefined,
-      intent: intent ?? undefined,
-      mode: 'workspace-write',
-    }
-    const result = await requestHost('fs.write.request', payload, {
-      call_id: call.callId,
-      plugin_id: 'dsh-official',
-    }, call.controller.signal)
-    if (!result?.ok) {
-      const code = result?.error?.code ?? 'FS_IO_ERROR'
-      const message = result?.error?.message ?? `write failed (${code})`
-      throw await makeFsError(message, officialFsErrorCode(code))
-    }
-    return result
-  }
-
-  return {
-    processPath(target) {
-      return target.targetKey
-    },
-    processPathFromHostPath(path) {
-      return officeOutputPath(root, path)
-    },
-    /**
-     * 沙箱能力事实：本侧车不挂载 confining 后端（真实约束在 Rust）。
-     * 官方 dsh-tool-fs 的 `FsSandboxController` 因此退化为 escalationModes=[]、
-     * 无 sandboxPolicy 依赖、无 sandbox_permissions 参数——即"无 escalate 模式"。
-     */
-    get sandboxMode() {
-      return undefined
-    },
-    async resolve(requestedPath, callOptions = {}) {
-      return targetOf(requestedPath, callOptions)
-    },
-    async stat(target, signal) {
-      if (signal?.aborted) throw new Error('stat aborted')
-      const path = await checkScopedFile(target)
-      try {
-        const info = await fsStat(path)
-        return {
-          version: versionOf(info),
-          type: info.isDirectory() ? 'directory' : 'file',
-          size: info.size,
-        }
-      } catch {
-        return undefined
-      }
-    },
-    async lstat(requestedPath, callOptions = {}) {
-      const target = await targetOf(requestedPath, callOptions)
-      await checkScopedFile(target)
-      try {
-        const info = await fsLstat(target.targetKey)
-        return {
-          version: versionOf(info),
-          type: info.isSymbolicLink()
-            ? 'symlink'
-            : info.isDirectory()
-              ? 'directory'
-              : 'file',
-          size: info.size,
-        }
-      } catch {
-        return undefined
-      }
-    },
-    async readText(target, signal) {
-      return readFile(target.targetKey, { encoding: 'utf8', signal })
-    },
-    async listDir(target, signal) {
-      signal?.throwIfAborted()
-      let entries
-      try {
-        entries = await readdir(target.targetKey, { withFileTypes: true })
-      } catch (error) {
-        const code = error?.code === 'ENOENT' ? 'FS_NOT_FOUND'
-          : error?.code === 'ENOTDIR' ? 'FS_NOT_DIRECTORY'
-          : error?.code === 'EACCES' || error?.code === 'EPERM' ? 'FS_PERMISSION_DENIED'
-          : 'FS_IO_ERROR'
-        throw await makeFsError(String(error?.message ?? error), code)
-      }
-      signal?.throwIfAborted()
-      return entries.map(entry => ({
-        name: entry.name,
-        target: describeTarget(join(target.targetKey, entry.name)),
-        type: entry.isDirectory() ? 'directory'
-          : entry.isFile() ? 'file'
-          : entry.isSymbolicLink() ? 'symlink' : 'other',
-      }))
-    },
-    async streamText(target, signal) {
-      // 工具侧用 `for await` 消费分块；一次返回整块也合法（只是不分块）。
-      return [await this.readText(target, signal)]
-    },
-    async readBytes(target, signal, cap) {
-      if (options.images && callStore.getStore()?.tool === 'read_image') {
-        return options.images.readBytes(target, signal, cap)
-      }
-      if (OFFICE_TOOLS.has(callStore.getStore()?.tool)) {
-        const limit = Number.isSafeInteger(cap) && cap >= 0 ? Math.min(cap, 100 * 1024 * 1024) : 0
-        return readOfficeBytes(target, signal, 0, limit, true)
-      }
-      if (signal?.aborted) throw new Error('read aborted')
-      const buffer = await readFile(target.targetKey)
-      return typeof cap === 'number' ? buffer.subarray(0, cap) : buffer
-    },
-    async readByteRange(target, { offset, length }, signal) {
-      if (!OFFICE_TOOLS.has(callStore.getStore()?.tool)
-          || !Number.isSafeInteger(offset) || offset < 0
-          || !Number.isSafeInteger(length) || length < 0 || length > 64 * 1024) {
-        throw await makeFsError('invalid Office byte range', 'FS_PERMISSION_DENIED')
-      }
-      return readOfficeBytes(target, signal, offset, length, false)
-    },
-    /**
-     * 官方 write 工具调用：无 policy 时是"无条件原子 create-or-overwrite"。
-     * `before/after/operation` 是官方 output schema / diff 卡片需要的字段。
-     */
-    async writeText(target, content, intent, signal) {
-      const call = callOf(signal)
-      const before = await readIfExists(target)
-      if (intent?.kind === 'createIfAbsent' && before !== null) {
-        throw await makeFsError(
-          `cannot overwrite existing "${target.displayPath}" without reading it first`,
-          'FS_NOT_OBSERVED',
-        )
-      }
-      const expectedVersion =
-        typeof intent?.version === 'string' ? intent.version : undefined
-      const operation = before === null ? 'create' : 'update'
-      const result = await performWrite({
-        operation: 'write',
-        target,
-        content,
-        expectedVersion,
-        call,
-        intent,
-      })
-      return {
-        version: result.version,
-        before,
-        after: content,
-        operation: result.operation ?? operation,
-      }
-    },
-    /** 官方 edit 工具调用：唯一匹配（默认）或 replace_all，写前带版本守卫。 */
-    async editText(target, edit, intent, signal) {
-      const call = callOf(signal)
-      const before = await readIfExists(target)
-      if (before === null) {
-        throw await makeFsError(
-          `cannot edit "${target.displayPath}": not found`,
-          'FS_NOT_FOUND',
-        )
-      }
-      const version = await currentVersion(target)
-      if (typeof intent?.version === 'string' && intent.version !== version) {
-        throw await makeFsError(
-          `cannot edit "${target.displayPath}": file changed since it was read`,
-          'FS_STALE_VERSION',
-        )
-      }
-      const occurrences = countOccurrences(before, edit.oldString)
-      if (occurrences === 0) {
-        throw await makeFsError(
-          `cannot edit "${target.displayPath}": old_string was not found`,
-          'FS_EDIT_NOT_FOUND',
-        )
-      }
-      if (occurrences > 1 && !edit.replaceAll) {
-        throw await makeFsError(
-          `cannot edit "${target.displayPath}": old_string appears ${occurrences} times; pass a unique string or replace_all`,
-          'FS_AMBIGUOUS_EDIT',
-        )
-      }
-      const after = edit.replaceAll
-        ? before.split(edit.oldString).join(edit.newString)
-        : replaceOnce(before, edit.oldString, edit.newString)
-      const result = await performWrite({
-        operation: 'write',
-        target,
-        content: after,
-        expectedVersion: version,
-        call,
-        intent,
-      })
-      return { version: result.version, before, after }
-    },
-    /** 官方 apply_patch update 调用：hunks 由官方 dsh-fs-patch 纯函数应用。 */
-    async patchText(target, hunks, intent, signal) {
-      const call = callOf(signal)
-      const before = await readIfExists(target)
-      if (before === null) {
-        throw await makeFsError(
-          `cannot patch "${target.displayPath}": not found`,
-          'FS_NOT_FOUND',
-        )
-      }
-      const version = await currentVersion(target)
-      const { applyHunks } = await import('@deepseek-ai/dsh-fs-patch')
-      const applied = applyHunks(before.replace(/\r\n/g, '\n'), hunks)
-      if (!applied?.ok) {
-        throw await makeFsError(
-          `cannot apply patch to "${target.displayPath}": hunk did not match the current file`,
-          'FS_PATCH_MISMATCH',
-        )
-      }
-      const result = await performWrite({
-        operation: 'write',
-        target,
-        content: applied.after,
-        expectedVersion: version,
-        call,
-        intent,
-      })
-      return { version: result.version, before, after: applied.after }
-    },
-    /** 官方 apply_patch delete 调用。 */
-    async deleteFile(target, intent, signal) {
-      const call = callOf(signal)
-      const before = await readIfExists(target)
-      if (before === null) {
-        throw await makeFsError(
-          `cannot delete "${target.displayPath}": not found`,
-          'FS_NOT_FOUND',
-        )
-      }
-      const version = await currentVersion(target)
-      await performWrite({
-        operation: 'delete',
-        target,
-        expectedVersion: version,
-        call,
-        intent,
-      })
-      return { before }
-    },
-    /**
-     * 官方 apply_patch move 调用：写目标 + 删源。两步各自审批、各自快照；
-     * 目标写成功而源删除失败时按官方契约返回 sourceFailure（不假装原子）。
-     */
-    async moveFile(target, destination, moveOptions = {}, signal) {
-      const call = callOf(signal)
-      const sourceText = await readIfExists(target)
-      if (sourceText === null) {
-        throw await makeFsError(
-          `cannot move "${target.displayPath}": not found`,
-          'FS_NOT_FOUND',
-        )
-      }
-      const sourceVersion = await currentVersion(target)
-      if (
-        typeof moveOptions.expectedSource?.version === 'string' &&
-        moveOptions.expectedSource.version !== sourceVersion
-      ) {
-        throw await makeFsError(
-          `cannot move "${target.displayPath}": file changed since it was read`,
-          'FS_STALE_VERSION',
-        )
-      }
-      let after = sourceText
-      if (Array.isArray(moveOptions.hunks) && moveOptions.hunks.length > 0) {
-        const { applyHunks } = await import('@deepseek-ai/dsh-fs-patch')
-        const applied = applyHunks(sourceText.replace(/\r\n/g, '\n'), moveOptions.hunks)
-        if (!applied?.ok) {
-          throw await makeFsError(
-            `cannot apply patch to "${target.displayPath}": hunk did not match the current file`,
-            'FS_PATCH_MISMATCH',
-          )
-        }
-        after = applied.after
-      }
-      const destinationBefore = await readIfExists(destination)
-      if (
-        moveOptions.expectedDestination?.kind === 'createIfAbsent' &&
-        destinationBefore !== null
-      ) {
-        throw await makeFsError(
-          `cannot overwrite existing "${destination.displayPath}" without reading it first`,
-          'FS_NOT_OBSERVED',
-        )
-      }
-      const writeResult = await performWrite({
-        operation: 'write',
-        target: destination,
-        content: after,
-        expectedVersion:
-          typeof moveOptions.expectedDestination?.version === 'string'
-            ? moveOptions.expectedDestination.version
-            : undefined,
-        call,
-        intent: moveOptions.expectedDestination,
-      })
-      const destinationResult = {
-        version: writeResult.version,
-        before: destinationBefore,
-        after,
-      }
-      try {
-        await performWrite({
-          operation: 'delete',
-          target,
-          expectedVersion: sourceVersion,
-          call,
-          intent: moveOptions.expectedSource,
-        })
-      } catch (error) {
-        return {
-          destination: destinationResult,
-          sourceDeleted: false,
-          sourceBefore: sourceText,
-          sourceFailure: {
-            code: error?.code ?? 'FS_IO_ERROR',
-            message: String(error?.message ?? error),
-          },
-        }
-      }
-      return {
-        destination: destinationResult,
-        sourceDeleted: true,
-        sourceBefore: sourceText,
-      }
-    },
-  }
-}
-
-function countOccurrences(text, search) {
-  if (typeof search !== 'string' || search.length === 0) return 0
-  return text.split(search).length - 1
-}
-
-function replaceOnce(text, search, replacement) {
-  const index = text.indexOf(search)
-  if (index < 0) return text
-  return text.slice(0, index) + replacement + text.slice(index + search.length)
-}
 
 /**
  * sidecar → host 请求。当前只有 `fs.write.request`，答复 kind 为 `fs.write.result`。
@@ -906,7 +252,7 @@ function createPluginContext(revision) {
       if (active?.tool === name && active.agent === agent) return active.exactDefinition
       const binding = active?.tool === PROGRAM_TOOL && active.agent === agent && active.programDefinitions?.[name]
       if (binding) {
-        return { ...binding.definition, execute: (args, exec) => executeNested(binding, args, exec) }
+        return { ...binding.definition, execute: (args, exec) => toolExecution.executeNested(binding, args, exec) }
       }
       return undefined
     },
@@ -923,7 +269,12 @@ function createPluginContext(revision) {
     executorScopes.get(root)?.removeTransport?.()
     executorScopes.delete(root)
   }, 'dispose scoped executor')
-  root.provide('fs', createFsService({ workingDirectory, images }))
+  root.provide('fs', createFsService({
+    workspaceRoot: WORKSPACE_ROOT,
+    currentCall: toolExecution.currentCall,
+    writeAllowed: () => writeEnabled,
+    requestHost,
+  }, { workingDirectory, images }))
   root.provide('systemPrompt', createSystemPromptService())
   if (hostServices && hostCaps.has(AGENT_TOOL_CONTEXT_CAP)) {
     root.provide('agents', {
@@ -1061,7 +412,7 @@ async function bootPlugins(entries, root = createPluginContext(), strict = false
         parent: root,
         currentCall: () => callStore.getStore(),
         callService: hostServices.call,
-        findAgent: id => agentActors.get(id),
+        findAgent: toolExecution.findAgent,
         shellPath: process.env.DSHR_TERMINAL_SHELL,
       })
       terminalBridges.set(root, terminals)
@@ -1183,7 +534,7 @@ async function bootPlugins(entries, root = createPluginContext(), strict = false
       fibers.push({ handle, fiber, name: entry.name })
       send('log.emit', `boot-${entry.name}`, {
         level: 'info',
-        message: `loaded official plugin ${entry.name} (tools now: ${[...globalTools.keys()].join(', ') || '<none>'})`,
+        message: `loaded official plugin ${entry.name} (tools now: ${[...toolRegistry.globalNames()].join(', ') || '<none>'})`,
       })
     } catch (error) {
       if (strict) throw new Error(`${entry.name}: ${String(error?.message ?? error)}`)
@@ -1205,16 +556,14 @@ async function bootPlugins(entries, root = createPluginContext(), strict = false
 }
 
 async function mountPreset(revision, entries) {
-  const scope = new Map()
-  revisionTools.set(revision, scope)
+  const releaseTools = toolRegistry.openRevision(revision)
   const root = createPluginContext(revision)
   revisionContexts.set(revision, root)
   const dispose = async () => {
     try {
       await root.fiber.dispose()
     } finally {
-      for (const binding of scope.values()) removeTool(binding, true)
-      revisionTools.delete(revision)
+      releaseTools()
       revisionContexts.delete(revision)
     }
   }
@@ -1224,374 +573,6 @@ async function mountPreset(revision, entries) {
   } catch (error) {
     await dispose()
     throw error
-  }
-}
-
-function agentFacade(sessionId) {
-  const current = () => {
-    const active = callStore.getStore()
-    return active?.sessionId === sessionId ? active : undefined
-  }
-  const agent = agentActors.get(sessionId) ?? {
-    id: sessionId,
-    status: 'running',
-    get ctx() { return current()?.terminalOwnerContext ?? current()?.pluginContext },
-    inbox: {
-      get nextStep() { return current()?.subagentInbox ?? [] },
-      remove(id) {
-        const notices = current()?.jobNotices
-        const index = notices?.findIndex(notice => notice.id === id) ?? -1
-        if (index >= 0) notices.splice(index, 1)
-      },
-    },
-    inject(message) {
-      if (message.source?.kind === 'tool-jobs') current()?.jobNotices?.push(message)
-    },
-    get options() { return current()?.model ?? {} },
-    session: {
-      id: sessionId,
-      get header() {
-        const call = current()
-        return call?.queryHeader ?? { id: sessionId, ...(call?.goal?.subagent ? { origin: 'subagent' } : {}) }
-      },
-      seq: 0,
-      snapshotEvents: () => goalTurnSnapshot(current()?.goal),
-      surface: { nodes: [] },
-      eventAt: () => undefined,
-      append(type, data) {
-        const append = current()?.appendSessionEvent
-        if (!append) throw new Error('session event append requires an active tool')
-        return append(type, data)
-      },
-      requestHeader: () => undefined,
-      requestContext: () => current()?.model,
-      deriveMessages: () => [],
-    },
-  }
-  agentActors.delete(sessionId)
-  agentActors.set(sessionId, agent)
-  if (agentActors.size > 128) agentActors.delete(agentActors.keys().next().value)
-  return agent
-}
-
-async function prepareAgentStep(msg) {
-  const sessionId = msg.session_id
-  const { step, model, user_text: userText, registrations, turn } = msg.payload
-  if (!sessionId || !Number.isInteger(step) || step < 1 || typeof model?.provider !== 'string'
-      || typeof model?.model !== 'string' || !registrations || Array.isArray(registrations)) {
-    throw new Error('invalid agent step context')
-  }
-  const revision = presets.binding(sessionId)
-  const contexts = [cordisRoot, revisionContexts.get(revision)].filter(Boolean)
-  const bindings = Object.create(null)
-  for (const [name, registrationId] of Object.entries(registrations)) {
-    const binding = toolsById.get(registrationId)
-    if (binding?.definition.name !== name || (binding.sessionId && binding.sessionId !== sessionId)
-        || (binding.revision && binding.revision !== revision)) continue
-    bindings[name] = binding
-  }
-  const agent = agentFacade(sessionId)
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error('agent pre-step timed out')), 7000)
-  const jobNotices = []
-  try {
-    return await callStore.run(
-      { sessionId, depth: 0, controller, agent, turn, model, stepBindings: bindings, jobNotices },
-      async () => {
-        if (bindings.job_output) {
-          const jobs = contexts.map(context => jobBridges.get(context)).reverse().find(Boolean)
-          if (jobs) await jobs.notify()
-        }
-        if (SUBAGENT_TOOLS.some(name => bindings[name])) {
-          const subagents = contexts.map(context => subagentBridges.get(context)).reverse().find(Boolean)
-          if (subagents) jobNotices.push(...await subagents.notices())
-        }
-        if (SCHEDULE_TOOLS.some(name => bindings[name])) {
-          const schedules = contexts.map(context => scheduleBridges.get(context)).reverse().find(Boolean)
-          if (schedules) jobNotices.push(...await schedules.notices())
-        }
-        const result = await collectAgentStep({
-          contexts, agent, signal: controller.signal, step, userText,
-          modelSelection: model, toolSet: undefined, bindings, jobNotices,
-          reportError: (name, error) => log('warn', `could not resolve availability of ${name}: ${error.message}`),
-        })
-        const selected = contexts.map(context => executorScopes.get(context)).filter(Boolean).at(-1)
-        let programDefinitions
-        if (selected?.ptc && bindings[PROGRAM_TOOL] && hostCaps.has(PROGRAM_CAP)) {
-          programDefinitions = Object.fromEntries(Object.entries(bindings).filter(([name]) => name !== PROGRAM_TOOL))
-          try {
-            const sdk = selected.executor.renderSdk(Object.values(programDefinitions).map(binding => binding.definition))
-            if (typeof sdk !== 'string' || Buffer.byteLength(sdk) > 64 * 1024) throw new Error('program SDK is too large')
-            result.system_sections.push('Call run_code to use the scoped tools from a TypeScript program. The functions are available on the tools object.')
-            result.system_sections.push(sdk)
-            result.deferred_tools = Object.keys(programDefinitions)
-          } catch (error) {
-            log('warn', `program SDK unavailable: ${error.message}`)
-            programDefinitions = undefined
-            result.unavailable_tools.push(PROGRAM_TOOL)
-            delete bindings[PROGRAM_TOOL]
-          }
-        } else if (bindings[PROGRAM_TOOL]) {
-          result.unavailable_tools.push(PROGRAM_TOOL)
-          delete bindings[PROGRAM_TOOL]
-        }
-        stepScopes.delete(sessionId)
-        stepScopes.set(sessionId, { revision, bindings, programDefinitions })
-        if (stepScopes.size > 128) stepScopes.delete(stepScopes.keys().next().value)
-        return result
-      },
-    )
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-function toolEffects(call) {
-  const deferred = []
-  let firstError
-  call.defer = pending => {
-    deferred.push(pending.catch(error => { firstError ??= error }))
-    return pending
-  }
-  call.appendSessionEvent = (type, data) => call.defer(hostServices
-    ? hostServices.call({
-        serviceKey: SERVICE_KEYS.sessionLog, method: 'events.append',
-        args: { event_type: String(type), data: data ?? null },
-        sessionId: call.sessionId, callId: call.callId, depth: call.depth,
-      })
-    : Promise.reject(new Error('session-log service is not negotiated (v2 host required)')))
-  return async () => {
-    await Promise.all(deferred)
-    call.controller.signal.throwIfAborted()
-    if (firstError) throw firstError
-  }
-}
-
-function adaptersFor(hooks, name) {
-  const from = map => hooks.map(context => map.get(context)).findLast(Boolean)
-  return {
-    jobs: from(jobBridges),
-    terminals: (name.startsWith('terminal_') || ['pwsh', 'bash'].includes(name)) ? from(terminalBridges) : undefined,
-    goals: GOAL_TOOLS.includes(name) ? from(goalBridges) : undefined,
-    query: SESSION_QUERY_TOOLS.includes(name) ? from(queryBridges) : undefined,
-    subagents: SUBAGENT_TOOLS.includes(name) || TEAM_TOOLS.includes(name) ? from(subagentBridges) : undefined,
-    teams: TEAM_TOOLS.includes(name) ? from(teamBridges) : undefined,
-  }
-}
-
-async function prepareAdapters(adapters, exec) {
-  const { jobs, goals, query, subagents, teams, terminals } = adapters
-  if (jobs) await jobs.prepare(exec)
-  if (goals) await goals.prepare(exec)
-  if (query) await query.prepare()
-  if (subagents && ['list_agents', 'send_message', 'interrupt_agent', 'team_task_list', 'team_task_update'].includes(exec.name)) {
-    await subagents.prepare()
-  }
-  if (teams && ['team_task_list', 'team_task_get'].includes(exec.name)) await teams.prepare()
-  if (terminals) await terminals.prepare(exec)
-}
-
-async function settleAdapters(adapters) {
-  if (adapters.jobs) await adapters.jobs.confirm()
-  if (adapters.goals) await adapters.goals.commit()
-}
-
-async function executeNested(binding, args, exec) {
-  const outer = callStore.getStore()
-  if (!outer?.programDefinitions || outer.programDefinitions[binding.definition.name] !== binding || !exec.parent) {
-    throw new Error('nested calls require an active run_code invocation')
-  }
-  const request = (method, fields) => hostServices.call({
-    serviceKey: PROGRAM_SERVICE, method, args: fields, sessionId: outer.sessionId, depth: outer.depth + 1,
-    timeoutMs: 120_000,
-  })
-  const admitted = await request('begin', {
-    name: binding.definition.name, registration: binding.registrationId, call_id: exec.callId, arguments: args,
-  })
-  const signal = AbortSignal.any([exec.signal, outer.controller.signal, AbortSignal.timeout(admitted.timeout_ms)])
-  const child = {
-    tool: binding.definition.name, sessionId: outer.sessionId, depth: outer.depth + 1,
-    callId: exec.callId, toolRequestId: admitted.id, controller: { signal },
-    turn: outer.turn, model: outer.model, agent: outer.agent, arguments: args,
-    timeoutMs: admitted.timeout_ms, pluginContext: outer.pluginContext, stepBindings: outer.stepBindings,
-  }
-  callContexts.set(signal, child)
-  const flush = toolEffects(child)
-  const hooks = [cordisRoot, revisionContexts.get(presets.binding(child.sessionId))].filter(Boolean)
-  const adapters = adaptersFor(hooks, child.tool)
-  // The official executor owns the execution token and final tool result. Each
-  // host callback from the body uses the independently approved child identity.
-  const nested = {
-    ...exec, signal,
-    ...(AGENT_FACADE_TOOLS.has(child.tool) ? {} : { agent: undefined }),
-  }
-  let value
-  let failure
-  try {
-    value = await callStore.run(child, async () => {
-      await prepareAdapters(adapters, nested)
-      const run = () => binding.definition.execute(args, nested)
-      const result = adapters.subagents && child.tool === 'wait_agent'
-        ? await adapters.subagents.deliverWait(nested, run)
-        : await run()
-      await flush()
-      await settleAdapters(adapters)
-      if (child.goal?.notice) exec.deferContext({ source: { kind: 'tool-goal' }, content: child.goal.notice })
-      return result
-    })
-  } catch (error) { failure = error }
-  try { await request('finish', { id: admitted.id }) } catch (error) { failure ??= error }
-  if (failure) throw failure
-  return value
-}
-
-async function runTool(definition, msg) {
-  const controller = new AbortController()
-  // 服务代理读取的调用上下文：session_id 只从信封来（spec §5），depth 用于 +1。
-  const callContext = {
-    callId: msg.call_id,
-    toolRequestId: msg.request_id,
-    controller,
-    tool: definition.name,
-    timeoutMs: definition.timeoutMs,
-    sessionId: msg.session_id,
-    turn: msg.payload?.turn,
-    model: definition.name === 'read_image'
-      ? { provider: 'dshr', model: 'active session model' }
-      : msg.payload?.model,
-    depth: Number.isInteger(msg.depth) ? msg.depth : 0,
-    exactDefinition: definition,
-  }
-  const activeRevision = presets.binding(msg.session_id)
-  const stepScope = stepScopes.get(msg.session_id)
-  if (stepScope && stepScope.revision === activeRevision) {
-    callContext.stepBindings = Object.fromEntries(Object.entries(stepScope.bindings)
-      .filter(([, binding]) => toolsById.get(binding.registrationId) === binding))
-    if (definition.name === PROGRAM_TOOL && stepScope.programDefinitions) {
-      callContext.programDefinitions = Object.fromEntries(Object.entries(stepScope.programDefinitions)
-        .filter(([, binding]) => toolsById.get(binding.registrationId) === binding))
-    }
-  }
-  inflight.set(msg.request_id, callContext)
-  callContexts.set(controller.signal, callContext)
-  const started = Date.now()
-  try {
-    // M4 W6：给官方工具一个最小 `exec.agent.session.append(type, data)`（todo 等需要）。
-    // 写入走 session-log/v1 events.append；官方代码不 await 时，这里在 execute 结束后
-    // 统一 flush 并抛出首个错误，避免"写入丢失但工具显示成功"。
-    const flush = toolEffects(callContext)
-    const exec = {
-      signal: controller.signal,
-      callId: msg.call_id,
-      rootCallId: msg.request_id,
-      name: definition.name,
-      arguments: msg.payload?.arguments ?? {},
-      // 只给明确支持最小 agent facade 的工具；fs 等工具在 agent 存在时会走
-      // `ctx.workingDirectory.ensure` 分支，但它们没有 inject workingDirectory，
-      // 这会让原本无 agent 的写路径回归。逐工具放开，避免"给了 agent 反而坏"。
-      ...(AGENT_FACADE_TOOLS.has(definition.name)
-        ? { agent: agentFacade(msg.session_id) }
-        : {}),
-    }
-    callContext.agent = exec.agent
-    callContext.arguments = exec.arguments
-    const argumentsValue = exec.arguments
-    if (exec.name === PROGRAM_TOOL && (argumentsValue.sandbox_permissions !== undefined || argumentsValue.justification !== undefined)) {
-      throw new Error('the program process uses the host read-only sandbox')
-    }
-    const hooks = hostServices && hostCaps.has(AGENT_TOOL_CONTEXT_CAP)
-      ? [cordisRoot, revisionContexts.get(presets.binding(msg.session_id))].filter(Boolean)
-      : []
-    callContext.pluginContext = hooks.at(-1)
-    const executionContext = hooks.findLast(context => executorScopes.has(context))
-    const selectedExecutor = executionContext && executorScopes.get(executionContext)
-    const adapters = adaptersFor(hooks, exec.name)
-    const notifyToolResult = async (result, skip) => {
-      for (const context of hooks) {
-        if (context !== skip) await context.parallel('tools/result', exec, result)
-      }
-    }
-    // AsyncLocalStorage：ctx.workingDirectory/ctx.storage 的代理在官方 execute 的
-    // 任意 await 点都能拿到同一个 call_id/session_id（tool.cancel 据此取消服务调用）。
-    const executed = await callStore.run(callContext, async () => {
-      await prepareAdapters(adapters, exec)
-      let result
-      const activateExecutor = selectedExecutor && (!selectedExecutor.ptc || exec.name === PROGRAM_TOOL)
-      try {
-        const run = () => activateExecutor
-          ? executeWithOfficialExecutor(selectedExecutor.executor, exec)
-          : executeWithHooks(hooks, exec, () => definition.execute(argumentsValue, exec))
-        result = adapters.subagents && exec.name === 'wait_agent' ? await adapters.subagents.deliverWait(exec, run) : await run()
-      } catch (error) {
-        await notifyToolResult({ isError: true, error }, activateExecutor ? executionContext : undefined)
-        throw error
-      }
-      controller.signal.throwIfAborted()
-      await notifyToolResult({ isError: false, ...result }, activateExecutor ? executionContext : undefined)
-      return result
-    })
-    const { value } = executed
-    await flush()
-    await callStore.run(callContext, () => settleAdapters(adapters))
-
-    let content
-    try {
-      content = executed.content ?? definition.output?.render?.(msg.payload?.arguments ?? {}, value)
-    } catch {
-      content = undefined
-    }
-    if (!Array.isArray(content) || content.length === 0) {
-      content = [{ type: 'json', value }]
-    }
-    if (callContext.goal?.notice) content = [...content, ...callContext.goal.notice]
-    for (const context of executed.contexts ?? []) {
-      if (context.source?.kind === 'tool-goal' || context.source?.kind === 'ptc-mode') {
-        content = [...content, ...context.content]
-      }
-    }
-    let meta = null
-    try {
-      meta = executed.meta ?? definition.output?.presentationMeta?.(msg.payload?.arguments ?? {}, value) ?? null
-    } catch {
-      meta = null
-    }
-
-    send(
-      'tool.result',
-      msg.request_id,
-      { call_id: msg.call_id, is_error: false, content, value, meta },
-      { call_id: msg.call_id, plugin_id: 'dsh-official' },
-    )
-    send('log.emit', `call-${msg.call_id}`, {
-      level: 'debug',
-      message: `dsh tool ${definition.name} done in ${Date.now() - started}ms`,
-    })
-  } catch (error) {
-    const code = controller.signal.aborted
-      ? 'E_CANCELLED'
-      : error?.code === 'TOOL_TIMEOUT' ? 'E_TOOL_TIMEOUT'
-      : typeof error?.code === 'string' ? error.code : 'E_TOOL'
-    send(
-      'tool.result',
-      msg.request_id,
-      {
-        call_id: msg.call_id,
-        is_error: true,
-        content: [{ type: 'text', text: String(error?.message ?? error) }],
-        value: null,
-        meta: null,
-      },
-      {
-        call_id: msg.call_id,
-        error: {
-          code,
-          message: String(error?.message ?? error),
-          retryable: false,
-        },
-      },
-    )
-  } finally {
-    inflight.delete(msg.request_id)
   }
 }
 
@@ -1771,37 +752,19 @@ async function handle(msg) {
       }
       return
     }
-    case 'tool.register': {
-      const binding = toolsByRequest.get(msg.request_id)
-      if (!binding || msg.runtime_generation !== generation) return
-      if (msg.error) {
-        removeTool(binding, false)
-        log('error', `could not register tool ${binding.definition.name}: ${msg.error.message}`)
-        return
-      }
-      const id = msg.registration_id ?? msg.payload?.registration_id
-      if (id) {
-        binding.registrationId = id
-        toolsByRequest.delete(msg.request_id)
-        toolsById.set(id, binding)
-      }
+    case 'tool.register':
+      toolRegistry.acknowledge(msg, generation)
       return
-    }
-    case 'tool.unregister': {
-      const binding = toolsById.get(msg.registration_id)
-      if (binding?.sessionId && binding.sessionId === msg.session_id &&
-          msg.plugin_id === TOOL_OWNER && msg.runtime_generation === generation) {
-        removeTool(binding, false)
-      }
+    case 'tool.unregister':
+      toolRegistry.revoke(msg, generation)
       return
-    }
     case 'agent.step': {
       if (!hostServices || !hostCaps.has(AGENT_TOOL_CONTEXT_CAP)
           || msg.runtime_generation !== generation) return
       await bootComplete
       const extra = { session_id: msg.session_id }
       try {
-        send('agent.step', msg.request_id, await prepareAgentStep(msg), extra)
+        send('agent.step', msg.request_id, await toolExecution.prepareAgentStep(msg), extra)
       } catch (error) {
         send('agent.step', msg.request_id, {}, {
           ...extra,
@@ -1812,7 +775,7 @@ async function handle(msg) {
     }
     case 'tool.invoke': {
       const name = msg.payload?.name
-      const binding = toolsById.get(msg.registration_id)
+      const binding = toolRegistry.find(msg.registration_id)
       const definition = msg.registration_id
         ? (msg.runtime_generation === generation &&
            msg.plugin_id === TOOL_OWNER &&
@@ -1834,19 +797,12 @@ async function handle(msg) {
         )
         return
       }
-      await runTool(definition, msg)
+      await toolExecution.runTool(definition, msg)
       return
     }
-    case 'tool.cancel': {
-      const requestId = msg.payload?.tool_request_id
-      for (const call of inflight.values()) {
-        if (call.callId !== msg.call_id || (requestId && requestId !== call.toolRequestId)) continue
-        inflight.delete(call.toolRequestId)
-        call.controller.abort()
-        hostServices?.cancelForCall(call.callId, call.toolRequestId)
-      }
+    case 'tool.cancel':
+      toolExecution.cancel(msg)
       return
-    }
     case 'host.service.result': {
       // 与 tool.result 严格分开：只按 request_id 关联 sidecar 发起的服务调用。
       if (!hostServices) {
