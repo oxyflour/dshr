@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Barrier, Mutex};
 
 struct EchoExecutor {
     calls: Vec<ToolCallRequest>,
@@ -366,9 +367,9 @@ fn m3_parallel_001_batch_default_is_sequential_and_ordered() {
     assert_eq!(result_ids, tool_call_ids(&events));
 }
 
-/// M3-PARALLEL-002：执行器覆盖 `execute_batch` 时可真正并发；墙钟显著小于串行。
+/// M3-PARALLEL-002：执行器覆盖 `execute_batch` 时，三个调用可同时执行。
 struct ConcurrentExecutor {
-    max_active: Arc<std::sync::atomic::AtomicUsize>,
+    max_active: AtomicUsize,
 }
 
 impl ToolExecutor for ConcurrentExecutor {
@@ -386,46 +387,46 @@ impl ToolExecutor for ConcurrentExecutor {
         max_parallel: usize,
     ) -> Vec<ToolOutcome> {
         assert_eq!(max_parallel, 3, "max_parallel 应透传给执行器");
-        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut handles = Vec::new();
-        for call in calls {
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&self.max_active);
-            let call = call.clone();
-            handles.push(std::thread::spawn(move || {
-                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
-                max_active.fetch_max(now, Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(80));
-                active.fetch_sub(1, Ordering::SeqCst);
-                ToolOutcome::success(
-                    json!([{ "type": "json", "value": { "call": call.call_id } }]),
-                    json!({ "call": call.call_id }),
-                )
-            }));
-        }
-        handles
-            .into_iter()
-            .map(|handle| handle.join().expect("worker"))
-            .collect()
+        let active = AtomicUsize::new(0);
+        let all_started = Barrier::new(calls.len());
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = calls
+                .iter()
+                .map(|call| {
+                    let (active, all_started, max_active) =
+                        (&active, &all_started, &self.max_active);
+                    scope.spawn(move || {
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_active.fetch_max(now, Ordering::SeqCst);
+                        all_started.wait();
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        ToolOutcome::success(
+                            json!([{ "type": "json", "value": { "call": call.call_id } }]),
+                            json!({ "call": call.call_id }),
+                        )
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("worker"))
+                .collect()
+        })
     }
 }
 
 #[test]
 fn m3_parallel_002_execute_batch_runs_concurrently() {
-    let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut agent = Agent::with_budget(loop_provider(Some(1), 3), ToolBudget::default())
         .with_max_parallel_tool_calls(Some(3));
     let mut executor = ConcurrentExecutor {
-        max_active: Arc::clone(&max_active),
+        max_active: AtomicUsize::new(0),
     };
-    let started = std::time::Instant::now();
     let events = agent.run_turn("并行", &mut executor);
-    let elapsed = started.elapsed();
-
-    assert_eq!(max_active.load(Ordering::SeqCst), 3, "3 个调用应同时在跑");
-    assert!(
-        elapsed < std::time::Duration::from_millis(200),
-        "并行墙钟应远小于串行 240ms，实际 {elapsed:?}"
+    assert_eq!(
+        executor.max_active.load(Ordering::SeqCst),
+        3,
+        "3 个调用应同时在跑"
     );
     assert_eq!(tool_results(&events).len(), 3);
     assert_eq!(
