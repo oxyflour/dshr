@@ -137,12 +137,16 @@ impl ChatApp {
                 .as_ref()
                 .and_then(|host| host.preset_status().as_object())
             {
-                choices.extend(presets.iter().filter_map(|(id, status)| {
-                    (id != creator::CORDIS_PRESET
-                        && id != creator::PRESET
-                        && status.get("error").is_none())
-                    .then(|| Some(id.clone()))
-                }));
+                choices.extend(
+                    presets
+                        .iter()
+                        .filter(|&(id, status)| {
+                            id != creator::CORDIS_PRESET
+                                && id != creator::PRESET
+                                && status.get("error").is_none()
+                        })
+                        .map(|(id, _status)| Some(id.clone())),
+                );
             }
         }
         choices

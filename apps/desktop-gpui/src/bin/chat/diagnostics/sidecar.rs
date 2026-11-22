@@ -477,9 +477,7 @@ pub(crate) fn selftest_l2() -> i32 {
         root.join("storage"),
         root.join("workspace"),
         "l2.fixture",
-        None,
-        None,
-        None,
+        ProcessServices::default(),
         false,
     ) {
         Ok(router) => router,

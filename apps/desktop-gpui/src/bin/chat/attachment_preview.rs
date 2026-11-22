@@ -37,6 +37,10 @@ impl Asset for AttachmentThumbnail {
     type Source = StoredAttachment;
     type Output = Result<Arc<RenderImage>, String>;
 
+    #[expect(
+        clippy::manual_async_fn,
+        reason = "The returned future is static and does not capture the App borrow."
+    )]
     fn load(
         source: Self::Source,
         _: &mut App,
@@ -95,7 +99,7 @@ pub(super) fn decode_image(
         image = image.thumbnail(edge, edge);
     }
     let mut pixels = image.into_rgba8();
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok(Arc::new(RenderImage::new([Frame::new(pixels)])))

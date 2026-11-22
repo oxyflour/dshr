@@ -457,10 +457,10 @@ impl ToolExecutor for ChatExecutor<'_> {
                         .step
                         .borrow()
                         .iter()
-                        .filter_map(|(name, tool)| {
+                        .filter(|&(_name, tool)| {
                             matches!(tool.location, ToolLocation::Global | ToolLocation::Trial)
-                                .then(|| name.clone())
                         })
+                        .map(|(name, _tool)| name.clone())
                         .collect();
                     let creator = self.creator.as_mut().expect("creator step");
                     creator.read_only = !self.permission.can_write();
@@ -646,18 +646,17 @@ impl ChatExecutor<'_> {
             .step
             .borrow()
             .iter()
-            .filter_map(|(name, tool)| {
-                (self.program_hidden.contains(name)
-                    && matches!(tool.location, ToolLocation::Global))
-                .then(|| {
+            .filter(|&(name, tool)| {
+                self.program_hidden.contains(name) && matches!(tool.location, ToolLocation::Global)
+            })
+            .map(|(name, tool)| {
+                (
+                    name.clone(),
                     (
-                        name.clone(),
-                        (
-                            tool.definition.clone(),
-                            sidecar_tool_timeout(&tool.definition),
-                        ),
-                    )
-                })
+                        tool.definition.clone(),
+                        sidecar_tool_timeout(&tool.definition),
+                    ),
+                )
             })
             .collect();
         let audit_owner = owner.clone();

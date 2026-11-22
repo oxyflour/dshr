@@ -289,9 +289,11 @@ pub(crate) fn spawn_sidecar_in(
                 data_root().join("storage"),
                 workspace.to_path_buf(),
                 "dsh-official",
-                processes,
-                jobs,
-                terminals,
+                ProcessServices {
+                    processes,
+                    jobs,
+                    terminals,
+                },
                 interactive,
             ) {
                 Ok(router) => {
@@ -337,17 +339,27 @@ fn path_executable(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+#[derive(Default)]
+pub(crate) struct ProcessServices {
+    processes: Option<ToolProcessService>,
+    jobs: Option<ToolJobService>,
+    terminals: Option<ToolTerminalService>,
+}
+
 /// 构造 v2 Host Service Router，并在 runtime.ready 协商后更新 generation。
 pub(crate) fn build_l2_router_at(
     access: Arc<ChatSessionAccess>,
     storage_root: PathBuf,
     workspace: PathBuf,
     plugin_id: &str,
-    processes: Option<ToolProcessService>,
-    jobs: Option<ToolJobService>,
-    terminals: Option<ToolTerminalService>,
+    process_services: ProcessServices,
     interactive: bool,
 ) -> Result<Arc<Mutex<HostServiceRouter>>, String> {
+    let ProcessServices {
+        processes,
+        jobs,
+        terminals,
+    } = process_services;
     let mut router = HostServiceRouter::new(
         "node-pending",
         PROTOCOL_MAX,

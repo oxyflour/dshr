@@ -55,6 +55,19 @@ Cargo 元数据表明，桌面应用直接依赖 18 个 workspace 库，只有�
 
 每个重构 PR 记录变更前后的职责、依赖方向、热点行数与验证结果。应用运行时的会话与工具链路、Sidecar 回调、插件卸载和 GPUI 交互分别验收。已有用例能证明行为时沿用其 conformance ID，只有缺少关键断言时才补用例。 [注册表](../conformance.d/registry.json)
 
+## 剩余超限文件
+
+完成热点拆分后，27 个初始存量上限中剩 6 个。以下路径的上限由门禁固定，后续减少行数时同步下调。 [文件长度基线](../../tools/code-quality-baseline.json)
+
+| 文件 | 上限 | 本轮留存理由 |
+| --- | ---: | --- |
+| `agent-core/src/session_tree.rs` | 1,722 | 父子关系、重放、中断传播和 drain 共用同一运行状态。先保留这一状态机及其用例，后续按树状态与持久化接线拆分。 |
+| `compat-mcp/src/lib.rs` | 1,027 | 单个 MCP 客户端拥有初始化、请求响应及关闭状态。拆传输时须同步验证超时、迟到答复和重启。 |
+| `plugin-host/src/external.rs` | 1,302 | 外部进程插件的帧限制、超时和清理共用进程句柄。当前阶段调整 Fiber 生命周期实现，独立进程适配保留现有实现。 |
+| `profile/src/loader.rs` | 1,633 | Include、group 展开和 patch 覆盖依赖处理顺序及相对路径基准。后续按解析与装配拆分并复验预设升级。 |
+| `profile/src/trust.rs` | 1,988 | 摘要、确认、安装记录与密钥审计有兼容测试。后续按包验证和密钥生命周期拆分并验证事务及审计结果。 |
+| `ui-contributions/src/element.rs` | 1,549 | 声明解析、归一化及诊断是 ADC 契约实现。本轮拆分渲染层，保留该契约实现的原有分支和配额规则。 |
+
 ## 验收命令
 
 将新增源码加入 Git 索引后执行质量检查。默认以 `HEAD` 比较文件上限，可用 `--base <git-ref>` 指定 PR 基准。测试专用 Rust 模块在文件首行声明 `#![cfg(test)]`。Windows 的 Cargo 构建、测试和 Clippy 使用 `tools\build-env.cmd`，Linux 和 macOS 直接调用 Cargo。 [质量工作流](../../.github/workflows/code-quality.yml) · [文件长度基线](../../tools/code-quality-baseline.json)
@@ -63,7 +76,7 @@ Cargo 元数据表明，桌面应用直接依赖 18 个 workspace 库，只有�
 node tools/check-code-quality.mjs
 node --test tools/check-code-quality.test.mjs
 cargo fmt --all -- --check
-tools\build-env.cmd cargo clippy --locked --workspace --all-targets
+tools\build-env.cmd cargo clippy --locked --workspace --all-targets -- -D warnings
 node tools/conformance.mjs --quick --compact
 node tools/check-links.mjs
 tools\build-env.cmd cargo test --locked --workspace
@@ -85,3 +98,5 @@ tools\build-env.cmd cargo test --locked --workspace
 - 2026-11-22 Conformance 的进程执行和报告移为独立模块，CLI 入口降至 959 行。对照拆分前后的 quick 输出，JSON 测试结果、Markdown 结果行与 `--list` 一致。
 - 2026-11-22 桌面启动、命令实现及 GPUI 视图完成拆分，`chat.rs` 降至 274 行并移除存量豁免。共享运行模块的 GPUI 依赖检查已纳入质量入口。Windows workspace 再次通过 961 项测试，42 项留给独立环境。审批、取消、两类进程恢复、ADC、真实窗口恢复、键盘和剪贴板自检通过。阶段 2 的 Windows 本地验收完成。
 - 2026-11-22 Rust 宿主按传输、注册、调用和回调拆分，入口降至 560 行。官方 Sidecar 按文件服务、工具注册及执行拆分，进程入口降至 923 行。两个入口移除存量豁免，门禁拦截 Sidecar 库反向导入入口。Windows 宿主回归通过 92 项，官方 `rc.1` 和 `rc.5` 来源与专项测试分别通过 10 项和 27 项。
+- 2026-11-22 ADC、Agent Core 和 Fiber 的入口分别降至 661、571、832 行。迁出另外 13 个超限文件的内联用例，保留原测试模块名。Windows workspace 严格 Clippy 通过。对现有 DSH 结构化错误、公开对话枚举及 GPUI 不捕获 App 借用的 future 保留有原因的局部 lint 例外。质量工作流配置三平台严格 Clippy。
+- 2026-11-22 GitHub 连接返回该仓库的读取权限。实际 PR 状态检查、macOS runner 和 `master` 必过规则仍需通过具有推送和分支规则权限的仓库会话验证。

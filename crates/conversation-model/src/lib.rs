@@ -46,6 +46,10 @@ pub struct UserAttachment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the public Item::Tool(ToolItem) payload by value."
+)]
 pub enum Item {
     User {
         text: String,

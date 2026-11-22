@@ -25,7 +25,7 @@ pub(crate) enum Row {
         is_error: bool,
         pending: bool,
         /// 结构化卡片（Diff/Terminal 的原生视图从这里取正文）。
-        card: Option<ToolCard>,
+        card: Option<Box<ToolCard>>,
         delivered_files: Vec<dsh_deliverables::DeliveredFile>,
     },
     Meta(String),
@@ -191,7 +191,7 @@ pub(crate) fn describe(item: &Item) -> Row {
                     .unwrap_or_default(),
                 is_error: matches!(tool.state, ToolState::Settled { is_error: true }),
                 pending,
-                card: tool.card.clone(),
+                card: tool.card.clone().map(Box::new),
                 delivered_files: Vec::new(),
             }
         }

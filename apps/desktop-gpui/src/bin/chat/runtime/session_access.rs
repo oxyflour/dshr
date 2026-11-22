@@ -114,6 +114,10 @@ impl ChatSessionAccess {
         SpillStore::new(spill_dir_in(&inner.sessions_dir))
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "The image service uses the host's structured service error."
+    )]
     pub(crate) fn image_input(&self, session: &str) -> Result<bool, ServiceError> {
         let inner = self
             .inner

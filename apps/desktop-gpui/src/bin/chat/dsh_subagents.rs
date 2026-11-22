@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use super::{
     now_ts, ApprovalBroker, ChatRuntime, ChatSessionAccess, ChatState, DesktopSettings,
-    LivePermission, PermissionMode, TurnReason,
+    LivePermission, PermissionMode, SessionInput, TurnReason,
 };
 
 const CREATED: &str = "subagent/created";
@@ -124,9 +124,11 @@ impl ChildSupervisor {
             .name(format!("dshr-child-{id}"))
             .spawn(move || {
                 let mut state = ChatState::from_log_in(
-                    store.path_for(log.session_id()),
-                    log,
-                    workspace,
+                    SessionInput {
+                        path: store.path_for(log.session_id()),
+                        log,
+                        workspace,
+                    },
                     &cancel,
                     ApprovalBroker::noninteractive(),
                     environment.settings.clone(),

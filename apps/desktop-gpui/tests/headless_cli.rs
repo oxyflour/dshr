@@ -48,8 +48,7 @@ impl Fixture {
 
     fn run(&self, args: &[&str], stdin: &[u8]) -> Output {
         invoke(
-            &mut self
-                .command(Path::new(env!("CARGO_BIN_EXE_dshr")))
+            self.command(Path::new(env!("CARGO_BIN_EXE_dshr")))
                 .args(args),
             stdin,
         )

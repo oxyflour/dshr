@@ -37,9 +37,13 @@ jobs:
         run: node --test tools/check-code-quality.test.mjs
 
   lint:
-    name: Windows Rust lint
-    runs-on: windows-latest
+    name: Rust lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -52,10 +56,8 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Fetch dependencies
         run: cargo fetch --locked
-      - name: Workspace Clippy
-        run: cargo clippy --locked --offline --workspace --all-targets
-      - name: Strict Clippy for contract crates
-        run: cargo clippy --locked --offline --all-targets -p dshr-compat-dsh-protocol -p dshr-ui-contributions -- -D warnings
+      - name: Strict workspace Clippy
+        run: cargo clippy --locked --offline --workspace --all-targets -- -D warnings
 
   quality:
     name: code quality
@@ -69,6 +71,6 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
         run: |
           if [[ "$SOURCE_RESULT" != success || "$LINT_RESULT" != success ]]; then
-            echo "Source checks: $SOURCE_RESULT; Windows Rust lint: $LINT_RESULT"
+            echo "Source checks: $SOURCE_RESULT; Rust lint: $LINT_RESULT"
             exit 1
           fi

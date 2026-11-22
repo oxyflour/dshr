@@ -171,7 +171,7 @@ pub(crate) fn selftest_recovery() -> i32 {
             .as_ref()
             .map(|log| log.events().len() == first_len)
             .unwrap_or(false);
-    let continue_ok = replayed.map_or(false, |mut log| {
+    let continue_ok = replayed.is_some_and(|mut log| {
         let _ = log.append(EventSpec::durable(
             "message.user",
             now_ts(),

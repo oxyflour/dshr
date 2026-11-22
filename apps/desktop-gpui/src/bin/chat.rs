@@ -93,20 +93,52 @@ const MAX_MEDIA_ATTACHMENT_BYTES: usize = 12 * 1024 * 1024;
 #[path = "chat/attachment_preview.rs"]
 mod attachment_preview;
 #[path = "chat/dsh_deliverables.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_deliverables;
 #[path = "chat/dsh_goals.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_goals;
 #[path = "chat/dsh_image_attachments.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_image_attachments;
 #[path = "chat/dsh_schedules.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_schedules;
 #[path = "chat/dsh_session_query.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_session_query;
 #[path = "chat/dsh_subagents.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_subagents;
 #[path = "chat/dsh_teams.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_teams;
 #[path = "chat/dsh_user_questions.rs"]
+#[expect(
+    clippy::result_large_err,
+    reason = "Keep structured host service errors at the DSH bridge."
+)]
 mod dsh_user_questions;
 #[path = "chat/session_header.rs"]
 mod session_header;

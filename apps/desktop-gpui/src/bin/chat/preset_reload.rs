@@ -6,9 +6,7 @@ use super::{read_agent_presets_from, ChatState};
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 pub(super) fn start(state: &Arc<Mutex<ChatState>>) -> Option<mpsc::Receiver<()>> {
-    if state.lock().ok()?.preset_inputs.is_none() {
-        return None;
-    }
+    state.lock().ok()?.preset_inputs.as_ref()?;
     let state = Arc::downgrade(state);
     let (updates, receiver) = mpsc::channel();
     std::thread::spawn(move || {

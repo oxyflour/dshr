@@ -17,6 +17,7 @@ pub(crate) use providers::{
     configured_models, force_mock, DesktopModel, DesktopSettings, ModelKind,
 };
 mod state;
+pub(crate) use state::SessionInput;
 pub(crate) use state::{
     AdcPanelView, ChatRuntime, ChatState, ParsedAgentPresets, TurnReason, TurnResult, TurnUpdate,
 };
@@ -30,6 +31,7 @@ pub(crate) use session_files::{
 };
 
 mod sidecar;
+pub(crate) use sidecar::ProcessServices;
 pub(crate) use sidecar::{
     blank_root_created, build_l2_router_at, creator_preset_id, loader_inputs,
     prepare_desktop_sidecar, profile_dir_for_app, read_agent_presets, read_agent_presets_from,

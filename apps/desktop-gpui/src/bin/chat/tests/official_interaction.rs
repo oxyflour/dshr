@@ -262,9 +262,7 @@ fn stage3_official_questions_round_trip_in_the_desktop_runtime() {
     let run = |state: &mut ChatState, id, answer| {
         let input = broker.clone();
         let reader = std::thread::spawn(move || {
-            let Some(prompt) = wait_for_prompt(&input) else {
-                return None;
-            };
+            let prompt = wait_for_prompt(&input)?;
             assert_eq!(prompt.questions[0].question, "Choose items");
             assert!(input.first("another-session", None).is_none());
             assert!(input

@@ -34,6 +34,12 @@ pub(crate) struct AdcPanelView {
 
 pub(crate) type ParsedAgentPresets = Result<dshr_profile::loader::AgentPresets, String>;
 
+pub(crate) struct SessionInput {
+    pub(crate) path: PathBuf,
+    pub(crate) log: SessionLog,
+    pub(crate) workspace: PathBuf,
+}
+
 pub(crate) struct ChatState {
     pub(crate) log: SessionLog,
     pub(crate) path: PathBuf,
@@ -202,20 +208,32 @@ impl ChatState {
         runtime: ChatRuntime,
     ) -> Self {
         Self::from_log_in(
-            path, log, workspace, cancel, approvals, settings, runtime, None,
+            SessionInput {
+                path,
+                log,
+                workspace,
+            },
+            cancel,
+            approvals,
+            settings,
+            runtime,
+            None,
         )
     }
 
     pub(crate) fn from_log_in(
-        path: PathBuf,
-        log: SessionLog,
-        workspace: PathBuf,
+        input: SessionInput,
         cancel: &Arc<AtomicBool>,
         approvals: Arc<ApprovalBroker>,
         settings: DesktopSettings,
         runtime: ChatRuntime,
         inherited: Option<(Arc<dsh_subagents::ChildSupervisor>, LivePermission)>,
     ) -> Self {
+        let SessionInput {
+            path,
+            log,
+            workspace,
+        } = input;
         let (headless, allow_spawn, with_sidecar, diagnostics) = match runtime {
             ChatRuntime::Desktop {
                 allow_spawn,
