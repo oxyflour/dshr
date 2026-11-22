@@ -216,7 +216,7 @@ pub struct Layout {
     pub sidebar_width: Pixels,
     /// `--dsh-chat-content-width` 的缺省回退值（CSS 里是 clamp(680, …×.64, 920)）。
     pub content_width: Pixels,
-    /// `--dsh-composer-card-max-width` = content + 32。
+    /// 输入卡片的桌面目标宽度，空间不足时随正文栏收缩。
     pub composer_max_width: Pixels,
     /// `--dsh-composer-side-clearance`。
     pub composer_clearance: Pixels,
@@ -230,7 +230,7 @@ impl Layout {
     pub const DSH: Self = Self {
         sidebar_width: px(280.0),
         content_width: px(748.0),
-        composer_max_width: px(780.0),
+        composer_max_width: px(712.0),
         composer_clearance: px(16.0),
         header_height: px(76.0),
         page_padding: px(16.0),
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(theme.radii.lg, px(16.0));
         assert_eq!(theme.layout.sidebar_width, px(280.0));
         assert_eq!(theme.layout.content_width, px(748.0));
-        assert_eq!(theme.layout.composer_max_width, px(780.0));
+        assert_eq!(theme.layout.composer_max_width, px(712.0));
         assert_eq!(theme.layout.header_height, px(76.0));
     }
 

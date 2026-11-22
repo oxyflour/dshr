@@ -6,7 +6,7 @@ G1 的签名交付需要**受信任的代码签名证书**；本机没有证书�
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 `
-  -Path dist/dshr-debug-windows-x64/chat.exe -Thumbprint <cert-thumbprint>
+  -Path dist/dshr-debug-windows-x64/dshr.exe -Thumbprint <cert-thumbprint>
 ```
 
 证书必须在 `Cert:\CurrentUser\My`，并且有私钥；脚本用 SHA-256 调
@@ -17,7 +17,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 `
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 `
-  -Path <copy-of-chat.exe> -SelfSignedTest
+  -Path <copy-of-dshr.exe> -SelfSignedTest
 ```
 
 实测输出：
@@ -36,7 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 `
 
 - `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` → 解码 pfx → `sign-windows.ps1 -PfxPath`，
   只在该 secret 存在时执行；
-- `MACOS_SIGN_IDENTITY` → `tools/sign-macos.sh target/debug/chat <identity>`，
+- `MACOS_SIGN_IDENTITY` → `tools/sign-macos.sh target/debug/dshr <identity>`，
   只在该 secret 存在时执行，`codesign --options runtime --timestamp`。
 
 没有 secret 时步骤跳过，包仍是 unsigned；CI 从未实跑，不能当作已签名发布。

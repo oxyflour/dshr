@@ -46,7 +46,8 @@
 | `session.created` | durable | `workspace_id`（必需）, `parent_session_id?`, `spawn_source?`(`user`/`agent`), `preset?` |
 | `session.title` | durable | `title`, `source` |
 | `session.archived` / `session.unarchived` | durable | — |
-| `turn.started` | durable | `turn_id`, `prompt_message_id` |
+| `turn.started` | durable | `turn_id`, `prompt_message_id`, 可选的宿主标记 `source`（直接用户输入或已准入的目标轮次） |
+| `step.started` | durable | `turn_id`, `step`。会话查询用作当前模型步的历史截点 |
 | `turn.ended` | durable | `turn_id`, `reason`(`completed`/`cancelled`/`error`) |
 | `step.started` | durable | `step_id`, `turn_id`, `model` |
 | `step.ended` | durable | `step_id`, `stop_reason`, `usage` |
@@ -57,7 +58,10 @@
 |---|---|---|
 | `message.user` | durable | `message_id`, `content[]`（引用附件用 `$attachment`） |
 | `message.assistant.delta` | ephemeral | `message_id`, `text`（流式，可丢） |
+| `message.assistant.reasoning` | durable | `text`（模型返回的推理文本，对应本轮接下来的工具批次或助手回复） |
 | `message.assistant.settled` | durable | `message_id`, `content[]`, `finish_reason` |
+
+推理事件按生成顺序展示，单独于助手正文。重建模型请求时，将该事件关联到同一轮接下来的工具批次或助手回复。轮次终止时，仍未配对的推理只用于展示。旧日志可以省略该事件。导出和 headless 标准输出的助手正文仍按原有正文事件生成。
 | `model.request` | durable | `step_id`, `provider`, `model`, `token_estimate` |
 | `model.response.meta` | durable | `usage{input,output,cached}`, `latency_ms` |
 
@@ -67,7 +71,7 @@
 
 | type | durability | 载荷要点 |
 |---|---|---|
-| `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`), `registration_id?`, `presentation?` |
+| `tool.call` | durable | `call_id`, `tool`, `arguments`, `origin`(`native`/`sidecar`/`mcp`/`unknown`), `registration_id?`, `plugin_id?`, `generation?`, `presentation?` |
 | `tool.chunk` | ephemeral | `call_id`, `seq`, `text` |
 | `tool.result` | durable | `call_id`, `is_error`, `content[]`, `value`, `meta?`, `metadata`；`meta.ui` 可带受限 ADC 附加区（M4 W3，仅展示，不参与模型输入） |
 | `tool.aborted` | durable | `call_id`, `reason`(`crash`/`cancel`/`timeout`/`unload`) |
@@ -75,12 +79,13 @@
 | `tool.result.pruned` | durable | `call_id`, `原始大小`, `spill_ref`（见 §5） |
 | `tool.repeat` | durable | `tool`, `count`, `threshold`, `message`（M3：同一工具+参数在本轮第 N 次调用触发软提醒；actor=`system`；**不失败、不改变工具结果**；读取端必须容忍未知 type，UI 可不渲染，用于自激诊断/审计） |
 
-不变量：一个 `call_id` 至多一条 `tool.result`；`tool.aborted` 与 `tool.result` 互斥（先到者胜）。
+新事件保留模型返回的 `call_id`，用可选的 `call_seq`（对应 `tool.call` 的事件序号）配对调用、终态和外部化结果。历史事件按 `call_id` 配对。
+每次调用至多有一个终态（`tool.result` 或 `tool.aborted`）。
 `tool.repeat` 是旁路诊断事件，不参与工具结算，也不影响 `tool.call/tool.result` 的配对。
 
 **并行工具的顺序（M3）**：一个 step 里有多个工具调用且宿主按批并发时，事件序为
 `ToolCall×N → 终态×N`（`tool.result` / `tool.aborted` 按**原调用顺序**发出），不同 `call_id` 的终态
-**不再保证相邻**于自己的 `tool.call`。UI/回放/审计必须按 `call_id` 配对，不能依赖"下一条就是结果"；
+**不再保证相邻**于自己的 `tool.call`。UI/回放按 `call_seq` 或历史 `call_id` 配对；
 `tool.chunk` 仍按各自 `call_id` 归属。
 
 ### 3.4 审批与策略
@@ -88,8 +93,11 @@
 | type | durability | 载荷要点 |
 |---|---|---|
 | `approval.asked` | durable | `call_id`, `request`, `policy` |
-| `approval.answered` | durable | `call_id`, `outcome`(`allow`/`deny`/`allow_once`), `answerer` |
+| `approval.answered` | durable | `call_id`, `outcome`(`allow`/`deny`/`allow_once`/`allow_always`), `answerer` |
 | `policy.changed` | durable | `scope`, `from`, `to`, `by` |
+
+桌面普通审批因权限模式变化而完成时，`answerer` 写为 `permission_mode`。按当前模式直接授权的调用用工具事件留痕。
+用户选择「始终允许」时写 `allow_always`。后续使用已保存授权时，`answerer` 写为 `tool_grant`。运行时授权来自本地授权设置，会话日志仅用于审计。
 
 ### 3.5 上下文工程（见 §5）
 
@@ -97,7 +105,14 @@
 |---|---|---|
 | `context.measured` | durable | `tokens{input,output,total}`, `window`, `ratio` |
 | `context.compacted` | durable | `from_seq`, `to_seq`, `summary_message_id`, `tokens_before/after` |
-| `spill.created` | durable | `id`, `hash`, `size`, `mime`, `retention` |
+| `spill.created` | durable | `id`, `hash`, `size`, `mime`, `retention`。官方工具保存的图片使用 `kind: "tool.image"` |
+| `deliverables/presented` | durable | `turn`, `callId`, `files`。文件项保存经宿主校验的工作区路径和可选描述，随成功的官方 `present` 工具结果回放 |
+| `terminal/opened` / `terminal/closed` | durable | 官方持久终端的宿主分配 ID 及状态。重启后，旧运行时的终端显示为已中断或关闭 |
+| `goal/change` | durable | 目标状态快照及累计已开始轮次。自动继续授权存在于当前宿主内存，重开会话后解除 |
+| `subagent/created` | durable | 子会话的名称、标签及初始工作目录 |
+| `subagent/started` / `subagent/settled` | durable | 子会话执行的开始及终态。终态记录结局及受限的回复摘要 |
+| `subagent/notified` | durable | 父会话已接收的子会话通知标识，用于重放时跳过重复投递 |
+| `tool.program.admitted` | durable | Rust 已批准的程序子调用，记录父子调用 ID、工具名、注册 ID 和 Sidecar 代次 |
 
 ### 3.6 会话树
 
@@ -162,6 +177,8 @@
 
 回放 MUST NOT 触发 LLM 请求或工具执行。所有展示元数据（tool card 的 `presentation`）随事件持久化，不依赖插件当前版本。
 
+桌面模型步骤的 `tool.call` 从该步提供的定义获取来源、卡片类型与 Sidecar 注册身份。模型请求中没有公开该工具时，事件使用 `origin: "unknown"`，并记录配对的工具错误。
+
 ### 6.1 工具卡片的折叠规则
 
 卡片是**事件的确定函数**：`(presentation, value, content, 终态)` → 卡片，不读插件、不读当前时间、不随机。
@@ -206,6 +223,9 @@ v1 语义（PLAN §6.5，实现见 `crates/session-store` 与 `crates/agent-core
 - 子会话是完整会话：自己的 `seq` 空间、自己的日志文件、可独立导出回放。
 - `parent_session_id` / `spawn_source` / `preset` 只在子会话的第一条 `session.created` 写入一次，
   不可修改；父会话**不保存**子会话树结构，只通过 `child.spawned` 留引用痕迹。
+- 桌面根会话仅含 `session.created` 时，可在写锁下原子更新该事件的 `preset`。会话开始后按原预设执行。官方 Sidecar 的创造根会话写入 `preset: "cordis"`，旧版和诊断入口使用 `"dshr-creator"`。
+  进程存续期间保留该会话的试用实例，删除会话或退出应用时清理。预设会话持久化的是 ID，进程内修订由 Sidecar 保留。
+  [创造模式](creator-mode.md) · [Agent 预设](agent-presets.md)
 - 深度从 0 开始（根 0 / 子 1 / 孙 2），默认上限为 2；上限可配置，子会话只能收紧不能放大。
 - 子会话继承父的工作区与策略，且只允许收紧（更小的深度上限、工具白名单子集、黑名单追加）；
   放宽必须走显式审批，v1 不支持。

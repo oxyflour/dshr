@@ -38,12 +38,10 @@ impl ComponentPlugin {
         let mut config = Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
-        let engine = Engine::new(&config).map_err(|error| {
-            PluginError::Invalid(format!("component engine: {error}"))
-        })?;
-        let component = Component::new(&engine, source.as_ref()).map_err(|error| {
-            PluginError::Invalid(format!("component does not parse: {error}"))
-        })?;
+        let engine = Engine::new(&config)
+            .map_err(|error| PluginError::Invalid(format!("component engine: {error}")))?;
+        let component = Component::new(&engine, source.as_ref())
+            .map_err(|error| PluginError::Invalid(format!("component does not parse: {error}")))?;
         Ok(Self {
             id: id.into(),
             version: version.into(),

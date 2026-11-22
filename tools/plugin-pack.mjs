@@ -23,7 +23,7 @@
 //      `dshr-trust/v1\n<plugin_id>\n<version>\n<digest>` (docs/spec/plugin-trust.md §4).
 //
 // The digest is byte-compatible with Rust `dshr_profile::package_digest`; the strongest
-// cross-check is a successful `chat --install-plugin` (host recomputes the digest and
+// cross-check is a successful `dshr --install-plugin` (host recomputes the digest and
 // rejects mismatches with E_INTEGRITY_MISMATCH). `--verify` recomputes for an existing
 // directory and can compare against a digest printed earlier.
 //
@@ -272,7 +272,7 @@ function runGenerateKey(args) {
   console.log(`[key] public_key_hex=${pubHex}`)
   console.log(`[key] private=${privatePath}（不要提交/分发）`)
   console.log('[key] 注册到本机信任库:')
-  console.log(`  chat --trust-key add ${args['key-id']} ${pubHex}`)
+  console.log(`  dshr --trust-key add ${args['key-id']} ${pubHex}`)
   return 0
 }
 
@@ -444,13 +444,13 @@ function runPack(args) {
   if (args.note) console.log(`[pack] note=${args.note}`)
   if (signature) {
     console.log('[pack] 本机信任库:')
-    console.log(`  chat --trust-key add ${signature.key_id} ${signerPublic}`)
-    console.log(`[pack] 安装（已验证签名，无需 --yes-install）: chat --install-plugin "${outDir}"`)
+    console.log(`  dshr --trust-key add ${signature.key_id} ${signerPublic}`)
+    console.log(`[pack] 安装（已验证签名，无需 --yes-install）: dshr --install-plugin "${outDir}"`)
   } else {
-    console.log(`[pack] 安装: target\\debug\\chat.exe --install-plugin "${outDir}" --yes-install`)
+    console.log(`[pack] 安装: target\\debug\\dshr.exe --install-plugin "${outDir}" --yes-install`)
   }
   console.log(`[pack] 校验: node tools/plugin-pack.mjs --verify "${outDir}" --digest ${report.digest}`)
-  console.log('[pack] 自校验: 用 chat --install-plugin 安装成功即证明 JS 摘要 == Rust package_digest')
+  console.log('[pack] 自校验: 用 dshr --install-plugin 安装成功即证明 JS 摘要 == Rust package_digest')
 }
 
 function runVerify(args) {

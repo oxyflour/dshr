@@ -18,6 +18,7 @@
 //! `disabled: !!js` 一律按真值处理）、patch 的 include 无文件基准、`isolate`/`intercept`
 //! 只保留不生效、`name` 相对路径不锚定 patch 文件。
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -87,6 +88,53 @@ pub fn parse_bundle(yaml: &str) -> Result<Vec<LoaderRow>, String> {
 /// 解析 patch 文件（顶层是 patch 映射列表）。
 pub fn parse_patch(yaml: &str) -> Result<Vec<PatchOp>, String> {
     let document = parse_document(yaml)?;
+    parse_patch_document(document)
+}
+
+/// Read the subset of DSH row overrides that the headless host can apply.
+pub(crate) fn parse_static_overrides(yaml: &str) -> Result<Vec<PatchOp>, String> {
+    let document = parse_document(yaml)?;
+    let items = match &document {
+        Yaml::Null => return Ok(Vec::new()),
+        Yaml::List(items) => items,
+        _ => return Err("patch 顶层必须是列表".into()),
+    };
+    for item in items {
+        let Yaml::Map(fields) = item else {
+            return Err("patch 项必须是映射".into());
+        };
+        let id = fields
+            .iter()
+            .find_map(|(key, value)| match (key.as_str(), value) {
+                ("id", Yaml::Str(id)) if !id.is_empty() => Some(id.as_str()),
+                _ => None,
+            })
+            .ok_or("patch 条目需要字符串 id")?;
+        let mut seen = std::collections::HashSet::new();
+        for (key, value) in fields {
+            if !seen.insert(key) {
+                return Err(format!("条目 `{id}` 重复声明 `{key}`"));
+            }
+            if count_js_expressions(value) != 0 {
+                return Err(format!("条目 `{id}` 的 `{key}` 不支持 !!js"));
+            }
+            match (key.as_str(), value) {
+                ("id", Yaml::Str(_)) | ("disabled", Yaml::Bool(_)) => {}
+                ("config", Yaml::Map(values)) => {
+                    let mut keys = std::collections::HashSet::new();
+                    for (name, _) in values {
+                        if !keys.insert(name) {
+                            return Err(format!("条目 `{id}` 的 config 重复声明 `{name}`"));
+                        }
+                    }
+                }
+                ("disabled" | "config", _) => {
+                    return Err(format!("条目 `{id}` 的 `{key}` 类型错误"));
+                }
+                _ => return Err(format!("条目 `{id}` 不支持字段 `{key}`")),
+            }
+        }
+    }
     parse_patch_document(document)
 }
 
@@ -160,6 +208,14 @@ pub fn entries_from_loader_files(
     bundle: &Path,
     patches: &[PathBuf],
 ) -> Result<(Vec<PluginEntry>, Vec<String>), String> {
+    let (bundle_text, base, patch_texts) = read_loader_files(bundle, patches)?;
+    build_entries(&bundle_text, base.as_deref(), &patch_texts)
+}
+
+fn read_loader_files(
+    bundle: &Path,
+    patches: &[PathBuf],
+) -> Result<(String, Option<PathBuf>, Vec<String>), String> {
     let base = bundle
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -173,7 +229,130 @@ pub fn entries_from_loader_files(
                 .map_err(|err| format!("读取 patch {} 失败: {err}", patch.display()))?,
         );
     }
-    build_entries(&bundle_text, base.as_deref(), &patch_texts)
+    Ok((bundle_text, base, patch_texts))
+}
+
+pub const AGENT_PRESET_PLUGIN: &str = "@deepseek-ai/dsh-agent-preset";
+pub const AGENT_PRESET_REGISTRY: &str = "@deepseek-ai/dsh-agent-preset-registry";
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentPresets {
+    pub default: Option<String>,
+    pub definitions: BTreeMap<String, Vec<PluginEntry>>,
+}
+
+impl Default for AgentPresets {
+    fn default() -> Self {
+        Self {
+            default: None,
+            definitions: BTreeMap::from([("cordis".to_owned(), Vec::new())]),
+        }
+    }
+}
+
+impl AgentPresets {
+    pub fn from_files(bundle: &Path, patches: &[PathBuf]) -> Result<Self, String> {
+        let (text, base, patches) = read_loader_files(bundle, patches)?;
+        let (rows, mut diagnostics) = build_rows(&text, base.as_deref(), &patches)?;
+        if diagnostics.include_warning_count != 0 {
+            return Err(diagnostics.warnings[..diagnostics.include_warning_count].join("\n"));
+        }
+        let mut presets = Self::default();
+        let mut declared = std::collections::HashSet::new();
+        let mut disable_builtin = false;
+        for row in diagnostics.flatten(&rows, 0) {
+            if row.disabled {
+                disable_builtin |= row.name.as_deref() == Some(AGENT_PRESET_PLUGIN)
+                    && row.config["id"] == "cordis";
+                continue;
+            }
+            match row.name.as_deref() {
+                Some(AGENT_PRESET_REGISTRY) => {
+                    let id = preset_id(&row.config["default"])?;
+                    if presets.default.replace(id).is_some() {
+                        return Err("duplicate Agent preset registry".to_owned());
+                    }
+                }
+                Some(AGENT_PRESET_PLUGIN) => {
+                    let id = preset_id(&row.config["id"])?;
+                    if !declared.insert(id.clone()) {
+                        return Err(format!("duplicate Agent preset {id}"));
+                    }
+                    let children = row.config["plugins"]
+                        .as_array()
+                        .ok_or_else(|| format!("preset {id}: plugins must be a list"))?;
+                    let mut entries = Vec::new();
+                    for entry in children {
+                        validate_preset_entry(entry, 0)
+                            .map_err(|error| format!("preset {id}: {error}"))?;
+                        entries.push(interpret_row(&json_to_yaml(entry))?);
+                    }
+                    let flat = diagnostics.flatten(&entries, 0);
+                    presets
+                        .definitions
+                        .insert(id, diagnostics.build_entries(flat));
+                }
+                _ => {}
+            }
+        }
+        if disable_builtin && !declared.contains("cordis") {
+            presets.definitions.remove("cordis");
+        }
+        Ok(presets)
+    }
+}
+
+fn preset_id(value: &Value) -> Result<String, String> {
+    value
+        .as_str()
+        .filter(|id| !id.is_empty() && id.trim() == *id)
+        .map(str::to_owned)
+        .ok_or_else(|| "Agent preset ID must be a non-empty string".to_owned())
+}
+
+fn validate_preset_entry(entry: &Value, depth: usize) -> Result<(), String> {
+    if depth > MAX_GROUP_DEPTH {
+        return Err("preset group depth exceeded".to_owned());
+    }
+    let fields = entry.as_object().ok_or("plugin entry must be an object")?;
+    for (key, value) in fields {
+        let valid = match key.as_str() {
+            "name" | "id" => value.as_str().is_some_and(|text| !text.is_empty()),
+            "disabled" => value.is_boolean(),
+            "inject" => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+            "group" => value == &Value::Bool(true) || value.is_array(),
+            "config" => true,
+            _ => false,
+        };
+        if !valid {
+            return Err(format!("unsupported preset field {key}"));
+        }
+    }
+    let group = fields.get("group").and_then(|group| {
+        group.as_array().or_else(|| {
+            (group == &Value::Bool(true))
+                .then(|| entry["config"].as_array())
+                .flatten()
+        })
+    });
+    if fields.contains_key("group") {
+        for child in group.ok_or("preset group requires child entries")? {
+            validate_preset_entry(child, depth + 1)?;
+        }
+    } else {
+        let name = entry["name"]
+            .as_str()
+            .ok_or("preset plugin requires a name")?;
+        if matches!(
+            name,
+            "cordis:include" | AGENT_PRESET_PLUGIN | AGENT_PRESET_REGISTRY
+        ) {
+            return Err(format!("unsupported nested preset plugin {name}"));
+        }
+    }
+    Ok(())
 }
 
 fn build_entries(
@@ -181,12 +360,25 @@ fn build_entries(
     base: Option<&Path>,
     patch_texts: &[String],
 ) -> Result<(Vec<PluginEntry>, Vec<String>), String> {
+    let (rows, mut diagnostics) = build_rows(bundle, base, patch_texts)?;
+    let flat = diagnostics.flatten(&rows, 0);
+    let entries = diagnostics.build_entries(flat);
+    diagnostics.finish();
+    Ok((entries, diagnostics.warnings))
+}
+
+fn build_rows(
+    bundle: &str,
+    base: Option<&Path>,
+    patch_texts: &[String],
+) -> Result<(Vec<LoaderRow>, Diagnostics), String> {
     let document = parse_document(bundle)?;
     let mut diagnostics = Diagnostics::default();
     diagnostics.js_expressions += count_js_expressions(&document);
 
     let rows = rows_from_document(document)?;
     let mut rows = diagnostics.resolve_includes(rows, base, 0)?;
+    diagnostics.include_warning_count = diagnostics.warnings.len();
 
     let mut ops = Vec::new();
     for text in patch_texts {
@@ -195,17 +387,14 @@ fn build_entries(
         ops.extend(parsed);
     }
     diagnostics.warnings.extend(apply_patch(&mut rows, &ops));
-
-    let flat = diagnostics.flatten(&rows, 0);
-    let entries = diagnostics.build_entries(flat);
-    diagnostics.finish();
-    Ok((entries, diagnostics.warnings))
+    Ok((rows, diagnostics))
 }
 
 /// 解析过程中的诊断与展开状态。
 #[derive(Debug, Default)]
 struct Diagnostics {
     warnings: Vec<String>,
+    include_warning_count: usize,
     /// 正在展开的 include 文件（canonical 路径），用于循环检测。
     active_includes: Vec<PathBuf>,
     js_expressions: usize,
@@ -734,6 +923,9 @@ fn parse_document(text: &str) -> Result<Yaml, String> {
     if raw.is_empty() {
         return Ok(Yaml::Null);
     }
+    if raw.len() == 1 && raw[0].1.content == "[]" {
+        return Ok(Yaml::List(Vec::new()));
+    }
     let mut index = 0usize;
     let value = parse_block(&raw, &mut index, raw[0].1.indent)?;
     if index < raw.len() {
@@ -875,6 +1067,9 @@ fn parse_scalar(text: &str) -> Result<Yaml, String> {
     if let Some(rest) = text.strip_prefix("!!js ") {
         // 不求值：保留表达式原文（含引号），由上层决定如何处理。
         return Ok(Yaml::Js(rest.trim().to_owned()));
+    }
+    if text == "{}" {
+        return Ok(Yaml::Map(Vec::new()));
     }
     if text.starts_with('[') && text.ends_with(']') {
         let inner = &text[1..text.len() - 1];
@@ -1372,5 +1567,67 @@ mod tests {
         let indent = " ".repeat(depth * 4);
         yaml.push_str(&format!("{indent}- name: '@x/deep'\n"));
         yaml
+    }
+    // M3-PRESET-001
+    #[test]
+    fn m3_preset_001_parses_declarations_and_replaces_the_complete_child_list() {
+        let dir = temp_dir("agent-presets");
+        let bundle = dir.join("bundle.yml");
+        let patch = dir.join("patch.yml");
+        fs::write(
+            &bundle,
+            r#"
+- id: registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
+  config:
+    default: cordis
+- id: declaration
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: cordis
+    plugins:
+      - name: first
+      - group: true
+        config:
+          - name: second
+            disabled: true
+"#,
+        )
+        .unwrap();
+        let original = AgentPresets::from_files(&bundle, &[]).unwrap();
+        assert_eq!(original.default.as_deref(), Some("cordis"));
+        assert_eq!(original.definitions["cordis"].len(), 2);
+        assert!(!original.definitions["cordis"][1].enabled);
+        fs::write(
+            &patch,
+            r#"
+- id: declaration
+  config:
+    id: cordis
+    plugins:
+      - name: replacement
+"#,
+        )
+        .unwrap();
+        let amended = AgentPresets::from_files(&bundle, std::slice::from_ref(&patch)).unwrap();
+        assert_eq!(amended.definitions["cordis"].len(), 1);
+        assert_eq!(amended.definitions["cordis"][0].name, "replacement");
+        fs::write(
+            &patch,
+            r#"
+- id: declaration
+  config:
+    id: cordis
+    plugins:
+      - name: not-static
+        disabled: !!js true
+"#,
+        )
+        .unwrap();
+        assert!(AgentPresets::from_files(&bundle, std::slice::from_ref(&patch)).is_err());
+        fs::write(&patch, "- id: declaration\n  disabled: true\n").unwrap();
+        let disabled = AgentPresets::from_files(&bundle, &[patch]).unwrap();
+        assert!(!disabled.definitions.contains_key("cordis"));
+        fs::remove_dir_all(dir).unwrap();
     }
 }

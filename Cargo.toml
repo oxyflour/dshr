@@ -13,3 +13,8 @@ serde_json = "=1.0.154"
 thiserror = "=2.0.21"
 # CPP-v1 manifest 的正式形态是 plugin.toml（TOML）；版本已在 Cargo.lock 且离线可用。
 toml = "=0.8.23"
+
+# GPUI compiles and embeds the DirectX shaders when debug assertions are off.
+# Its debug shader loader otherwise reads from the original Cargo checkout at runtime.
+[profile.dev.package.gpui_windows]
+debug-assertions = false

@@ -16,11 +16,12 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dshr_session_store::{EventSpec, LogError, SessionLog};
+use dshr_agent_core::{tool_image_references, AttachmentFormat, ChatMessage, MediaAttachment};
+use dshr_session_store::{Durability, EventSpec, LogError, SessionLog, ToolCallKey};
 use serde_json::{json, Value};
 
 use crate::sha256::digest_hex;
@@ -41,7 +42,7 @@ pub const EVENT_SPILL_CREATED: &str = "spill.created";
 pub const EVENT_TOOL_RESULT_PRUNED: &str = "tool.result.pruned";
 
 /// 附件保留期。`Session` 表示随会话删除；`Days(n)` 表示事故后可保留 n 天。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Retention {
     Session,
     Days(u32),
@@ -150,7 +151,7 @@ impl SpillPolicy {
 }
 
 /// 内容寻址引用。`id` 是 `$attachment` 引用目标，`hash` 是完整 sha256。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SpillRef {
     pub id: String,
     pub hash: String,
@@ -198,6 +199,17 @@ impl SpillRef {
         })
     }
 
+    pub fn user_attachment_payload(&self) -> Value {
+        json!({
+            "id": self.id,
+            "hash": self.hash,
+            "size": self.size,
+            "mime": self.mime,
+            "retention": self.retention.as_str(),
+            "kind": "message.user",
+        })
+    }
+
     /// 从 `spill.created` 载荷解析；字段缺失或 hash 非法返回 `None`。
     pub fn from_event_payload(payload: &Value) -> Option<Self> {
         let hash = payload.get("hash").and_then(Value::as_str)?.to_owned();
@@ -229,6 +241,7 @@ impl SpillRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingSpill {
     pub call_id: String,
+    pub call_seq: Option<u64>,
     pub spill: SpillRef,
     pub payload: Vec<u8>,
     pub preview_chars: usize,
@@ -295,9 +308,10 @@ pub fn render_reference(spill: &SpillRef, preview: &str) -> String {
 /// 2. 否则通过 `tool.result.pruned.spill_ref` 关联到同 id 的 `spill.created`。
 ///
 /// 找不到 `spill.created` 的 `pruned` 事件会被忽略（退化为完整内容，不阻塞回放）。
-pub fn recorded_spills(log: &SessionLog) -> HashMap<String, RecordedSpill> {
+pub fn recorded_spills(log: &SessionLog) -> HashMap<ToolCallKey, RecordedSpill> {
     let mut created: HashMap<String, RecordedSpill> = HashMap::new();
-    let mut edges: Vec<(String, String)> = Vec::new();
+    let mut map = HashMap::new();
+    let mut edges = Vec::new();
 
     for event in log.events() {
         match event.event_type.as_str() {
@@ -317,8 +331,7 @@ pub fn recorded_spills(log: &SessionLog) -> HashMap<String, RecordedSpill> {
                 };
                 if let Some(call_id) = event.payload.get("call_id").and_then(Value::as_str) {
                     if !call_id.is_empty() {
-                        created
-                            .entry(format!("call:{call_id}"))
+                        map.entry(ToolCallKey::from_payload(&event.payload))
                             .or_insert(recorded.clone());
                     }
                 }
@@ -338,25 +351,16 @@ pub fn recorded_spills(log: &SessionLog) -> HashMap<String, RecordedSpill> {
                     .unwrap_or_default()
                     .to_owned();
                 if !call_id.is_empty() && !spill_ref.is_empty() {
-                    edges.push((call_id, spill_ref));
+                    edges.push((ToolCallKey::from_payload(&event.payload), spill_ref));
                 }
             }
             _ => {}
         }
     }
 
-    let mut map: HashMap<String, RecordedSpill> = HashMap::new();
-    for (key, recorded) in &created {
-        if let Some(call_id) = key.strip_prefix("call:") {
-            map.insert(call_id.to_owned(), recorded.clone());
-        }
-    }
-    for (call_id, spill_ref) in edges {
-        if map.contains_key(&call_id) {
-            continue;
-        }
+    for (key, spill_ref) in edges {
         if let Some(recorded) = created.get(&spill_ref) {
-            map.insert(call_id, recorded.clone());
+            map.entry(key).or_insert_with(|| recorded.clone());
         }
     }
     map
@@ -389,24 +393,22 @@ pub fn record_spill(
     pending: &PendingSpill,
     ts: &str,
 ) -> Result<(u64, u64), LogError> {
-    let created_seq = log.append(EventSpec::durable(
-        EVENT_SPILL_CREATED,
-        ts,
-        pending
-            .spill
-            .event_payload(&pending.call_id, pending.preview_chars),
-    ))?;
-    let pruned_seq = log.append(EventSpec::durable(
-        EVENT_TOOL_RESULT_PRUNED,
-        ts,
-        json!({
-            "call_id": pending.call_id,
-            "original_size": pending.spill.size,
-            "spill_ref": pending.spill.id,
-            "mode": "spill",
-            "preview_chars": pending.preview_chars,
-        }),
-    ))?;
+    let mut created = pending
+        .spill
+        .event_payload(&pending.call_id, pending.preview_chars);
+    let mut pruned = json!({
+        "call_id": pending.call_id,
+        "original_size": pending.spill.size,
+        "spill_ref": pending.spill.id,
+        "mode": "spill",
+        "preview_chars": pending.preview_chars,
+    });
+    if let Some(call_seq) = pending.call_seq {
+        created["call_seq"] = json!(call_seq);
+        pruned["call_seq"] = json!(call_seq);
+    }
+    let created_seq = log.append(EventSpec::durable(EVENT_SPILL_CREATED, ts, created))?;
+    let pruned_seq = log.append(EventSpec::durable(EVENT_TOOL_RESULT_PRUNED, ts, pruned))?;
     Ok((created_seq, pruned_seq))
 }
 
@@ -486,7 +488,10 @@ impl SpillStore {
 
     /// 按引用读取对象并校验大小。
     pub fn get(&self, spill: &SpillRef) -> io::Result<Vec<u8>> {
-        let bytes = fs::read(self.object_path(spill))?;
+        let file = fs::File::open(self.object_path(spill))?;
+        let mut bytes = Vec::new();
+        file.take(spill.size.saturating_add(1))
+            .read_to_end(&mut bytes)?;
         if bytes.len() as u64 != spill.size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -527,6 +532,117 @@ impl SpillStore {
             )
         })
     }
+}
+
+/// Durable attachment records keyed by the reference used by user messages.
+pub fn user_attachment_refs(log: &SessionLog) -> HashMap<String, SpillRef> {
+    attachment_refs(log, "message.user")
+}
+
+fn attachment_refs(log: &SessionLog, kind: &str) -> HashMap<String, SpillRef> {
+    log.events()
+        .iter()
+        .filter(|event| {
+            event.event_type == EVENT_SPILL_CREATED
+                && event.durability == Durability::Durable
+                && event.payload["kind"] == kind
+        })
+        .filter_map(|event| SpillRef::from_event_payload(&event.payload))
+        .map(|spill| (spill.id.clone(), spill))
+        .collect()
+}
+
+/// Resolve retained attachments newest-first using the same objects as session export.
+pub fn restore_history_attachments(
+    store: &SpillStore,
+    log: &SessionLog,
+    messages: &mut Vec<ChatMessage>,
+    supports: impl Fn(AttachmentFormat) -> bool,
+) {
+    if !messages.iter().any(|message| {
+        matches!(
+            message,
+            ChatMessage::UserWithAttachments { .. } | ChatMessage::ToolImages(_)
+        )
+    }) {
+        return;
+    }
+    let user_refs = user_attachment_refs(log);
+    let image_refs = attachment_refs(log, "tool.image");
+    let mut remaining = 24 * 1024 * 1024u64;
+    let mut count = 20;
+    for message in messages.iter_mut().rev() {
+        let (attachments, refs, mut text) = match message {
+            ChatMessage::UserWithAttachments { text, attachments } => {
+                (attachments, &user_refs, Some(text))
+            }
+            ChatMessage::ToolImages(images) => (images, &image_refs, None),
+            _ => continue,
+        };
+        attachments.retain_mut(|attachment| {
+            let result = if !supports(attachment.format) {
+                Err("当前模型不支持")
+            } else if let Some(spill) = refs
+                .get(&attachment.reference)
+                .filter(|spill| spill.mime == attachment.format.mime())
+            {
+                if count == 0 || spill.size > remaining {
+                    Err("超出历史附件预算")
+                } else {
+                    store
+                        .get_verified(spill)
+                        .map(|bytes| {
+                            remaining -= spill.size;
+                            count -= 1;
+                            attachment.bytes = Some(bytes.into());
+                        })
+                        .map_err(|_| "本地文件缺失或已损坏")
+                }
+            } else {
+                Err("文件引用无效")
+            };
+            if let Err(reason) = result {
+                if let Some(text) = text.as_mut() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!("附件 {}（{reason}）", attachment.name));
+                }
+                false
+            } else {
+                true
+            }
+        });
+        if attachments.is_empty() {
+            if let Some(text) = text {
+                *message = ChatMessage::User(std::mem::take(text));
+            }
+        }
+    }
+    messages
+        .retain(|message| !matches!(message, ChatMessage::ToolImages(images) if images.is_empty()));
+}
+
+pub fn restore_tool_images(
+    store: &SpillStore,
+    log: &SessionLog,
+    content: &Value,
+) -> Vec<MediaAttachment> {
+    let images = tool_image_references(content);
+    if images.is_empty() {
+        return images;
+    }
+    let refs = attachment_refs(log, "tool.image");
+    images
+        .into_iter()
+        .filter_map(|mut image| {
+            let spill = refs
+                .get(&image.reference)
+                .filter(|spill| spill.mime == image.format.mime())?;
+            image.bytes = Some(store.get_verified(spill).ok()?.into());
+            Some(image)
+        })
+        .collect()
 }
 
 /// 计算任意字节的 sha256 小写十六进制串（导出 manifest 复用）。
@@ -804,7 +920,9 @@ mod tests {
         .expect("pruned");
 
         let recorded = recorded_spills(&log);
-        let entry = recorded.get("c9").expect("edge 关联");
+        let entry = recorded
+            .get(&ToolCallKey::Id("c9".to_owned()))
+            .expect("edge 关联");
         assert_eq!(entry.spill, spill);
         assert_eq!(entry.preview_chars, 64);
         assert_eq!(spill_refs_in_log(&log), vec![spill]);

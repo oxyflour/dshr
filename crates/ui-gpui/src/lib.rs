@@ -5,6 +5,7 @@
 pub mod adc;
 pub mod diff;
 pub mod markdown;
+mod message_selection;
 pub mod terminal;
 mod text_input;
 pub mod theme;
@@ -19,10 +20,15 @@ pub use diff::{
     MAX_RENDER_LINES,
 };
 pub use dshr_ui_contributions::{parse_tree, Action, ElementNode};
-pub use markdown::{markdown_view, Block, Inline};
+pub use markdown::{markdown_view, selectable_markdown_view, Block, Inline};
+pub use message_selection::MessageSelection;
 pub use terminal::{
     parse_terminal, terminal_view, terminal_view_from_text, AnsiColor, TermLine, TermRun,
     TermStyle, Terminal, MAX_LINES,
 };
 pub use text_input::{init, TextInput};
+#[cfg(target_os = "windows")]
+pub use text_input::{
+    Copy as CopyInput, Cut as CutInput, Paste as PasteInput, SelectAll as SelectAllInput,
+};
 pub use theme::{Layout, Palette, Radii, Theme, ThemeKind, Typography};

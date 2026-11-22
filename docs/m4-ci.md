@@ -23,12 +23,13 @@ node tools/conformance.mjs --quick --compact
 
 ```text
 cargo test --offline \
-  -p dshr-agent-context -p dshr-agent-core -p dshr-compat-dsh-host \
+  -p dshr-agent-context -p dshr-agent-core -p dshr-compat-acp \
+  -p dshr-compat-dsh-fs -p dshr-compat-dsh-host \
   -p dshr-compat-dsh-protocol -p dshr-compat-mcp -p dshr-conversation-model \
   -p dshr-llm-deepseek -p dshr-llm-openai -p dshr-llm-retry \
   -p dshr-plugin-api -p dshr-plugin-host -p dshr-plugin-sdk -p dshr-plugin-wasm \
   -p dshr-profile -p dshr-sandbox -p dshr-session-export -p dshr-session-store \
-  -p dshr-tool-runtime -p dshr-ui-contributions
+  -p dshr-sidecar-guard -p dshr-tool-runtime -p dshr-ui-contributions
 ```
 
 其中 `dshr-plugin-host` 覆盖 external-process 退路，`dshr-plugin-wasm` 覆盖 WASM 主机，

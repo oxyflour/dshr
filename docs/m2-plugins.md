@@ -43,13 +43,13 @@ M2 之前 sidecar 的插件列表是写死的两条（workspace-dependencies + �
 - 切换时：
   1. 写 `plugins.json`；
   2. 更新 `DSHR_DSH_PLUGINS`；
-  3. **空闲时重启当前会话的 sidecar**（先撤销旧 generation 再重新注册工具），
-     生成中只保存、下次启动生效；
+  3. **空闲时重载窗口的 sidecar**（先撤销旧 generation 再重新注册工具）。
+     生成中保存配置，在下一轮发送前重载；
 - 面板打开时侧栏自动收起，避免 280+300 把正文挤没（窄窗口尤其重要）。
 
 ## 自检
 
-`chat --selftest-profile`：
+`dshr --selftest-profile`：
 
 1. 默认 profile 有两条；
 2. 禁用 fs 后 `sidecar_json()` 不再包含它、`plugins.json` 持久化；
@@ -60,7 +60,7 @@ M2 之前 sidecar 的插件列表是写死的两条（workspace-dependencies + �
 
 ## 安装（离线）
 
-`chat --install-plugin <本地包目录 | npm pack 产物 .tgz>`：
+`dshr --install-plugin <本地包目录 | npm pack 产物 .tgz>`：
 
 1. 读取 `package.json`（容忍 UTF-8 BOM），校验 `name` 不含 `..`/绝对路径；
    `.tgz` 先离线解包（内置最小 tar + flate2，拒绝路径逃逸与符号链接）；
@@ -72,9 +72,9 @@ M2 之前 sidecar 的插件列表是写死的两条（workspace-dependencies + �
 
 ```powershell
 # 目录
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --install-plugin path\to\my-tool
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --install-plugin path\to\my-tool
 # npm pack 产物（离线）
-npm pack my-tool && tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --install-plugin my-tool-1.0.0.tgz
+npm pack my-tool && tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --install-plugin my-tool-1.0.0.tgz
 ```
 
 这是**本地/离线安装**：不联网做 npm 解析、不处理依赖树、不校验签名。`.tgz` 里的依赖

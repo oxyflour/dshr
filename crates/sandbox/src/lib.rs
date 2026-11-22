@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +33,8 @@ pub enum SandboxError {
     TooLarge { size: u64, limit: u64 },
     #[error("父目录不存在: {0}")]
     MissingParent(String),
+    #[error("文件已存在: {0}")]
+    AlreadyExists(String),
     #[error("io: {0}")]
     Io(String),
 }
@@ -121,8 +124,79 @@ impl Workspace {
         Ok(resolved)
     }
 
+    fn resolve_creating_parents(&self, requested: &str) -> Result<PathBuf, SandboxError> {
+        if requested.trim().is_empty() {
+            return Err(SandboxError::InvalidPath(String::from("<empty>")));
+        }
+        let mut relative = PathBuf::new();
+        for component in Path::new(requested).components() {
+            match component {
+                Component::Normal(part) if valid_component(part) => relative.push(part),
+                Component::Normal(_) => {
+                    return Err(SandboxError::InvalidPath(requested.to_owned()))
+                }
+                Component::CurDir => {}
+                Component::ParentDir => return Err(SandboxError::Escape(requested.to_owned())),
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(SandboxError::AbsolutePath(requested.to_owned()))
+                }
+            }
+        }
+        let parent = relative
+            .parent()
+            .ok_or_else(|| SandboxError::InvalidPath(requested.to_owned()))?;
+        if fs::canonicalize(&self.root).map_err(io)? != self.canonical_root {
+            return Err(SandboxError::Escape(requested.to_owned()));
+        }
+
+        let path = self.root.join(&relative);
+        let mut directory = self.root.clone();
+        for part in parent {
+            directory.push(part);
+            let metadata = match fs::symlink_metadata(&directory) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    match fs::create_dir(&directory) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                        Err(error) => return Err(io(error)),
+                    }
+                    fs::symlink_metadata(&directory).map_err(io)?
+                }
+                Err(error) => return Err(io(error)),
+            };
+            if is_link(&metadata)
+                || !fs::canonicalize(&directory)
+                    .map_err(io)?
+                    .starts_with(&self.canonical_root)
+            {
+                return Err(SandboxError::Escape(requested.to_owned()));
+            }
+            if !metadata.is_dir() {
+                return Err(SandboxError::InvalidPath(directory.display().to_string()));
+            }
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if is_link(&metadata) => Err(SandboxError::Escape(requested.to_owned())),
+            Ok(metadata) if !metadata.is_file() && !metadata.is_dir() => {
+                Err(SandboxError::InvalidPath(requested.to_owned()))
+            }
+            Ok(_) => Ok(path),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(path),
+            Err(error) => Err(io(error)),
+        }
+    }
+
     /// 写入文本：路径校验 → 大小限制 → 写前快照 → 原子写。
     pub fn write_text(&self, requested: &str, content: &str) -> Result<WriteReceipt, SandboxError> {
+        self.write_text_inner(requested, content, false)
+    }
+
+    pub fn create_text(
+        &self,
+        requested: &str,
+        content: &str,
+    ) -> Result<WriteReceipt, SandboxError> {
         let bytes = content.len() as u64;
         if bytes > MAX_WRITE_BYTES {
             return Err(SandboxError::TooLarge {
@@ -131,6 +205,59 @@ impl Workspace {
             });
         }
         let path = self.resolve(requested)?;
+        let parent = path.parent().expect("resolved path has a parent");
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o666));
+        }
+        let mut temporary = builder
+            .prefix(".dshr-create-")
+            .tempfile_in(parent)
+            .map_err(io)?;
+        temporary.write_all(content.as_bytes()).map_err(io)?;
+        temporary.persist_noclobber(&path).map_err(|error| {
+            if error.error.kind() == ErrorKind::AlreadyExists {
+                SandboxError::AlreadyExists(path.display().to_string())
+            } else {
+                io(error.error)
+            }
+        })?;
+        Ok(WriteReceipt {
+            path,
+            bytes,
+            snapshot: None,
+        })
+    }
+
+    /// 原生写入入口。调用方批准写入后，可创建缺失的父目录。
+    pub fn write_text_creating_parents(
+        &self,
+        requested: &str,
+        content: &str,
+    ) -> Result<WriteReceipt, SandboxError> {
+        self.write_text_inner(requested, content, true)
+    }
+
+    fn write_text_inner(
+        &self,
+        requested: &str,
+        content: &str,
+        create_parents: bool,
+    ) -> Result<WriteReceipt, SandboxError> {
+        let bytes = content.len() as u64;
+        if bytes > MAX_WRITE_BYTES {
+            return Err(SandboxError::TooLarge {
+                size: bytes,
+                limit: MAX_WRITE_BYTES,
+            });
+        }
+        let path = if create_parents {
+            self.resolve_creating_parents(requested)?
+        } else {
+            self.resolve(requested)?
+        };
         let snapshot = if path.exists() {
             Some(self.snapshot(&path)?)
         } else {
@@ -169,6 +296,48 @@ impl Workspace {
     pub fn restore(&self, snapshot: &SnapshotRef) -> Result<(), SandboxError> {
         fs::copy(&snapshot.stored, &snapshot.source).map_err(io)?;
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn valid_component(part: &std::ffi::OsStr) -> bool {
+    let name = part.to_string_lossy();
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    !name.ends_with(['.', ' '])
+        && !name.chars().any(|ch| {
+            ch.is_ascii_control() || matches!(ch, ':' | '"' | '<' | '>' | '|' | '?' | '*')
+        })
+        && !matches!(
+            stem.as_str(),
+            "NUL" | "CON" | "PRN" | "AUX" | "CONIN$" | "CONOUT$"
+        )
+        && !matches!(
+            stem.strip_prefix("COM")
+                .or_else(|| stem.strip_prefix("LPT")),
+            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        )
+}
+
+#[cfg(not(windows))]
+fn valid_component(part: &std::ffi::OsStr) -> bool {
+    !part.as_encoded_bytes().contains(&0)
+}
+
+fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
     }
 }
 
@@ -258,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_parent_and_oversized_writes() {
+    fn strict_and_oversized_writes_create_no_directories() {
         let ws = temp_workspace("limits");
         assert!(matches!(
             ws.write_text("no-such-dir/file.txt", "x"),
@@ -266,18 +435,42 @@ mod tests {
         ));
         let big = "x".repeat((MAX_WRITE_BYTES + 1) as usize);
         assert!(matches!(
-            ws.write_text("big.txt", &big),
+            ws.write_text_creating_parents("no-such-dir/big.txt", &big),
             Err(SandboxError::TooLarge { .. })
         ));
+        assert!(!ws.root().join("no-such-dir").exists());
+        fs::remove_dir_all(ws.root()).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_invalid_components_before_creating_any_parents() {
+        let ws = temp_workspace("invalid-component");
+        for path in [
+            "new/src/NUL.txt",
+            "new/src/file:stream",
+            "new/src/file?.txt",
+        ] {
+            assert!(matches!(
+                ws.write_text_creating_parents(path, "x"),
+                Err(SandboxError::InvalidPath(_))
+            ));
+        }
+        assert!(!ws.root().join("new").exists());
         fs::remove_dir_all(ws.root()).ok();
     }
 
     #[test]
-    fn nested_directories_work_when_parent_exists() {
+    fn writes_into_new_nested_directories() {
         let ws = temp_workspace("nested");
-        fs::create_dir_all(ws.root().join("sub")).unwrap();
-        let receipt = ws.write_text("sub/b.txt", "nested").unwrap();
+        let receipt = ws
+            .write_text_creating_parents("plugin/src/main.rs", "nested")
+            .unwrap();
         assert_eq!(receipt.bytes, 6);
+        assert_eq!(
+            fs::read_to_string(ws.root().join("plugin/src/main.rs")).unwrap(),
+            "nested"
+        );
         fs::remove_dir_all(ws.root()).ok();
     }
 }

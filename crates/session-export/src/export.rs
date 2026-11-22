@@ -423,6 +423,7 @@ mod tests {
 
         let pending = PendingSpill {
             call_id: "c1".to_owned(),
+            call_seq: None,
             spill: spill.clone(),
             payload,
             preview_chars: 64,
@@ -538,6 +539,7 @@ mod tests {
         assert_eq!(spill_again.hash, spill.hash);
         let pending = PendingSpill {
             call_id: "c2".to_owned(),
+            call_seq: None,
             spill: spill_again,
             payload: payload_again,
             preview_chars: 64,

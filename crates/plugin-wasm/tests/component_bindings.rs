@@ -107,8 +107,8 @@ fn m4_component_014_guest_tool_provider_round_trip() {
         .expect("host imports link");
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker).expect("wasi imports link");
     let mut store = Store::new(&engine, HostState::default());
-    let instance = Plugin::instantiate(&mut store, &component, &linker)
-        .expect("guest component instantiates");
+    let instance =
+        Plugin::instantiate(&mut store, &component, &linker).expect("guest component instantiates");
     let tools = instance
         .dshr_cpp_v1_tool_provider()
         .call_list_tools(&mut store)
@@ -130,8 +130,8 @@ fn m4_component_015_guest_invoke_round_trip() {
         .expect("host imports link");
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker).expect("wasi imports link");
     let mut store = Store::new(&engine, HostState::default());
-    let instance = Plugin::instantiate(&mut store, &component, &linker)
-        .expect("guest component instantiates");
+    let instance =
+        Plugin::instantiate(&mut store, &component, &linker).expect("guest component instantiates");
     let result = instance
         .dshr_cpp_v1_tool_provider()
         .call_invoke(&mut store, "echo", "hello")
@@ -169,9 +169,8 @@ fn m4_component_020_parallel_component_instances() {
     let handles: Vec<_> = (0..2)
         .map(|index| {
             std::thread::spawn(move || {
-                let mut plugin =
-                    CppComponentPlugin::new(format!("guest.{index}"), "0.1.0", GUEST)
-                        .expect("cpp component plugin constructs");
+                let mut plugin = CppComponentPlugin::new(format!("guest.{index}"), "0.1.0", GUEST)
+                    .expect("cpp component plugin constructs");
                 plugin
                     .call("echo", &json!({ "index": index }))
                     .expect("guest invoke")
@@ -201,7 +200,9 @@ fn m4_component_021_cpp_component_plugin_fuel_limit() {
         error.to_string().contains("trap") || error.to_string().contains("fuel"),
         "unexpected error: {error}"
     );
-    let result = plugin.call("echo", &json!({ "ok": true })).expect("echo still works");
+    let result = plugin
+        .call("echo", &json!({ "ok": true }))
+        .expect("echo still works");
     assert_eq!(result["content"][0]["text"], "{\"ok\":true}");
 }
 

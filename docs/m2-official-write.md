@@ -4,6 +4,8 @@
 > 关联：[`m2-dsh-official.md`](m2-dsh-official.md)、[`spec/sidecar-rpc.md`](spec/sidecar-rpc.md) §7.5、
 > [`m2-closeout.md`](m2-closeout.md) Gate 4
 
+桌面切换「工具免审批」后的裁决见[桌面对话控制](spec/desktop-conversation.md)。以下记录 M2 的默认工作区写入审批流程。
+
 **结论**：官方 `@deepseek-ai/dsh-tool-fs@0.2.2-rc.1` 的 `write` / `edit` / `apply_patch`
 在**不改官方源码**的前提下打开了。写入不发生在 Node 进程：Sidecar 只把官方 `ctx.fs`
 的写意图翻译成 `fs.write.request`，由 Rust（`crates/compat-dsh-fs`）完成
@@ -139,9 +141,9 @@ profile 显式 `false` 保持只读。
 2. **workspace_root 一致性**：Sidecar 声明根与宿主 `Workspace::root()` 组件级比较
    （Windows 大小写不敏感），不一致直接 `FS_SANDBOX_DENIED`（防混淆代理）。
 3. **路径归一化**：
-   - 相对路径交给 `dshr_sandbox::Workspace::resolve`（拒绝绝对路径、`..`、父目录缺失）；
+   - 相对路径交给 `dshr_sandbox::Workspace::resolve` 校验。绝对路径、`..` 和缺失的父目录会被拒绝。
    - 绝对路径先 `std::path::absolute` 归一，按组件去掉工作区根前缀；不在根内 →
-     `FS_SANDBOX_DENIED`；再走一次 `Workspace::resolve` 做父目录/符号链接逃逸检查。
+     `FS_SANDBOX_DENIED`。写入和删除都要求父目录存在。[现行契约](spec/sidecar-rpc.md#75-文件写入回调fswrite)
 4. **目标类型**：已存在且是目录 → `FS_NOT_REGULAR_FILE`。
 5. **版本**：读 `mtime_ms:size`；请求带 `expected_version` 且不匹配 → `FS_STALE_VERSION`
    （在审批之前拒绝，不打扰用户）。
@@ -201,7 +203,7 @@ tools\build-env.cmd cargo test -p dshr-compat-dsh-host -p dshr-compat-dsh-protoc
 node --check sidecar/dsh-official/sidecar-dsh.mjs
 
 # Lead 的最终 E2E（chat.rs）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --selftest-dsh-write
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh-write
 ```
 
 ## 8. 边界与风险

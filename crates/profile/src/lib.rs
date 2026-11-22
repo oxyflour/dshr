@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod headless;
 pub mod install;
 pub mod loader;
 pub mod trust;
@@ -73,6 +74,11 @@ pub struct Profile {
 impl Profile {
     /// 读取 profile；文件不存在时生成默认条目并落盘。
     pub fn load(dir: impl Into<PathBuf>) -> Result<Self, String> {
+        Self::load_with_seed(dir, None)
+    }
+
+    /// Use the packaged defaults only when creating a new editable profile.
+    pub fn load_with_seed(dir: impl Into<PathBuf>, seed: Option<&Path>) -> Result<Self, String> {
         let dir = dir.into();
         let path = dir.join("plugins.json");
         if path.exists() {
@@ -85,9 +91,18 @@ impl Profile {
                 source: ProfileSource::File,
             });
         }
+        let entries = if let Some(seed) = seed {
+            let text =
+                fs::read_to_string(seed).map_err(|err| format!("读取打包默认配置失败: {err}"))?;
+            let parsed: ProfileFile = serde_json::from_str(&text)
+                .map_err(|err| format!("解析打包默认配置失败: {err}"))?;
+            parsed.plugins
+        } else {
+            default_entries()
+        };
         let profile = Self {
             path,
-            entries: default_entries(),
+            entries,
             source: ProfileSource::File,
         };
         profile.save()?;
@@ -162,10 +177,39 @@ impl Profile {
     pub fn set_enabled(&mut self, name: &str, enabled: bool) -> bool {
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) {
             entry.enabled = enabled;
+            if enabled {
+                let paired = match name {
+                    "@deepseek-ai/dsh-tool-pwsh" => Some("@deepseek-ai/dsh-tool-pwsh-persistent"),
+                    "@deepseek-ai/dsh-tool-pwsh-persistent" => Some("@deepseek-ai/dsh-tool-pwsh"),
+                    "@deepseek-ai/dsh-tool-executor-native" => {
+                        Some("@deepseek-ai/dsh-tool-executor-ptc")
+                    }
+                    "@deepseek-ai/dsh-tool-executor-ptc" => {
+                        Some("@deepseek-ai/dsh-tool-executor-native")
+                    }
+                    _ => None,
+                };
+                if let Some(paired) = paired {
+                    for entry in self.entries.iter_mut().filter(|entry| entry.name == paired) {
+                        entry.enabled = false;
+                    }
+                }
+            }
             true
         } else {
             false
         }
+    }
+
+    pub fn set_config(&mut self, name: &str, config: Value) -> bool {
+        if !self.can_edit() {
+            return false;
+        }
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) else {
+            return false;
+        };
+        entry.config = config;
+        true
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -190,7 +234,13 @@ impl Profile {
         let entries: Vec<Value> = self
             .entries
             .iter()
-            .filter(|entry| entry.enabled)
+            .filter(|entry| {
+                entry.enabled
+                    && !matches!(
+                        entry.name.as_str(),
+                        loader::AGENT_PRESET_PLUGIN | loader::AGENT_PRESET_REGISTRY
+                    )
+            })
             .map(|entry| {
                 let mut object = serde_json::json!({
                     "name": entry.name,

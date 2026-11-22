@@ -98,7 +98,7 @@ Get-Content .tmp\launch-err.txt
 
 `tools/package-dev.ps1`：包内新增 `RUNNING.txt`（双击启动、数据默认目录、
 未签名 dev 构建被 SmartScreen/Defender 拦截时的说明与 `Unblock-File` 建议、CLI 自检入口），
-`MANIFEST.txt` 注明 release `chat.exe` 是 GUI 子系统、无控制台；debug 打包会额外提示会弹窗。
+`MANIFEST.txt` 注明 release `dshr.exe` 是 GUI 子系统、无控制台；debug 打包会额外提示会弹窗。
 
 ### F. sidecar 子进程不弹控制台（2026-11-12 复报）
 
@@ -114,9 +114,9 @@ spawn 路径同样处理。Job Object、环境清洗、stdio 协议都不受影�
 
 ```powershell
 # 启动 release，枚举其 node 子进程的顶层窗口：修复前有 ConsoleWindowClass，修复后为 0
-Start-Process .\target\release\chat.exe -WorkingDirectory <目录> `
+Start-Process .\target\release\dshr.exe -WorkingDirectory <目录> `
   -RedirectStandardOutput .tmp\out.txt -RedirectStandardError .tmp\err.txt
-# node 子进程应存活（sidecar 正常），但窗口列表为空；关掉 chat 后 node 被 Job 清理
+# node 子进程应存活（sidecar 正常），但窗口列表为空；关掉 dshr 后 node 被 Job 清理
 ```
 
 `--selftest` / `--selftest-dsh` 在 release 下仍 PASS（sidecar 协议、工具注册与写盘不受影响）。
@@ -125,7 +125,7 @@ Start-Process .\target\release\chat.exe -WorkingDirectory <目录> `
 
 ```powershell
 # 1) 构建
-tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo build --release -p dshr-desktop-gpui --bin dshr
 
 # 2) 单测 / 静态检查（新增：数据根选择、CLI 参数识别、超时 clamp）
 tools\build-env.cmd cargo test -p dshr-desktop-gpui
@@ -133,10 +133,10 @@ tools\build-env.cmd cargo clippy -p dshr-desktop-gpui --all-targets -- -D warnin
 tools\build-env.cmd cargo fmt -p dshr-desktop-gpui
 
 # 3) CLI 仍能打印（release GUI 子系统下 AttachConsole 生效）
-target\release\chat.exe --selftest        # 期望最后一行 [selftest] PASS
+target\release\dshr.exe --selftest        # 期望最后一行 [selftest] PASS
 
 # 4) 不可写 CWD 不再退出（清理 DSHR_* 后从 System32 启动）
-Start-Process target\release\chat.exe -WorkingDirectory C:\Windows\System32 `
+Start-Process target\release\dshr.exe -WorkingDirectory C:\Windows\System32 `
   -RedirectStandardError .tmp\launch2-err.txt -RedirectStandardOutput .tmp\launch2-out.txt
 # 期望：进程存活并出现 Zed::Window 顶层窗口，stderr 不再有 os error 5；
 #       会话目录被创建在 %LOCALAPPDATA%\dshr\sessions
@@ -148,7 +148,7 @@ Start-Process target\release\chat.exe -WorkingDirectory C:\Windows\System32 `
 PE 子系统可用 PowerShell 读 PE 头验证（修复后应为 2 = Windows GUI）：
 
 ```powershell
-$bytes = [System.IO.File]::ReadAllBytes('target\release\chat.exe')
+$bytes = [System.IO.File]::ReadAllBytes('target\release\dshr.exe')
 $pe = [BitConverter]::ToInt32($bytes, 0x3C)
 $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C)   # OptionalHeader.Subsystem
 $subsystem   # 2 = GUI, 3 = Console

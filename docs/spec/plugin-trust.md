@@ -109,7 +109,7 @@ M3 的"最小信任链"只回答三个问题，不做完整证书体系：
 | 签名无效 | `E_TRUST_SIGNATURE` | 否 |
 | 签名有效 | —— | 可安装（无需确认，但仍审计） |
 
-**轮换**：`chat --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>` 先登记新钥、
+**轮换**：`dshr --trust-key rotate <old_key_id> <new_key_id> <public_key_hex>` 先登记新钥、
 再吊销旧钥；旧钥签名的包立即被拒，作者需用新钥重签后重新安装。旧钥保留在密钥库里
 （`revoked: true` + `revoked_at_ms`）以便审计，不用 `remove` 做轮换。
 
@@ -132,7 +132,7 @@ M3 的"最小信任链"只回答三个问题，不做完整证书体系：
   → 追加 install-audit.jsonl（接受与拒绝都记）
 ```
 
-**卸载**（M4 W1）：`chat --uninstall-plugin <name>` 先 rename 到同父目录的
+**卸载**（M4 W1）：`dshr --uninstall-plugin <name>` 先 rename 到同父目录的
 `.dshr-remove-*` 再删除（失败恢复原名），随后移除 profile 同名条目并写审计
 `action: "uninstall"`。目录已删但 profile 落盘失败时返回错误，重跑即可收敛。
 

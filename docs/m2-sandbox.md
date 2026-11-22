@@ -35,7 +35,7 @@ probe_write（presentation=diff）
 
 ## 自检
 
-`chat --selftest-sandbox`：
+`dshr --selftest-sandbox`：
 
 - 在工作区写 `demo.txt`、覆盖一次（产生快照）、尝试 `../escape.txt`（被拒）；
 - 断言文件内容为最新值、快照文件存在、三条审批记录、逃逸写入 `is_error`。

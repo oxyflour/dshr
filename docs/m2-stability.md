@@ -31,7 +31,7 @@ M2 gate 1 要求"20 步 turn 成功率 ≥99%、≥2 家 provider"。这一轮�
 
 ## 故障注入自检
 
-`chat --selftest-retry`：`FlakyProvider` 每第 3 次请求返回 `HTTP 503`，
+`dshr --selftest-retry`：`FlakyProvider` 每第 3 次请求返回 `HTTP 503`，
 外面套 max_attempts=4 的重试；每轮先返回一次工具调用（`probe_native`），
 工具结果回来后再返回文本。连续跑 20 轮：
 
@@ -46,7 +46,7 @@ M2 gate 1 要求"20 步 turn 成功率 ≥99%、≥2 家 provider"。这一轮�
 
 ## 真实网络 20 步成功率（Gate 1 实测，2026-11-11）
 
-`chat --selftest-live-20`：真实 DeepSeek（`deepseek-chat`，SSE 流式），每步要求模型调用
+`dshr --selftest-live-20`：真实 DeepSeek（`deepseek-chat`，SSE 流式），每步要求模型调用
 一次本地工具 `probe_native` 并确认结果；统计口径为"每步一次模型请求 + 至少一次真实工具调用，
 `tool.call`/`tool.result` 配对且无错误/中止"。
 

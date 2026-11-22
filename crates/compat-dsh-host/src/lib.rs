@@ -11,9 +11,21 @@
 // 逐条分配 message/detail）；这是有意的取舍，用 crate 级 allow 固定，避免逐函数标注。
 #![allow(clippy::result_large_err)]
 
+mod callbacks;
+mod invocation;
+mod program_tools;
+mod registrations;
+mod transport;
+
+use invocation::ActiveCall;
+use transport::ChildHandle;
 pub mod service;
 pub mod services;
 pub mod storage_kv;
+pub mod tool_jobs;
+pub mod tool_process;
+pub mod tool_terminals;
+pub use program_tools::ProgramToolScope;
 
 // 集成点（chat.rs / sidecar 读循环）的常用入口，避免深层路径。
 pub use service::{
@@ -25,8 +37,11 @@ pub use services::{
     WORKING_DIRECTORY_CHANGED, WORKING_DIRECTORY_V1,
 };
 pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
+pub use tool_jobs::ToolJobService;
+pub use tool_process::{ShellProgram, ToolProcessService};
+pub use tool_terminals::ToolTerminalService;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -43,8 +58,17 @@ use dshr_compat_dsh_protocol::{
     KIND_HOST_SERVICE_REQUEST, KIND_HOST_SERVICE_RESULT, MAX_DEPTH, PROTOCOL_VERSION,
 };
 /// 集成方（chat.rs）构造 v2 Router 需要的协议常量；避免直接依赖 protocol crate。
-pub use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
+pub use dshr_compat_dsh_protocol::{
+    Envelope, HostServiceKind, HostServiceMethod, HostServiceTable, CAP_AGENT_TOOL_CONTEXT,
+    CAP_BACKGROUND_JOBS, CAP_IMAGE_ATTACHMENTS, CAP_PROGRAM_TOOLS, CAP_SEARCH_PROCESS,
+    CAP_SERVICE_PROXY, CAP_SHELL_PROCESS, CAP_TERMINAL_PROCESS, CAP_TOOL_GOALS, CAP_TOOL_SCHEDULES,
+    CAP_TOOL_SESSION_QUERY, CAP_TOOL_SUBAGENTS, CAP_TOOL_TEAMS, CAP_USER_QUESTIONS,
+    IMAGE_ATTACHMENTS_V1, PROTOCOL_MAX, TOOL_GOALS_V1, TOOL_JOBS_V1, TOOL_PROCESS_V1,
+    TOOL_PROGRAM_V1, TOOL_SCHEDULES_V1, TOOL_SESSION_QUERY_V1, TOOL_SUBAGENTS_V1, TOOL_TEAMS_V1,
+    TOOL_TERMINALS_V1, USER_QUESTIONS_V1,
+};
 use dshr_sidecar_guard::{GuardLimits, GuardedChild};
+use dshr_tool_runtime::ToolOrigin;
 use serde_json::{json, Value};
 use thiserror::Error;
 
@@ -161,6 +185,10 @@ impl HostOptions {
 pub struct Registration {
     pub name: String,
     pub description: String,
+    pub input_schema: Option<Value>,
+    pub session_id: Option<String>,
+    pub preset_revision: Option<String>,
+    register_request_id: String,
     /// 对齐 DSH 的 `output.schema`；L1 暂不校验，但必须能穿过协议。
     pub output_schema: Option<serde_json::Value>,
     /// 对齐 DSH 的 `presentResult` 卡片类型。
@@ -183,6 +211,9 @@ impl Registration {
                 generation: generation.to_owned(),
             },
         );
+        if let Some(schema) = &self.input_schema {
+            definition.input_schema = schema.clone();
+        }
         if let Some(schema) = &self.output_schema {
             definition = definition.with_output_schema(schema.clone());
         }
@@ -211,6 +242,13 @@ pub fn parse_tool_registration(
             .as_str()
             .unwrap_or_default()
             .to_owned(),
+        input_schema: payload
+            .get("input_schema")
+            .filter(|value| value.is_object())
+            .cloned(),
+        session_id: None,
+        preset_revision: None,
+        register_request_id: String::new(),
         output_schema: payload
             .get("output_schema")
             .cloned()
@@ -247,6 +285,16 @@ pub struct BatchInvokeCall {
     pub timeout: Duration,
     /// 会话身份（信封 `session_id`）；`None` = 兼容旧的 `s-probe` 占位。
     pub session_id: Option<String>,
+    binding: Option<ToolOrigin>,
+    approval_key: Option<String>,
+    turn: Option<OpenToolTurn>,
+    model_route: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OpenToolTurn {
+    pub number: u64,
+    pub start_seq: u64,
 }
 
 impl BatchInvokeCall {
@@ -262,7 +310,21 @@ impl BatchInvokeCall {
             arguments,
             timeout,
             session_id: None,
+            binding: None,
+            approval_key: None,
+            turn: None,
+            model_route: None,
         }
+    }
+
+    pub fn with_binding(mut self, binding: ToolOrigin) -> Self {
+        self.binding = Some(binding);
+        self
+    }
+
+    pub fn with_approval_key(mut self, key: Option<String>) -> Self {
+        self.approval_key = key;
+        self
     }
 
     /// 显式透传会话 id（L2 服务方法按会话授权时必需）。
@@ -270,27 +332,17 @@ impl BatchInvokeCall {
         self.session_id = Some(session_id.into());
         self
     }
+
+    pub fn with_turn(mut self, turn: Option<OpenToolTurn>) -> Self {
+        self.turn = turn;
+        self
+    }
+
+    pub fn with_model_route(mut self, provider: &str, model: &str) -> Self {
+        self.model_route = Some((provider.to_owned(), model.to_owned()));
+        self
+    }
 }
-
-/// Windows：GUI 子系统父进程 spawn console 子程序（node）时默认会新开一个控制台窗口；
-/// 设置 `CREATE_NO_WINDOW` 让 sidecar 静默运行（release 双击时不再每个会话弹黑框）。
-#[cfg(windows)]
-fn hide_console_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    /// `CREATE_NO_WINDOW`（winbase.h）。
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_console_window(_command: &mut Command) {}
-
-/// 批量调用等待读循环的轮询片段：既保证及时检查超时/取消，又不空转。
-const WAIT_SLICE: Duration = Duration::from_millis(50);
-
-/// 取消后的宽限：`invoke_batch` 发出 `tool.cancel` 后最多再等这么久
-/// （P1-7：不能等到 per-call 120s；sidecar 忽略 cancel 时也必须按时结算）。
-const CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 pub struct SidecarHost {
     child: ChildHandle,
@@ -301,6 +353,13 @@ pub struct SidecarHost {
     plugin: PathBuf,
     seq: u64,
     registrations: Vec<Registration>,
+    retired_sessions: HashSet<String>,
+    agent_presets_supported: bool,
+    agent_tool_context_supported: bool,
+    preparing_step: Option<String>,
+    preset_definitions: Option<Value>,
+    preset_status: Value,
+    preset_bindings: HashMap<String, (String, String)>,
     ready: Duration,
     host_caps: Vec<String>,
     fs_write: Option<Arc<FsWriteService>>,
@@ -310,210 +369,14 @@ pub struct SidecarHost {
     negotiated_protocol: u32,
     /// 真正的服务开关：router 存在 && 协商到 2 && sidecar 回声 `service.proxy`。
     host_services_active: bool,
+    /// 按 tool.invoke 的 request_id 追踪，模型给出的 call_id 可在其他调用中重复。
+    active_calls: HashMap<String, ActiveCall>,
+    program_tools: Option<ProgramToolScope>,
     /// sidecar 在启动/装载阶段上报的错误（`log.emit` level=error），供 UI 提示。
     boot_errors: Vec<String>,
 }
 
-/// 侧车进程句柄：普通 spawn 或 Job Object 包裹（Windows 隔离）。
-enum ChildHandle {
-    Plain(Child),
-    Guarded(GuardedChild),
-}
-
-impl ChildHandle {
-    fn kill(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Plain(child) => child.kill(),
-            Self::Guarded(child) => child.kill(),
-        }
-    }
-
-    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        match self {
-            Self::Plain(child) => child.wait(),
-            Self::Guarded(child) => child.wait(),
-        }
-    }
-}
-
 impl SidecarHost {
-    /// 旧行为：只读侧车（capabilities = tool.stream / tool.cancel）。
-    pub fn spawn(script: impl AsRef<Path>, plugin: impl AsRef<Path>) -> Result<Self, HostError> {
-        Self::spawn_with(script, plugin, HostOptions::default())
-    }
-
-    /// 带能力协商/写裁决的启动入口（chat.rs 用 `HostOptions::with_fs_write` 打开写工具）。
-    pub fn spawn_with(
-        script: impl AsRef<Path>,
-        plugin: impl AsRef<Path>,
-        options: HostOptions,
-    ) -> Result<Self, HostError> {
-        let script = script.as_ref().to_path_buf();
-        let plugin = plugin.as_ref().to_path_buf();
-
-        let started = Instant::now();
-        let program = options
-            .program
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("node"));
-        let mut command = Command::new(&program);
-        command
-            .arg(&script)
-            .arg(&plugin)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        if let Some(dir) = &options.current_dir {
-            command.current_dir(dir);
-        }
-        let mut env = options.env.clone();
-        if let Some(service) = &options.fs_write {
-            // sidecar 的 fs 根必须与 Rust 裁决层的工作区一致；显式 env 优先。
-            if !env
-                .iter()
-                .any(|(key, _)| key.eq_ignore_ascii_case("DSHR_WORKSPACE"))
-            {
-                env.push((
-                    "DSHR_WORKSPACE".to_owned(),
-                    service.workspace_root().to_string_lossy().into_owned(),
-                ));
-            }
-        }
-        if options.guard {
-            // Job Object 包裹：环境变量先清洗（去凭据）再叠加显式 env；
-            // cwd 也由 guard 统一设置。
-            let cwd = options
-                .current_dir
-                .clone()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| PathBuf::from("."));
-            let mut guarded =
-                dshr_sidecar_guard::spawn_guarded(command, cwd, &env, &options.guard_limits)
-                    .map_err(|err| HostError::Protocol(format!("guarded spawn: {err}")))?;
-            let stdin = guarded
-                .child_mut()
-                .stdin
-                .take()
-                .ok_or_else(|| HostError::Protocol("no stdin".into()))?;
-            let stdout = guarded
-                .child_mut()
-                .stdout
-                .take()
-                .ok_or_else(|| HostError::Protocol("no stdout".into()))?;
-            return Self::from_parts(
-                ChildHandle::Guarded(guarded),
-                stdin,
-                stdout,
-                script,
-                plugin,
-                options,
-                started,
-            );
-        }
-        command.envs(env.iter().map(|(key, value)| (key, value)));
-        hide_console_window(&mut command);
-        let mut child = command.spawn()?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| HostError::Protocol("no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HostError::Protocol("no stdout".into()))?;
-
-        Self::from_parts(
-            ChildHandle::Plain(child),
-            stdin,
-            stdout,
-            script,
-            plugin,
-            options,
-            started,
-        )
-    }
-
-    /// spawn 之后共用的握手/注册收集流程（guard 与普通路径一致）。
-    fn from_parts(
-        child: ChildHandle,
-        stdin: ChildStdin,
-        stdout: std::process::ChildStdout,
-        script: PathBuf,
-        plugin: PathBuf,
-        options: HostOptions,
-        started: Instant,
-    ) -> Result<Self, HostError> {
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => match serde_json::from_str::<Envelope>(&text) {
-                        Ok(envelope) => {
-                            if tx.send(envelope).is_err() {
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("[sidecar] bad envelope: {err}: {text}");
-                        }
-                    },
-                    Err(_) => break,
-                }
-            }
-        });
-
-        let mut host = Self {
-            child,
-            stdin,
-            rx,
-            generation: "node-pending".to_owned(),
-            script,
-            plugin,
-            seq: 0,
-            registrations: Vec::new(),
-            ready: Duration::ZERO,
-            host_caps: options.effective_caps(),
-            fs_write: options.fs_write.clone(),
-            host_services: options.host_services.clone(),
-            negotiated_protocol: PROTOCOL_VERSION,
-            host_services_active: false,
-            boot_errors: Vec::new(),
-        };
-
-        // 规范 §5：generation 由宿主分配，sidecar 只回声。
-        static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let generation = format!(
-            "node-{:04}",
-            NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        // 有 HostServiceRouter 时才宣告 v2；否则与 M2 完全一致（hello.protocol_max = 1）。
-        let mut hello = if host.host_services.is_some() {
-            hello_with_caps_at(&host.host_caps, PROTOCOL_MAX)
-        } else {
-            hello_with_caps(&host.host_caps)
-        };
-        hello.payload["generation"] = json!(generation);
-        host.write(&hello)?;
-        let ready = host.wait_for("runtime.ready", Duration::from_secs(10))?;
-        if let Some(err) = ready.error {
-            return Err(HostError::Rpc {
-                code: err.code,
-                message: err.message,
-            });
-        }
-        host.generation = generation;
-        host.ready = started.elapsed();
-        host.apply_negotiation(&ready)?;
-
-        let registration_window = options
-            .registration_window
-            .unwrap_or(Duration::from_secs(2));
-        host.collect_registrations(registration_window)?;
-        Ok(host)
-    }
-
     /// 本次握手协商出的 host_caps（诊断/自检用）。
     pub fn host_caps(&self) -> &[String] {
         &self.host_caps
@@ -534,6 +397,10 @@ impl SidecarHost {
 
     pub fn generation(&self) -> &str {
         &self.generation
+    }
+
+    pub fn has_exited(&mut self) -> bool {
+        self.child.try_wait().is_ok_and(|status| status.is_some())
     }
 
     /// 握手协商出的协议版本（v1 缺省；配置了 host_services 且 sidecar 支持时才可能为 2）。
@@ -562,724 +429,12 @@ impl SidecarHost {
             .map(|router| router.host_services_payload())
     }
 
-    /// 推进 generation（崩溃重启/重连，spec §13.5）：同步给 router，旧 generation 的
-    /// 请求会以 `E_SERVICE_UNAVAILABLE` 结算，去重窗口清空。
-    pub fn set_generation(&mut self, generation: impl Into<String>) -> Result<(), HostError> {
-        self.generation = generation.into();
-        if let Some(router) = &self.host_services {
-            let mut router = router
-                .lock()
-                .map_err(|_| HostError::Protocol("host service router poisoned".to_owned()))?;
-            router.set_generation(self.generation.clone());
-        }
-        Ok(())
-    }
-
-    /// 应用 `runtime.ready` 的协商结果（spec §3.2/§13.5）。
-    fn apply_negotiation(&mut self, ready: &Envelope) -> Result<(), HostError> {
-        let reported = ready
-            .payload
-            .get("protocol")
-            .and_then(Value::as_u64)
-            .unwrap_or(u64::from(PROTOCOL_VERSION)) as u32;
-        self.negotiated_protocol = if self.host_services.is_some() {
-            reported.clamp(PROTOCOL_VERSION, PROTOCOL_MAX)
-        } else {
-            reported.clamp(1, PROTOCOL_VERSION)
-        };
-        let sidecar_proxy = ready
-            .payload
-            .get("sidecar_caps")
-            .and_then(Value::as_array)
-            .map(|caps| {
-                caps.iter()
-                    .any(|cap| cap.as_str() == Some(CAP_SERVICE_PROXY))
-            })
-            .unwrap_or(false);
-        self.host_services_active =
-            self.host_services.is_some() && self.negotiated_protocol >= 2 && sidecar_proxy;
-        if self.host_services_active {
-            if let Some(router) = &self.host_services {
-                let mut router = router
-                    .lock()
-                    .map_err(|_| HostError::Protocol("host service router poisoned".to_owned()))?;
-                router.set_generation(self.generation.clone());
-            }
-        }
-        Ok(())
-    }
-
-    pub fn registrations(&self) -> &[Registration] {
-        &self.registrations
-    }
-
-    /// 把 sidecar 注册映射成 Registry 可登记的 `ToolDefinition`。
-    ///
-    /// 这是 slice 2 的关键：sidecar 工具与原生工具进入**同一个**注册表，
-    /// 由同一个 `authorize` 闸门放行。
-    pub fn tool_definitions(&self) -> Vec<dshr_tool_runtime::ToolDefinition> {
-        self.registrations
-            .iter()
-            .map(|registration| registration.to_tool_definition(&self.generation))
-            .collect()
-    }
-
     pub fn script(&self) -> &Path {
         &self.script
     }
 
     pub fn plugin(&self) -> &Path {
         &self.plugin
-    }
-
-    pub fn invoke(
-        &mut self,
-        tool: &str,
-        arguments: Value,
-        timeout: Duration,
-    ) -> Result<InvokeOutcome, HostError> {
-        let call_id = self.begin_invoke(tool, arguments)?;
-        self.wait_terminal(&call_id, timeout)
-    }
-
-    pub fn begin_invoke(&mut self, tool: &str, arguments: Value) -> Result<String, HostError> {
-        self.begin_invoke_in_session(tool, arguments, None)
-    }
-
-    /// 带显式会话 id 的 `tool.invoke`（`None` = 兼容旧 `s-probe` 占位）。
-    pub fn begin_invoke_in_session(
-        &mut self,
-        tool: &str,
-        arguments: Value,
-        session_id: Option<&str>,
-    ) -> Result<String, HostError> {
-        self.seq += 1;
-        let call_id = format!("call-{}", self.seq);
-        let request_id = format!("req-invoke-{}", self.seq);
-        let envelope = Envelope::host(
-            "tool.invoke",
-            request_id,
-            json!({ "name": tool, "arguments": arguments }),
-        )
-        .with_generation(self.generation.clone())
-        .with_call(call_id.clone())
-        .with_session(session_id.unwrap_or("s-probe"));
-        self.write(&envelope)?;
-        Ok(call_id)
-    }
-
-    /// 用调用方指定的 `call_id` 发起调用：Session Log 与 IPC 必须是同一个身份。
-    pub fn invoke_as(
-        &mut self,
-        call_id: &str,
-        tool: &str,
-        arguments: Value,
-        timeout: Duration,
-    ) -> Result<InvokeOutcome, HostError> {
-        self.invoke_as_cancellable(call_id, tool, arguments, timeout, None)
-    }
-
-    /// 可取消的 [`SidecarHost::invoke_as`]。
-    ///
-    /// 等待期间每 100ms 轮询一次 `cancel`；置位时发送一次 `tool.cancel`
-    /// （`tool.cancel` RPC 之前只有定义、没有调用点），再给 sidecar 最多 2s 宽限
-    /// 等 `tool.aborted` / `tool.result`；宽限期满仍无终态则返回
-    /// [`HostError::Cancelled`]。正常等待的片段超时**不再**直接判 `Timeout`，
-    /// 绝对 deadline 语义保持不变。
-    pub fn invoke_as_cancellable(
-        &mut self,
-        call_id: &str,
-        tool: &str,
-        arguments: Value,
-        timeout: Duration,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<InvokeOutcome, HostError> {
-        self.invoke_as_cancellable_in_session(call_id, None, tool, arguments, timeout, cancel)
-    }
-
-    /// [`SidecarHost::invoke_as_cancellable`] + 显式 `session_id` 透传（P2-10）。
-    ///
-    /// `session_id` 是 L2 服务方法按会话授权的唯一身份锚点；`None` 保持旧行为
-    /// （`s-probe` 占位，供探针/旧测试）。
-    pub fn invoke_as_cancellable_in_session(
-        &mut self,
-        call_id: &str,
-        session_id: Option<&str>,
-        tool: &str,
-        arguments: Value,
-        timeout: Duration,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<InvokeOutcome, HostError> {
-        self.seq += 1;
-        let request_id = format!("req-invoke-{}", self.seq);
-        let envelope = Envelope::host(
-            "tool.invoke",
-            request_id,
-            json!({ "name": tool, "arguments": arguments }),
-        )
-        .with_generation(self.generation.clone())
-        .with_call(call_id.to_owned())
-        .with_session(session_id.unwrap_or("s-probe"));
-        self.write(&envelope)?;
-        self.wait_terminal_cancellable(call_id, timeout, cancel)
-    }
-
-    /// 单调用 + 显式会话 id 的便捷入口（无取消句柄）。
-    pub fn invoke_in_session(
-        &mut self,
-        call_id: &str,
-        session_id: Option<&str>,
-        tool: &str,
-        arguments: Value,
-        timeout: Duration,
-    ) -> Result<InvokeOutcome, HostError> {
-        self.invoke_as_cancellable_in_session(call_id, session_id, tool, arguments, timeout, None)
-    }
-
-    pub fn cancel(&mut self, call_id: &str) -> Result<(), HostError> {
-        self.seq += 1;
-        let envelope = Envelope::host(
-            "tool.cancel",
-            format!("req-cancel-{}", self.seq),
-            json!({ "call_id": call_id, "reason": "user" }),
-        )
-        .with_generation(self.generation.clone())
-        .with_call(call_id.to_owned());
-        self.write(&envelope)
-    }
-
-    /// 批量调用（M3 并行工具，DSH `maxParallelToolCalls`）：
-    ///
-    /// 按 `max_parallel` 分**波次**：每一波先把本波所有 `tool.invoke` 一次写出
-    /// （request_id 区分），再在同一读循环里收集各自 `tool.chunk` / `tool.result` /
-    /// `tool.aborted`，按 `call_id` 关联。返回值与 `calls` 一一对应（原顺序），
-    /// 单个调用失败/超时不影响其它调用。
-    ///
-    /// 语义：
-    /// - **per-call timeout**：每个调用独立 deadline；超时回 `HostError::Timeout`
-    ///   并向 sidecar 发 `tool.cancel`，迟到结果被丢弃；
-    /// - **取消**：`cancel` 置位时对本波在途调用发一次 `tool.cancel`，随后继续收结果
-    ///   （`tool.aborted` 作为该调用的终态返回，聊天层映射为失败）；不再启动后续波次；
-    /// - **迟到/未知结果**：`call_id` 不匹配当前波的终态直接丢弃（不干扰后续调用）；
-    /// - **读循环仍服务** `fs.write.request` / `host.service.*` / `log.emit`，不会与
-    ///   现有单调用路径互相死锁。
-    pub fn invoke_batch(
-        &mut self,
-        calls: &[BatchInvokeCall],
-        max_parallel: usize,
-        cancel: Option<&AtomicBool>,
-    ) -> Vec<Result<InvokeOutcome, HostError>> {
-        struct BatchSlot {
-            call_id: String,
-            started: Instant,
-            deadline: Instant,
-            /// 取消宽限截止（发出 tool.cancel 后置位；P1-7）。
-            cancel_deadline: Option<Instant>,
-            chunks: Vec<String>,
-            done: bool,
-        }
-
-        let mut results: Vec<Option<Result<InvokeOutcome, HostError>>> =
-            (0..calls.len()).map(|_| None).collect();
-        if calls.is_empty() {
-            return Vec::new();
-        }
-        let parallel = max_parallel.max(1);
-        let mut next = 0usize;
-        'outer: while next < calls.len() {
-            let end = (next + parallel).min(calls.len());
-            let mut slots: Vec<BatchSlot> = Vec::with_capacity(end - next);
-            let mut by_call: HashMap<String, usize> = HashMap::new();
-
-            // 第一波写：把本波调用的 tool.invoke 全部写出再收结果。
-            for (offset, call) in calls[next..end].iter().enumerate() {
-                let started = Instant::now();
-                self.seq += 1;
-                let request_id = format!("req-batch-{}", self.seq);
-                let envelope = Envelope::host(
-                    "tool.invoke",
-                    request_id,
-                    json!({ "name": call.tool, "arguments": call.arguments }),
-                )
-                .with_generation(self.generation.clone())
-                .with_call(call.call_id.clone())
-                .with_session(call.session_id.as_deref().unwrap_or("s-probe"));
-                match self.write(&envelope) {
-                    Ok(()) => {
-                        by_call.insert(call.call_id.clone(), offset);
-                        slots.push(BatchSlot {
-                            call_id: call.call_id.clone(),
-                            started,
-                            deadline: started + call.timeout.max(Duration::from_millis(1)),
-                            cancel_deadline: None,
-                            chunks: Vec::new(),
-                            done: false,
-                        });
-                    }
-                    Err(err) => {
-                        slots.push(BatchSlot {
-                            call_id: call.call_id.clone(),
-                            started,
-                            deadline: started,
-                            cancel_deadline: None,
-                            chunks: Vec::new(),
-                            done: true,
-                        });
-                        results[next + offset] = Some(Err(err));
-                    }
-                }
-            }
-
-            let mut cancel_sent = false;
-            let mut fatal: Option<String> = None;
-            loop {
-                // 取消：对本波所有在途调用发一次 tool.cancel，并置 2s 宽限；
-                // 宽限内收到终态按终态结算，宽限到期未结算的一律 `Cancelled`
-                //（sidecar 忽略 cancel 时不能等到 per-call 120s，P1-7）。
-                if !cancel_sent && cancel.is_some_and(|token| token.load(Ordering::Relaxed)) {
-                    cancel_sent = true;
-                    let grace_deadline = Instant::now() + CANCEL_GRACE;
-                    for slot in slots.iter_mut().filter(|slot| !slot.done) {
-                        let _ = self.cancel(&slot.call_id);
-                        slot.cancel_deadline = Some(grace_deadline);
-                    }
-                }
-                let now = Instant::now();
-                for (offset, slot) in slots.iter_mut().enumerate() {
-                    if slot.done {
-                        continue;
-                    }
-                    if slot.cancel_deadline.is_some_and(|deadline| now >= deadline) {
-                        slot.done = true;
-                        results[next + offset] = Some(Err(HostError::Cancelled(format!(
-                            "tool {} did not settle within {}s of cancellation",
-                            slot.call_id,
-                            CANCEL_GRACE.as_secs()
-                        ))));
-                        continue;
-                    }
-                    if now < slot.deadline {
-                        continue;
-                    }
-                    slot.done = true;
-                    let _ = self.cancel(&slot.call_id);
-                    results[next + offset] =
-                        Some(Err(HostError::Timeout(format!("tool {}", slot.call_id))));
-                }
-                if slots.iter().all(|slot| slot.done) {
-                    break;
-                }
-                let mut wait = WAIT_SLICE;
-                for slot in slots.iter().filter(|slot| !slot.done) {
-                    let mut slot_deadline = slot.deadline;
-                    if let Some(cancel_deadline) = slot.cancel_deadline {
-                        slot_deadline = slot_deadline.min(cancel_deadline);
-                    }
-                    let remaining = slot_deadline.saturating_duration_since(now);
-                    wait = wait.min(remaining.max(Duration::from_millis(1)));
-                }
-                match self.rx.recv_timeout(wait) {
-                    Ok(envelope) => {
-                        let served = match self.maybe_serve_fs_write(&envelope) {
-                            Ok(served) => served,
-                            Err(err) => {
-                                fatal = Some(format!("serving fs.write during batch: {err}"));
-                                break;
-                            }
-                        };
-                        if served {
-                            continue;
-                        }
-                        let served = match self.maybe_serve_host_service(&envelope) {
-                            Ok(served) => served,
-                            Err(err) => {
-                                fatal = Some(format!("serving host.service during batch: {err}"));
-                                break;
-                            }
-                        };
-                        if served {
-                            continue;
-                        }
-                        if envelope.kind == "log.emit" {
-                            self.note_log_emit(&envelope);
-                            continue;
-                        }
-                        let Some(call_id) = envelope.call_id.clone() else {
-                            continue;
-                        };
-                        let Some(offset) = by_call.get(&call_id).copied() else {
-                            // 其它调用/上一波超时后的迟到结果：丢弃（与本波无关）。
-                            continue;
-                        };
-                        let slot = &mut slots[offset];
-                        if slot.done {
-                            continue;
-                        }
-                        match envelope.kind.as_str() {
-                            "tool.chunk" => {
-                                if let Some(text) =
-                                    envelope.payload.get("text").and_then(Value::as_str)
-                                {
-                                    slot.chunks.push(text.to_owned());
-                                }
-                            }
-                            "tool.result" | "tool.aborted" => {
-                                let chunks = std::mem::take(&mut slot.chunks);
-                                let elapsed = slot.started.elapsed();
-                                slot.done = true;
-                                results[next + offset] = Some(Ok(InvokeOutcome {
-                                    chunks,
-                                    terminal: envelope,
-                                    elapsed,
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    Err(RecvTimeoutError::Disconnected) => {
-                        for (offset, slot) in slots.iter_mut().enumerate() {
-                            if !slot.done {
-                                slot.done = true;
-                                results[next + offset] = Some(Err(HostError::Closed));
-                            }
-                        }
-                        fatal = Some("sidecar closed the pipe during batch".to_owned());
-                        break;
-                    }
-                }
-            }
-
-            if let Some(message) = fatal {
-                for slot in results.iter_mut().skip(next).take(calls.len() - next) {
-                    if slot.is_none() {
-                        *slot = Some(Err(HostError::Protocol(message.clone())));
-                    }
-                }
-                break 'outer;
-            }
-            next = end;
-            if cancel_sent {
-                // 已取消：不再启动后续波次；本波已发出的调用已全部结算。
-                for slot in results.iter_mut().skip(next) {
-                    if slot.is_none() {
-                        *slot = Some(Err(HostError::Cancelled(format!(
-                            "batch cancelled before wave starting at {next}"
-                        ))));
-                    }
-                }
-                break 'outer;
-            }
-        }
-
-        results
-            .into_iter()
-            .map(|slot| {
-                slot.unwrap_or_else(|| {
-                    Err(HostError::Protocol(
-                        "batch slot missing after invoke_batch".to_owned(),
-                    ))
-                })
-            })
-            .collect()
-    }
-
-    /// 读到达终止事件（`tool.result` / `tool.aborted`）为止，收集中间 chunk。
-    pub fn wait_terminal(
-        &mut self,
-        call_id: &str,
-        timeout: Duration,
-    ) -> Result<InvokeOutcome, HostError> {
-        self.wait_terminal_cancellable(call_id, timeout, None)
-    }
-
-    /// [`SidecarHost::wait_terminal`] 的可取消版本。
-    fn wait_terminal_cancellable(
-        &mut self,
-        call_id: &str,
-        timeout: Duration,
-        cancel: Option<&AtomicBool>,
-    ) -> Result<InvokeOutcome, HostError> {
-        /// 取消后给 sidecar 收尾的宽限（它的取消检查周期是 200ms 级）。
-        const CANCEL_GRACE: Duration = Duration::from_secs(2);
-        /// 等待片段：既保证及时检查 cancel，又不让循环空转。
-        const WAIT_SLICE: Duration = Duration::from_millis(100);
-
-        let started = Instant::now();
-        let deadline = started + timeout;
-        let mut chunks = Vec::new();
-        // `tool.cancel` 只发一次；置位后改用"宽限 deadline"收尾。
-        let mut cancel_deadline: Option<Instant> = None;
-        loop {
-            if cancel_deadline.is_none()
-                && cancel.is_some_and(|token| token.load(Ordering::Relaxed))
-            {
-                self.cancel(call_id)?;
-                cancel_deadline = Some(Instant::now() + CANCEL_GRACE);
-            }
-            let now = Instant::now();
-            let effective_deadline = cancel_deadline.map_or(deadline, |grace| grace.min(deadline));
-            let remaining = effective_deadline.saturating_duration_since(now);
-            if remaining.is_zero() {
-                return if cancel_deadline.is_some() {
-                    Err(HostError::Cancelled(format!("tool {call_id}")))
-                } else {
-                    Err(HostError::Timeout(format!("tool {call_id}")))
-                };
-            }
-
-            // 100ms 片段超时不是失败：回到循环头部重新检查 cancel / deadline。
-            let envelope = match self.rx.recv_timeout(remaining.min(WAIT_SLICE)) {
-                Ok(envelope) => envelope,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
-            };
-
-            // 关键：等待 tool.result 期间必须同时服务 sidecar 的写入请求，
-            // 否则 sidecar 等 fs.write.result、宿主等 tool.result，双向死锁。
-            if self.maybe_serve_fs_write(&envelope)? {
-                continue;
-            }
-            // v2：等待工具结果期间同样要服务 host.service.request/result/cancel。
-            if self.maybe_serve_host_service(&envelope)? {
-                continue;
-            }
-            if envelope.kind == "log.emit" {
-                self.note_log_emit(&envelope);
-                continue;
-            }
-
-            if envelope.call_id.as_deref() != Some(call_id) {
-                continue;
-            }
-            match envelope.kind.as_str() {
-                "tool.chunk" => {
-                    if let Some(text) = envelope.payload.get("text").and_then(Value::as_str) {
-                        chunks.push(text.to_owned());
-                    }
-                }
-                "tool.result" | "tool.aborted" => {
-                    return Ok(InvokeOutcome {
-                        chunks,
-                        terminal: envelope,
-                        elapsed: started.elapsed(),
-                    });
-                }
-                _ => {}
-            }
-        }
-    }
-
-    pub fn kill(&mut self) -> Result<(), HostError> {
-        self.child.kill()?;
-        let _ = self.child.wait();
-        Ok(())
-    }
-
-    fn collect_registrations(&mut self, window: Duration) -> Result<(), HostError> {
-        let deadline = Instant::now() + window;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(());
-            }
-            match self.rx.recv_timeout(remaining) {
-                Ok(envelope) if envelope.kind == KIND_FS_WRITE_REQUEST => {
-                    self.maybe_serve_fs_write(&envelope)?;
-                }
-                Ok(envelope) if envelope.kind == "log.emit" => {
-                    self.note_log_emit(&envelope);
-                }
-                Ok(envelope) if envelope.kind == "tool.register" => {
-                    let plugin_id = envelope.plugin_id.clone().unwrap_or_default();
-                    self.seq += 1;
-                    let registration_id = format!("reg-{}", self.seq);
-                    let registration = parse_tool_registration(
-                        &envelope.payload,
-                        &plugin_id,
-                        registration_id.clone(),
-                    );
-                    let ack = envelope.reply(
-                        "tool.register",
-                        json!({ "registration_id": registration_id, "name": registration.name }),
-                    );
-                    self.write(&ack)?;
-                    self.registrations.push(registration);
-                }
-                Ok(envelope) => {
-                    self.maybe_serve_host_service(&envelope)?;
-                    continue;
-                }
-                Err(RecvTimeoutError::Timeout) => return Ok(()),
-                Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
-            }
-        }
-    }
-
-    fn wait_for(&mut self, kind: &str, timeout: Duration) -> Result<Envelope, HostError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(HostError::Timeout(kind.to_owned()));
-            }
-            match self.rx.recv_timeout(remaining) {
-                Ok(envelope) if envelope.kind == KIND_FS_WRITE_REQUEST => {
-                    self.maybe_serve_fs_write(&envelope)?;
-                }
-                Ok(envelope) if envelope.kind == "log.emit" => {
-                    self.note_log_emit(&envelope);
-                }
-                Ok(envelope) if envelope.kind == kind => return Ok(envelope),
-                Ok(envelope) if envelope.kind == "runtime.reject" => {
-                    return Err(HostError::Protocol(format!(
-                        "handshake rejected: {}",
-                        envelope.payload
-                    )))
-                }
-                Ok(envelope) => {
-                    self.maybe_serve_host_service(&envelope)?;
-                    continue;
-                }
-                Err(RecvTimeoutError::Timeout) => return Err(HostError::Timeout(kind.to_owned())),
-                Err(RecvTimeoutError::Disconnected) => return Err(HostError::Closed),
-            }
-        }
-    }
-
-    /// 记录 sidecar 上报的错误日志（`log.emit` level=error），供 UI 插件错误提示。
-    fn note_log_emit(&mut self, envelope: &Envelope) {
-        let level = envelope
-            .payload
-            .get("level")
-            .and_then(Value::as_str)
-            .unwrap_or("info");
-        let message = envelope
-            .payload
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if level == "error" && !message.is_empty() {
-            if self.boot_errors.len() < 8 {
-                self.boot_errors.push(message.to_owned());
-            }
-            eprintln!("[sidecar] {message}");
-        }
-    }
-
-    /// 读循环的公共服务点：遇到 sidecar 的写入请求就地裁决并回复。
-    ///
-    /// 返回 `true` 表示该信封已被消费，调用方继续循环、不再把它当作
-    /// `tool.result`/`tool.register` 处理。
-    fn maybe_serve_fs_write(&mut self, envelope: &Envelope) -> Result<bool, HostError> {
-        if envelope.kind != KIND_FS_WRITE_REQUEST {
-            return Ok(false);
-        }
-        let result = match &self.fs_write {
-            Some(service) => service.handle_payload(&envelope.payload),
-            None => FsWriteResult::error(
-                "E_FS_CAPABILITY",
-                "fs.write.request received but fs.write was not negotiated in runtime.hello",
-            ),
-        };
-        let payload = serde_json::to_value(&result)
-            .map_err(|err| HostError::Protocol(format!("serialize fs.write.result: {err}")))?;
-        self.write(&envelope.reply(KIND_FS_WRITE_RESULT, payload))?;
-        Ok(true)
-    }
-
-    /// 读循环的 v2 公共服务点（spec §13.4/§13.9）：
-    /// - `host.service.request` → `HostServiceRouter::handle_request` → `host.service.result`；
-    /// - `host.service.cancel` → router 取消标记（幂等，无答复）；
-    /// - `capabilities.list` → 白名单方法表（仅 v2 启用时）。
-    ///
-    /// 返回 `true` 表示该信封已被消费。同步 dispatch 会占用当前读循环（本轮按
-    /// spec §13.4 的"服务必须做小做快"取舍；未来可移到工作线程，`acquire_slot`
-    /// 已为背压预留）。
-    fn maybe_serve_host_service(&mut self, envelope: &Envelope) -> Result<bool, HostError> {
-        match envelope.kind.as_str() {
-            KIND_HOST_SERVICE_REQUEST => {
-                let reply = if self.host_services_active {
-                    let router = self.host_services.as_ref().ok_or_else(|| {
-                        HostError::Protocol("active host services without router".to_owned())
-                    })?;
-                    let mut router = router.lock().map_err(|_| {
-                        HostError::Protocol("host service router poisoned".to_owned())
-                    })?;
-                    router.handle_request(envelope)
-                } else {
-                    // v1 回退 / sidecar 未协商也发了 v2 kind：结构化拒绝，不 panic。
-                    let mut reply = envelope.reply(KIND_HOST_SERVICE_RESULT, json!({}));
-                    reply.error = Some(RpcError {
-                        code: "E_PROTOCOL".to_owned(),
-                        message:
-                            "host.service.request received but service.proxy was not negotiated"
-                                .to_owned(),
-                        retryable: false,
-                    });
-                    reply
-                };
-                self.write(&reply)?;
-                Ok(true)
-            }
-            KIND_HOST_SERVICE_CANCEL => {
-                if self.host_services_active {
-                    if let Some(router) = &self.host_services {
-                        if let Ok(mut router) = router.lock() {
-                            router.cancel(&envelope.request_id);
-                        }
-                    }
-                }
-                // 取消是通知语义：恰好一次答复不适用（spec §8/§13.6）。
-                Ok(true)
-            }
-            "capabilities.list" => {
-                let reply = if self.host_services_active {
-                    let payload = self.host_services_payload().unwrap_or_else(|| json!([]));
-                    envelope.reply(
-                        "capabilities.list",
-                        json!({
-                            "protocol": self.negotiated_protocol,
-                            "host_services": payload,
-                        }),
-                    )
-                } else {
-                    let mut reply = envelope.reply("capabilities.list", json!({}));
-                    reply.error = Some(RpcError {
-                        code: "E_VERSION".to_owned(),
-                        message: format!(
-                            "host services are not negotiated (protocol {})",
-                            self.negotiated_protocol
-                        ),
-                        retryable: false,
-                    });
-                    reply
-                };
-                self.write(&reply)?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn write(&mut self, envelope: &Envelope) -> Result<(), HostError> {
-        assert!(
-            envelope.depth <= MAX_DEPTH,
-            "depth must respect the spec limit"
-        );
-        let line = serde_json::to_string(envelope)
-            .map_err(|err| HostError::Protocol(format!("serialize: {err}")))?;
-        self.stdin.write_all(line.as_bytes())?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()?;
-        Ok(())
-    }
-}
-
-impl Drop for SidecarHost {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 

@@ -57,7 +57,7 @@ UI 回放的 Token 曲线直接取这个事件序列（规范 §6），不需要
   超预算丢弃最旧且保持协议合法、任何情况下不以 `Tool` 开头、配对逐条可断言、
   **压缩事件重建为 System 摘要且区间被跳过**、**计划带出 dropped_range**。
 - `conversation-model`：demo 的压缩区间不再渲染用户/助手原文，只留工具卡片与压缩占位。
-- `chat --selftest-context`：36814 token 的历史触发压缩（seq 1–72 → 一条摘要），
+- `dshr --selftest-context`：36814 token 的历史触发压缩（seq 1–72 → 一条摘要），
   断言 `context.compacted`、摘要消息、重建出的 System 摘要都存在，ratio ≤ 0.8，
   压缩后 `dropped_messages == 0`（不会每轮重复压缩）。
 - UI 截图核对：`上下文已压缩 · seq 1–72` 占位、区间内的消息不再显示、头部标题截断正常。

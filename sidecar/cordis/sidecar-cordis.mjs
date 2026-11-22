@@ -55,8 +55,8 @@ async function bootCordis(pluginPath) {
 }
 
 async function runTool(tool, msg) {
-  const state = { cancelled: false }
-  inflight.set(msg.call_id, state)
+  const state = { cancelled: false, callId: msg.call_id }
+  inflight.set(msg.request_id, state)
   let seq = 0
   try {
     for await (const chunk of tool.run(msg.payload?.arguments ?? {}, state)) {
@@ -91,10 +91,11 @@ async function runTool(tool, msg) {
     )
   } catch (error) {
     send('tool.result', msg.request_id, { call_id: msg.call_id, is_error: true }, {
+      call_id: msg.call_id,
       error: { code: 'E_INTERNAL', message: String(error?.message ?? error), retryable: false },
     })
   } finally {
-    inflight.delete(msg.call_id)
+    inflight.delete(msg.request_id)
   }
 }
 
@@ -130,8 +131,12 @@ async function handle(msg) {
       return
     }
     case 'tool.cancel': {
-      const state = inflight.get(msg.call_id)
-      if (state) state.cancelled = true
+      for (const [requestId, state] of inflight) {
+        if (state.callId !== msg.call_id) continue
+        if (msg.payload?.tool_request_id && requestId !== msg.payload.tool_request_id) continue
+        state.cancelled = true
+        inflight.delete(requestId)
+      }
       return
     }
     default:

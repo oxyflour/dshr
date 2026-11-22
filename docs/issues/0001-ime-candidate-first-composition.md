@@ -60,7 +60,7 @@ tools\build-env.cmd cargo build --manifest-path tools\ime-probe\Cargo.toml
 **人工复验步骤**（自动化无法模拟输入法）：
 
 ```powershell
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr
 ```
 
 1. 启动后直接切中文输入法（先不要敲英文）；

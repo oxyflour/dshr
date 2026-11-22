@@ -12,7 +12,8 @@
 
 use std::collections::HashMap;
 
-use dshr_session_store::{Durability, LogError, SessionLog, ToolState};
+use dshr_agent_context::spill::{user_attachment_refs, SpillRef};
+use dshr_session_store::{Durability, LogError, SessionLog, ToolCallKey, ToolState};
 use dshr_tool_runtime::Presentation;
 use serde_json::Value;
 
@@ -26,6 +27,7 @@ pub const DEMO_SESSION: &str = include_str!("demo_session.jsonl");
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolItem {
     pub call_id: String,
+    pub call_seq: u64,
     pub tool: String,
     /// `native` / `sidecar` / `mcp`
     pub origin: String,
@@ -37,11 +39,32 @@ pub struct ToolItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserAttachment {
+    pub name: String,
+    /// Populated only for a matching durable file record. Text attachments have no blob.
+    pub file: Option<SpillRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the public Item::Tool(ToolItem) payload by value."
+)]
 pub enum Item {
-    User { text: String },
-    Assistant { text: String },
+    User {
+        text: String,
+        attachments: Vec<UserAttachment>,
+    },
+    Assistant {
+        text: String,
+    },
+    Reasoning(String),
+    Stopped,
     Tool(ToolItem),
-    Compaction { from_seq: u64, to_seq: u64 },
+    Compaction {
+        from_seq: u64,
+        to_seq: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -62,7 +85,7 @@ pub fn build(jsonl: &str, session_id: &str) -> Result<Vec<Item>, LogError> {
 
 pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
     let mut items: Vec<Item> = Vec::new();
-    let mut tool_index: HashMap<String, usize> = HashMap::new();
+    let mut tool_index: HashMap<ToolCallKey, usize> = HashMap::new();
 
     // 压缩区间与摘要消息：区间内事件不再渲染，摘要消息只经 context.compacted 展示。
     let mut ranges: Vec<(u64, u64)> = Vec::new();
@@ -82,6 +105,7 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
         }
     }
     let in_range = |seq: u64| ranges.iter().any(|(from, to)| seq >= *from && seq <= *to);
+    let mut file_refs = None;
 
     for event in log.events() {
         if event.durability == Durability::Ephemeral || in_range(event.seq) {
@@ -90,20 +114,48 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
         match event.event_type.as_str() {
             "message.user" => items.push(Item::User {
                 text: text_of(&event.payload),
+                attachments: event.payload["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|block| {
+                        let name = block["attachment_name"].as_str()?.to_owned();
+                        let file = block["$attachment"]
+                            .as_str()
+                            .filter(|_| block["type"] == "attachment")
+                            .and_then(|reference| {
+                                file_refs
+                                    .get_or_insert_with(|| user_attachment_refs(log))
+                                    .get(reference)
+                                    .filter(|file| block["mime"] == file.mime)
+                                    .cloned()
+                            });
+                        Some(UserAttachment { name, file })
+                    })
+                    .collect(),
             }),
             "message.assistant.settled" => {
-                if summary_ids.contains(&str_of(&event.payload, "message_id")) {
+                let message_id = str_of(&event.payload, "message_id");
+                if summary_ids.contains(&message_id) {
                     continue;
                 }
                 items.push(Item::Assistant {
                     text: text_of(&event.payload),
                 })
             }
+            "message.assistant.reasoning" => {
+                let text = str_of(&event.payload, "text");
+                if !text.is_empty() {
+                    items.push(Item::Reasoning(text));
+                }
+            }
+            "turn.ended" if event.payload["reason"] == "cancelled" => items.push(Item::Stopped),
             "tool.call" => {
                 let call_id = str_of(&event.payload, "call_id");
-                tool_index.insert(call_id.clone(), items.len());
+                tool_index.insert(ToolCallKey::from_payload(&event.payload), items.len());
                 items.push(Item::Tool(ToolItem {
                     call_id,
+                    call_seq: event.seq,
                     tool: str_of(&event.payload, "tool"),
                     origin: str_of(&event.payload, "origin"),
                     presentation: event
@@ -116,8 +168,10 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                 }));
             }
             "tool.result" => {
-                let call_id = str_of(&event.payload, "call_id");
-                let Some(ix) = tool_index.get(&call_id).copied() else {
+                let Some(ix) = tool_index
+                    .get(&ToolCallKey::from_payload(&event.payload))
+                    .copied()
+                else {
                     continue;
                 };
                 let Some(Item::Tool(tool)) = items.get_mut(ix) else {
@@ -155,8 +209,10 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                 });
             }
             "tool.aborted" => {
-                let call_id = str_of(&event.payload, "call_id");
-                let Some(ix) = tool_index.get(&call_id).copied() else {
+                let Some(ix) = tool_index
+                    .get(&ToolCallKey::from_payload(&event.payload))
+                    .copied()
+                else {
                     continue;
                 };
                 let Some(Item::Tool(tool)) = items.get_mut(ix) else {
@@ -188,6 +244,7 @@ pub fn stats(items: &[Item]) -> Stats {
         match item {
             Item::User { .. } => stats.user += 1,
             Item::Assistant { .. } => stats.assistant += 1,
+            Item::Reasoning(_) | Item::Stopped => {}
             Item::Tool(tool) => {
                 stats.tools += 1;
                 match tool.state {

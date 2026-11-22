@@ -174,6 +174,11 @@ pub fn spawn_guarded_with(
     for (key, value) in env {
         command.env(key, value);
     }
+    spawn_prepared(command, limits)
+}
+
+/// Apply the process guard to a command whose environment and directory are already set.
+pub fn spawn_prepared(command: Command, limits: &GuardLimits) -> Result<GuardedChild, GuardError> {
     imp::spawn(command, limits)
 }
 

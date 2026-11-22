@@ -13,13 +13,13 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use dshr_compat_dsh_protocol::{FsWriteOperation, FsWriteRequest, FsWriteResult};
 use dshr_sandbox::{SandboxError, Workspace};
-use dshr_tool_runtime::{ApprovalBroker, ApprovalOutcome};
+use dshr_tool_runtime::{ApprovalBroker, ApprovalOutcome, LiveApproval, PolicyDecision};
 use serde_json::{json, Value};
 
 /// 审批等待上限：必须小于宿主侧工具调用 timeout（默认 120 s），
@@ -31,6 +31,7 @@ const E_SANDBOX_DENIED: &str = "FS_SANDBOX_DENIED";
 const E_STALE_VERSION: &str = "FS_STALE_VERSION";
 const E_TOO_LARGE: &str = "FS_TOO_LARGE";
 const E_NOT_FOUND: &str = "FS_NOT_FOUND";
+const E_NOT_OBSERVED: &str = "FS_NOT_OBSERVED";
 const E_NOT_REGULAR_FILE: &str = "FS_NOT_REGULAR_FILE";
 const E_PERMISSION_DENIED: &str = "FS_PERMISSION_DENIED";
 const E_IO: &str = "FS_IO_ERROR";
@@ -64,6 +65,12 @@ pub struct FsWriteService {
     workspace: Workspace,
     approvals: Arc<ApprovalBroker>,
     approval_timeout: Duration,
+    live: Option<LiveWritePolicy>,
+}
+
+struct LiveWritePolicy {
+    decide: Box<dyn Fn() -> PolicyDecision + Send + Sync>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl FsWriteService {
@@ -76,7 +83,20 @@ impl FsWriteService {
             workspace: Workspace::new(workspace_root)?,
             approvals,
             approval_timeout: DEFAULT_APPROVAL_TIMEOUT,
+            live: None,
         })
+    }
+
+    pub fn with_live_controls(
+        mut self,
+        decide: impl Fn() -> PolicyDecision + Send + Sync + 'static,
+        cancel: Arc<AtomicBool>,
+    ) -> Self {
+        self.live = Some(LiveWritePolicy {
+            decide: Box::new(decide),
+            cancel,
+        });
+        self
     }
 
     pub fn with_approval_timeout(mut self, timeout: Duration) -> Self {
@@ -102,8 +122,12 @@ impl FsWriteService {
 
     /// 协议入口：解析 payload，任何失败都折成结构化结果（宿主不会因此 panic）。
     pub fn handle_payload(&self, payload: &Value) -> FsWriteResult {
+        self.handle_tool_payload(payload, None)
+    }
+
+    pub fn handle_tool_payload(&self, payload: &Value, grant_key: Option<&str>) -> FsWriteResult {
         match serde_json::from_value::<FsWriteRequest>(payload.clone()) {
-            Ok(request) => self.handle(&request),
+            Ok(request) => self.handle_with_grant(&request, grant_key),
             Err(err) => FsWriteResult::error(
                 E_REQUEST,
                 format!("invalid fs.write.request payload: {err}"),
@@ -113,13 +137,25 @@ impl FsWriteService {
 
     /// 裁决一次写请求。成功返回新版本；失败返回 `FsWriteResult { ok: false, error }`。
     pub fn handle(&self, request: &FsWriteRequest) -> FsWriteResult {
-        match self.try_handle(request) {
+        self.handle_with_grant(request, None)
+    }
+
+    fn handle_with_grant(
+        &self,
+        request: &FsWriteRequest,
+        grant_key: Option<&str>,
+    ) -> FsWriteResult {
+        match self.try_handle(request, grant_key) {
             Ok(result) => result,
             Err(failure) => FsWriteResult::error(failure.code, failure.message),
         }
     }
 
-    fn try_handle(&self, request: &FsWriteRequest) -> Result<FsWriteResult, WriteFailure> {
+    fn try_handle(
+        &self,
+        request: &FsWriteRequest,
+        grant_key: Option<&str>,
+    ) -> Result<FsWriteResult, WriteFailure> {
         let relative = self.resolve_target(request)?;
         let absolute = self.workspace.root().join(&relative);
         let metadata = fs::metadata(&absolute).ok();
@@ -155,17 +191,31 @@ impl FsWriteService {
                         ),
                     ));
                 }
+                let create_only = request
+                    .intent
+                    .as_ref()
+                    .and_then(|intent| intent["kind"].as_str())
+                    == Some("createIfAbsent");
+                if create_only && fs::symlink_metadata(&absolute).is_ok() {
+                    return Err(map_sandbox_error(SandboxError::AlreadyExists(
+                        absolute.display().to_string(),
+                    )));
+                }
                 self.check_version(request, &absolute, current_version.as_deref())?;
                 let operation = if metadata.is_some() {
                     "update"
                 } else {
                     "create"
                 };
-                self.approve(request, &absolute, operation, bytes)?;
-                let receipt = self
-                    .workspace
-                    .write_text(&relative.to_string_lossy(), content)
-                    .map_err(map_sandbox_error)?;
+                self.approve(request, &absolute, operation, bytes, grant_key)?;
+                self.check_version_after_approval(request, &absolute)?;
+                let requested = relative.to_string_lossy();
+                let receipt = if create_only {
+                    self.workspace.create_text(&requested, content)
+                } else {
+                    self.workspace.write_text(&requested, content)
+                }
+                .map_err(map_sandbox_error)?;
                 let after = fs::metadata(&absolute).map_err(map_io_error)?;
                 let version = version_of(&after)?;
                 Ok(FsWriteResult {
@@ -193,7 +243,8 @@ impl FsWriteService {
                 })?;
                 self.check_version(request, &absolute, current_version.as_deref())?;
                 let bytes = meta.len();
-                self.approve(request, &absolute, "delete", bytes)?;
+                self.approve(request, &absolute, "delete", bytes, grant_key)?;
+                self.check_version_after_approval(request, &absolute)?;
                 let snapshot = self
                     .workspace
                     .snapshot(&absolute)
@@ -289,13 +340,33 @@ impl FsWriteService {
         ))
     }
 
+    fn check_version_after_approval(
+        &self,
+        request: &FsWriteRequest,
+        absolute: &Path,
+    ) -> Result<(), WriteFailure> {
+        if request.expected_version.is_none() {
+            return Ok(());
+        }
+        let version = match fs::metadata(absolute) {
+            Ok(info) => Some(version_of(&info)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(map_io_error(error)),
+        };
+        self.check_version(request, absolute, version.as_deref())
+    }
+
     fn approve(
         &self,
         request: &FsWriteRequest,
         absolute: &Path,
         operation: &str,
         bytes: u64,
+        grant_key: Option<&str>,
     ) -> Result<(), WriteFailure> {
+        if self.write_policy()? == PolicyDecision::Allow {
+            return Ok(());
+        }
         let tool = if request.tool.trim().is_empty() {
             "write"
         } else {
@@ -312,11 +383,25 @@ impl FsWriteService {
             "tool": tool,
             "sandbox": "workspace-write",
         });
-        match self
-            .approvals
-            .request(&call_id, tool, &arguments, self.approval_timeout)
-        {
-            ApprovalOutcome::AllowOnce => Ok(()),
+        let outcome = if let Some(live) = &self.live {
+            self.approvals.request_with_policy(
+                &call_id,
+                tool,
+                &arguments,
+                self.approval_timeout,
+                &live.cancel,
+                LiveApproval {
+                    decide: live.decide.as_ref(),
+                    grant_key,
+                },
+            )
+        } else {
+            self.approvals
+                .request(&call_id, tool, &arguments, self.approval_timeout)
+        };
+        self.write_policy()?;
+        match outcome {
+            ApprovalOutcome::AllowOnce | ApprovalOutcome::AllowAlways => Ok(()),
             ApprovalOutcome::Deny => Err(WriteFailure::new(
                 E_SANDBOX_DENIED,
                 format!(
@@ -325,6 +410,22 @@ impl FsWriteService {
                     absolute.display()
                 ),
             )),
+        }
+    }
+
+    fn write_policy(&self) -> Result<PolicyDecision, WriteFailure> {
+        let Some(live) = &self.live else {
+            return Ok(PolicyDecision::Ask);
+        };
+        if live.cancel.load(Ordering::Relaxed) {
+            return Err(WriteFailure::new(
+                E_SANDBOX_DENIED,
+                "file write denied: turn stopped",
+            ));
+        }
+        match (live.decide)() {
+            PolicyDecision::Deny(reason) => Err(WriteFailure::new(E_SANDBOX_DENIED, reason)),
+            decision => Ok(decision),
         }
     }
 }
@@ -361,6 +462,10 @@ fn map_sandbox_error(error: SandboxError) -> WriteFailure {
         SandboxError::MissingParent(path) => (
             E_NOT_FOUND,
             format!("parent directory does not exist: {path}"),
+        ),
+        SandboxError::AlreadyExists(path) => (
+            E_NOT_OBSERVED,
+            format!("cannot create \"{path}\": a file already exists"),
         ),
         SandboxError::Io(message) => (E_IO, message),
     };
@@ -458,6 +563,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn editor_respects_concurrent_changes_during_approval() {
+        for (create, expected_error) in [(true, E_NOT_OBSERVED), (false, E_STALE_VERSION)] {
+            let (service, root) = service("editor-approval-race");
+            let path = root.join("editor.txt");
+            let mut request = write_request("editor.txt", "editor contents");
+            if create {
+                request.intent = Some(json!({ "kind": "createIfAbsent" }));
+            } else {
+                fs::write(&path, "old").unwrap();
+                request.expected_version = Some(version_of(&fs::metadata(&path).unwrap()).unwrap());
+            }
+            let worker_service = service.clone();
+            let worker = thread::spawn(move || worker_service.handle(&request));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let pending = loop {
+                if let Some(pending) = service.approvals().pending().into_iter().next() {
+                    break pending;
+                }
+                assert!(Instant::now() < deadline, "editor did not reach approval");
+                thread::sleep(Duration::from_millis(1));
+            };
+            fs::write(&path, "written while approval was pending").unwrap();
+            service
+                .approvals()
+                .resolve(&pending.call_id, ApprovalOutcome::AllowOnce);
+            let result = worker.join().unwrap();
+            assert_eq!(result.error.unwrap().code, expected_error);
+            assert_eq!(
+                fs::read_to_string(path).unwrap(),
+                "written while approval was pending"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     /// 在另一个线程里等审批 pending 出现并决定；主线程同步调用 `handle`。
     fn run_with_decision(
         service: &Arc<FsWriteService>,
@@ -515,6 +656,93 @@ mod tests {
             })
             .filter(|name| name.contains("dshr-tmp"))
             .collect()
+    }
+
+    #[test]
+    fn live_permission_revocation_blocks_an_approved_write() {
+        let root = temp_root("live-permission");
+        let approvals = ApprovalBroker::new();
+        let allowed = Arc::new(AtomicBool::new(true));
+        let service = Arc::new(
+            FsWriteService::open(&root, approvals.clone())
+                .unwrap()
+                .with_approval_timeout(Duration::from_secs(2))
+                .with_live_controls(
+                    {
+                        let allowed = allowed.clone();
+                        move || {
+                            if allowed.load(Ordering::Relaxed) {
+                                PolicyDecision::Ask
+                            } else {
+                                PolicyDecision::Deny(
+                                    "file write denied in read-only mode".to_owned(),
+                                )
+                            }
+                        }
+                    },
+                    Arc::new(AtomicBool::new(false)),
+                ),
+        );
+        let write = thread::spawn(move || service.handle(&write_request("blocked.txt", "test")));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while approvals.pending().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let pending = approvals.pending();
+        assert_eq!(pending.len(), 1);
+        allowed.store(false, Ordering::Relaxed);
+        approvals.resolve(&pending[0].call_id, ApprovalOutcome::AllowOnce);
+        assert_eq!(error_code(&write.join().unwrap()), E_SANDBOX_DENIED);
+        assert!(!root.join("blocked.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_approval_continues_pending_and_future_writes_inside_workspace() {
+        let root = temp_root("live-no-approval");
+        let approvals = ApprovalBroker::new();
+        let skip_approval = Arc::new(AtomicBool::new(false));
+        let live_setting = skip_approval.clone();
+        let service = Arc::new(
+            FsWriteService::open(&root, approvals.clone())
+                .unwrap()
+                .with_approval_timeout(Duration::from_secs(3))
+                .with_live_controls(
+                    move || {
+                        if live_setting.load(Ordering::Relaxed) {
+                            PolicyDecision::Allow
+                        } else {
+                            PolicyDecision::Ask
+                        }
+                    },
+                    Arc::new(AtomicBool::new(false)),
+                ),
+        );
+        let first_write = service.clone();
+        let write = thread::spawn(move || first_write.handle(&write_request("notes.txt", "first")));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while approvals.pending().is_empty() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(approvals.pending().len(), 1);
+        skip_approval.store(true, Ordering::Relaxed);
+        assert!(write.join().unwrap().ok);
+        assert!(approvals.pending().is_empty());
+        assert_eq!(approvals.take_records()[0].answerer, "permission_mode");
+
+        let update = service.handle(&write_request("notes.txt", "second"));
+        assert!(update.ok);
+        assert!(update.snapshot.is_some());
+        assert_eq!(
+            fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "second"
+        );
+        assert_eq!(
+            error_code(&service.handle(&write_request("../outside.txt", "blocked"))),
+            E_SANDBOX_DENIED,
+        );
+        assert!(approvals.take_records().is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

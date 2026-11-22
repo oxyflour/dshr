@@ -148,7 +148,7 @@ pub struct ProfileDirs { pub root: PathBuf, pub node_modules: PathBuf, pub logs:
 ```rust
 pub fn install_package(sidecar_dir: &Path, package: &Path, profile: &mut Profile)
     -> Result<InstallReport, String>;
-// chat --install-plugin 的接线不变：传文件路径即可
+// dshr --install-plugin 的接线不变：传文件路径即可
 ```
 
 ### 校验与安全边界
@@ -173,11 +173,11 @@ pub fn install_package(sidecar_dir: &Path, package: &Path, profile: &mut Profile
 
 ```powershell
 # 目录安装（原有）
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --install-plugin path\to\my-tool
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --install-plugin path\to\my-tool
 
 # npm pack 产物（离线）
 npm pack @deepseek-ai/dsh-tool-fs            # 得到 dsh-tool-fs-0.2.2-rc.1.tgz
-tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin chat -- --install-plugin dsh-tool-fs-0.2.2-rc.1.tgz
+tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --install-plugin dsh-tool-fs-0.2.2-rc.1.tgz
 ```
 
 安装后重启 chat 生效（Loader 只读模式下拒绝安装）。依赖闭包仍需提前存在于
@@ -227,7 +227,7 @@ let child = dshr_sidecar_guard::spawn_guarded(
 
 ```powershell
 pwsh tools/package-dev.ps1              # release 构建 + 打包
-pwsh tools/package-dev.ps1 -SkipBuild   # 复用 target/release/chat.exe
+pwsh tools/package-dev.ps1 -SkipBuild   # 复用 target/release/dshr.exe
 pwsh tools/package-dev.ps1 -Configuration debug
 # Windows PowerShell 5.1（本机没有 pwsh 时）：
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-dev.ps1 -Configuration debug -SkipBuild
@@ -236,7 +236,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-dev.ps1 -Confi
 产物 `dist/dshr-dev.zip`（gitignored）：
 
 ```text
-chat.exe
+dshr.exe
 sidecar/            # 含 dsh-official/node_modules（vendored 官方插件）与 cordis sidecar
 runtime/node/       # node.exe + RUNTIME.json
 docs/               # M0–M2 文档
@@ -246,7 +246,7 @@ MANIFEST.txt        # builtAt / configuration / gitCommit / node 版本
 
 前置：`node tools/vendor-node.mjs`、`node tools/dsh-vendor.mjs` 各跑一次（都是本地
 操作，不联网）。脚本只写 `dist/`；不做签名、安装器、自动更新或发布。
-验证：解开 zip 后 `chat.exe --selftest`（无 Node 时仍应 Native-only 可用）。
+验证：解开 zip 后 `dshr.exe --selftest`（无 Node 时仍应 Native-only 可用）。
 
 ## 6. 未做项与风险
 
@@ -280,5 +280,5 @@ node tools/vendor-node.mjs --check
 - `cargo test ... --offline` 同时验证了 flate2 离线可用（未访问网络）。
 - `tools/package-dev.ps1 -Configuration debug -SkipBuild` **实测通过**：
   `dist/dshr-dev.zip` 46.1 MiB（staged 130.6 MiB，1329 个条目），已核对
-  `chat.exe` / `sidecar/dsh-official/sidecar-dsh.mjs` / `runtime/node/node.exe` /
+  `dshr.exe` / `sidecar/dsh-official/sidecar-dsh.mjs` / `runtime/node/node.exe` /
   `runtime/node/RUNTIME.json` / `docs/m2-runtime.md` / `MANIFEST.txt` 均在包内。

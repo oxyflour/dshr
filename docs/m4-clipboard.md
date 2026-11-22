@@ -1,9 +1,9 @@
 # M4 真实剪贴板 smoke test
 
-`chat --selftest-clipboard` 通过 GPUI/OS 剪贴板写入并读回 UTF-8 文本（含中文）：
+`dshr --selftest-clipboard` 通过 GPUI/OS 剪贴板写入并读回 UTF-8 文本（含中文）：
 
 ```text
-.\target\debug\chat.exe --selftest-clipboard
+.\target\debug\dshr.exe --selftest-clipboard
 [selftest-clipboard] PASS text="dshr clipboard selftest 中文"
 exit 0
 ```

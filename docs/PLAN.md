@@ -408,6 +408,8 @@ export function apply(ctx) {
 
 ## 5. DSH 兼容 Sidecar
 
+官方工具包的验证状态与后续交付顺序见 [兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵) 和 [实施计划](plan/dsh-official-plugin-compatibility.md)。
+
 ### 5.1 兼容策略
 
 Node Sidecar 使用与锁定目标版本一致的**原版 DSH vendored Cordis**、Loader、npm 解析和插件生命周期。Sidecar 负责执行 JS 插件，但不运行第二套主 Agent Loop。
@@ -787,16 +789,12 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 
 ### M4 — 跨平台 Beta（累计 290–470 工程日 + review 后追加候选 80–140，见 §9.2；不设硬时间上限）
 
-> **状态：进行中（2026-11-16 启动）。** 工作包与 gate 口径见
+> **状态：四条 gate 已完成，范围收尾中（2026-11-18）。** 工作包与 gate 口径见
 > [ADR-0013](decisions/0013-m4-scope.md)，证据与未验证项见 [m4-status.md](m4-status.md)。
-> W1 完成（uninstall/密钥生命周期/作者签名安装/SDK 离线渠道）；W2 部分完成（快捷键与 a11y 基线，
-> G3 待真机复验）；W3 开始（ADC Button onPress→宿主 copy/call/command，openExternal 确认条，
-> tool card extra 渲染；Checkbox/Switch/Select/Input/Textarea/Slider 步进已接，拖拽未接）；W8 修复 node 缺失时
-> SKIP 记 pass；G2 有 headless `--selftest-recovery` / `--selftest-sidecar-recovery` /
-> `--selftest-crash-recovery`；W6 的 todo/working_directory execute 已闭环
-> （official gate 8/8）；G4 有 `tools/perf-gate.mjs` + CI step（本机 PASS，Actions 未实跑）；
-> W4 的 id/version leak 已收口、native 跨插件批并行/协作式取消已接；运行中抢占/MCP 与 trait 冻结未做；三平台 CI 已加 contract/core
-> matrix 文件（含 desktop-build + Linux/macOS 自检），官方包来源/SHA-256 lock 已接 gate，WSL Linux 核心+桌面+自检+自带 Node/官方 sidecar 的 zip/tar 打包已通过；macOS target 仅 UI crate 类型检查通过（无 SDK），Actions 未实跑。
+> W1/W5/W7 完成；W2/W3/W4/W6/W8 部分完成：W4 的 MCP/运行中抢占/异步 trait 冻结、W6 的
+> bash/pwsh shell execute、W8 的矩阵元数据/事件顺序/flaky 治理仍在收尾。G1/G2/G3/G4 均已 PASS：
+> G2 新增 `M4-RECOVERY-004`（`--selftest-window-recovery`，真实窗口恢复后继续发送）。
+> registry/CA/自动更新、生产签名/公证/安装器仍未交付。
 
 - [ ] Windows/macOS/Linux 编译与发布管线；签名和更新策略（差分、灰度、回滚）。
 - [ ] 多窗口、快捷键、IME、辅助功能、DPI、窗口恢复、主题一致性。
@@ -814,8 +812,10 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 
 > **M4 gate 状态（2026-11-18）**：G1 **PASS**（Actions run 44122517682 9/9；Windows 自检追加 run 44127414363 最终 9/9）；
 > G3 **PASS**（`DSHR_KEYBOARD_FLOW=1` 真实窗口新建→输入→发送→审批→面板→关闭，Windows CI 执行）；
-> G4 **PASS**（conformance run 44122517731）；G2 仍为三平台 headless 恢复、窗口内点击继续未自动验收。
-> 证据汇总见 [m4-status.md](m4-status.md)。
+> G4 **PASS**（conformance run 44122517731）；G2 **PASS**（`M4-RECOVERY-004` = `chat --selftest-window-recovery`：
+> 真实子进程崩溃留下孤儿 `.bak` → 窗口启动恢复并显示横幅 → 注入键盘继续发送；Windows 本机 PASS，
+> Windows CI desktop job 已加该步骤；macOS/Linux 真窗口未跑，headless 恢复由三平台 CI 覆盖）。
+> 工作包仍有 W2/W3/W4/W6/W8 部分收尾项，证据汇总见 [m4-status.md](m4-status.md)。
 
 ### M5 — 长期可选方向（不计入 Beta 承诺）
 
@@ -824,6 +824,9 @@ ADC 交互元素 → 只读子集冻结、交互延 M4；L2 减到 1 个服务�
 - 更广泛的 `ADC-v1` 元素与 IDE/3D/EDA/仿真面板 SDK。
 - 团队任务板、跨会话共享上下文、多用户/远端 Runtime、云端 Agent 工作区。
 - 更稳定的 Wasm Component UI、组件市场。
+
+dshr 原生创造会话复用 CPP-v1 和 ADC-v1，首版交付对话内预览与本地包试用。后续扩展的进度和验收在
+[创造模式实施计划](plan/creator-mode.md) 维护。
 
 ---
 
@@ -879,7 +882,7 @@ ADC 渲染器（20–30 日）在 §9 均无预算行。对应累计：M3 240–
 | native/MCP 并发 + `Plugin` trait 冻结（异步/取消/泄漏收口） | 10–18 | W7 只覆盖 sidecar；review P2-11 |
 | ADC 交互/事件/tool card + 窗口 draw 预算 + a11y 焦点 | 15–25 | ADR-0011 降级清单；review "panel 只到 AnyElement" |
 | 子会话并行 / sidecar 工具继承 / `tool.chunk` 消费 | 8–15 | M3 债务剩余；ADR-0007 §3 |
-| 官方包 CI/vendor + GitHub Actions 实跑（含 manual gate 自动化） | 5–8 | review P0/P2-1；当前 CI 未实跑 |
+| 官方包 CI/vendor + GitHub Actions 实跑（含 manual gate 自动化） | 5–8 | review P0/P2-1；Actions 已实跑（G1） |
 | P2 余项（矩阵元数据、事件顺序文档、session_id chat 接线、flaky 治理） | 5–10 | review P2 表 |
 | **合计** | **80–140** | |
 
@@ -915,6 +918,8 @@ ADC 渲染器（20–30 日）在 §9 均无预算行。对应累计：M3 240–
 实现要求：每个断言对应一个**测试 ID**（如 `L1-CANCEL-003`），CI 生成矩阵报告并按里程碑聚合；发布前必须全绿。
 
 ### 10.2 工程质量门槛
+
+当前基线、模块整改顺序及合并门禁的启用条件见[代码质量与合并门禁计划](plan/code-quality.md)。
 
 - CI：`cargo fmt/clippy/test`、TS 检查、IPC Schema 测试、至少 Windows E2E。
 - **E2E 策略**：GPUI 没有 Playwright 级方案，采用"逻辑层测试接缝 + 截图回归"双层：所有 View 必须能在无窗口环境下构造状态并断言；关键界面做截图基线比对。

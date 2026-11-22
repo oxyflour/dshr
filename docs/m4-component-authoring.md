@@ -25,7 +25,7 @@ cp target/wasm32-wasip2/release/demo_echo.wasm plugin.wasm
 ## 3. 安装边界
 
 ```text
-dshr chat --install-plugin <dir>
+dshr --install-plugin <dir>
 ```
 
 宿主会读 `plugin.toml` 的 `runtime.kind=wasm-component` 与 `entry`，交给

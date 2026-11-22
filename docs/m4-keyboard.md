@@ -33,7 +33,7 @@
 
 ## 3. G3 键盘全流程复验清单（真实窗口，不用鼠标）
 
-1. 启动 `chat.exe`，焦点应在输入框；
+1. 启动 `dshr.exe`，焦点应在输入框；
 2. `Ctrl/⌘+N` 新建会话，标题变为新会话；
 3. 直接输入一句话，`Enter` 发送；生成中界面出现状态；
 4. 触发一个需要审批的工具（写文件/执行命令），审批条出现；
@@ -66,8 +66,8 @@
 - 正确做法是 `window.defer(cx, |window, cx| window.dispatch_keystroke(...))`，
   把注入排到本帧更新之后；`--selftest-window` 已用该方式验证真实窗口的 key handler，
   输出 `[selftest-window] PASS window+keyboard`。
-- 这仍只证明窗口/按键路由，不证明 ChatApp 主流程；G3 仍需要真实桌面人工跑
-  新建→发送→审批→切换面板→关闭，或为 ChatApp 写 `TestAppContext` 全流程测试。
+- 这一步只证明窗口/按键路由；ChatApp 主流程由 §5.1 的 `DSHR_KEYBOARD_FLOW=1` 覆盖并已
+  在 Windows CI 执行，因此 G3 判 PASS。IME/macOS 键位与完整 Tab 焦点环仍另测。
 
 ### 5.1 ChatApp 真实快捷键全流程（环境变量）
 

@@ -87,6 +87,8 @@ jobs:
           cargo test --offline
           -p dshr-agent-context
           -p dshr-agent-core
+          -p dshr-compat-acp
+          -p dshr-compat-dsh-fs
           -p dshr-compat-dsh-host
           -p dshr-compat-dsh-protocol
           -p dshr-compat-mcp
@@ -147,20 +149,25 @@ jobs:
 
       # Linux 的 GPUI 后端依赖纯 Rust/dlopen；WSL 已验证 cargo build 成功。
       - name: Build desktop chat
-        run: cargo build --offline -p dshr-desktop-gpui --bin chat
+        run: cargo build --offline -p dshr-desktop-gpui --bin dshr
+
+      - name: Headless CLI contracts
+        run: cargo test --offline -p dshr-desktop-gpui --test headless_cli
 
       # Linux/macOS 运行无窗口自检：ADC 面板、恢复、真实子进程崩溃恢复。
       - name: Windows runtime selftests
         if: runner.os == 'Windows'
         run: |
           cargo build --offline -p dshr-plugin-host --bins
-          target\debug\chat.exe --selftest-adc-panel
-          target\debug\chat.exe --selftest-recovery
-          target\debug\chat.exe --selftest-crash-recovery
-          target\debug\chat.exe --selftest-window
-          target\debug\chat.exe --selftest-clipboard
+          target\debug\dshr.exe --selftest-adc-panel
+          target\debug\dshr.exe --selftest-recovery
+          target\debug\dshr.exe --selftest-crash-recovery
+          target\debug\dshr.exe --selftest-window-recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          target\debug\dshr.exe --selftest-window
+          target\debug\dshr.exe --selftest-clipboard
           $env:DSHR_KEYBOARD_FLOW = '1'
-          target\debug\chat.exe
+          target\debug\dshr.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:\DSHR_KEYBOARD_FLOW
 
@@ -168,9 +175,9 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cargo build --offline -p dshr-plugin-host --bins
-          target/debug/chat --selftest-adc-panel
-          target/debug/chat --selftest-recovery
-          target/debug/chat --selftest-crash-recovery
+          target/debug/dshr --selftest-adc-panel
+          target/debug/dshr --selftest-recovery
+          target/debug/dshr --selftest-crash-recovery
 
       - name: Sign Windows binary (optional)
         if: runner.os == 'Windows' && env.WINDOWS_CERT_PFX_BASE64 != ''
@@ -178,15 +185,36 @@ jobs:
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
-          powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 -Path target/debug/chat.exe -PfxPath $pfx
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/sign-windows.ps1 -Path target/debug/dshr.exe -PfxPath $pfx
 
       - name: Sign macOS binary (optional)
         if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
-        run: bash tools/sign-macos.sh target/debug/chat "$MACOS_SIGN_IDENTITY"
+        run: bash tools/sign-macos.sh target/debug/dshr "$MACOS_SIGN_IDENTITY"
+
+      - name: Verify diagnostic sidecar recovery (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:DSHR_SIDECAR = "probe"
+          $env:DSHR_HOME = Join-Path $env:RUNNER_TEMP "dshr-diagnostic-home"
+          & target/debug/dshr.exe --selftest-sidecar-recovery
+          exit $LASTEXITCODE
+
+      - name: Verify diagnostic sidecar recovery (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: DSHR_SIDECAR=probe DSHR_HOME="$RUNNER_TEMP/dshr-diagnostic-home" target/debug/dshr --selftest-sidecar-recovery
+
+      - name: Stage locked official sidecar
+        run: npm ci --ignore-scripts --prefix sidecar/dsh-official
+
+      - name: Stage bundled Node (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: node tools/vendor-node.mjs --source (Get-Command node.exe).Source
 
       - name: Package desktop (Windows)
         if: runner.os == 'Windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug -BaseSidecar
 
       - name: Package desktop (Linux/macOS)
         if: runner.os != 'Windows'
@@ -208,8 +236,8 @@ jobs:
         with:
           name: desktop-${{ matrix.os }}
           path: |
-            target/debug/chat
-            target/debug/chat.exe
+            target/debug/dshr
+            target/debug/dshr.exe
           if-no-files-found: error
           retention-days: 14
 

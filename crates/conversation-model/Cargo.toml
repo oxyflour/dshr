@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dshr-agent-context = { path = "../agent-context" }
 dshr-session-store = { path = "../session-store" }
 dshr-tool-runtime = { path = "../tool-runtime" }
 serde_json.workspace = true

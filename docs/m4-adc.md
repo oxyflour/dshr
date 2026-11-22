@@ -51,7 +51,7 @@
 
 1. 用 external fixture 声明一个 `workspace.panel`，树里放
    `Button{ "label": "复制", "a11yLabel": "复制", "onPress": { "copy": "demo" } }`；
-2. 启动 `chat.exe`，`Ctrl/⌘+J` 打开插件面板；
+2. 启动 `dshr.exe`，`Ctrl/⌘+J` 打开插件面板；
 3. 点击"复制"，剪贴板应为 `demo`；stderr 出现 `[adc] copy 4 bytes`；
 4. 把 `onPress` 换成 `call`，点击后宿主发 `ui.action`；external fixture 的 action 计数器
    增加，下一次 `ui.render` 的文本出现 `actions=1`；未知 action 只写 stderr，不影响界面。

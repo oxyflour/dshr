@@ -6,7 +6,7 @@
 //! 已实现的不变量（对应规范 §4）：
 //! - I1 append-only：事件只能追加，`seq` 由日志分配；
 //! - I2 `seq` 连续、从 1 开始；
-//! - I3 一个 `call_id` 至多一次结算（`tool.result` XOR `tool.aborted`）；
+//! - I3 每次工具调用至多一次结算（`tool.result` XOR `tool.aborted`）；
 //! - I4 `message.assistant.settled` 每个 `message_id` 恰好一次；
 //! - I8 稳定 ID（`session_id` / `call_id`）与插件 generation 无关；
 //! - I9 `session.created` 是第一条事件，`parent_session_id` 写入一次后不可改（会话树，§7）。
@@ -22,7 +22,7 @@ pub mod session_index;
 pub mod session_tree;
 
 pub use session_index::{
-    quarantine_corrupt, recover_backup, save_atomic, SessionIndex, SessionMeta,
+    quarantine_corrupt, recover_backup, save_atomic, try_lock_session, SessionIndex, SessionMeta,
 };
 pub use session_tree::{SessionNode, SessionTree, TreeError, DEFAULT_MAX_DEPTH};
 
@@ -269,11 +269,27 @@ pub enum LogError {
     Invalid(String),
 }
 
+/// 按调用事件序号区分重复的模型 ID。旧日志仍按原来的 call_id 关联。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ToolCallKey {
+    Seq(u64),
+    Id(String),
+}
+
+impl ToolCallKey {
+    pub fn from_payload(payload: &Value) -> Self {
+        match payload.get("call_seq").and_then(Value::as_u64) {
+            Some(seq) => Self::Seq(seq),
+            None => Self::Id(payload_str(payload, "call_id")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionLog {
     session_id: String,
     events: Vec<Event>,
-    settled_calls: HashSet<String>,
+    settled_calls: HashSet<ToolCallKey>,
     settled_messages: HashSet<String>,
     /// `session.created` 里的树字段；旧日志（M2 之前）没有该事件时为 None。
     created: Option<SessionCreated>,
@@ -345,12 +361,37 @@ impl SessionLog {
                 }
                 self.created = Some(created);
             }
+            "tool.call" => {
+                if let ToolCallKey::Seq(call_seq) = ToolCallKey::from_payload(&spec.payload) {
+                    if call_seq != seq {
+                        return Err(LogError::Invalid(format!(
+                            "tool.call has invalid call_seq {call_seq}"
+                        )));
+                    }
+                }
+            }
             "tool.result" | "tool.aborted" => {
                 let call_id = required_str(&spec.payload, "call_id", &spec.event_type)?;
                 if spec.event_type == "tool.aborted" {
                     required_str(&spec.payload, "reason", &spec.event_type)?;
                 }
-                if !self.settled_calls.insert(call_id.to_owned()) {
+                let key = ToolCallKey::from_payload(&spec.payload);
+                if let ToolCallKey::Seq(call_seq) = key {
+                    let call = call_seq
+                        .checked_sub(1)
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| self.events.get(index));
+                    if !call.is_some_and(|event| {
+                        event.event_type == "tool.call"
+                            && event.payload.get("call_id").and_then(Value::as_str) == Some(call_id)
+                            && ToolCallKey::from_payload(&event.payload) == key
+                    }) {
+                        return Err(LogError::Invalid(format!(
+                            "tool {call_id} has no call at seq {call_seq}"
+                        )));
+                    }
+                }
+                if !self.settled_calls.insert(key) {
                     return Err(LogError::DuplicateSettlement {
                         call_id: call_id.to_owned(),
                     });
@@ -533,7 +574,7 @@ impl SessionLog {
     /// 回放：只从事件推导视图，不触发任何副作用（规范 §6）。
     pub fn replay(&self) -> SessionView {
         let mut view = SessionView::default();
-        let mut tool_index: HashMap<String, usize> = HashMap::new();
+        let mut tool_index: HashMap<ToolCallKey, usize> = HashMap::new();
 
         for event in &self.events {
             if event.durability == Durability::Ephemeral {
@@ -559,7 +600,10 @@ impl SessionLog {
                 }
                 "tool.call" => {
                     let call_id = payload_str(&event.payload, "call_id");
-                    tool_index.insert(call_id.clone(), view.tool_calls.len());
+                    tool_index.insert(
+                        ToolCallKey::from_payload(&event.payload),
+                        view.tool_calls.len(),
+                    );
                     view.tool_calls.push(ToolCallView {
                         call_id,
                         tool: payload_str(&event.payload, "tool"),
@@ -567,8 +611,7 @@ impl SessionLog {
                     });
                 }
                 "tool.result" => {
-                    let call_id = payload_str(&event.payload, "call_id");
-                    if let Some(ix) = tool_index.get(&call_id) {
+                    if let Some(ix) = tool_index.get(&ToolCallKey::from_payload(&event.payload)) {
                         view.tool_calls[*ix].state = ToolState::Settled {
                             is_error: event
                                 .payload
@@ -581,8 +624,7 @@ impl SessionLog {
                     }
                 }
                 "tool.aborted" => {
-                    let call_id = payload_str(&event.payload, "call_id");
-                    if let Some(ix) = tool_index.get(&call_id) {
+                    if let Some(ix) = tool_index.get(&ToolCallKey::from_payload(&event.payload)) {
                         view.tool_calls[*ix].state = ToolState::Aborted {
                             reason: payload_str(&event.payload, "reason"),
                         };
@@ -783,330 +825,4 @@ fn payload_text(payload: &Value) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn ts() -> &'static str {
-        "2026-11-09T10:00:00.000Z"
-    }
-
-    fn log_with_call() -> SessionLog {
-        let mut log = SessionLog::new("s-1");
-        log.append(EventSpec::durable(
-            "tool.call",
-            ts(),
-            json!({ "call_id": "call-1", "tool": "bash" }),
-        ))
-        .unwrap();
-        log
-    }
-
-    #[test]
-    fn append_assigns_contiguous_seq() {
-        let mut log = SessionLog::new("s-1");
-        assert_eq!(
-            log.append(EventSpec::durable("turn.started", ts(), json!({})))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            log.append(EventSpec::durable("turn.ended", ts(), json!({})))
-                .unwrap(),
-            2
-        );
-        assert_eq!(log.len(), 2);
-    }
-
-    #[test]
-    fn rejects_second_settlement_for_same_call() {
-        let mut log = log_with_call();
-        log.append(EventSpec::durable(
-            "tool.result",
-            ts(),
-            json!({ "call_id": "call-1", "is_error": false }),
-        ))
-        .unwrap();
-
-        let err = log
-            .append(EventSpec::durable(
-                "tool.aborted",
-                ts(),
-                json!({ "call_id": "call-1", "reason": "crash" }),
-            ))
-            .unwrap_err();
-
-        assert_eq!(
-            err,
-            LogError::DuplicateSettlement {
-                call_id: "call-1".to_owned()
-            }
-        );
-        assert_eq!(log.len(), 2, "failed append must not mutate the log");
-    }
-
-    #[test]
-    fn rejects_duplicate_assistant_settlement() {
-        let mut log = SessionLog::new("s-1");
-        log.append(EventSpec::durable(
-            "message.assistant.settled",
-            ts(),
-            json!({ "message_id": "m-1", "text": "hi" }),
-        ))
-        .unwrap();
-
-        let err = log
-            .append(EventSpec::durable(
-                "message.assistant.settled",
-                ts(),
-                json!({ "message_id": "m-1", "text": "hi again" }),
-            ))
-            .unwrap_err();
-        assert!(matches!(err, LogError::DuplicateMessage { .. }));
-    }
-
-    #[test]
-    fn rejects_settlement_without_call_id() {
-        let mut log = SessionLog::new("s-1");
-        let err = log
-            .append(EventSpec::durable("tool.result", ts(), json!({})))
-            .unwrap_err();
-        assert_eq!(
-            err,
-            LogError::MissingField {
-                event_type: "tool.result".to_owned(),
-                field: "call_id".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn replay_rebuilds_messages_tools_and_turns() {
-        let mut log = SessionLog::new("s-1");
-        log.append(EventSpec::durable("turn.started", ts(), json!({})))
-            .unwrap();
-        log.append(EventSpec::durable(
-            "message.user",
-            ts(),
-            json!({ "message_id": "m-1", "text": "run it" }),
-        ))
-        .unwrap();
-        log.append(EventSpec::ephemeral(
-            "message.assistant.delta",
-            ts(),
-            json!({ "message_id": "m-2", "text": "partial" }),
-        ))
-        .unwrap();
-        log.append(EventSpec::durable(
-            "message.assistant.settled",
-            ts(),
-            json!({ "message_id": "m-2", "text": "done" }),
-        ))
-        .unwrap();
-        log.append(EventSpec::durable(
-            "tool.call",
-            ts(),
-            json!({ "call_id": "call-1", "tool": "bash" }),
-        ))
-        .unwrap();
-        log.append(EventSpec::durable(
-            "tool.result",
-            ts(),
-            json!({ "call_id": "call-1", "is_error": true }),
-        ))
-        .unwrap();
-        log.append(EventSpec::durable("some.future.event", ts(), json!({})))
-            .unwrap();
-
-        let view = log.replay();
-        assert_eq!(view.turns, 1);
-        assert_eq!(view.messages.len(), 2);
-        assert_eq!(view.messages[1].role, Role::Assistant);
-        assert_eq!(view.messages[1].text, "done");
-        assert_eq!(
-            view.tool_calls[0].state,
-            ToolState::Settled { is_error: true }
-        );
-        assert_eq!(view.unmodeled_events, 1);
-        assert_eq!(view.ephemeral_skipped, 1);
-    }
-
-    #[test]
-    fn replay_marks_aborted_tool_and_skips_ephemeral() {
-        let mut log = log_with_call();
-        log.append(EventSpec::ephemeral(
-            "tool.chunk",
-            ts(),
-            json!({ "call_id": "call-1", "text": "..." }),
-        ))
-        .unwrap();
-        log.append(EventSpec::durable(
-            "tool.aborted",
-            ts(),
-            json!({ "call_id": "call-1", "reason": "crash" }),
-        ))
-        .unwrap();
-
-        let view = log.replay();
-        assert_eq!(view.ephemeral_skipped, 1);
-        assert_eq!(
-            view.tool_calls[0].state,
-            ToolState::Aborted {
-                reason: "crash".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    fn jsonl_round_trip_preserves_events_and_view() {
-        let mut log = log_with_call();
-        log.append(EventSpec::durable(
-            "tool.result",
-            ts(),
-            json!({ "call_id": "call-1", "is_error": false }),
-        ))
-        .unwrap();
-
-        let jsonl = log.to_jsonl();
-        let restored = SessionLog::from_jsonl("s-1", &jsonl).unwrap();
-
-        assert_eq!(restored.events(), log.events());
-        assert_eq!(
-            restored.replay().tool_calls[0].state,
-            ToolState::Settled { is_error: false }
-        );
-    }
-
-    #[test]
-    fn from_jsonl_rejects_seq_gap_and_wrong_session() {
-        let mut log = log_with_call();
-        log.append(EventSpec::durable(
-            "tool.result",
-            ts(),
-            json!({ "call_id": "call-1" }),
-        ))
-        .unwrap();
-        let mut jsonl = log.to_jsonl();
-
-        let err = SessionLog::from_jsonl("s-2", &jsonl).unwrap_err();
-        assert!(matches!(err, LogError::SessionMismatch { .. }));
-
-        let first_line_end = jsonl.find('\n').unwrap();
-        jsonl.remove(first_line_end - 1); // 破坏第一条事件的字符
-        let err = SessionLog::from_jsonl("s-1", &jsonl).unwrap_err();
-        assert!(
-            matches!(err, LogError::Invalid(_) | LogError::SeqGap { .. }),
-            "corrupted line must be rejected, got {err:?}"
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // 会话树（规范 §3.6 / §7）
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn created_must_be_first_and_carries_parent_and_source() {
-        let mut log = SessionLog::new("s-child");
-        let created =
-            SessionCreated::child("ws-1", "s-parent", SpawnSource::Agent).with_preset("reviewer");
-        assert_eq!(log.append_created(ts(), &created).unwrap(), 1);
-
-        assert_eq!(log.parent_session_id(), Some("s-parent"));
-        assert_eq!(log.spawn_source(), Some(SpawnSource::Agent));
-        assert_eq!(log.created().unwrap().preset.as_deref(), Some("reviewer"));
-
-        // 不是第一条 → 拒绝
-        let mut later = SessionLog::new("s-x");
-        later
-            .append(EventSpec::durable("turn.started", ts(), json!({})))
-            .unwrap();
-        let err = later.append_created(ts(), &created).unwrap_err();
-        assert!(matches!(err, LogError::Invalid(_)));
-
-        // 自引用 → 拒绝
-        let mut self_parent = SessionLog::new("s-self");
-        let err = self_parent
-            .append_created(
-                ts(),
-                &SessionCreated::child("ws", "s-self", SpawnSource::Agent),
-            )
-            .unwrap_err();
-        assert!(matches!(err, LogError::Invalid(_)));
-    }
-
-    #[test]
-    fn replay_rebuilds_tree_fields_from_session_created() {
-        let mut log = SessionLog::new("s-root");
-        log.append_created(ts(), &SessionCreated::root("ws-1"))
-            .unwrap();
-        log.append_child_spawned(ts(), "s-child", "修窗口", Some("call-1"))
-            .unwrap();
-        log.append_child_finished(ts(), "s-child", "completed")
-            .unwrap();
-        log.append_interrupted(ts(), "user_stop").unwrap();
-
-        let view = log.replay();
-        assert_eq!(view.created.as_ref().unwrap().workspace_id, "ws-1");
-        assert!(!view.created.as_ref().unwrap().is_child());
-        assert_eq!(view.children.len(), 1);
-        assert_eq!(view.children[0].child_session_id, "s-child");
-        assert_eq!(view.children[0].prompt, "修窗口");
-        assert_eq!(view.children[0].outcome.as_deref(), Some("completed"));
-        assert!(view.is_interrupted());
-        assert!(!view.interrupted_by_parent());
-        assert!(!view.was_killed());
-        assert_eq!(view.unmodeled_events, 0);
-    }
-
-    #[test]
-    fn replay_marks_interrupted_by_parent_and_kill_escalation() {
-        let mut child = SessionLog::new("s-child");
-        child
-            .append_created(
-                ts(),
-                &SessionCreated::child("ws-1", "s-parent", SpawnSource::Agent),
-            )
-            .unwrap();
-        child
-            .append_interrupted_by_parent(ts(), "s-parent", "parent_interrupt")
-            .unwrap();
-        child.append_killed(ts(), "interrupt_timeout").unwrap();
-
-        let view = child.replay();
-        assert_eq!(
-            view.created.as_ref().unwrap().parent_session_id.as_deref(),
-            Some("s-parent")
-        );
-        assert_eq!(view.interruptions.len(), 2);
-        assert!(view.interrupted_by_parent());
-        assert!(view.was_killed());
-        assert!(child.interrupted_by_parent());
-        assert!(child.was_killed());
-    }
-
-    #[test]
-    fn tree_events_survive_jsonl_round_trip() {
-        let mut log = SessionLog::new("s-child");
-        log.append_created(
-            ts(),
-            &SessionCreated::child("ws-1", "s-parent", SpawnSource::Agent),
-        )
-        .unwrap();
-        log.append_interrupted_by_parent(ts(), "s-parent", "parent_interrupt")
-            .unwrap();
-
-        let restored = SessionLog::from_jsonl("s-child", &log.to_jsonl()).unwrap();
-        assert_eq!(restored.parent_session_id(), Some("s-parent"));
-        assert_eq!(restored.spawn_source(), Some(SpawnSource::Agent));
-        assert!(restored.replay().interrupted_by_parent());
-    }
-
-    #[test]
-    fn spawn_source_round_trips_and_tolerates_unknown_values() {
-        assert_eq!(SpawnSource::parse("user"), Some(SpawnSource::User));
-        assert_eq!(SpawnSource::parse("agent"), Some(SpawnSource::Agent));
-        assert_eq!(SpawnSource::parse("acp"), None);
-        assert_eq!(SpawnSource::User.as_str(), "user");
-        assert_eq!(SpawnSource::Agent.as_str(), "agent");
-    }
-}
+mod tests;

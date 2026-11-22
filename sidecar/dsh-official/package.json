@@ -1,0 +1,10 @@
+{
+  "name": "dshr-dsh-official-sidecar",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-tool-fs": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-workspace-dependencies": "0.2.2-rc.1"
+  }
+}

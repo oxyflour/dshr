@@ -18,7 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dshr_agent_core::{
-    ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort,
+    AttachmentFormat, ChatMessage, CompletionRequest, ModelProvider, ModelReply, ModelToolCall,
+    ReasoningEffort,
 };
 use serde_json::{json, Value};
 
@@ -32,6 +33,7 @@ const SYSTEM_PROMPT: &str = "你是一个桌面 Agent。回答简洁；需要外
 /// 这里按 DSH 映射原样发送（兼容端点可能扩展支持），非法/不被接受由服务端报错。
 pub const SUPPORTS_REASONING_EFFORT: bool = true;
 
+#[derive(Clone)]
 pub struct OpenAiProvider {
     api_key: String,
     base_url: String,
@@ -72,6 +74,16 @@ impl OpenAiProvider {
 
     pub fn with_cancel(mut self, token: Arc<AtomicBool>) -> Self {
         self.cancel = Some(token);
+        self
+    }
+
+    pub fn with_connection(
+        mut self,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.base_url = base_url.into();
+        self.model = model.into();
         self
     }
 
@@ -201,6 +213,9 @@ impl ModelProvider for OpenAiProvider {
             return Err(String::from("cancelled"));
         }
         let body = self.send(&self.request_body(request))?;
+        if is_cancelled(self.cancel.as_deref()) {
+            return Err(String::from("cancelled"));
+        }
         parse_reply(&body)
     }
 }
@@ -209,7 +224,13 @@ fn message_json(message: &ChatMessage) -> Value {
     match message {
         ChatMessage::System(text) => json!({ "role": "system", "content": text }),
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
-        ChatMessage::Assistant { text, tool_calls } => {
+        ChatMessage::UserWithAttachments { text, attachments } => {
+            media_message_json(text, attachments)
+        }
+        ChatMessage::ToolImages(images) => media_message_json("工具返回的图片", images),
+        ChatMessage::Assistant {
+            text, tool_calls, ..
+        } => {
             let mut object = json!({ "role": "assistant", "content": text });
             if !tool_calls.is_empty() {
                 object["tool_calls"] = Value::Array(
@@ -236,6 +257,32 @@ fn message_json(message: &ChatMessage) -> Value {
             "content": content,
         }),
     }
+}
+
+fn media_message_json(text: &str, attachments: &[dshr_agent_core::MediaAttachment]) -> Value {
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    for attachment in attachments {
+        match attachment.data_url() {
+            Some(data) if attachment.format == AttachmentFormat::Pdf => {
+                content.push(json!({ "type": "file", "file": {
+                    "filename": attachment.name,
+                    "file_data": data,
+                } }));
+            }
+            Some(data) => {
+                content
+                    .push(json!({ "type": "text", "text": format!("图片：{}", attachment.name) }));
+                content.push(json!({ "type": "image_url", "image_url": { "url": data } }));
+            }
+            None => content.push(
+                json!({ "type": "text", "text": format!("附件 {}（未加载）", attachment.name) }),
+            ),
+        }
+    }
+    json!({ "role": "user", "content": content })
 }
 
 fn parse_reply(body: &Value) -> Result<ModelReply, String> {
@@ -272,7 +319,14 @@ fn parse_reply(body: &Value) -> Result<ModelReply, String> {
             });
         }
     }
-    Ok(ModelReply { text, tool_calls })
+    Ok(ModelReply {
+        reasoning: message["reasoning_content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        text,
+        tool_calls,
+    })
 }
 
 #[cfg(test)]
@@ -303,6 +357,7 @@ mod tests {
         let body = provider.request_body(&request(vec![
             ChatMessage::System("自定义".to_owned()),
             ChatMessage::Assistant {
+                reasoning: String::new(),
                 text: String::new(),
                 tool_calls: vec![ModelToolCall {
                     id: "c1".to_owned(),
@@ -320,6 +375,42 @@ mod tests {
         assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "c1");
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn request_body_sends_image_and_pdf_parts() {
+        use dshr_agent_core::MediaAttachment;
+
+        let body = OpenAiProvider::new("k").request_body(&request(vec![
+            ChatMessage::UserWithAttachments {
+                text: "compare".into(),
+                attachments: vec![
+                    MediaAttachment {
+                        name: "photo.png".into(),
+                        format: AttachmentFormat::Png,
+                        reference: "photo".into(),
+                        bytes: Some(b"\x89PNG\r\n\x1a\n".as_slice().into()),
+                    },
+                    MediaAttachment {
+                        name: "report.pdf".into(),
+                        format: AttachmentFormat::Pdf,
+                        reference: "report".into(),
+                        bytes: Some(b"%PDF".as_slice().into()),
+                    },
+                ],
+            },
+        ]));
+        assert_eq!(
+            body["messages"][1]["content"],
+            json!([
+                { "type": "text", "text": "compare" },
+                { "type": "text", "text": "图片：photo.png" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } },
+                { "type": "file", "file": {
+                    "filename": "report.pdf", "file_data": "data:application/pdf;base64,JVBERg=="
+                } }
+            ])
+        );
     }
 
     #[test]

@@ -1,0 +1,76 @@
+name: quality
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Source checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check format, file length, dependencies, and Node syntax
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="${EVENT_BASE:-HEAD}"
+          if [[ "$base" =~ ^0+$ ]]; then
+            base="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          if ! git cat-file -e "${base}^{commit}"; then
+            git fetch --no-tags origin "$base"
+          fi
+          node tools/check-code-quality.mjs --base "$base"
+      - name: Exercise the quality gate on fixture changes
+        run: node --test tools/check-code-quality.test.mjs
+
+  lint:
+    name: Rust lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+      - name: Strict workspace Clippy
+        run: cargo clippy --locked --offline --workspace --all-targets -- -D warnings
+
+  quality:
+    name: code quality
+    needs: [checks, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify both checks passed
+        env:
+          SOURCE_RESULT: ${{ needs.checks.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+        run: |
+          if [[ "$SOURCE_RESULT" != success || "$LINT_RESULT" != success ]]; then
+            echo "Source checks: $SOURCE_RESULT; Rust lint: $LINT_RESULT"
+            exit 1
+          fi

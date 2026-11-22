@@ -21,10 +21,11 @@ impl Render for Harness {
         let on_action = self.on_action.clone();
         let handler: AdcActionHandler = Rc::new(move |action: &Action, _, _| on_action(action));
         let parsed = parse_tree(&self.tree);
-        div()
-            .w(px(400.0))
-            .h(px(300.0))
-            .child(adc_view_with_handler(&Theme::light(), &parsed.root, handler))
+        div().w(px(400.0)).h(px(300.0)).child(adc_view_with_handler(
+            &Theme::light(),
+            &parsed.root,
+            handler,
+        ))
     }
 }
 
@@ -136,7 +137,10 @@ fn m4_adc_013_real_click_slider_step_injects_value(cx: &mut TestAppContext) {
     )
     .expect("slider + click should dispatch an action");
     match action {
-        Action::Call { ref method, ref args } => {
+        Action::Call {
+            ref method,
+            ref args,
+        } => {
             assert_eq!(method, "set_level");
             assert_eq!(args["value"], 6.0, "slider step not injected: {args}");
         }
@@ -161,7 +165,10 @@ fn m4_adc_014_real_click_input_emits_edit(cx: &mut TestAppContext) {
     )
     .expect("input click should dispatch an edit action");
     match action {
-        Action::Call { ref method, ref args } => {
+        Action::Call {
+            ref method,
+            ref args,
+        } => {
             assert_eq!(method, "__adc_edit");
             assert_eq!(args["path"], "$");
             assert_eq!(args["value"], "hello");
@@ -190,7 +197,10 @@ fn m4_adc_015_real_click_textarea_emits_multiline_edit(cx: &mut TestAppContext) 
     )
     .expect("textarea click should dispatch an edit action");
     match action {
-        Action::Call { ref method, ref args } => {
+        Action::Call {
+            ref method,
+            ref args,
+        } => {
             assert_eq!(method, "__adc_edit");
             assert_eq!(args["multiline"], true);
             assert_eq!(args["value"], "line1\nline2");
@@ -318,7 +328,9 @@ fn m4_adc_020_keyboard_activates_select_chip(cx: &mut TestAppContext) {
     });
     let (_view, cx) = cx.add_window_view(move |_, _| Harness { tree, on_action });
     cx.run_until_parked();
-    let bounds = cx.debug_bounds("adc-$-option-1").expect("select chip bounds");
+    let bounds = cx
+        .debug_bounds("adc-$-option-1")
+        .expect("select chip bounds");
     cx.simulate_click(bounds.center(), Modifiers::default());
     cx.run_until_parked();
     assert_eq!(count.get(), 1);
@@ -381,10 +393,7 @@ fn m4_adc_022_drag_slider_track_sets_value(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let track = cx.debug_bounds("adc-$-track").expect("track bounds");
     let start = gpui::point(track.origin.x + px(2.0), track.center().y);
-    let target = gpui::point(
-        track.origin.x + track.size.width * 0.75,
-        track.center().y,
-    );
+    let target = gpui::point(track.origin.x + track.size.width * 0.75, track.center().y);
     cx.simulate_mouse_move(start, None, Modifiers::default());
     cx.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -429,7 +438,10 @@ fn m4_adc_023_real_click_tabs_changes_key(cx: &mut TestAppContext) {
     )
     .expect("tab click should dispatch an action");
     match action {
-        Action::Call { ref method, ref args } => {
+        Action::Call {
+            ref method,
+            ref args,
+        } => {
             assert_eq!(method, "switch_tab");
             assert_eq!(args["value"], "b", "tab key not injected: {args}");
         }
@@ -516,7 +528,10 @@ fn m4_adc_012_real_click_select_chip_injects_value(cx: &mut TestAppContext) {
     )
     .expect("select chip click should dispatch an action");
     match action {
-        Action::Call { ref method, ref args } => {
+        Action::Call {
+            ref method,
+            ref args,
+        } => {
             assert_eq!(method, "pick");
             assert_eq!(args["value"], "b", "value not injected: {args}");
         }
