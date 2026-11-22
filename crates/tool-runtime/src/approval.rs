@@ -145,7 +145,8 @@ impl ApprovalBroker {
             timeout,
             None,
             ApprovalSource::Tool,
-        ).outcome
+        )
+        .outcome
     }
 
     /// 可取消的审批：等待期间定期检查 `cancel`。
@@ -168,7 +169,8 @@ impl ApprovalBroker {
             timeout,
             Some(cancel),
             ApprovalSource::Tool,
-        ).outcome
+        )
+        .outcome
     }
 
     /// Reevaluate a tool's policy while it waits. A manual answer already submitted
@@ -182,7 +184,8 @@ impl ApprovalBroker {
         cancel: &AtomicBool,
         policy: LiveApproval<'_>,
     ) -> ApprovalOutcome {
-        self.request_with_policy_resolution(call_id, tool, arguments, timeout, cancel, policy).outcome
+        self.request_with_policy_resolution(call_id, tool, arguments, timeout, cancel, policy)
+            .outcome
     }
 
     pub fn request_with_policy_resolution(
@@ -220,7 +223,8 @@ impl ApprovalBroker {
             timeout,
             Some(cancel),
             ApprovalSource::UserOnly,
-        ).outcome
+        )
+        .outcome
     }
 
     fn request_inner(
@@ -234,7 +238,10 @@ impl ApprovalBroker {
     ) -> ApprovalResolution {
         if self.noninteractive {
             self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "headless");
-            return ApprovalResolution { outcome: ApprovalOutcome::Deny, answerer: "headless" };
+            return ApprovalResolution {
+                outcome: ApprovalOutcome::Deny,
+                answerer: "headless",
+            };
         }
         // 非交互模式：自检/CI 不应卡在审批上。
         if let Some(mode) = std::env::var("DSHR_APPROVAL_MODE")
@@ -247,7 +254,10 @@ impl ApprovalBroker {
                 _ => ApprovalOutcome::Deny,
             };
             self.record(call_id, tool, arguments, outcome, "auto");
-            return ApprovalResolution { outcome, answerer: "auto" };
+            return ApprovalResolution {
+                outcome,
+                answerer: "auto",
+            };
         }
 
         let grant_key = match &source {

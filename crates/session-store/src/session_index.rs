@@ -341,7 +341,8 @@ impl SessionIndex {
         metadata.insert(key.to_owned(), value);
         let contents = serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?;
         let temporary = temp_path_for(&path)?;
-        let result = write_synced(&temporary, &contents).and_then(|()| fs::rename(&temporary, &path));
+        let result =
+            write_synced(&temporary, &contents).and_then(|()| fs::rename(&temporary, &path));
         if result.is_err() {
             let _ = remove_if_exists(&temporary);
         }

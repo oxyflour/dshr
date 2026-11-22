@@ -12,7 +12,8 @@
 pub mod approval;
 
 pub use approval::{
-    ApprovalBroker, ApprovalOutcome, ApprovalRecord, ApprovalResolution, LiveApproval, PendingApproval,
+    ApprovalBroker, ApprovalOutcome, ApprovalRecord, ApprovalResolution, LiveApproval,
+    PendingApproval,
 };
 
 use std::collections::BTreeMap;

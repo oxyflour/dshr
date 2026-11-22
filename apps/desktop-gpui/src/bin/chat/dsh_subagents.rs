@@ -8,14 +8,14 @@ use dshr_compat_dsh_host::{
     ServiceError, SessionAccess, TOOL_SUBAGENTS_V1,
 };
 use dshr_session_store::{
-    EventSpec, SessionCreated, SessionIndex, SessionLog, SpawnSource, try_lock_session,
+    try_lock_session, EventSpec, SessionCreated, SessionIndex, SessionLog, SpawnSource,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{
-    ApprovalBroker, ChatRuntime, ChatSessionAccess, ChatState, DesktopSettings, LivePermission,
-    PermissionMode, TurnReason, now_ts,
+    now_ts, ApprovalBroker, ChatRuntime, ChatSessionAccess, ChatState, DesktopSettings,
+    LivePermission, PermissionMode, TurnReason,
 };
 
 const CREATED: &str = "subagent/created";
@@ -36,7 +36,9 @@ pub(super) struct ChildEnvironment {
 
 impl ChildEnvironment {
     fn with_delegated_permission(mut self, mode: Option<&str>) -> Self {
-        let mode = mode.and_then(PermissionMode::parse).unwrap_or(PermissionMode::ReadOnly);
+        let mode = mode
+            .and_then(PermissionMode::parse)
+            .unwrap_or(PermissionMode::ReadOnly);
         self.permission = LivePermission::new(Some(mode));
         self.settings.permission = Some(mode);
         self
@@ -367,7 +369,11 @@ impl SubagentService {
             name: name.clone(),
             label: label.clone(),
             cwd: cwd.clone(),
-            permission_mode: snapshot.environment.permission.mode().map(|mode| mode.as_str().to_owned()),
+            permission_mode: snapshot
+                .environment
+                .permission
+                .mode()
+                .map(|mode| mode.as_str().to_owned()),
             oneshot,
         };
         let id = snapshot.store.new_id();
@@ -406,7 +412,9 @@ impl SubagentService {
             caller.to_owned(),
             log.clone(),
             workspace,
-            snapshot.environment.with_delegated_permission(details.permission_mode.as_deref()),
+            snapshot
+                .environment
+                .with_delegated_permission(details.permission_mode.as_deref()),
             prompt,
         ) {
             log.append(EventSpec::durable(
@@ -536,7 +544,9 @@ impl SubagentService {
                     child.owner.clone(),
                     child.log.clone(),
                     PathBuf::from(snapshot.workspace),
-                    snapshot.environment.with_delegated_permission(child.details.permission_mode.as_deref()),
+                    snapshot
+                        .environment
+                        .with_delegated_permission(child.details.permission_mode.as_deref()),
                     text,
                 )?;
             }

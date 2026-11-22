@@ -8,7 +8,7 @@ use dshr_compat_dsh_host::{
 };
 use dshr_session_store::{EventSpec, SessionLog};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::ChatSessionAccess;
 

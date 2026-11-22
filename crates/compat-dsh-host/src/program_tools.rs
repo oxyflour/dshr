@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dshr_compat_dsh_protocol::{KIND_HOST_SERVICE_RESULT, RpcError};
+use dshr_compat_dsh_protocol::{RpcError, KIND_HOST_SERVICE_RESULT};
 use dshr_tool_runtime::{ToolDefinition, ToolOrigin, ToolRegistry};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{ActiveCall, BatchInvokeCall, CAP_PROGRAM_TOOLS, Envelope, SidecarHost};
+use super::{ActiveCall, BatchInvokeCall, Envelope, SidecarHost, CAP_PROGRAM_TOOLS};
 
 const MAX_ACTIVE_CHILDREN: usize = 8;
 

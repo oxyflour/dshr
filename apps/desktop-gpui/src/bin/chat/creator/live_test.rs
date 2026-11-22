@@ -1,14 +1,17 @@
 use super::{BUILD_PLUGIN_TOOL, CORDIS_PRESET, INSPECT_TOOL, TRY_PLUGIN_TOOL, WRITE_FILE_TOOL};
-use crate::{AdcAction, ChatState, DesktopModel, DesktopSettings, PermissionMode, Profile, runtime_components};
+use crate::{
+    runtime_components, AdcAction, ChatState, DesktopModel, DesktopSettings, PermissionMode,
+    Profile,
+};
 use dshr_agent_core::ToolCallRequest;
 use dshr_llm_deepseek::DeepSeekProvider;
 use dshr_session_store::{SessionCreated, SessionIndex};
 use dshr_tool_runtime::{ApprovalBroker, ApprovalOutcome};
-use dshr_ui_contributions::{ElementKind, parse_tree};
+use dshr_ui_contributions::{parse_tree, ElementKind};
 use serde_json::json;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn relative_path(path: &str) -> bool {
@@ -43,10 +46,16 @@ pub(crate) fn drive_notes_panel_approval(approvals: &Arc<ApprovalBroker>) {
             let fixture = pending.tool == TRY_PLUGIN_TOOL
                 && pending.arguments["plugin"] == "demo.notes-panel"
                 && pending.arguments["path"] == "notes-panel"
-                && pending.arguments["permissions"].as_array().is_some_and(Vec::is_empty);
+                && pending.arguments["permissions"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty);
             approvals.resolve(
                 &pending.call_id,
-                if fixture { ApprovalOutcome::AllowOnce } else { ApprovalOutcome::Deny },
+                if fixture {
+                    ApprovalOutcome::AllowOnce
+                } else {
+                    ApprovalOutcome::Deny
+                },
             );
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -79,7 +88,10 @@ fn run_live_creator(with_panel: bool) {
     if managed {
         let node = dshr_sidecar_guard::resolve_node().expect("bundled Node");
         assert!(node.is_vendored());
-        assert!(super::build::toolchain().is_err(), "expected no Cargo on the test machine");
+        assert!(
+            super::build::toolchain().is_err(),
+            "expected no Cargo on the test machine"
+        );
         for component in runtime_components::Component::ALL {
             assert!(runtime_components::installed(component).is_none());
         }
@@ -124,11 +136,21 @@ fn run_live_creator(with_panel: bool) {
         };
         let read_path = root.join("base-read.txt");
         std::fs::write(&read_path, "official read before installing components").unwrap();
-        let read = call(&mut state, "base-read", "read", serde_json::json!({"file_path": "base-read.txt"}));
+        let read = call(
+            &mut state,
+            "base-read",
+            "read",
+            serde_json::json!({"file_path": "base-read.txt"}),
+        );
         assert!(!read.is_error && read.content.to_string().contains("official read before"));
         println!("OFFICIAL_READ_BEFORE_INSTALL_PASS");
         let python_tool = runtime_components::WORKSPACE_DEPS_TOOL;
-        let no_python = call(&mut state, "python-missing", python_tool, serde_json::json!({}));
+        let no_python = call(
+            &mut state,
+            "python-missing",
+            python_tool,
+            serde_json::json!({}),
+        );
         assert!(no_python.is_error);
         for component in runtime_components::Component::ALL {
             let install = std::process::Command::new(crate::app_root().join("dshr.exe"))
@@ -136,22 +158,44 @@ fn run_live_creator(with_panel: bool) {
                 .output()
                 .expect("run application component installer");
             assert!(install.status.success(), "{install:?}");
-            let destination = runtime_components::installed(component).expect("install release asset");
+            let destination =
+                runtime_components::installed(component).expect("install release asset");
             let asset = runtime_components::asset(component).unwrap();
-            println!("INSTALLED {} {} {}", component.id(), asset.version, destination.display());
+            println!(
+                "INSTALLED {} {} {}",
+                component.id(),
+                asset.version,
+                destination.display()
+            );
         }
-        let python = call(&mut state, "python-installed", python_tool, serde_json::json!({}));
+        let python = call(
+            &mut state,
+            "python-installed",
+            python_tool,
+            serde_json::json!({}),
+        );
         assert!(!python.is_error, "{python:?}");
-        let executable = Path::new(python.value["python"].as_str().expect("official Python path"));
-        let installed = runtime_components::installed(runtime_components::Component::Python).unwrap();
+        let executable = Path::new(
+            python.value["python"]
+                .as_str()
+                .expect("official Python path"),
+        );
+        let installed =
+            runtime_components::installed(runtime_components::Component::Python).unwrap();
         assert!(executable.starts_with(installed));
-        let output = std::process::Command::new(executable).args([
-            "-I",
-            "-c",
-            "import json,sys; print(json.dumps(list(sys.version_info[:3])))",
-        ]).output().unwrap();
+        let output = std::process::Command::new(executable)
+            .args([
+                "-I",
+                "-c",
+                "import json,sys; print(json.dumps(list(sys.version_info[:3])))",
+            ])
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{output:?}");
-        println!("OFFICIAL_PYTHON_PASS {}", String::from_utf8_lossy(&output.stdout).trim());
+        println!(
+            "OFFICIAL_PYTHON_PASS {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
         std::fs::remove_file(read_path).unwrap();
     }
     let done = Arc::new(AtomicBool::new(false));
@@ -236,13 +280,20 @@ fn run_live_creator(with_panel: bool) {
     if with_panel {
         let panels = trial.payload["value"]["panels"].as_array().unwrap();
         assert!(!panels.is_empty(), "agent must successfully try the panel");
-        let try_call = events.iter().find(|event|
-            event.event_type == "tool.call" && event.payload["call_id"] == trial.payload["call_id"]
-        ).unwrap();
+        let try_call = events
+            .iter()
+            .find(|event| {
+                event.event_type == "tool.call"
+                    && event.payload["call_id"] == trial.payload["call_id"]
+            })
+            .unwrap();
         assert_eq!(try_call.payload["arguments"]["expect_panel"], true);
         assert!(!events.iter().any(|event| event.event_type == "tool.result" && event.payload["is_error"] == true),
             "panel authoring should build and try without retries; see the saved trace");
-        let plugin_id = trial.payload["value"]["plugin"].as_str().unwrap().to_owned();
+        let plugin_id = trial.payload["value"]["plugin"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         assert_panel_actions(&mut state, &plugin_id);
         println!("LIVE_CREATOR_PANEL_PASS {}", store.path_for(&id).display());
         return;
@@ -267,34 +318,67 @@ fn run_live_creator(with_panel: bool) {
 }
 
 fn assert_panel_actions(state: &mut ChatState, plugin_id: &str) {
-    let panel = state.adc_panels.iter().find(|panel| panel.plugin_id == plugin_id).expect("pane visible");
+    let panel = state
+        .adc_panels
+        .iter()
+        .find(|panel| panel.plugin_id == plugin_id)
+        .expect("pane visible");
     let view = panel.view.clone();
     let tree = parse_tree(panel.tree.as_ref().expect("first render"));
     assert!(tree.diagnostics.is_empty());
     let mut input = None;
     let mut button = None;
     tree.root.walk(&mut |node| match node.kind {
-        ElementKind::Input => { input = node.action("onChange"); }
-        ElementKind::Button if button.is_none() => { button = node.action("onPress"); }
+        ElementKind::Input => {
+            input = node.action("onChange");
+        }
+        ElementKind::Button if button.is_none() => {
+            button = node.action("onPress");
+        }
         _ => {}
     });
     let Some(AdcAction::Call { method, mut args }) = input else {
         panic!("the name field must pass its value in call.args");
     };
-    args.as_object_mut().unwrap().insert("value".to_owned(), json!("Panel Check"));
-    state.apply_adc_action(plugin_id, &view, "call", &json!({"method":method,"args":args})).unwrap();
+    args.as_object_mut()
+        .unwrap()
+        .insert("value".to_owned(), json!("Panel Check"));
+    state
+        .apply_adc_action(
+            plugin_id,
+            &view,
+            "call",
+            &json!({"method":method,"args":args}),
+        )
+        .unwrap();
     let Some(AdcAction::Call { method, args }) = button else {
         panic!("greeting button must send its panel action");
     };
-    state.apply_adc_action(plugin_id, &view, "call", &json!({"method":method,"args":args})).unwrap();
-    let panel = state.adc_panels.iter().find(|panel| panel.plugin_id == plugin_id).unwrap();
+    state
+        .apply_adc_action(
+            plugin_id,
+            &view,
+            "call",
+            &json!({"method":method,"args":args}),
+        )
+        .unwrap();
+    let panel = state
+        .adc_panels
+        .iter()
+        .find(|panel| panel.plugin_id == plugin_id)
+        .unwrap();
     let refreshed = parse_tree(panel.tree.as_ref().expect("render after action"));
     assert!(refreshed.diagnostics.is_empty());
     let mut greet = false;
     refreshed.root.walk(&mut |node| {
         if node.kind == ElementKind::Text {
-            greet |= node.str_prop("value").is_some_and(|text| text.contains("Panel Check"));
+            greet |= node
+                .str_prop("value")
+                .is_some_and(|text| text.contains("Panel Check"));
         }
     });
-    assert!(greet, "render after editing and pressing must include the name in the greeting");
+    assert!(
+        greet,
+        "render after editing and pressing must include the name in the greeting"
+    );
 }

@@ -1303,21 +1303,19 @@ fn render_slider(
         track = track
             .debug_selector(|| format!("adc-{path}-track"))
             .on_drag((), |_, _, _, cx| cx.new(|_| SliderDragPreview))
-            .on_drag_move(
-                move |event: &gpui::DragMoveEvent<()>, window, cx| {
-                    let width = event.bounds.size.width.as_f32();
-                    if width <= 0.0 {
-                        return;
-                    }
-                    let x = (event.event.position.x - event.bounds.origin.x).as_f32();
-                    let fraction = ((x / width).clamp(0.0, 1.0)) as f64;
-                    let raw = min + fraction * (max - min);
-                    let snapped = ((raw - min) / step).round() * step + min;
-                    let value = snapped.clamp(min, max);
-                    let action = action_with_json(&drag_action, serde_json::json!(value));
-                    drag_handler(&action, window, cx);
-                },
-            );
+            .on_drag_move(move |event: &gpui::DragMoveEvent<()>, window, cx| {
+                let width = event.bounds.size.width.as_f32();
+                if width <= 0.0 {
+                    return;
+                }
+                let x = (event.event.position.x - event.bounds.origin.x).as_f32();
+                let fraction = ((x / width).clamp(0.0, 1.0)) as f64;
+                let raw = min + fraction * (max - min);
+                let snapped = ((raw - min) / step).round() * step + min;
+                let value = snapped.clamp(min, max);
+                let action = action_with_json(&drag_action, serde_json::json!(value));
+                drag_handler(&action, window, cx);
+            });
     }
     let mut slider = interactive_base(div(), node, path, Role::Slider)
         .flex()
@@ -1341,11 +1339,13 @@ fn render_slider(
         let key_inc = inc.clone();
         slider = slider
             .focusable()
-            .on_key_down(move |event, window, cx| match event.keystroke.key.as_str() {
-                "left" | "down" => key_dec_handler(&key_dec, window, cx),
-                "right" | "up" => key_inc_handler(&key_inc, window, cx),
-                _ => {}
-            })
+            .on_key_down(
+                move |event, window, cx| match event.keystroke.key.as_str() {
+                    "left" | "down" => key_dec_handler(&key_dec, window, cx),
+                    "right" | "up" => key_inc_handler(&key_inc, window, cx),
+                    _ => {}
+                },
+            )
             .child(
                 div()
                     .id(format!("{path}-dec"))

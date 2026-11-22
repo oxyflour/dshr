@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use dshr_compat_dsh_host::{
     HostService, HostServiceKind, HostServiceMethod, HostServiceTable, ServiceCallContext,
@@ -8,7 +8,7 @@ use dshr_compat_dsh_host::{
 };
 use dshr_session_store::{recover_backup, save_atomic, try_lock_session};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::ChatSessionAccess;
 
@@ -162,7 +162,9 @@ impl HostService for ScheduleService {
         let reply = match method {
             "list" => return Ok(json!({"result":ledger.tasks})),
             "view" => {
-                return Ok(json!({"result":ledger.tasks.iter().find(|task| args["id"] == task.id)}));
+                return Ok(
+                    json!({"result":ledger.tasks.iter().find(|task| args["id"] == task.id)}),
+                );
             }
             "due" => {
                 return Ok(json!({"result":{

@@ -30,7 +30,9 @@ pub use spill::{PendingSpill, RecordedSpill, Retention, SpillPolicy, SpillRef, S
 
 use std::collections::{HashMap, HashSet};
 
-use dshr_agent_core::{tool_image_references, AttachmentFormat, ChatMessage, MediaAttachment, ModelToolCall};
+use dshr_agent_core::{
+    tool_image_references, AttachmentFormat, ChatMessage, MediaAttachment, ModelToolCall,
+};
 use dshr_session_store::{Durability, SessionLog, ToolCallKey};
 use serde_json::Value;
 
@@ -465,7 +467,10 @@ fn trim_to_budget(
     }
     // 不从 Tool 开始：它对应的 assistant.tool_calls 被丢掉了。
     while start < messages.len()
-        && matches!(messages[start].message, ChatMessage::Tool { .. } | ChatMessage::ToolImages(_))
+        && matches!(
+            messages[start].message,
+            ChatMessage::Tool { .. } | ChatMessage::ToolImages(_)
+        )
     {
         start += 1;
     }
@@ -556,10 +561,15 @@ fn history_with_seqs_spilled(
         if event.durability == Durability::Ephemeral || in_range(event.seq) {
             continue;
         }
-        if matches!(event.event_type.as_str(),
-            "message.user" | "message.assistant.reasoning" | "message.assistant.settled"
-            | "tool.call" | "turn.ended" | "context.compacted")
-        {
+        if matches!(
+            event.event_type.as_str(),
+            "message.user"
+                | "message.assistant.reasoning"
+                | "message.assistant.settled"
+                | "tool.call"
+                | "turn.ended"
+                | "context.compacted"
+        ) {
             messages.extend(step_images.take());
         }
         match event.event_type.as_str() {
@@ -668,7 +678,12 @@ fn history_with_seqs_spilled(
                     } else {
                         let images = tool_image_references(&content_value);
                         if !images.is_empty() {
-                            if let Some(SeqMessage { end_seq, message: ChatMessage::ToolImages(existing), .. }) = &mut step_images {
+                            if let Some(SeqMessage {
+                                end_seq,
+                                message: ChatMessage::ToolImages(existing),
+                                ..
+                            }) = &mut step_images
+                            {
                                 *end_seq = event.seq;
                                 existing.extend(images);
                             } else {
@@ -797,7 +812,10 @@ pub fn trim_history(messages: Vec<ChatMessage>, max_messages: usize) -> Vec<Chat
     }
     let mut start = messages.len() - max_messages;
     while start < messages.len()
-        && matches!(messages[start], ChatMessage::Tool { .. } | ChatMessage::ToolImages(_))
+        && matches!(
+            messages[start],
+            ChatMessage::Tool { .. } | ChatMessage::ToolImages(_)
+        )
     {
         start += 1;
     }

@@ -1,16 +1,16 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use dshr_compat_dsh_host::{
     HostService, HostServiceKind, HostServiceMethod, HostServiceTable, ServiceCallContext,
     ServiceError, SessionEventView, SessionHeaderView, TOOL_SESSION_QUERY_V1,
 };
 use dshr_session_store::{SessionIndex, SessionLog};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{ChatSessionAccess, chat_header_from_log, load_session_log};
+use super::{chat_header_from_log, load_session_log, ChatSessionAccess};
 
 const PAGE: usize = 32;
 const MAX_CATALOG: usize = 128;
@@ -250,16 +250,14 @@ impl QueryScope {
         let metas = SessionIndex::new(&self.dir)
             .scan()
             .map_err(|_| ServiceError::new("E_INTERNAL", "session index is unavailable"))?;
-        let mut records = vec![
-            self.record(
-                &self.caller.id,
-                None,
-                metas
-                    .iter()
-                    .find(|meta| meta.id == self.caller.id)
-                    .map(|meta| meta.title.as_str()),
-            ),
-        ];
+        let mut records = vec![self.record(
+            &self.caller.id,
+            None,
+            metas
+                .iter()
+                .find(|meta| meta.id == self.caller.id)
+                .map(|meta| meta.title.as_str()),
+        )];
         for meta in metas {
             if records.len() == MAX_CATALOG {
                 break;

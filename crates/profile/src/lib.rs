@@ -19,8 +19,8 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
-pub mod install;
 pub mod headless;
+pub mod install;
 pub mod loader;
 pub mod trust;
 pub mod uninstall;
@@ -92,7 +92,8 @@ impl Profile {
             });
         }
         let entries = if let Some(seed) = seed {
-            let text = fs::read_to_string(seed).map_err(|err| format!("读取打包默认配置失败: {err}"))?;
+            let text =
+                fs::read_to_string(seed).map_err(|err| format!("读取打包默认配置失败: {err}"))?;
             let parsed: ProfileFile = serde_json::from_str(&text)
                 .map_err(|err| format!("解析打包默认配置失败: {err}"))?;
             parsed.plugins
@@ -180,8 +181,12 @@ impl Profile {
                 let paired = match name {
                     "@deepseek-ai/dsh-tool-pwsh" => Some("@deepseek-ai/dsh-tool-pwsh-persistent"),
                     "@deepseek-ai/dsh-tool-pwsh-persistent" => Some("@deepseek-ai/dsh-tool-pwsh"),
-                    "@deepseek-ai/dsh-tool-executor-native" => Some("@deepseek-ai/dsh-tool-executor-ptc"),
-                    "@deepseek-ai/dsh-tool-executor-ptc" => Some("@deepseek-ai/dsh-tool-executor-native"),
+                    "@deepseek-ai/dsh-tool-executor-native" => {
+                        Some("@deepseek-ai/dsh-tool-executor-ptc")
+                    }
+                    "@deepseek-ai/dsh-tool-executor-ptc" => {
+                        Some("@deepseek-ai/dsh-tool-executor-native")
+                    }
                     _ => None,
                 };
                 if let Some(paired) = paired {
@@ -229,8 +234,13 @@ impl Profile {
         let entries: Vec<Value> = self
             .entries
             .iter()
-            .filter(|entry| entry.enabled && !matches!(entry.name.as_str(),
-                loader::AGENT_PRESET_PLUGIN | loader::AGENT_PRESET_REGISTRY))
+            .filter(|entry| {
+                entry.enabled
+                    && !matches!(
+                        entry.name.as_str(),
+                        loader::AGENT_PRESET_PLUGIN | loader::AGENT_PRESET_REGISTRY
+                    )
+            })
             .map(|entry| {
                 let mut object = serde_json::json!({
                     "name": entry.name,

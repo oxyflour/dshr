@@ -1,10 +1,10 @@
 use super::{
-    ChatApp, ComposerMenu, Theme, blank_root_created, chrome_button, creator, creator_preset_id,
-    desktop_icon, now_ts, popover, rows_snapshot, toolbar_icon_button, toolbar_tooltip,
-    workspace_name,
+    blank_root_created, chrome_button, creator, creator_preset_id, desktop_icon, now_ts, popover,
+    rows_snapshot, toolbar_icon_button, toolbar_tooltip, workspace_name, ChatApp, ComposerMenu,
+    Theme,
 };
 use gpui::prelude::*;
-use gpui::{Anchor, AnyElement, Context, PathPromptOptions, Pixels, Role, Window, div, px};
+use gpui::{div, px, Anchor, AnyElement, Context, PathPromptOptions, Pixels, Role, Window};
 use std::path::PathBuf;
 
 impl ChatApp {

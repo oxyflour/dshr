@@ -192,10 +192,17 @@ impl Workspace {
         self.write_text_inner(requested, content, false)
     }
 
-    pub fn create_text(&self, requested: &str, content: &str) -> Result<WriteReceipt, SandboxError> {
+    pub fn create_text(
+        &self,
+        requested: &str,
+        content: &str,
+    ) -> Result<WriteReceipt, SandboxError> {
         let bytes = content.len() as u64;
         if bytes > MAX_WRITE_BYTES {
-            return Err(SandboxError::TooLarge { size: bytes, limit: MAX_WRITE_BYTES });
+            return Err(SandboxError::TooLarge {
+                size: bytes,
+                limit: MAX_WRITE_BYTES,
+            });
         }
         let path = self.resolve(requested)?;
         let parent = path.parent().expect("resolved path has a parent");
@@ -205,7 +212,10 @@ impl Workspace {
             use std::os::unix::fs::PermissionsExt;
             builder.permissions(fs::Permissions::from_mode(0o666));
         }
-        let mut temporary = builder.prefix(".dshr-create-").tempfile_in(parent).map_err(io)?;
+        let mut temporary = builder
+            .prefix(".dshr-create-")
+            .tempfile_in(parent)
+            .map_err(io)?;
         temporary.write_all(content.as_bytes()).map_err(io)?;
         temporary.persist_noclobber(&path).map_err(|error| {
             if error.error.kind() == ErrorKind::AlreadyExists {
@@ -214,7 +224,11 @@ impl Workspace {
                 io(error.error)
             }
         })?;
-        Ok(WriteReceipt { path, bytes, snapshot: None })
+        Ok(WriteReceipt {
+            path,
+            bytes,
+            snapshot: None,
+        })
     }
 
     /// 原生写入入口。调用方批准写入后，可创建缺失的父目录。

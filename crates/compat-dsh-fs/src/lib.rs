@@ -191,7 +191,10 @@ impl FsWriteService {
                         ),
                     ));
                 }
-                let create_only = request.intent.as_ref().and_then(|intent| intent["kind"].as_str())
+                let create_only = request
+                    .intent
+                    .as_ref()
+                    .and_then(|intent| intent["kind"].as_str())
                     == Some("createIfAbsent");
                 if create_only && fs::symlink_metadata(&absolute).is_ok() {
                     return Err(map_sandbox_error(SandboxError::AlreadyExists(
@@ -211,7 +214,8 @@ impl FsWriteService {
                     self.workspace.create_text(&requested, content)
                 } else {
                     self.workspace.write_text(&requested, content)
-                }.map_err(map_sandbox_error)?;
+                }
+                .map_err(map_sandbox_error)?;
                 let after = fs::metadata(&absolute).map_err(map_io_error)?;
                 let version = version_of(&after)?;
                 Ok(FsWriteResult {
@@ -582,10 +586,15 @@ mod tests {
                 thread::sleep(Duration::from_millis(1));
             };
             fs::write(&path, "written while approval was pending").unwrap();
-            service.approvals().resolve(&pending.call_id, ApprovalOutcome::AllowOnce);
+            service
+                .approvals()
+                .resolve(&pending.call_id, ApprovalOutcome::AllowOnce);
             let result = worker.join().unwrap();
             assert_eq!(result.error.unwrap().code, expected_error);
-            assert_eq!(fs::read_to_string(path).unwrap(), "written while approval was pending");
+            assert_eq!(
+                fs::read_to_string(path).unwrap(),
+                "written while approval was pending"
+            );
             fs::remove_dir_all(root).unwrap();
         }
     }

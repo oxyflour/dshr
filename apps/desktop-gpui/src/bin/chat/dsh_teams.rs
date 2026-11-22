@@ -7,9 +7,9 @@ use dshr_compat_dsh_host::{
 };
 use dshr_session_store::{recover_backup, save_atomic, try_lock_session};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::{ChatSessionAccess, dsh_subagents};
+use super::{dsh_subagents, ChatSessionAccess};
 
 const MAX_TASKS: usize = 64;
 const MAX_BOARD_BYTES: usize = 128 * 1024;

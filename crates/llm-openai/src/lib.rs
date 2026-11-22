@@ -77,7 +77,11 @@ impl OpenAiProvider {
         self
     }
 
-    pub fn with_connection(mut self, base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn with_connection(
+        mut self,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
         self.base_url = base_url.into();
         self.model = model.into();
         self

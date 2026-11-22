@@ -114,16 +114,18 @@ pub struct CppComponentPlugin {
 }
 
 impl CppComponentPlugin {
-    pub fn new(id: impl Into<String>, version: impl Into<String>, source: &[u8]) -> Result<Self, PluginError> {
+    pub fn new(
+        id: impl Into<String>,
+        version: impl Into<String>,
+        source: &[u8],
+    ) -> Result<Self, PluginError> {
         let mut config = Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
-        let engine = Engine::new(&config).map_err(|error| {
-            PluginError::Invalid(format!("component engine: {error}"))
-        })?;
-        let component = Component::new(&engine, source).map_err(|error| {
-            PluginError::Invalid(format!("component does not parse: {error}"))
-        })?;
+        let engine = Engine::new(&config)
+            .map_err(|error| PluginError::Invalid(format!("component engine: {error}")))?;
+        let component = Component::new(&engine, source)
+            .map_err(|error| PluginError::Invalid(format!("component does not parse: {error}")))?;
         Ok(Self {
             id: id.into(),
             version: version.into(),
@@ -153,26 +155,20 @@ impl CppComponentPlugin {
         self
     }
 
-    fn instantiate(
-        &self,
-    ) -> Result<(Store<CppHostState>, Plugin), PluginError> {
+    fn instantiate(&self) -> Result<(Store<CppHostState>, Plugin), PluginError> {
         let mut linker: Linker<CppHostState> = Linker::new(&self.engine);
-        Plugin::add_to_linker::<CppHostState, HasSelf<CppHostState>>(
-            &mut linker,
-            |state| state,
-        )
-        .map_err(|error| PluginError::Invalid(format!("host imports: {error}")))?;
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|error| {
-            PluginError::Invalid(format!("wasi imports: {error}"))
-        })?;
+        Plugin::add_to_linker::<CppHostState, HasSelf<CppHostState>>(&mut linker, |state| state)
+            .map_err(|error| PluginError::Invalid(format!("host imports: {error}")))?;
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+            .map_err(|error| PluginError::Invalid(format!("wasi imports: {error}")))?;
         let limits = StoreLimitsBuilder::new()
             .memory_size(self.memory_bytes)
             .build();
         let mut store = Store::new(&self.engine, CppHostState::with_limits(limits));
         store.limiter(|state| &mut state.limits);
-        store.set_fuel(self.fuel).map_err(|error| {
-            PluginError::Invalid(format!("component fuel: {error}"))
-        })?;
+        store
+            .set_fuel(self.fuel)
+            .map_err(|error| PluginError::Invalid(format!("component fuel: {error}")))?;
         store.set_epoch_deadline(self.epoch_deadline.unwrap_or(u64::MAX));
         let instance = Plugin::instantiate(&mut store, &self.component, &linker)
             .map_err(|error| PluginError::Invalid(format!("component instantiate: {error}")))?;

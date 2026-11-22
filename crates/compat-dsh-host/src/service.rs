@@ -617,7 +617,9 @@ impl HostServiceRouter {
             generation: self.generation.clone(),
             session_id: request.session_id.clone(),
             call_id: request.call_id.clone(),
-            tool_request_id: request.payload["tool_request_id"].as_str().map(str::to_owned),
+            tool_request_id: request.payload["tool_request_id"]
+                .as_str()
+                .map(str::to_owned),
             depth: request.depth,
         };
         let started = Instant::now();

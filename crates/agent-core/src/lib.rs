@@ -445,7 +445,10 @@ pub fn tool_image_references(content: &Value) -> Vec<MediaAttachment> {
                 return None;
             }
             Some(MediaAttachment {
-                name: block["attachment"]["name"].as_str().unwrap_or("tool image").to_owned(),
+                name: block["attachment"]["name"]
+                    .as_str()
+                    .unwrap_or("tool image")
+                    .to_owned(),
                 format,
                 reference: reference.to_owned(),
                 bytes: None,
@@ -832,19 +835,32 @@ impl<P: ModelProvider> Agent<P> {
             on_event(&AgentEvent::StepStarted { turn_id, step });
 
             let mut tool_specs = executor.prepare_step();
-            let context = executor.prepare_step_context(step, if step == 1 {
-                user_text.as_deref()
-            } else {
-                None
-            });
+            let context = executor.prepare_step_context(
+                step,
+                if step == 1 {
+                    user_text.as_deref()
+                } else {
+                    None
+                },
+            );
             if cancel_requested(cancel.as_ref()) {
-                on_event(&AgentEvent::TurnCancelled { reason: CANCEL_REASON.to_owned() });
+                on_event(&AgentEvent::TurnCancelled {
+                    reason: CANCEL_REASON.to_owned(),
+                });
                 return;
             }
             tool_specs.retain(|tool| !context.unavailable_tools.contains(&tool.name));
-            turn_instructions.extend(context.turn_instructions.into_iter().map(ChatMessage::System));
+            turn_instructions.extend(
+                context
+                    .turn_instructions
+                    .into_iter()
+                    .map(ChatMessage::System),
+            );
             let request = CompletionRequest {
-                messages: context.system_sections.into_iter().map(ChatMessage::System)
+                messages: context
+                    .system_sections
+                    .into_iter()
+                    .map(ChatMessage::System)
                     .chain(turn_instructions.iter().cloned())
                     .chain(messages.iter().cloned())
                     .collect(),
@@ -1144,7 +1160,10 @@ impl ModelProvider for MockProvider {
         let user_text = request.last_user_text().to_owned();
         let lower = user_text.to_lowercase();
         if (user_text.contains("原生") || lower.contains("native"))
-            && request.tool_specs.iter().any(|spec| spec.name == "probe_native")
+            && request
+                .tool_specs
+                .iter()
+                .any(|spec| spec.name == "probe_native")
         {
             return Ok(tool_reply(request, "probe_native", &user_text));
         }

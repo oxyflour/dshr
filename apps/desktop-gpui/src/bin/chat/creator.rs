@@ -137,14 +137,25 @@ impl Session<'_> {
             PREVIEW_TOOL if args.len() == 1 && args.contains_key("element") => {
                 preview_panel(&args["element"])
             }
-            BUILD_PLUGIN_TOOL if args.len() == 1 => match args.get("path").and_then(Value::as_str) {
-                Some(path) => build::run(self, path, call, approvals, cancel),
-                None => Err("path 必须是工作区相对路径".to_owned()),
-            },
-            TRY_PLUGIN_TOOL if args.keys().all(|key| matches!(key.as_str(), "path" | "expect_panel")) => {
-                match (args.get("path").and_then(Value::as_str), args.get("expect_panel")) {
+            BUILD_PLUGIN_TOOL if args.len() == 1 => {
+                match args.get("path").and_then(Value::as_str) {
+                    Some(path) => build::run(self, path, call, approvals, cancel),
+                    None => Err("path 必须是工作区相对路径".to_owned()),
+                }
+            }
+            TRY_PLUGIN_TOOL
+                if args
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "path" | "expect_panel")) =>
+            {
+                match (
+                    args.get("path").and_then(Value::as_str),
+                    args.get("expect_panel"),
+                ) {
                     (Some(path), None) => self.try_plugin(path, false, call, approvals, cancel),
-                    (Some(path), Some(Value::Bool(expect))) => self.try_plugin(path, *expect, call, approvals, cancel),
+                    (Some(path), Some(Value::Bool(expect))) => {
+                        self.try_plugin(path, *expect, call, approvals, cancel)
+                    }
                     _ => Err("path 必须是工作区相对路径，expect_panel 必须是布尔值".to_owned()),
                 }
             }
@@ -171,11 +182,23 @@ impl Session<'_> {
         let staging_root = self.sessions_dir.join(".creator-trials");
         let (trial, manifest, runtime) = prepare_trial(self.workspace, path, &staging_root)?;
         let plugin_id = &manifest.plugin.id;
-        let previous = self.scope.trials.iter().position(|item| item.plugin_id == *plugin_id);
+        let previous = self
+            .scope
+            .trials
+            .iter()
+            .position(|item| item.plugin_id == *plugin_id);
         if previous.is_some_and(|index| self.scope.trials[index].source != trial.source) {
-            return Err(format!("插件 {plugin_id} 已从另一个包目录试用。请使用原包目录或更改插件 ID。"));
+            return Err(format!(
+                "插件 {plugin_id} 已从另一个包目录试用。请使用原包目录或更改插件 ID。"
+            ));
         }
-        if previous.is_none() && self.scope.plugins.loaded_plugins().contains(&plugin_id.as_str()) {
+        if previous.is_none()
+            && self
+                .scope
+                .plugins
+                .loaded_plugins()
+                .contains(&plugin_id.as_str())
+        {
             return Err(format!("插件 ID {plugin_id} 与创造模式内置插件冲突"));
         }
 
@@ -221,7 +244,9 @@ impl Session<'_> {
         if !panels.is_empty() {
             result["panel_location"] = json!("Inside this trial's result card in the current conversation, after this turn finishes.");
         }
-        self.scope.plugins.adopt_candidate(candidate, plugin_id)
+        self.scope
+            .plugins
+            .adopt_candidate(candidate, plugin_id)
             .map_err(|error| format!("插件 {plugin_id} 装载失败: {error}"))?;
         if let Some(index) = previous {
             self.scope.trials[index] = trial;
@@ -238,16 +263,26 @@ fn validate_trial_panels(
     plugin_id: &str,
     expect_panel: bool,
 ) -> Result<Vec<String>, String> {
-    let panels: Vec<_> = candidate.panels().into_iter()
-        .filter(|registration| registration.plugin_id == plugin_id && registration.panel.slot == "workspace.panel")
-        .map(|registration| (registration.panel.title.clone(), registration.panel.view_name().to_owned()))
+    let panels: Vec<_> = candidate
+        .panels()
+        .into_iter()
+        .filter(|registration| {
+            registration.plugin_id == plugin_id && registration.panel.slot == "workspace.panel"
+        })
+        .map(|registration| {
+            (
+                registration.panel.title.clone(),
+                registration.panel.view_name().to_owned(),
+            )
+        })
         .collect();
     if expect_panel && panels.is_empty() {
         return Err("插件未注册 workspace.panel。将 PanelDecl 放进 ReadyDecls::new 的第二个参数，查看 creator_inspect.workspace_panel 后重建并试用。".to_owned());
     }
     let mut titles = Vec::with_capacity(panels.len());
     for (title, view) in panels {
-        let tree = candidate.render_panel(plugin_id, &view)
+        let tree = candidate
+            .render_panel(plugin_id, &view)
             .map_err(|error| format!("面板「{title}」的 view {view} 无法渲染: {error}"))?;
         let parsed = parse_tree(&tree);
         if let Some(diagnostic) = parsed.diagnostics.first() {
@@ -327,7 +362,9 @@ fn preview_panel(tree: &Value) -> Result<ToolOutcome, String> {
             diagnostic.path, diagnostic.message
         ));
     }
-    let mut outcome = json_outcome(json!({ "preview": "adc-v1", "nodes": parsed.node_count(), "interactive": false }));
+    let mut outcome = json_outcome(
+        json!({ "preview": "adc-v1", "nodes": parsed.node_count(), "interactive": false }),
+    );
     outcome.meta = Some(json!({ "ui": tree }));
     Ok(outcome)
 }
@@ -346,16 +383,13 @@ pub(super) struct TrialScope {
 impl TrialScope {
     pub(super) fn new(permission: super::LivePermission, workspace: &Path) -> Self {
         let mut plugins = PluginHost::new(permission);
-        let result = super::WorkspaceWritePlugin::new(
-            workspace,
-            WRITE_FILE_TOOL,
-            "builtin.creator-write",
-        )
-        .and_then(|writer| {
-            plugins
-                .load(Box::new(writer))
-                .map_err(|error| error.to_string())
-        });
+        let result =
+            super::WorkspaceWritePlugin::new(workspace, WRITE_FILE_TOOL, "builtin.creator-write")
+                .and_then(|writer| {
+                    plugins
+                        .load(Box::new(writer))
+                        .map_err(|error| error.to_string())
+                });
         if let Err(error) = result {
             eprintln!("[chat] 创造会话写入工具不可用: {error}");
         }
@@ -430,7 +464,10 @@ fn prepare_trial(
             format!("入口文件 `{}` 无效。{error}", entry.display())
         }
     })?;
-    let root = directory.path().canonicalize().map_err(|error| error.to_string())?;
+    let root = directory
+        .path()
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     if !resolved.starts_with(root) || !resolved.is_file() {
         return Err("入口必须是插件包内的普通文件".to_owned());
     }
@@ -746,7 +783,10 @@ mod tests {
         let restored = SessionLog::from_jsonl(&id, &fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(restored.events().len(), 1);
         assert_eq!(restored.events()[0].ts, created_ts);
-        assert_eq!(restored.created().unwrap().workspace_id, root.path().to_string_lossy());
+        assert_eq!(
+            restored.created().unwrap().workspace_id,
+            root.path().to_string_lossy()
+        );
         assert_eq!(restored.created().unwrap().preset.as_deref(), Some(PRESET));
 
         state.stream_turn("你好", &mut |_| {}).unwrap();
@@ -768,7 +808,11 @@ mod tests {
             (
                 external,
                 RuntimeKind::ExternalProcess,
-                if cfg!(windows) { "bin/hello-world.exe" } else { "bin/hello-world" },
+                if cfg!(windows) {
+                    "bin/hello-world.exe"
+                } else {
+                    "bin/hello-world"
+                },
             ),
             (wasm, RuntimeKind::WasmComponent, "plugin.wasm"),
         ] {
@@ -786,7 +830,12 @@ mod tests {
         let error = state.execute_tool(&trial);
         assert!(error.is_error);
         let detail = error.content[0]["text"].as_str().unwrap();
-        assert!(detail.contains(&Path::new("plugin").join("plugin.toml").display().to_string()));
+        assert!(detail.contains(
+            &Path::new("plugin")
+                .join("plugin.toml")
+                .display()
+                .to_string()
+        ));
         assert!(detail.contains("unknown field `id`"));
         assert!(detail.contains(INSPECT_TOOL));
         assert!(!detail.contains(".creator-trials"));
@@ -824,7 +873,10 @@ mod tests {
             let result = state.execute_tool(&call(PREVIEW_TOOL, json!({ "element": element })));
             assert!(result.is_error);
             assert!(result.meta.is_none());
-            assert!(result.content[0]["text"].as_str().unwrap().contains("creator_inspect.workspace_panel"));
+            assert!(result.content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("creator_inspect.workspace_panel"));
         }
     }
 
@@ -1008,12 +1060,17 @@ entry = "plugin.wasm"
                 }
             });
             let result = state.execute_tool(&call(
-                TRY_PLUGIN_TOOL, json!({"path":"plugin", "expect_panel":expect_panel}),
+                TRY_PLUGIN_TOOL,
+                json!({"path":"plugin", "expect_panel":expect_panel}),
             ));
             answer.join().unwrap();
             let scope = &state.creator_trials["creator"];
             assert_eq!(scope.len(), 1);
-            (result, scope.trials[0].directory.path().to_owned(), scope.revision)
+            (
+                result,
+                scope.trials[0].directory.path().to_owned(),
+                scope.revision,
+            )
         };
         let (first, original, revision) = run_trial(false, ApprovalOutcome::AllowOnce);
         assert_eq!(first.value["replaced"], false);
@@ -1024,11 +1081,16 @@ entry = "plugin.wasm"
         let (denied, unchanged, _) = run_trial(false, ApprovalOutcome::Deny);
         assert!(denied.is_error);
         assert_eq!(unchanged, original);
-        let (replaced, replacement, after_replacement) = run_trial(false, ApprovalOutcome::AllowOnce);
+        let (replaced, replacement, after_replacement) =
+            run_trial(false, ApprovalOutcome::AllowOnce);
         assert_eq!(replaced.value["replaced"], true);
         assert!(replacement.is_dir() && !original.exists());
         assert_eq!(after_replacement, revision + 1);
-        assert!(!state.execute_tool(&call("echo", json!({"text":"replacement"}))).is_error);
+        assert!(
+            !state
+                .execute_tool(&call("echo", json!({"text":"replacement"})))
+                .is_error
+        );
     }
 
     // CPP-CREATOR-005
@@ -1328,11 +1390,15 @@ entry = "plugin.wasm"
         );
         let original_id = state.session_id.clone();
         let original_log = fs::read_to_string(&state.path).unwrap();
-        assert!(state.select_blank_preset(Some("unavailable".to_owned())).is_err());
+        assert!(state
+            .select_blank_preset(Some("unavailable".to_owned()))
+            .is_err());
         assert_eq!(fs::read_to_string(&state.path).unwrap(), original_log);
         state.select_blank_preset(None).unwrap();
         assert!(state.execute_tool(&request).is_error);
-        state.select_blank_preset(Some("cordis".to_owned())).unwrap();
+        state
+            .select_blank_preset(Some("cordis".to_owned()))
+            .unwrap();
         assert_eq!(state.execute_tool(&request).value["label"], "before");
         assert_eq!(state.session_id, original_id);
         write_bundle("after");

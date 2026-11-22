@@ -342,7 +342,13 @@ fn spawn_fixture_with(
     label: &str,
     sidecar_dir: &Path,
     plugins: String,
-    configure: impl FnOnce(&Path, &Arc<FakeAccess>, &mut HostServiceRouter, &mut Vec<String>, &mut HostOptions),
+    configure: impl FnOnce(
+        &Path,
+        &Arc<FakeAccess>,
+        &mut HostServiceRouter,
+        &mut Vec<String>,
+        &mut HostOptions,
+    ),
 ) -> Fixture {
     let workspace = temp_dir(&format!("{label}-ws"));
     let target = temp_dir(&format!("{label}-target"));
@@ -372,15 +378,14 @@ fn spawn_fixture_with(
         .register(Box::new(SessionProjectionsService::new(access.clone())))
         .expect("register session-projections");
     let mut inject = vec![
-            STORAGE_KV_V1.to_owned(),
-            WORKING_DIRECTORY_V1.to_owned(),
-            SESSION_LOG_V1.to_owned(),
-            SESSION_PROJECTIONS_V1.to_owned(),
+        STORAGE_KV_V1.to_owned(),
+        WORKING_DIRECTORY_V1.to_owned(),
+        SESSION_LOG_V1.to_owned(),
+        SESSION_PROJECTIONS_V1.to_owned(),
     ];
     let broker = ApprovalBroker::new();
-    let fs_write = Arc::new(
-        FsWriteService::open(&workspace, broker.clone()).expect("fs write service opens"),
-    );
+    let fs_write =
+        Arc::new(FsWriteService::open(&workspace, broker.clone()).expect("fs write service opens"));
     let mut options = HostOptions::default()
         .with_env("DSHR_DSH_PLUGINS", plugins)
         .with_env("DSHR_WORKSPACE", workspace.to_string_lossy())
@@ -518,30 +523,50 @@ fn stage4_official_bash_background_jobs_return_the_host_output() {
         json!([
             { "name": "@deepseek-ai/dsh-tool-jobs", "config": { "completionDelivery": "quiet" } },
             { "name": "@deepseek-ai/dsh-tool-bash", "config": { "promoteOnTimeout": false } },
-        ]).to_string(),
+        ])
+        .to_string(),
         |workspace, _, router, inject, options| {
-            let bash = ShellProgram { name: "bash", path: "/bin/bash".into() };
+            let bash = ShellProgram {
+                name: "bash",
+                path: "/bin/bash".into(),
+            };
             let processes = ToolProcessService::new(workspace, None, Some(bash.clone())).unwrap();
             let jobs = ToolJobService::new(workspace, workspace.join("job-proof"), bash).unwrap();
             router.register(Box::new(processes)).unwrap();
             router.register(Box::new(jobs)).unwrap();
             inject.extend([TOOL_PROCESS_V1.to_owned(), TOOL_JOBS_V1.to_owned()]);
             options.extra_caps.extend([
-                CAP_AGENT_TOOL_CONTEXT.to_owned(), CAP_SHELL_PROCESS.to_owned(), CAP_BACKGROUND_JOBS.to_owned(),
+                CAP_AGENT_TOOL_CONTEXT.to_owned(),
+                CAP_SHELL_PROCESS.to_owned(),
+                CAP_BACKGROUND_JOBS.to_owned(),
             ]);
         },
     );
-    let started = invoke(&mut fixture.host, "bash", json!({
-        "command": "printf 'linux-background-proof\\n'",
-        "description": "Check background output", "run_in_background": true,
-    }));
+    let started = invoke(
+        &mut fixture.host,
+        "bash",
+        json!({
+            "command": "printf 'linux-background-proof\\n'",
+            "description": "Check background output", "run_in_background": true,
+        }),
+    );
     assert!(!started.is_error(), "{started:?}");
     let id = started.payload["value"]["jobId"].as_str().unwrap();
-    let claimed = invoke(&mut fixture.host, "job_output", json!({
-        "job_id": id, "wait": true, "timeout_ms": 3000,
-    }));
-    assert_eq!(claimed.payload["value"]["job"]["status"], "completed", "{claimed:?}");
-    assert!(claimed.payload["value"]["text"].as_str().unwrap().contains("linux-background-proof"));
+    let claimed = invoke(
+        &mut fixture.host,
+        "job_output",
+        json!({
+            "job_id": id, "wait": true, "timeout_ms": 3000,
+        }),
+    );
+    assert_eq!(
+        claimed.payload["value"]["job"]["status"], "completed",
+        "{claimed:?}"
+    );
+    assert!(claimed.payload["value"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("linux-background-proof"));
     let repeated = invoke(&mut fixture.host, "job_output", json!({ "job_id": id }));
     assert_eq!(repeated.payload["value"]["text"], "", "{repeated:?}");
     fixture.cleanup();
@@ -566,28 +591,58 @@ fn stage4_official_bash_persistent_uses_a_real_pty() {
             options.env.push(("DSHR_TERMINAL_SHELL".to_owned(), "/bin/bash".to_owned()));
         },
     );
-    let first = invoke(&mut fixture.host, "bash", json!({
-        "command": "test -t 0 && marker=retained-in-bash",
-    }));
+    let first = invoke(
+        &mut fixture.host,
+        "bash",
+        json!({
+            "command": "test -t 0 && marker=retained-in-bash",
+        }),
+    );
     assert!(!first.is_error(), "{first:?}");
-    let second = invoke(&mut fixture.host, "bash", json!({
-        "command": r#"printf '%s\n' "$marker""#,
-    }));
+    let second = invoke(
+        &mut fixture.host,
+        "bash",
+        json!({
+            "command": r#"printf '%s\n' "$marker""#,
+        }),
+    );
     assert!(!second.is_error(), "{second:?}");
-    assert!(second.payload["value"].as_str().is_some_and(|text| text.contains("retained-in-bash")), "{second:?}");
+    assert!(
+        second.payload["value"]
+            .as_str()
+            .is_some_and(|text| text.contains("retained-in-bash")),
+        "{second:?}"
+    );
     let list = invoke(&mut fixture.host, "terminal_list", json!({}));
     let rows = list.payload["value"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{list:?}");
     let terminal = rows[0]["sessionId"].as_str().unwrap();
-    fixture.access.add_session("s-outsider", &norm(&fixture.workspace));
-    let foreign = fixture.host.invoke_as_cancellable_in_session(
-        "wrong-terminal", Some("s-outsider"), "terminal_read",
-        json!({ "sessionId": terminal }), Duration::from_secs(15), None,
-    ).unwrap();
+    fixture
+        .access
+        .add_session("s-outsider", &norm(&fixture.workspace));
+    let foreign = fixture
+        .host
+        .invoke_as_cancellable_in_session(
+            "wrong-terminal",
+            Some("s-outsider"),
+            "terminal_read",
+            json!({ "sessionId": terminal }),
+            Duration::from_secs(15),
+            None,
+        )
+        .unwrap();
     assert!(foreign.terminal.is_error(), "{:?}", foreign.terminal);
-    let closed = invoke(&mut fixture.host, "terminal_close", json!({ "sessionId": terminal }));
+    let closed = invoke(
+        &mut fixture.host,
+        "terminal_close",
+        json!({ "sessionId": terminal }),
+    );
     assert_eq!(closed.payload["value"]["outcome"], "closed", "{closed:?}");
-    assert!(fixture.access.events("s-probe").iter().any(|event| event.event_type == "terminal/closed"));
+    assert!(fixture
+        .access
+        .events("s-probe")
+        .iter()
+        .any(|event| event.event_type == "terminal/closed"));
     fixture.cleanup();
 }
 
@@ -1081,8 +1136,15 @@ fn rpc_l2_507_official_fs_write_execute() {
         json!({ "file_path": "written.txt", "content": "hello official write\n" }),
     );
     resolver.join().expect("approval resolver");
-    assert!(envelope.error.is_none(), "官方 write execute 失败: {envelope:?}");
-    assert_eq!(envelope.payload["is_error"], false, "{:?}", envelope.payload);
+    assert!(
+        envelope.error.is_none(),
+        "官方 write execute 失败: {envelope:?}"
+    );
+    assert_eq!(
+        envelope.payload["is_error"], false,
+        "{:?}",
+        envelope.payload
+    );
     assert_eq!(
         std::fs::read_to_string(fixture.workspace.join("written.txt")).expect("written file"),
         "hello official write\n"
@@ -1123,7 +1185,6 @@ fn rpc_l2_505_official_storage_is_a_service_class_not_a_plugin() {
     assert_eq!(shape["hasInject"], false);
     assert_eq!(shape["hasDefaultClass"], true);
 }
-
 
 // RPC-REG-001
 #[test]
@@ -1218,7 +1279,6 @@ fn scoped_tool_bindings_are_revoked_and_never_retargeted() {
         "global"
     );
 }
-
 
 // M3-PRESET-002 / M3-PRESET-003
 #[test]

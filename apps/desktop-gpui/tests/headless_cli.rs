@@ -582,20 +582,27 @@ fn stage3_headless_questions_return_a_noninteractive_error() {
     let fixture = Fixture::new();
     let profile = fixture.root.join("questions-profile");
     fs::create_dir(&profile).unwrap();
-    fs::write(profile.join("plugins.json"), json!({
-        "plugins": [{ "name": "@deepseek-ai/dsh-tool-ask-user" }],
-    }).to_string()).unwrap();
+    fs::write(
+        profile.join("plugins.json"),
+        json!({
+            "plugins": [{ "name": "@deepseek-ai/dsh-tool-ask-user" }],
+        })
+        .to_string(),
+    )
+    .unwrap();
     let (server, endpoint) = model_listener();
     let worker = thread::spawn(move || {
-        let arguments = json!({ "questions": [{ "id": "language", "question": "Which language?" }] });
+        let arguments =
+            json!({ "questions": [{ "id": "language", "question": "Which language?" }] });
         let call = json!({ "choices": [{ "message": { "tool_calls": [{
             "id": "ask", "type": "function",
             "function": { "name": "ask_user_question", "arguments": arguments.to_string() },
         }] }, "finish_reason": "tool_calls" }] });
         let done = json!({ "choices": [{ "message": { "content": "continued" }, "finish_reason": "stop" }] });
-        [call, done].into_iter().map(|reply| {
-            answer_model_request(&server, "200 OK", reply.to_string(), None)
-        }).collect::<Vec<_>>()
+        [call, done]
+            .into_iter()
+            .map(|reply| answer_model_request(&server, "200 OK", reply.to_string(), None))
+            .collect::<Vec<_>>()
     });
     let output = invoke(
         openai_command(&fixture, &endpoint)
@@ -607,15 +614,25 @@ fn stage3_headless_questions_return_a_noninteractive_error() {
     );
     assert_success(&output);
     let requests = worker.join().unwrap();
-    assert!(requests[0]["tools"].as_array().unwrap().iter().any(|tool| {
-        tool["function"]["name"] == "ask_user_question"
-    }));
+    assert!(requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| { tool["function"]["name"] == "ask_user_question" }));
     let events = records(&output.stdout);
     let session = events[0]["sessionId"].as_str().unwrap();
     let log = records(&fs::read(fixture.log(session)).unwrap());
-    let result = &log.iter().find(|event| event["type"] == "tool.result").unwrap()["payload"];
+    let result = &log
+        .iter()
+        .find(|event| event["type"] == "tool.result")
+        .unwrap()["payload"];
     assert_eq!(result["is_error"], true, "{result:?}");
-    assert!(result["content"].to_string().contains("require an interactive desktop session"), "{result:?}");
+    assert!(
+        result["content"]
+            .to_string()
+            .contains("require an interactive desktop session"),
+        "{result:?}"
+    );
 }
 
 #[test]
@@ -635,8 +652,10 @@ fn stage3_headless_deliverables_round_trip_in_the_session() {
         json!({ "plugins": [
             { "name": "@deepseek-ai/dsh-tool-working-directory" },
             { "name": "@deepseek-ai/dsh-tool-present" },
-        ] }).to_string(),
-    ).unwrap();
+        ] })
+        .to_string(),
+    )
+    .unwrap();
     let (server, endpoint) = model_listener();
     let worker = thread::spawn(move || {
         let tool = |id: &str, name: &str, args: Value| {
@@ -644,22 +663,33 @@ fn stage3_headless_deliverables_round_trip_in_the_session() {
                 "name": name, "arguments": args.to_string(),
             } })
         };
-        let calls = |calls: Vec<Value>| {
-            json!({ "choices": [{ "message": { "tool_calls": calls }, "finish_reason": "tool_calls" }] })
-        };
+        let calls = |calls: Vec<Value>| json!({ "choices": [{ "message": { "tool_calls": calls }, "finish_reason": "tool_calls" }] });
         let done = json!({ "choices": [{ "message": { "content": "delivered" }, "finish_reason": "stop" }] });
         let responses = [
-            calls(vec![tool("cwd", "working_directory", json!({ "cd": "child" }))]),
+            calls(vec![tool(
+                "cwd",
+                "working_directory",
+                json!({ "cd": "child" }),
+            )]),
             calls(vec![
-                tool("deliver", "present", json!({ "files": [{ "path": "deliverable.txt", "description": "Result" }] })),
-                tool("escape", "present", json!({ "files": [{ "path": outside_file }] })),
+                tool(
+                    "deliver",
+                    "present",
+                    json!({ "files": [{ "path": "deliverable.txt", "description": "Result" }] }),
+                ),
+                tool(
+                    "escape",
+                    "present",
+                    json!({ "files": [{ "path": outside_file }] }),
+                ),
             ]),
             done.clone(),
             done,
         ];
-        responses.into_iter().map(|reply| {
-            answer_model_request(&server, "200 OK", reply.to_string(), None)
-        }).collect::<Vec<_>>()
+        responses
+            .into_iter()
+            .map(|reply| answer_model_request(&server, "200 OK", reply.to_string(), None))
+            .collect::<Vec<_>>()
     });
     let command = || {
         let mut cmd = openai_command(&fixture, &endpoint);
@@ -674,15 +704,26 @@ fn stage3_headless_deliverables_round_trip_in_the_session() {
     let events = records(&output.stdout);
     let session = events[0]["sessionId"].as_str().unwrap();
     let log = records(&fs::read(fixture.log(session)).unwrap());
-    let results: Vec<_> = log.iter().filter(|event| event["type"] == "tool.result").collect();
-    assert!(results.iter().any(|event| {
-        event["payload"]["call_id"] == "deliver" && event["payload"]["is_error"] == false
-    }), "{log:?}");
-    assert!(results.iter().any(|event| {
-        event["payload"]["call_id"] == "escape" && event["payload"]["is_error"] == true
-    }), "{log:?}");
-    let deliveries: Vec<_> = log.iter()
-        .filter(|event| event["type"] == "deliverables/presented").collect();
+    let results: Vec<_> = log
+        .iter()
+        .filter(|event| event["type"] == "tool.result")
+        .collect();
+    assert!(
+        results.iter().any(|event| {
+            event["payload"]["call_id"] == "deliver" && event["payload"]["is_error"] == false
+        }),
+        "{log:?}"
+    );
+    assert!(
+        results.iter().any(|event| {
+            event["payload"]["call_id"] == "escape" && event["payload"]["is_error"] == true
+        }),
+        "{log:?}"
+    );
+    let deliveries: Vec<_> = log
+        .iter()
+        .filter(|event| event["type"] == "deliverables/presented")
+        .collect();
     assert_eq!(deliveries.len(), 1, "{log:?}");
     let delivery = &deliveries[0]["payload"];
     assert_eq!(delivery["turn"], 1);
@@ -694,10 +735,15 @@ fn stage3_headless_deliverables_round_trip_in_the_session() {
     let output = invoke(command().args(["--session-id", session, "resume"]), b"");
     assert_success(&output);
     let requests = worker.join().unwrap();
-    assert!(requests[3]["messages"].as_array().unwrap().iter().any(|message| {
-        message["role"] == "tool" && message["tool_call_id"] == "deliver"
-            && message["content"].to_string().contains("deliverable.txt")
-    }));
+    assert!(requests[3]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|message| {
+            message["role"] == "tool"
+                && message["tool_call_id"] == "deliver"
+                && message["content"].to_string().contains("deliverable.txt")
+        }));
 }
 
 #[test]
@@ -713,9 +759,11 @@ fn stage3_headless_skill_is_scoped_and_supports_direct_invocation() {
         let skill = project.join(".agents").join("skills").join(name);
         fs::create_dir_all(&skill).unwrap();
         fs::create_dir(project.join(".git")).unwrap();
-        fs::write(skill.join("SKILL.md"), format!(
-            "---\nname: {name}\ndescription: Use the {name} skill\n---\n{body}\n"
-        )).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Use the {name} skill\n---\n{body}\n"),
+        )
+        .unwrap();
     }
     fs::write(profile.join("plugins.json"), json!({ "plugins": [
         { "name": "@deepseek-ai/dsh-tool-working-directory" },
@@ -727,21 +775,25 @@ fn stage3_headless_skill_is_scoped_and_supports_direct_invocation() {
     ] }).to_string()).unwrap();
     let (server, endpoint) = model_listener();
     let worker = thread::spawn(move || {
-        let call = |id, name, arguments: Value| json!({ "choices": [
+        let call = |id, name, arguments: Value| {
+            json!({ "choices": [
             { "message": { "tool_calls": [{ "id": id, "type": "function", "function":
                 { "name": name, "arguments": arguments.to_string() }
             }] }, "finish_reason": "tool_calls" },
-        ] });
-        let done = json!({ "choices": [{ "message": { "content": "ok" }, "finish_reason": "stop" }] });
+        ] })
+        };
+        let done =
+            json!({ "choices": [{ "message": { "content": "ok" }, "finish_reason": "stop" }] });
         let replies = [
             call("cwd", "working_directory", json!({ "cd": "child" })),
             call("load", "skill", json!({ "name": "child-only" })),
             done.clone(),
             done,
         ];
-        replies.into_iter().map(|reply| {
-            answer_model_request(&server, "200 OK", reply.to_string(), None)
-        }).collect::<Vec<_>>()
+        replies
+            .into_iter()
+            .map(|reply| answer_model_request(&server, "200 OK", reply.to_string(), None))
+            .collect::<Vec<_>>()
     });
     let command = || {
         let mut cmd = openai_command(&fixture, &endpoint);
@@ -756,19 +808,32 @@ fn stage3_headless_skill_is_scoped_and_supports_direct_invocation() {
     let events = records(&first.stdout);
     let session = events[0]["sessionId"].as_str().unwrap();
     let log = records(&fs::read(fixture.log(session)).unwrap());
-    assert!(log.iter().any(|event| {
-        event["type"] == "tool.result" && event["payload"]["call_id"] == "load"
-            && event["payload"]["is_error"] == false
-            && event["payload"]["content"].to_string().contains("CHILD_SKILL_BODY")
-    }), "{log:?}");
-    assert_success(&invoke(command().args([
-        "--session-id", session, "Please use /child-only now",
-    ]), b""));
+    assert!(
+        log.iter().any(|event| {
+            event["type"] == "tool.result"
+                && event["payload"]["call_id"] == "load"
+                && event["payload"]["is_error"] == false
+                && event["payload"]["content"]
+                    .to_string()
+                    .contains("CHILD_SKILL_BODY")
+        }),
+        "{log:?}"
+    );
+    assert_success(&invoke(
+        command().args(["--session-id", session, "Please use /child-only now"]),
+        b"",
+    ));
     let requests = worker.join().unwrap();
-    let systems = |index: usize| requests[index]["messages"].as_array().unwrap()
-        .iter().filter(|message| message["role"] == "system")
-        .filter_map(|message| message["content"].as_str())
-        .collect::<Vec<_>>().join("\n");
+    let systems = |index: usize| {
+        requests[index]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "system")
+            .filter_map(|message| message["content"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     assert!(systems(0).contains("root-only"), "{requests:?}");
     assert!(!systems(0).contains("child-only"), "{requests:?}");
     assert!(systems(1).contains("child-only"), "{requests:?}");
@@ -785,27 +850,48 @@ fn stage3_headless_web_uses_official_providers_and_times_out() {
     let (web, web_url) = model_listener();
     let (server, model_url) = model_listener();
     let page = "https://example.com/source";
-    fs::write(profile.join("plugins.json"), json!({ "plugins": [
+    fs::write(
+        profile.join("plugins.json"),
+        json!({ "plugins": [
         { "name": "@deepseek-ai/dsh-web-deepseek-api", "config": {
             "searchBaseURL": web_url, "fetchBaseURL": web_url,
             "searchApiKeyEnv": "DSHR_FIXTURE_WEB_KEY", "fetchApiKeyEnv": "DSHR_FIXTURE_WEB_KEY",
             "sendOriginalQuestion": false
         } },
         { "name": "@deepseek-ai/dsh-tool-web", "config": { "fetchTimeoutMs": 1000 } },
-    ] }).to_string()).unwrap();
+    ] })
+        .to_string(),
+    )
+    .unwrap();
     let api = thread::spawn(move || {
-        let search = answer_model_request(&web, "200 OK", json!({ "results": [{
+        let search = answer_model_request(
+            &web,
+            "200 OK",
+            json!({ "results": [{
             "url": page, "title": "Fixture source", "snippet": "SEARCH_SNIPPET", "date": null
-        }] }).to_string(), None);
-        let fetch = answer_model_request(&web, "200 OK", json!({
-            "content": "WEB_PAGE_BODY",
-        }).to_string(), None);
+        }] })
+            .to_string(),
+            None,
+        );
+        let fetch = answer_model_request(
+            &web,
+            "200 OK",
+            json!({
+                "content": "WEB_PAGE_BODY",
+            })
+            .to_string(),
+            None,
+        );
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let silent = loop {
             match web.accept() {
                 Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-                    && std::time::Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10))
+                }
                 Err(error) => panic!("fixture did not receive the timed fetch: {error}"),
             }
         };
@@ -814,20 +900,31 @@ fn stage3_headless_web_uses_official_providers_and_times_out() {
         (search, fetch)
     });
     let model = thread::spawn(move || {
-        let tool = |id, name, args: Value| json!({ "choices": [{ "message": {
+        let tool = |id, name, args: Value| {
+            json!({ "choices": [{ "message": {
             "tool_calls": [{ "id": id, "type": "function", "function": {
                 "name": name, "arguments": args.to_string(),
             } }],
-        }, "finish_reason": "tool_calls" }] });
+        }, "finish_reason": "tool_calls" }] })
+        };
         let replies = [
-            tool("search", "web_search", json!({ "queries": ["fixture query"] })),
+            tool(
+                "search",
+                "web_search",
+                json!({ "queries": ["fixture query"] }),
+            ),
             tool("fetch", "web_fetch", json!({ "url": page })),
-            tool("timeout", "web_fetch", json!({ "url": "https://example.com/slow" })),
+            tool(
+                "timeout",
+                "web_fetch",
+                json!({ "url": "https://example.com/slow" }),
+            ),
             json!({ "choices": [{ "message": { "content": "done" }, "finish_reason": "stop" }] }),
         ];
-        replies.into_iter().map(|reply| {
-            answer_model_request(&server, "200 OK", reply.to_string(), None)
-        }).collect::<Vec<_>>()
+        replies
+            .into_iter()
+            .map(|reply| answer_model_request(&server, "200 OK", reply.to_string(), None))
+            .collect::<Vec<_>>()
     });
     let command = |endpoint: &str| {
         let mut cmd = openai_command(&fixture, endpoint);
@@ -838,36 +935,76 @@ fn stage3_headless_web_uses_official_providers_and_times_out() {
         cmd
     };
     // The provider can be explicitly unavailable even while the tool package is loaded.
-    let (no_key, no_key_model) = local_model("200 OK", json!({
-        "choices": [{ "message": { "content": "done" }, "finish_reason": "stop" }]
-    }), None);
-    assert_success(&invoke(command(&no_key).env_remove("DSHR_FIXTURE_WEB_KEY").arg("no credential"), b""));
+    let (no_key, no_key_model) = local_model(
+        "200 OK",
+        json!({
+            "choices": [{ "message": { "content": "done" }, "finish_reason": "stop" }]
+        }),
+        None,
+    );
+    assert_success(&invoke(
+        command(&no_key)
+            .env_remove("DSHR_FIXTURE_WEB_KEY")
+            .arg("no credential"),
+        b"",
+    ));
     let missing = no_key_model.join().unwrap();
-    assert!(missing["tools"].as_array().into_iter().flatten().all(|tool| {
-        !matches!(tool["function"]["name"].as_str(), Some("web_search" | "web_fetch"))
-    }), "{missing:?}");
+    assert!(
+        missing["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|tool| {
+                !matches!(
+                    tool["function"]["name"].as_str(),
+                    Some("web_search" | "web_fetch")
+                )
+            }),
+        "{missing:?}"
+    );
     let output = invoke(
-        command(&model_url).env("DSHR_FIXTURE_WEB_KEY", "local-fixture-key").arg("search"),
+        command(&model_url)
+            .env("DSHR_FIXTURE_WEB_KEY", "local-fixture-key")
+            .arg("search"),
         b"",
     );
     assert_success(&output);
     let events = records(&output.stdout);
     let session = events[0]["sessionId"].as_str().unwrap();
     let log = records(&fs::read(fixture.log(session)).unwrap());
-    let outcome = |id: &str| &log.iter().find(|event| {
-        event["type"] == "tool.result" && event["payload"]["call_id"] == id
-    }).unwrap()["payload"];
-    assert_eq!(outcome("search")["value"]["sources"][0]["snippet"], "SEARCH_SNIPPET",
-        "{:?}\n{}", outcome("search"), String::from_utf8_lossy(&output.stderr));
-    assert_eq!(outcome("fetch")["value"]["body"]["content"], "WEB_PAGE_BODY", "{log:?}");
+    let outcome = |id: &str| {
+        &log.iter()
+            .find(|event| event["type"] == "tool.result" && event["payload"]["call_id"] == id)
+            .unwrap()["payload"]
+    };
+    assert_eq!(
+        outcome("search")["value"]["sources"][0]["snippet"],
+        "SEARCH_SNIPPET",
+        "{:?}\n{}",
+        outcome("search"),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        outcome("fetch")["value"]["body"]["content"],
+        "WEB_PAGE_BODY",
+        "{log:?}"
+    );
     assert_eq!(outcome("timeout")["is_error"], true, "{log:?}");
-    assert!(outcome("timeout")["content"].to_string().contains("timeout"), "{log:?}");
+    assert!(
+        outcome("timeout")["content"]
+            .to_string()
+            .contains("timeout"),
+        "{log:?}"
+    );
     let (search, fetch) = api.join().unwrap();
     assert_eq!(search["query"], "fixture query");
     assert_eq!(fetch["url"], page);
     let requests = model.join().unwrap();
     let prompt = requests[0]["messages"].to_string();
-    assert!(prompt.contains("web_search results are external"), "{prompt}");
+    assert!(
+        prompt.contains("web_search results are external"),
+        "{prompt}"
+    );
     assert!(prompt.contains("web_fetch returns external"), "{prompt}");
 }
 

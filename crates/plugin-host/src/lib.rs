@@ -89,18 +89,18 @@ impl PluginHost {
 
     /// Move a validated candidate from a temporary host. Check collisions before
     /// unloading an older instance and retain the destination's tool policy.
-    pub fn adopt_candidate(
-        &mut self,
-        mut staged: Self,
-        plugin_id: &str,
-    ) -> Result<(), HostError> {
-        let plugin = staged.plugins.remove(plugin_id)
+    pub fn adopt_candidate(&mut self, mut staged: Self, plugin_id: &str) -> Result<(), HostError> {
+        let plugin = staged
+            .plugins
+            .remove(plugin_id)
             .ok_or_else(|| HostError::NotFound(plugin_id.to_owned()))?;
         let tools = staged.registry.list().into_iter()
             .filter(|tool| matches!(&tool.origin, ToolOrigin::Native { plugin_id: owner } if owner == plugin_id))
             .cloned()
             .collect();
-        let panels = staged.panels.into_values()
+        let panels = staged
+            .panels
+            .into_values()
             .filter(|registration| registration.plugin_id == plugin_id)
             .map(|registration| registration.panel)
             .collect();
@@ -117,7 +117,9 @@ impl PluginHost {
         let id = plugin.id().to_owned();
         let mut declared_panels = std::collections::BTreeSet::new();
         for panel in &panels {
-            if let Some(existing) = self.panels.get(&panel.id)
+            if let Some(existing) = self
+                .panels
+                .get(&panel.id)
                 .filter(|existing| !replace || existing.plugin_id != id)
             {
                 return Err(HostError::PanelConflict {
@@ -224,11 +226,7 @@ impl PluginHost {
                 reason: "component probe manifest must not declare tools/ui".to_owned(),
             });
         }
-        let entry = manifest
-            .runtime
-            .entry
-            .as_deref()
-            .unwrap_or("plugin.wasm");
+        let entry = manifest.runtime.entry.as_deref().unwrap_or("plugin.wasm");
         let path = package_dir.as_ref().join(entry);
         let source = std::fs::read(&path).map_err(|error| HostError::Wasm {
             plugin_id: manifest.plugin.id.clone(),

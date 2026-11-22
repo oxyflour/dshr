@@ -66,7 +66,10 @@ fn m4_component_004_component_fuel_limit_traps() {
         .get_typed_func::<(), (u32,)>(&mut store, "run")
         .expect("run export typed");
     let result = run.call(&mut store, ());
-    assert!(result.is_err(), "infinite loop should exhaust component fuel");
+    assert!(
+        result.is_err(),
+        "infinite loop should exhaust component fuel"
+    );
 }
 
 /// M4-COMPONENT-005：component 死循环受 epoch 中断约束，外部 increment_epoch 后 trap。
@@ -151,10 +154,7 @@ fn m4_component_006_component_memory_limit_traps() {
 fn m4_component_002_wit_contract_parses() {
     let mut resolve = Resolve::default();
     let package = resolve
-        .push_str(
-            "cpp-v1.wit",
-            include_str!("../../../docs/spec/cpp-v1.wit"),
-        )
+        .push_str("cpp-v1.wit", include_str!("../../../docs/spec/cpp-v1.wit"))
         .expect("cpp-v1.wit parses");
     let world = resolve
         .select_world(&[package], Some("plugin"))

@@ -53,7 +53,9 @@ impl Component {
             Self::CreatorBuild => {
                 root.join("toolchain/bin/cargo.exe").is_file()
                     && root.join("toolchain/bin/rustc.exe").is_file()
-                    && root.join("toolchain/lib/rustlib/x86_64-pc-windows-gnu/lib").is_dir()
+                    && root
+                        .join("toolchain/lib/rustlib/x86_64-pc-windows-gnu/lib")
+                        .is_dir()
                     && root.join("vendor").is_dir()
             }
         }
@@ -83,10 +85,13 @@ impl Asset {
         let simple = |value: &str| {
             !value.is_empty()
                 && value.len() <= 96
-                && value.bytes().next().is_some_and(|byte| byte.is_ascii_alphanumeric())
-                && value.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                })
+                && value
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
                 && !value.ends_with('.')
                 && valid_path_part(value)
         };
@@ -102,8 +107,10 @@ impl Asset {
         }
         if let Some(raw) = &self.url {
             let url = url::Url::parse(raw).map_err(|_| "无效的运行组件下载地址".to_owned())?;
-            if url.scheme() != "https" || url.host_str().is_none()
-                || !url.username().is_empty() || url.password().is_some()
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
             {
                 return Err("运行组件地址必须是 HTTPS".to_owned());
             }
@@ -128,12 +135,15 @@ fn read_asset(app: &Path, component: Component) -> Result<Asset, String> {
         .map_err(|error| format!("本发行包未提供运行组件目录。{error}"))?;
     let mut catalog: Catalog = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .map_err(|error| format!("运行组件目录无效。{error}"))?;
-    if catalog.schema_version != 1 || catalog.platform != "windows-x64"
+    if catalog.schema_version != 1
+        || catalog.platform != "windows-x64"
         || !cfg!(all(windows, target_arch = "x86_64"))
     {
         return Err("当前平台或运行组件目录版本不受支持".to_owned());
     }
-    let asset = catalog.components.remove(component.id())
+    let asset = catalog
+        .components
+        .remove(component.id())
         .ok_or_else(|| format!("本发行包未提供{}", component.title()))?;
     asset.validate()?;
     Ok(asset)
@@ -144,7 +154,9 @@ pub(super) fn asset(component: Component) -> Result<Asset, String> {
 }
 
 fn planned(component: Component) -> Option<PathBuf> {
-    asset(component).ok().map(|entry| entry.destination(&crate::data_root(), component))
+    asset(component)
+        .ok()
+        .map(|entry| entry.destination(&crate::data_root(), component))
 }
 
 pub(super) fn installed(component: Component) -> Option<PathBuf> {
@@ -166,7 +178,8 @@ fn install_with(
     let destination = asset.destination(data, component);
     let parent = destination.parent().expect("component version parent");
     fs::create_dir_all(parent).map_err(io_error)?;
-    let _lock = try_lock_session(&destination).map_err(|error| format!("无法取得组件安装锁。{error}"))?;
+    let _lock =
+        try_lock_session(&destination).map_err(|error| format!("无法取得组件安装锁。{error}"))?;
     if component.complete(&destination) {
         return Ok(destination);
     }
@@ -185,7 +198,10 @@ fn install_with(
             .timeout_global(Some(Duration::from_secs(600)))
             .build()
             .new_agent();
-        let body = agent.get(url).call().map_err(|error| format!("组件下载失败。{error}"))?
+        let body = agent
+            .get(url)
+            .call()
+            .map_err(|error| format!("组件下载失败。{error}"))?
             .into_body();
         verified_copy(body.into_reader(), output, asset)?;
     } else {
@@ -202,11 +218,7 @@ fn install_with(
     Ok(destination)
 }
 
-fn verified_copy(
-    input: impl Read,
-    mut output: impl Write,
-    asset: &Asset,
-) -> Result<(), String> {
+fn verified_copy(input: impl Read, mut output: impl Write, asset: &Asset) -> Result<(), String> {
     let mut input = input.take(asset.bytes + 1);
     let mut state = digest::Context::new(&digest::SHA256);
     let mut buffer = [0; 64 * 1024];
@@ -223,7 +235,12 @@ fn verified_copy(
         state.update(&buffer[..size]);
         output.write_all(&buffer[..size]).map_err(io_error)?;
     }
-    let actual: String = state.finish().as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+    let actual: String = state
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     if total != asset.bytes || !actual.eq_ignore_ascii_case(&asset.sha256) {
         return Err("运行组件大小或 SHA-256 与发行目录不符".to_owned());
     }
@@ -255,9 +272,13 @@ fn unpack(file: File, root: &Path) -> Result<(), String> {
             return Err("运行组件解压数据超限".to_owned());
         }
         fs::create_dir_all(path.parent().expect("asset file parent")).map_err(io_error)?;
-        let mut output = File::options().write(true).create_new(true).open(&path).map_err(io_error)?;
-        let copied = io::copy(&mut item.by_ref().take(remaining + 1), &mut output)
+        let mut output = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
             .map_err(io_error)?;
+        let copied =
+            io::copy(&mut item.by_ref().take(remaining + 1), &mut output).map_err(io_error)?;
         if copied != item.size() {
             return Err("运行组件文件大小无效".to_owned());
         }
@@ -267,22 +288,37 @@ fn unpack(file: File, root: &Path) -> Result<(), String> {
 }
 
 fn valid_path_part(part: &str) -> bool {
-    let stem = part.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
     !part.is_empty()
         && !part.ends_with(['.', ' '])
-        && !part.chars().any(|ch| ch.is_control() || matches!(ch, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*'))
-        && !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        && !matches!(stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")),
-            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
+        && !part.chars().any(|ch| {
+            ch.is_control() || matches!(ch, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+        })
+        && !matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        )
+        && !matches!(
+            stem.strip_prefix("COM")
+                .or_else(|| stem.strip_prefix("LPT")),
+            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        )
 }
 
 fn python_payload_ready(path: &Path) -> bool {
     path.join("runtime.json").is_file()
-        && path.join(if cfg!(windows) {
-            "dependencies/python/python.exe"
-        } else {
-            "dependencies/python/bin/python3"
-        }).is_file()
+        && path
+            .join(if cfg!(windows) {
+                "dependencies/python/python.exe"
+            } else {
+                "dependencies/python/bin/python3"
+            })
+            .is_file()
         && if cfg!(windows) {
             path.join("dependencies/python/Lib/site-packages").is_dir()
         } else {
@@ -306,7 +342,10 @@ fn workspace_dependencies_source(entry: &serde_json::Value) -> Option<PathBuf> {
 
 pub(super) fn sidecar_profile(raw: &str) -> Option<String> {
     let mut entries = serde_json::from_str::<Vec<serde_json::Value>>(raw).ok()?;
-    for entry in entries.iter_mut().filter(|row| row["name"] == WORKSPACE_DEPS) {
+    for entry in entries
+        .iter_mut()
+        .filter(|row| row["name"] == WORKSPACE_DEPS)
+    {
         if let Some(source) = workspace_dependencies_source(entry) {
             if entry["config"].is_object() || entry["config"].is_null() {
                 entry["config"]["source"] = serde_json::json!(source);
@@ -328,10 +367,14 @@ pub(super) fn web_credential_refs(profile: &str) -> BTreeSet<String> {
             _ => continue,
         };
         for field in fields {
-            let name = entry["config"][field].as_str().filter(|value| !value.is_empty())
+            let name = entry["config"][field]
+                .as_str()
+                .filter(|value| !value.is_empty())
                 .unwrap_or("DEEPSEEK_API_KEY");
             let mut bytes = name.bytes();
-            if bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            if bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
                 && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
             {
                 names.insert(name.to_owned());
@@ -342,7 +385,8 @@ pub(super) fn web_credential_refs(profile: &str) -> BTreeSet<String> {
 }
 
 pub(super) fn workspace_dependencies_ready() -> bool {
-    let Some(entries) = std::env::var("DSHR_DSH_PLUGINS").ok()
+    let Some(entries) = std::env::var("DSHR_DSH_PLUGINS")
+        .ok()
         .and_then(|raw| serde_json::from_str::<Vec<serde_json::Value>>(&raw).ok())
     else {
         return true;
@@ -350,7 +394,9 @@ pub(super) fn workspace_dependencies_ready() -> bool {
     let Some(entry) = entries.iter().find(|row| row["name"] == WORKSPACE_DEPS) else {
         return true;
     };
-    workspace_dependencies_source(entry).as_deref().is_some_and(python_payload_ready)
+    workspace_dependencies_source(entry)
+        .as_deref()
+        .is_some_and(python_payload_ready)
 }
 
 #[cfg(test)]
@@ -368,16 +414,27 @@ mod tests {
             "primary-runtime/dependencies/python/python.exe",
             "primary-runtime/dependencies/python/bin/python3",
             "primary-runtime/dependencies/python/Lib/site-packages/placeholder",
-        ].into_iter().chain(extra) {
+        ]
+        .into_iter()
+        .chain(extra)
+        {
             zip.start_file(name, SimpleFileOptions::default()).unwrap();
             zip.write_all(b"test").unwrap();
         }
         zip.finish().unwrap();
         let bytes = fs::read(path).unwrap();
-        let sha256 = digest::digest(&digest::SHA256, &bytes).as_ref().iter()
-            .map(|byte| format!("{byte:02x}")).collect();
-        Asset { version: "test".into(), bytes: bytes.len() as u64,
-                archive: "test.zip".into(), sha256, url: None }
+        let sha256 = digest::digest(&digest::SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Asset {
+            version: "test".into(),
+            bytes: bytes.len() as u64,
+            archive: "test.zip".into(),
+            sha256,
+            url: None,
+        }
     }
 
     // M4-RUNTIME-001
@@ -389,21 +446,30 @@ mod tests {
         let mut asset = archive(app.path(), None);
         let installed = install_with(app.path(), data.path(), component, &asset).unwrap();
         assert!(component.complete(&installed));
-        assert_eq!(install_with(app.path(), data.path(), component, &asset).unwrap(), installed);
+        assert_eq!(
+            install_with(app.path(), data.path(), component, &asset).unwrap(),
+            installed
+        );
 
         asset.version = "invalid-hash".into();
         asset.sha256 = "0".repeat(64);
-        assert!(install_with(app.path(), data.path(), component, &asset).unwrap_err().contains("SHA-256"));
+        assert!(install_with(app.path(), data.path(), component, &asset)
+            .unwrap_err()
+            .contains("SHA-256"));
         assert!(!asset.destination(data.path(), component).exists());
 
         let mut asset = archive(app.path(), Some("../outside"));
         asset.version = "invalid-path".into();
-        assert!(install_with(app.path(), data.path(), component, &asset).unwrap_err().contains("非法路径"));
+        assert!(install_with(app.path(), data.path(), component, &asset)
+            .unwrap_err()
+            .contains("非法路径"));
         assert!(!asset.destination(data.path(), component).exists());
         assert!(component.complete(&installed));
 
         asset.version = "missing-payload".into();
         assert!(install_with(app.path(), data.path(), Component::CreatorBuild, &asset).is_err());
-        assert!(!asset.destination(data.path(), Component::CreatorBuild).exists());
+        assert!(!asset
+            .destination(data.path(), Component::CreatorBuild)
+            .exists());
     }
 }

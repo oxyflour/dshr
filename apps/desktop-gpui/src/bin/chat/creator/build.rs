@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 
 use dshr_agent_core::{ToolCallRequest, ToolOutcome};
 use dshr_plugin_api::manifest::RuntimeKind;
-use dshr_sidecar_guard::{GuardLimits, spawn_guarded};
+use dshr_sidecar_guard::{spawn_guarded, GuardLimits};
 use dshr_tool_runtime::{ApprovalBroker, ApprovalOutcome};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{
-    BUILD_PLUGIN_TOOL, MAX_PACKAGE_BYTES, MAX_PACKAGE_ENTRIES, Session, SnapshotBudget,
-    checked_metadata, json_outcome, read_manifest, snapshot_directory, source_directory,
+    checked_metadata, json_outcome, read_manifest, snapshot_directory, source_directory, Session,
+    SnapshotBudget, BUILD_PLUGIN_TOOL, MAX_PACKAGE_BYTES, MAX_PACKAGE_ENTRIES,
 };
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(180);
@@ -298,7 +298,9 @@ fn compile(
             ("CARGO_HOME".to_owned(), home.to_string_lossy().into_owned()),
             (
                 "RUSTC".to_owned(),
-                root.join("toolchain/bin/rustc.exe").to_string_lossy().into_owned(),
+                root.join("toolchain/bin/rustc.exe")
+                    .to_string_lossy()
+                    .into_owned(),
             ),
         ]);
         command.args(["--target", "x86_64-pc-windows-gnu"]);

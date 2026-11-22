@@ -1,3 +1,4 @@
+use super::runtime_components::{self, Component};
 use super::{
     chrome_button, desktop_icon, permission_label, save_atomic, toolbar_icon_button, ChatApp,
     DesktopModel, DesktopSettings, PermissionMode, Theme, ThemeKind, EDITABLE_PERMISSIONS,
@@ -8,7 +9,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use super::runtime_components::{self, Component};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingsTab {
@@ -437,20 +437,37 @@ impl ChatApp {
                         ),
                         Err(message) => message.clone(),
                     };
-                    div().flex().items_center().justify_between().gap(px(12.0)).p(px(12.0))
-                        .child(div().flex().flex_col().gap(px(4.0))
-                            .child(component.title())
-                            .child(div().text_color(p.color(p.label_secondary)).child(component.description()))
-                            .child(div().text_color(p.color(p.label_secondary)).child(status)))
-                        .when(asset.is_ok() && !installed && self.runtime_installing.is_none(), |row| {
-                            row.child(
-                                chrome_button(component.id(), "安装", t)
-                                    .focusable()
-                                    .on_click(cx.listener(move |chat, _, _, cx| {
-                                        chat.install_component(component, cx);
-                                    })),
-                            )
-                        })
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .p(px(12.0))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .child(component.title())
+                                .child(
+                                    div()
+                                        .text_color(p.color(p.label_secondary))
+                                        .child(component.description()),
+                                )
+                                .child(div().text_color(p.color(p.label_secondary)).child(status)),
+                        )
+                        .when(
+                            asset.is_ok() && !installed && self.runtime_installing.is_none(),
+                            |row| {
+                                row.child(
+                                    chrome_button(component.id(), "安装", t)
+                                        .focusable()
+                                        .on_click(cx.listener(move |chat, _, _, cx| {
+                                            chat.install_component(component, cx);
+                                        })),
+                                )
+                            },
+                        )
                 })))
                 .children(self.runtime_notice.clone())
                 .into_any_element(),
@@ -463,9 +480,9 @@ impl ChatApp {
         }
         self.runtime_installing = Some(component);
         self.runtime_notice = None;
-        let install = cx.background_executor().spawn(async move {
-            runtime_components::install(component)
-        });
+        let install = cx
+            .background_executor()
+            .spawn(async move { runtime_components::install(component) });
         cx.spawn(async move |chat, cx| {
             let result = install.await;
             let _ = chat.update(cx, |chat, cx| {
@@ -473,7 +490,8 @@ impl ChatApp {
                 chat.runtime_notice = result.err();
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 }
