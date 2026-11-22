@@ -259,7 +259,7 @@ begin_drain(parent, DirectChildren | AllDescendants)
 
 ## 7. 与 chat.rs 的接线（已落地，2026-11-11）
 
-产品面已按最小接线实现（`TreeCoordinator` + `ChatExecutor` 拦截 + 侧栏缩进）：
+产品面通过 `TreeCoordinator` 和 `ChatExecutor` 接入会话树。
 
 1. `ChatExecutor::specs()` 在 `allow_spawn` 时追加 `spawn_child_spec()`；`execute()` 在查
    注册表**之前**拦截 `call.tool == SPAWN_CHILD_TOOL`，交给 `TreeCoordinator::spawn_child`。
@@ -275,8 +275,8 @@ begin_drain(parent, DirectChildren | AllDescendants)
 5. 中断传播：父子共享同一个 `cancel` 句柄；`stop()` 置位后，执行器在子轮次结束时
    调 `interrupt_tree`，并给子日志补 `session.interrupted_by_parent`；
    `stream_turn` 结束时给父日志补 `session.interrupted`。
-6. UI：`ordered_sessions()` 用 `SessionTree::flatten()` 的前序 + 深度表排序，
-   侧栏子会话缩进 `depth × 14px` 并加 `↳` 标记；`reload_sessions`/启动初始化共用。
+6. `ordered_sessions()` 用 `SessionTree::flatten()` 的前序和深度表排序。启动和 `reload_sessions` 共用该逻辑。
+   桌面在会话标题旁的子智能体菜单按会话深度展示。 [桌面对话控制](spec/desktop-conversation.md)
 7. `--selftest-tree` 实测（全部通过）：
    - 子日志有 `session.created.parent_session_id`、父日志有 `child.spawned`/`child.finished`；
    - 子会话回答落盘（`message.assistant.settled`）；

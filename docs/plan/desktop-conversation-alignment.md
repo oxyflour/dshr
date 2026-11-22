@@ -15,3 +15,15 @@ Windows 发布构建使用 `tools\build-env.cmd cargo build --offline --locked -
 审批回归已复核。在工具审批和官方文件写入审批处分别切换到「工具免审批」，当前写入与同轮后续写入均成功，工作区外写入被拒。待审批时切到「只读」也结束了等待，目标文件没有创建。会话日志中的审批答复记录为 `permission_mode`。
 
 审批卡片参考 DSH Desktop `0.2.2-rc.5` 的 `dsh-client-ui-approval/src/client/ApprovalCard.tsx` 添加「始终允许」。发布窗口分别在 `write` 的工具审批和 `edit` 的文件写入审批上完成授权。重启后，同一会话的 `write` 自动通过两层审批。不同工具及不同会话各自弹出审批，工作区外写入被拒。单测覆盖授权键的会话、工作区和工具定义隔离，以及只读策略优先于已保存授权。
+
+## 工作区与会话头部
+
+已完成。参考本机 DSH Desktop `0.2.2-rc.5` 安装包中的 `WorkspaceBrowser.tsx`、`ArchiveSession.tsx`、`ConversationSession.tsx`、`AgentPresetLabel.tsx` 和 `SubagentHeaderLineage.tsx`。
+
+| 优先级 | 改动 | Windows 实窗验收 |
+|---|---|---|
+| P2 | 工作区会话按批展开，悬停归档，可筛选并恢复 | 七个主会话显示「展开其余 2 个会话」，可展开与收起。归档当前会话后切到下一条，日志哈希相同。重启后通过归档筛选找到并恢复会话 |
+| P2 | 模式和子智能体靠近标题，右侧提供会话操作及插件视图 | 从创造会话打开子智能体并返回主会话。会话导出生成 JSONL 和清单。宽窗右侧栏停靠，窄窗浮层可关闭 |
+| P3 | 移除完整轮次列表的可见按钮 | 宽窗仍显示轮次标记，窄窗可通过 `/turns` 打开轮次列表 |
+
+使用隔离会话目录、本地模拟模型和 175% 显示缩放验收。桌面、会话存储和 GPUI 常规测试通过。 [桌面对话控制](../spec/desktop-conversation.md)

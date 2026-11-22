@@ -22,6 +22,8 @@ use crate::{SessionCreated, SessionLog, SpawnSource};
 pub struct SessionMeta {
     pub id: String,
     pub title: String,
+    /// Local sidebar membership. Missing metadata means the session is active.
+    pub archived: bool,
     /// Unix 秒；UI 负责格式化成"刚刚 / N 分钟前"。
     pub updated_at: u64,
     pub path: PathBuf,
@@ -120,14 +122,19 @@ impl SessionIndex {
                 events,
                 created,
             } = summarize(&content);
-            let renamed = read_title(&self.meta_path(&id));
+            let metadata = read_metadata(&self.meta_path(&id)).unwrap_or_default();
+            let renamed = metadata.get("title").and_then(serde_json::Value::as_str);
             let parent_session_id = created
                 .as_ref()
                 .and_then(|created| created.parent_session_id.clone());
             let spawn_source = created.as_ref().and_then(|created| created.spawn_source);
             let workspace_id = created.map(|created| created.workspace_id);
             sessions.push(SessionMeta {
-                title: renamed.unwrap_or(title),
+                title: renamed.map(str::to_owned).unwrap_or(title),
+                archived: metadata
+                    .get("archived")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true),
                 id,
                 updated_at: modified_at(&read_path),
                 path: read_path,
@@ -153,6 +160,7 @@ impl SessionIndex {
         Ok(SessionMeta {
             id: id.to_owned(),
             title: String::from("新会话"),
+            archived: false,
             updated_at: modified_at(&path),
             path,
             events: 0,
@@ -213,6 +221,7 @@ impl SessionIndex {
         Ok(SessionMeta {
             id: id.to_owned(),
             title: summary.title,
+            archived: false,
             updated_at: modified_at(&path),
             path,
             events: summary.events,
@@ -313,12 +322,30 @@ impl SessionIndex {
         if title.is_empty() {
             return Ok(());
         }
-        self.ensure_dir()?;
-        let meta = serde_json::json!({ "title": title });
-        fs::write(
-            self.meta_path(id),
-            serde_json::to_vec_pretty(&meta).unwrap_or_default(),
-        )
+        self.update_metadata(id, "title", title.into())
+    }
+
+    /// Move a session into or out of the desktop archive without rewriting its log.
+    pub fn set_archived(&self, id: &str, archived: bool) -> io::Result<()> {
+        self.update_metadata(id, "archived", archived.into())
+    }
+
+    fn update_metadata(&self, id: &str, key: &str, value: serde_json::Value) -> io::Result<()> {
+        let session_path = self.path_for(id);
+        let _writer = try_lock_session(&session_path)?;
+        if !session_path.try_exists()? && !backup_path_for(&session_path).try_exists()? {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        let path = self.meta_path(id);
+        let mut metadata = read_metadata(&path)?;
+        metadata.insert(key.to_owned(), value);
+        let contents = serde_json::to_vec_pretty(&metadata).map_err(io::Error::other)?;
+        let temporary = temp_path_for(&path)?;
+        let result = write_synced(&temporary, &contents).and_then(|()| fs::rename(&temporary, &path));
+        if result.is_err() {
+            let _ = remove_if_exists(&temporary);
+        }
+        result
     }
 
     /// 生成不重复的新会话 ID（毫秒时间戳，足够本地使用）。
@@ -654,13 +681,12 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out
 }
 
-fn read_title(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value
-        .get("title")
-        .and_then(|title| title.as_str())
-        .map(str::to_owned)
+fn read_metadata(path: &Path) -> io::Result<serde_json::Map<String, serde_json::Value>> {
+    match fs::read(path) {
+        Ok(contents) => serde_json::from_slice(&contents).map_err(io::Error::other),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error),
+    }
 }
 
 fn modified_at(path: &Path) -> u64 {
@@ -747,6 +773,36 @@ mod tests {
         assert!(fs::read_to_string(index.path_for("s-1"))
             .unwrap()
             .contains("原始标题"));
+        fs::remove_dir_all(index.dir()).ok();
+    }
+
+    #[test]
+    fn archive_and_rename_preserve_each_other_and_the_log() {
+        let index = temp_index("archive");
+        seed(&index, "s-1", &[&user_event("原始标题")]);
+        let path = index.path_for("s-1");
+        let original = fs::read(&path).unwrap();
+        assert!(!index.scan().unwrap()[0].archived);
+        index.rename("s-1", "原有自定义标题").unwrap();
+        let writer = try_lock_session(&path).unwrap();
+        assert_eq!(
+            index.set_archived("s-1", true).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+        );
+        drop(writer);
+        index.set_archived("s-1", true).unwrap();
+        let archived = SessionIndex::new(index.dir()).scan().unwrap().remove(0);
+        assert!(archived.archived);
+        assert_eq!(archived.title, "原有自定义标题");
+        index.rename("s-1", "改名后仍保留归档").unwrap();
+        assert!(index.scan().unwrap()[0].archived);
+        index.set_archived("s-1", false).unwrap();
+        let restored = index.scan().unwrap().remove(0);
+        assert!(!restored.archived);
+        assert_eq!(restored.title, "改名后仍保留归档");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        index.delete("s-1").unwrap();
+        assert!(index.scan().unwrap().is_empty());
         fs::remove_dir_all(index.dir()).ok();
     }
 

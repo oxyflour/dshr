@@ -71,6 +71,8 @@ tools\build-env.cmd cargo run -p dshr-desktop-gpui --bin dshr -- --selftest-dsh
 官方 Sidecar 的创造会话使用 `cordis` 预设。桌面后台发布 Loader 预设配置变更，新会话使用当前修订，已绑定会话保留原修订。
 [插件创作和试用指南](docs/plugin-authoring.md#在创造会话中预览和试用) · [Agent 预设](docs/spec/agent-presets.md)
 
+工作区会话列表默认显示最近五条，点「展开其余 X 个会话」查看后续会话。悬停会话行可归档，点工作区标题旁的「已归档会话」可筛选并取消归档。已派发子智能体的会话可从标题旁切换，也可在同一菜单返回主会话。右上角的「⋯」可导出会话，旁边的按钮可打开插件视图侧栏。输入 `/turns` 可打开轮次导航。
+
 ## 在桌面配置真实模型
 
 打开左下角的「设置」，进入「模型」。可以编辑 DeepSeek，或点击「添加 OpenAI 兼容模型」来配置一个或多个模型。每条连接填写 API 根地址、模型 ID 和 API Key，再点「保存并使用」。在已有 OpenAI 兼容连接上点击「添加模型」，会预填 API 根地址，API Key 留空即可沿用该服务的密钥。输入卡右下角的模型菜单显示各模型的连接地址，便于切换同名模型。
@@ -190,7 +192,7 @@ max-width 780、链接色/气泡/边框/字体全部取自 DSH 安装包解析�
 助手正文支持 Markdown 子集；工具卡有 Diff / Terminal 原生视图
 （[`docs/m2-ui-views.md`](docs/m2-ui-views.md)）。侧栏是真实会话列表：新建、切换、
 行内重命名、二次确认删除，重启恢复（[`docs/m2-sessions.md`](docs/m2-sessions.md)）；
-**会话树**按父子缩进展示（子会话带 `↳` 标记），模型可经 `spawn_child` 派发子会话，
+**会话树**在会话标题旁的子智能体菜单按父子关系展示，模型可经 `spawn_child` 派发子会话，
 中断会向下传播（[`docs/m2-session-tree.md`](docs/m2-session-tree.md)）。
 transcript 采用**变高行虚拟化**：只排版视口附近几十行，10k 会话（7500 行）滚动
 draw p95 ≈ 3 ms、0 次超预算；进程 RSS ≈ 80 MB + sidecar 37 MB

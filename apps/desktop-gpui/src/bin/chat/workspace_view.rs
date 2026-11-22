@@ -109,6 +109,7 @@ impl ChatApp {
         }
         self.workspace_notice = None;
         self.workspace_picker_open = false;
+        self.show_archived = false;
         self.folded_workspaces.remove(workspace.as_ref());
         self.session_search
             .update(cx, |input, cx| input.clear(window, cx));

@@ -119,6 +119,8 @@ mod dsh_goals;
 mod dsh_session_query;
 #[path = "chat/dsh_subagents.rs"]
 mod dsh_subagents;
+#[path = "chat/session_header.rs"]
+mod session_header;
 #[path = "chat/dsh_teams.rs"]
 mod dsh_teams;
 #[path = "chat/dsh_schedules.rs"]
@@ -628,10 +630,46 @@ struct WorkspaceSessions<'a> {
     sessions: Vec<(usize, &'a SessionMeta)>,
 }
 
-fn workspace_sessions<'a>(sessions: &'a [SessionMeta], query: &str) -> Vec<WorkspaceSessions<'a>> {
+fn archive_label(archived: bool) -> &'static str {
+    if archived {
+        "取消归档"
+    } else {
+        "归档会话"
+    }
+}
+
+const WORKSPACE_SESSION_PAGE: usize = 5;
+const WORKSPACE_SESSION_AUTO_LIMIT: usize = 15;
+
+fn top_level_session(
+    session: &SessionMeta,
+    depths: &std::collections::BTreeMap<String, u32>,
+) -> bool {
+    depths.get(&session.id).copied().unwrap_or(0) == 0
+}
+
+fn next_sidebar_session(
+    sessions: &[SessionMeta],
+    depths: &std::collections::BTreeMap<String, u32>,
+) -> Option<String> {
+    sessions
+        .iter()
+        .find(|session| !session.archived && top_level_session(session, depths))
+        .map(|session| session.id.clone())
+}
+
+fn workspace_sessions<'a>(
+    sessions: &'a [SessionMeta],
+    depths: &std::collections::BTreeMap<String, u32>,
+    archived: bool,
+    query: &str,
+) -> Vec<WorkspaceSessions<'a>> {
     let mut groups = Vec::new();
     let mut indices = HashMap::new();
     for (index, session) in sessions.iter().enumerate() {
+        if session.archived != archived || !top_level_session(session, depths) {
+            continue;
+        }
         let workspace = session
             .workspace_id
             .as_deref()
@@ -4892,6 +4930,11 @@ struct ChatApp {
     session_search: Entity<TextInput>,
     session_search_open: bool,
     session_menu: Option<SessionMenu>,
+    header_menu: Option<session_header::HeaderMenu>,
+    header_notice: Option<(bool, String)>,
+    right_sidebar_open: bool,
+    show_archived: bool,
+    workspace_session_limits: HashMap<String, usize>,
     session_id: String,
     active_workspace: PathBuf,
     folded_workspaces: std::collections::HashSet<String>,
@@ -5005,6 +5048,7 @@ impl ChatApp {
         self.activity_open = false;
         self.composer_menu = None;
         self.session_menu = None;
+        self.header_menu = None;
         self.turn_menu_open = false;
         self.turn_jump = None;
         self.turn_focus = None;
@@ -5122,6 +5166,7 @@ impl ChatApp {
                             app.adc_panels = panels;
                         }
                         app.busy = false;
+                        app.reload_sessions();
                         app.sync_user_questions(cx);
                         cx.notify();
                     });
@@ -5643,6 +5688,11 @@ impl ChatApp {
             cx.notify();
             return;
         }
+        if self.header_menu.take().is_some() {
+            self.focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
         if self.workspace_picker_open {
             self.workspace_picker_open = false;
             self.focus_composer(window, cx);
@@ -5664,6 +5714,10 @@ impl ChatApp {
             cx.notify();
         } else if self.turn_menu_open {
             self.turn_menu_open = false;
+            self.focus_composer(window, cx);
+            cx.notify();
+        } else if self.right_sidebar_open && !self.plugins_open {
+            self.right_sidebar_open = false;
             self.focus_composer(window, cx);
             cx.notify();
         } else if self.plugins_open {
@@ -5756,6 +5810,13 @@ impl ChatApp {
         if self.busy {
             return;
         }
+        if !self
+            .sessions
+            .iter()
+            .any(|session| session.id == id && !session.archived)
+        {
+            return;
+        }
         let path = self.store.path_for(&id);
         let index_changed = {
             let mut state = self
@@ -5773,6 +5834,9 @@ impl ChatApp {
             index_changed
         };
         self.session_id = id;
+        self.header_menu = None;
+        self.header_notice = None;
+        self.right_sidebar_open = false;
         self.open_processes.clear();
         self.copied_message = None;
         self.collapsed_trial_cards.clear();
@@ -5863,13 +5927,50 @@ impl ChatApp {
         self.rename_input = None;
         self.reload_sessions();
         if id == self.session_id {
-            match self.sessions.first().map(|session| session.id.clone()) {
+            match next_sidebar_session(&self.sessions, &self.session_depths) {
                 Some(next) => self.open_session(next, window, cx),
                 None => self.new_session(window, cx),
             }
         } else {
             cx.notify();
         }
+    }
+
+    fn set_session_archived(
+        &mut self,
+        id: &str,
+        archived: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.session_menu = None;
+        self.header_menu = None;
+        let active = self
+            .session_branch()
+            .first()
+            .is_some_and(|root| root.id == id);
+        if archived && active && self.busy {
+            self.workspace_notice = Some("会话正在生成，结束后可归档".to_owned());
+        } else if let Err(error) = self.store.set_archived(id, archived) {
+            self.workspace_notice = Some(format!("无法更新归档状态：{error}"));
+        } else {
+            self.workspace_notice = None;
+            if self.renaming.as_deref() == Some(id) {
+                self.cancel_rename(cx);
+            }
+            if self.pending_delete.as_deref() == Some(id) {
+                self.pending_delete = None;
+            }
+            self.reload_sessions();
+            if archived && active {
+                if let Some(next) = next_sidebar_session(&self.sessions, &self.session_depths) {
+                    self.open_session(next, window, cx);
+                } else {
+                    self.new_session_with_preset(self.new_session_workspace(), None, window, cx);
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn start_rename(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -5899,8 +6000,11 @@ impl ChatApp {
         };
         let title = input.read(cx).content().to_owned();
         if let Err(err) = self.store.rename(&id, &title) {
-            eprintln!("[chat] 重命名会话 {id} 失败: {err}");
+            self.workspace_notice = Some(format!("无法重命名会话：{err}"));
+            cx.notify();
+            return;
         }
+        self.workspace_notice = None;
         self.renaming = None;
         self.rename_input = None;
         self.reload_sessions();
@@ -6094,7 +6198,13 @@ impl ChatApp {
     fn session_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
         let query = self.session_search.read(cx).content().trim().to_lowercase();
-        let groups = workspace_sessions(&self.sessions, &query);
+        let groups = workspace_sessions(
+            &self.sessions,
+            &self.session_depths,
+            self.show_archived,
+            &query,
+        );
+        let active_root = self.session_branch().first();
         let mut list = div().flex().flex_col().gap(px(8.0)).w_full();
         if groups.is_empty() {
             return list
@@ -6104,7 +6214,11 @@ impl ChatApp {
                         .py(px(8.0))
                         .text_size(t.type_scale.small)
                         .text_color(p.color(p.label_secondary))
-                        .child("没有匹配的会话"),
+                        .child(if self.show_archived && query.is_empty() {
+                            "暂无已归档会话"
+                        } else {
+                            "没有匹配的会话"
+                        }),
                 )
                 .into_any_element();
         }
@@ -6118,6 +6232,7 @@ impl ChatApp {
         {
             let label = workspace.map_or("未分组会话", workspace_name);
             let key = workspace.unwrap_or("").to_owned();
+            let fold_key = key.clone();
             let folded = query.is_empty() && self.folded_workspaces.contains(&key);
             let path = workspace.map(|workspace| workspace_root().join(workspace));
             let mut group = div().flex().flex_col().gap(px(2.0)).child(
@@ -6151,8 +6266,9 @@ impl ChatApp {
                             )
                             .tooltip(toolbar_tooltip(workspace.unwrap_or(label).to_owned(), *t))
                             .on_click(cx.listener(move |chat, _, _, cx| {
-                                if !chat.folded_workspaces.remove(&key) {
-                                    chat.folded_workspaces.insert(key.clone());
+                                if !chat.folded_workspaces.remove(&fold_key) {
+                                    chat.folded_workspaces.insert(fold_key.clone());
+                                    chat.workspace_session_limits.remove(&fold_key);
                                 }
                                 cx.notify();
                             })),
@@ -6177,11 +6293,63 @@ impl ChatApp {
                     }),
             );
             if !folded {
-                for (index, session) in sessions {
+                let total = sessions.len();
+                let selected = sessions
+                    .iter()
+                    .take(WORKSPACE_SESSION_AUTO_LIMIT)
+                    .position(|(_, session)| active_root.is_some_and(|root| root.id == session.id));
+                let base_limit = WORKSPACE_SESSION_PAGE.max(selected.map_or(0, |index| index + 1));
+                let limit = if query.is_empty() {
+                    base_limit.max(
+                        self.workspace_session_limits
+                            .get(&key)
+                            .copied()
+                            .unwrap_or(0),
+                    )
+                } else {
+                    total
+                };
+                for (index, session) in sessions.into_iter().take(limit) {
                     group = group.child(
                         div()
                             .pl(px(12.0))
-                            .child(self.session_row(index, session, t, cx)),
+                            .child(self.session_row(
+                                index,
+                                session,
+                                active_root.is_some_and(|root| root.id == session.id),
+                                t,
+                                cx,
+                            )),
+                    );
+                }
+                if query.is_empty() && total > base_limit {
+                    let remaining = total.saturating_sub(limit);
+                    let label = if remaining == 0 {
+                        "收起".to_owned()
+                    } else {
+                        format!("展开其余 {remaining} 个会话")
+                    };
+                    group = group.child(
+                        chrome_button(("workspace-more-sessions", group_index), "", t)
+                            .aria_label(label.clone())
+                            .aria_expanded(remaining == 0)
+                            .focusable()
+                            .justify_start()
+                            .pl(px(22.0))
+                            .text_color(p.color(p.label_caption))
+                            .child(label)
+                            .on_click(cx.listener(move |chat, _, _, cx| {
+                                chat.session_menu = None;
+                                if remaining == 0 {
+                                    chat.workspace_session_limits.remove(&key);
+                                } else {
+                                    chat.workspace_session_limits.insert(
+                                        key.clone(),
+                                        (limit + WORKSPACE_SESSION_PAGE).min(total),
+                                    );
+                                }
+                                cx.notify();
+                            })),
                     );
                 }
             }
@@ -6234,6 +6402,8 @@ impl ChatApp {
 
         let rename_id = session.id.clone();
         let delete_id = session.id.clone();
+        let archive_id = session.id.clone();
+        let archived = session.archived;
         let menu = div()
             .id("session-menu")
             .role(Role::Menu)
@@ -6256,6 +6426,16 @@ impl ChatApp {
                     .on_click(cx.listener(move |chat, _, window, cx| {
                         cx.stop_propagation();
                         chat.start_rename(rename_id.clone(), window, cx);
+                    })),
+            )
+            .child(
+                chrome_button("session-menu-archive", archive_label(archived), t)
+                    .role(Role::MenuItem)
+                    .justify_start()
+                    .focusable()
+                    .on_click(cx.listener(move |chat, _, window, cx| {
+                        cx.stop_propagation();
+                        chat.set_session_archived(&archive_id, !archived, window, cx);
                     })),
             )
             .child(
@@ -6296,19 +6476,12 @@ impl ChatApp {
         &self,
         index: usize,
         session: &SessionMeta,
+        is_active: bool,
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = t.palette;
-        let is_active = session.id == self.session_id;
         let is_renaming = self.renaming.as_deref() == Some(session.id.as_str());
-        // 子会话按树深度缩进，父会话保持 0 级。
-        let depth = self
-            .session_depths
-            .get(&session.id)
-            .copied()
-            .unwrap_or(0)
-            .min(6);
 
         if is_renaming {
             let input = self.rename_input.clone();
@@ -6413,15 +6586,39 @@ impl ChatApp {
                 )
                 .into_any_element()
         } else {
-            self.session_menu_trigger(index, session, t, cx)
+            let archive_id = session.id.clone();
+            let archived = session.archived;
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    toolbar_icon_button(
+                        ("archive-session", index),
+                        archive_label(archived),
+                        if archived { "\u{e8a7}" } else { "\u{e7b8}" },
+                        if archived { "↶" } else { "▣" },
+                        t,
+                    )
+                    .size(px(24.0))
+                    .when(!is_menu_open, |button| {
+                        button.invisible()
+                            .group_hover("session-row", |style| style.visible())
+                            .focus_visible(|style| style.visible())
+                    })
+                    .on_click(cx.listener(move |chat, _, window, cx| {
+                        cx.stop_propagation();
+                        chat.set_session_archived(&archive_id, !archived, window, cx);
+                    })),
+                )
+                .child(self.session_menu_trigger(index, session, t, cx))
+                .into_any_element()
         };
         div()
             .id(("session-row", index))
             .group("session-row")
-            .role(Role::Button)
             .aria_label(session.title.clone())
             .w_full()
-            .pl(px(10.0 + depth as f32 * 14.0))
+            .pl(px(10.0))
             .pr(px(10.0))
             .min_h(px(32.0))
             .py(px(3.0))
@@ -6430,7 +6627,6 @@ impl ChatApp {
             .justify_between()
             .gap(px(6.0))
             .rounded(t.radii.sm)
-            .cursor_pointer()
             .when(is_active, |row| row.bg(p.color(p.business_tertiary)))
             .hover(|style| style.bg(p.color(p.interactive_hover_solid)))
             .when(is_menu_open && !is_active, |row| {
@@ -6445,19 +6641,19 @@ impl ChatApp {
                     .text_size(t.type_scale.small)
                     .line_height(px(18.0))
                     .when(is_active, |title| title.font_weight(FontWeight::MEDIUM))
-                    .text_color(p.color(p.label_primary))
-                    .child(if depth > 0 {
-                        format!("↳ {}", session.title)
+                    .text_color(p.color(if session.archived {
+                        p.label_secondary
                     } else {
-                        session.title.clone()
-                    }),
+                        p.label_primary
+                    }))
+                    .child(session.title.clone()),
             )
             .child(if is_pending_delete {
                 actions
             } else {
                 div()
                     .relative()
-                    .min_w(px(40.0))
+                    .min_w(px(48.0))
                     .flex()
                     .flex_none()
                     .justify_end()
@@ -6475,9 +6671,13 @@ impl ChatApp {
                     .child(div().absolute().right_0().top(px(-3.0)).child(actions))
                     .into_any_element()
             })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_session(open_id.clone(), window, cx);
-            }))
+            .when(!session.archived, |row| {
+                row.role(Role::Button)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |chat, _, window, cx| {
+                        chat.open_session(open_id.clone(), window, cx);
+                    }))
+            })
             .when(!is_pending_delete, |row| {
                 row.on_aux_click(cx.listener(move |chat, event, _, cx| {
                     if matches!(event, gpui::ClickEvent::Mouse(mouse) if mouse.up.button == gpui::MouseButton::Right) {
@@ -6585,6 +6785,26 @@ impl ChatApp {
                             .text_color(p.color(p.label_secondary))
                             .child(div().flex_1().child("工作区"))
                             .child(self.workspace_add_button(t, cx))
+                            .child(
+                                toolbar_icon_button(
+                                    "archived-sessions",
+                                    "已归档会话",
+                                    "\u{e7b8}",
+                                    "▣",
+                                    t,
+                                )
+                                .aria_selected(self.show_archived)
+                                .when(self.show_archived, |button| {
+                                    button.bg(p.color(p.tag)).text_color(p.color(p.link))
+                                })
+                                .on_click(cx.listener(|chat, _, _, cx| {
+                                    chat.show_archived = !chat.show_archived;
+                                    chat.workspace_session_limits.clear();
+                                    chat.session_menu = None;
+                                    chat.workspace_notice = None;
+                                    cx.notify();
+                                })),
+                            )
                             .child(
                                 toolbar_icon_button(
                                     "toggle-session-search",
@@ -6712,12 +6932,6 @@ impl ChatApp {
         cx.notify();
     }
 
-    fn toggle_turn_navigator(&mut self, cx: &mut Context<Self>) {
-        self.composer_menu = None;
-        self.turn_menu_open = !self.turn_menu_open;
-        cx.notify();
-    }
-
     fn turn_rail(&self, focus_row: usize, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let anchors: Vec<_> = self
             .rows
@@ -6784,19 +6998,6 @@ impl ChatApp {
                         .tooltip(toolbar_tooltip(tooltip, *t))
                         .on_click(cx.listener(move |chat, _, _, cx| chat.jump_to_turn(row, cx)))
                 }))
-                .child(
-                    toolbar_icon_button(
-                        "open-turn-navigator-rail",
-                        "查看全部轮次",
-                        "\u{e712}",
-                        "⋯",
-                        t,
-                    )
-                    .size(px(22.0))
-                    .mt(px(2.0))
-                    .aria_expanded(self.turn_menu_open)
-                    .on_click(cx.listener(|chat, _, _, cx| chat.toggle_turn_navigator(cx))),
-                )
                 .into_any_element(),
         )
     }
@@ -6891,25 +7092,15 @@ impl ChatApp {
         t: &Theme,
         collapsed: bool,
         compact: bool,
-        show_turn_rail: bool,
         show_window_bar: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = t.palette;
         let hero = self.show_empty_composer();
-        let (theme_label, theme_glyph) = match self.theme_kind {
-            ThemeKind::Light => ("切换到深色主题", "\u{e708}"),
-            ThemeKind::Dark => ("切换到浅色主题", "\u{e706}"),
-        };
         let sidebar_label = if collapsed {
             "展开侧栏"
         } else {
             "收起侧栏"
-        };
-        let panel_label = if self.plugins_open {
-            "关闭插件面板"
-        } else {
-            "打开插件面板"
         };
         div()
             .relative()
@@ -6948,26 +7139,10 @@ impl ChatApp {
                             )),
                         )
                     })
-                    .child(
-                        div().flex_1().min_w(px(0.0)).when(!hero, |title| {
-                            title
-                                .overflow_hidden()
-                                .text_size(t.type_scale.body)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(p.color(p.label_primary))
-                                .text_overflow(TextOverflow::Truncate("…".into()))
-                                .child(self.active_title())
-                        }),
-                    )
-                    .when(self.creator_mode && !hero, |header| {
-                        header.child(
-                            div()
-                                .flex_none()
-                                .text_size(t.type_scale.secondary)
-                                .text_color(p.color(p.label_secondary))
-                                .child("创造模式"),
-                        )
+                    .when(!hero, |header| {
+                        header.child(self.session_heading(t, compact, cx))
                     })
+                    .child(div().flex_1().min_w(px(0.0)))
                     .when(self.busy && !compact, |header| {
                         header.child(
                             div()
@@ -6977,36 +7152,23 @@ impl ChatApp {
                                 .child("生成中…"),
                         )
                     })
-                    .child(
-                        toolbar_icon_button(
-                            "theme-toggle-header",
-                            theme_label,
-                            theme_glyph,
-                            "◐",
-                            t,
+                    .when(!hero, |header| header.child(self.header_actions(t, cx)))
+                    .when(!self.right_sidebar_open, |header| {
+                        header.child(
+                            toolbar_icon_button(
+                                "expand-right-sidebar", "展开右侧栏", "\u{e89f}", "▥", t,
+                            )
+                            .aria_expanded(false)
+                            .on_click(cx.listener(|chat, _, _, cx| {
+                                chat.header_menu = None;
+                                chat.composer_menu = None;
+                                chat.workspace_picker_open = false;
+                                chat.turn_menu_open = false;
+                                chat.right_sidebar_open = true;
+                                cx.notify();
+                            })),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
-                    )
-                    .child(
-                        toolbar_icon_button(
-                            "plugins-toggle-header",
-                            panel_label,
-                            "\u{e71d}",
-                            "⋮",
-                            t,
-                        )
-                        .aria_expanded(self.plugins_open)
-                        .when(self.plugins_open, |button| {
-                            button
-                                .bg(p.color(p.business_tertiary))
-                                .text_color(p.color(p.link))
-                        })
-                        .on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.toggle_plugins_panel(window, cx)
-                            }),
-                        ),
-                    ),
+                    }),
             )
             .children((!hero).then(|| {
                 div()
@@ -7039,23 +7201,16 @@ impl ChatApp {
                                 }))
                         }),
                     )
-                    .when(
-                        !show_turn_rail
-                            && self.rows.iter().any(|row| matches!(row, Row::User { .. })),
-                        |tabs| {
-                            tabs.child(div().flex_1()).child(
-                                chrome_button("open-turn-navigator", "轮次 ▾", t)
-                                    .aria_label("轮次导航")
-                                    .aria_expanded(self.turn_menu_open)
-                                    .on_click(
-                                        cx.listener(|chat, _, _, cx| {
-                                            chat.toggle_turn_navigator(cx)
-                                        }),
-                                    ),
-                            )
-                        },
-                    )
             }))
+            .when_some(self.header_notice.as_ref(), |header, (error, notice)| {
+                header.child(
+                    div()
+                        .pb(px(4.0))
+                        .text_size(t.type_scale.small)
+                        .text_color(p.color(if *error { p.state_error } else { p.label_secondary }))
+                        .child(notice.clone()),
+                )
+            })
             .when(self.turn_menu_open, |header| {
                 header.child(self.turn_navigator(t, cx))
             })
@@ -9618,7 +9773,15 @@ impl Render for ChatApp {
         } else {
             theme.layout.sidebar_width
         };
-        let body_width = width - sidebar_width;
+        let available_width = width - sidebar_width;
+        let right_sidebar_visible = self.right_sidebar_open && !self.plugins_open;
+        let right_sidebar_overlay = available_width < px(744.0);
+        let right_sidebar_width = px(264.0).min(available_width.max(px(0.0)));
+        let body_width = if right_sidebar_visible && !right_sidebar_overlay {
+            available_width - right_sidebar_width
+        } else {
+            available_width
+        };
         let compact = body_width < px(480.0);
         theme.layout.composer_max_width =
             (body_width * 0.64).clamp(px(680.0), px(920.0)) + px(32.0);
@@ -9677,14 +9840,7 @@ impl Render for ChatApp {
                 menu_top,
                 cx,
             );
-            body.child(self.header(
-                &theme,
-                collapsed,
-                compact,
-                show_turn_rail,
-                show_window_bar,
-                cx,
-            ))
+            body.child(self.header(&theme, collapsed, compact, show_window_bar, cx))
             // 启动/加载错误在 GUI 主界面可见（双击启动没有控制台可看 stderr）。
             .when(!self.plugin_errors.is_empty(), |el| {
                 el.child(self.error_banner(&theme))
@@ -9706,6 +9862,14 @@ impl Render for ChatApp {
         };
         let shell = shell
             .child(body)
+            .when(right_sidebar_visible, |shell| {
+                shell.child(self.right_sidebar(
+                    right_sidebar_width,
+                    right_sidebar_overlay,
+                    &theme,
+                    cx,
+                ))
+            })
             .children(self.settings_overlay(&theme, width, cx))
             .when_some(self.image_preview_overlay(&theme, cx), |el, overlay| {
                 el.child(overlay)
@@ -14729,7 +14893,7 @@ fn main() {
     }
 
     let (mut sessions, mut session_depths) = ordered_sessions(&store);
-    if sessions.is_empty() {
+    if next_sidebar_session(&sessions, &session_depths).is_none() {
         let id = store.new_id();
         let default = read_agent_presets()
             .ok()
@@ -14744,9 +14908,7 @@ fn main() {
         sessions = rebuilt.0;
         session_depths = rebuilt.1;
     }
-    let active = sessions
-        .first()
-        .map(|session| session.id.clone())
+    let active = next_sidebar_session(&sessions, &session_depths)
         .unwrap_or_else(|| SESSION_ID.to_owned());
     // 插件 profile：启停状态持久化到 DSHR_PROFILE_DIR/plugins.json，并注入 sidecar。
     let profile_dir = std::env::var("DSHR_PROFILE_DIR")
@@ -14941,6 +15103,11 @@ fn main() {
                             session_search,
                             session_search_open: false,
                             session_menu: None,
+                            header_menu: None,
+                            header_notice: None,
+                            right_sidebar_open: false,
+                            show_archived: false,
+                            workspace_session_limits: Default::default(),
                             session_id: active,
                             active_workspace,
                             folded_workspaces: Default::default(),
