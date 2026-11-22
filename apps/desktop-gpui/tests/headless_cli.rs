@@ -5,29 +5,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use dshr_session_store::try_lock_session;
 use serde_json::{json, Value};
 
 struct Fixture {
-    root: PathBuf,
+    directory: tempfile::TempDir,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("dshr-headless-{}-{stamp}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
-        Self { root }
+        let directory = tempfile::Builder::new()
+            .prefix("dshr-headless-")
+            .tempdir()
+            .expect("create an isolated headless CLI workspace");
+        Self { directory }
+    }
+
+    fn root(&self) -> &Path {
+        self.directory.path()
     }
 
     fn home(&self) -> PathBuf {
-        self.root.join("home")
+        self.root().join("home")
     }
 
     fn command(&self, binary: &Path) -> Command {
@@ -38,11 +39,11 @@ impl Fixture {
             }
         }
         command
-            .current_dir(&self.root)
+            .current_dir(self.root())
             .env("DSHR_HOME", self.home())
-            .env("DSHR_WORKSPACE", &self.root)
+            .env("DSHR_WORKSPACE", self.root())
             .env("DSHR_PROVIDER", "mock")
-            .env("DSHR_APP_ROOT", self.root.join("no-sidecar"));
+            .env("DSHR_APP_ROOT", self.root().join("no-sidecar"));
         command
     }
 
@@ -55,7 +56,7 @@ impl Fixture {
     }
 
     fn install_sidecar(&self, tool: &str, presentation: &str) {
-        let dir = self.root.join("no-sidecar/sidecar/dsh-official");
+        let dir = self.root().join("no-sidecar/sidecar/dsh-official");
         fs::create_dir_all(dir.join("node_modules")).unwrap();
         let script = include_str!("fixtures/headless-sidecar.mjs")
             .replace("FIXTURE_TOOL", tool)
@@ -65,12 +66,6 @@ impl Fixture {
 
     fn log(&self, id: &str) -> PathBuf {
         self.home().join("sessions").join(format!("{id}.jsonl"))
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -207,11 +202,11 @@ fn rc5_desktop_official_writes() {
 #[ignore = "requires tools/official-rc5-gate.ps1"]
 fn rc5_headless_replays_the_saved_working_directory() {
     let fixture = Fixture::new();
-    let settings = fixture.root.join("profile");
-    let child = fixture.root.join("child");
+    let settings = fixture.root().join("profile");
+    let child = fixture.root().join("child");
     fs::create_dir(&settings).unwrap();
     fs::create_dir(&child).unwrap();
-    fs::write(fixture.root.join("file.txt"), "root marker").unwrap();
+    fs::write(fixture.root().join("file.txt"), "root marker").unwrap();
     fs::write(child.join("file.txt"), "saved directory marker").unwrap();
     fs::write(
         settings.join("plugins.json"),
@@ -294,7 +289,7 @@ fn rc5_headless_replays_the_saved_working_directory() {
 }
 
 fn rc5_image_profile(fixture: &Fixture) -> PathBuf {
-    let profile = fixture.root.join("image-profile");
+    let profile = fixture.root().join("image-profile");
     fs::create_dir(&profile).unwrap();
     fs::write(profile.join("plugins.json"), json!({ "plugins": [{
         "name": "@deepseek-ai/dsh-tool-fs",
@@ -311,14 +306,14 @@ fn rc5_headless_preserves_image_results_across_restart() {
     let fixture = Fixture::new();
     let outside = Fixture::new();
     let profile = rc5_image_profile(&fixture);
-    let png = fixture.root.join("sample.png");
-    let external_png = outside.root.join("outside.png");
+    let png = fixture.root().join("sample.png");
+    let external_png = outside.root().join("outside.png");
     image::RgbImage::from_pixel(2100, 3, image::Rgb([180, 40, 12]))
         .save(&png)
         .unwrap();
     fs::copy(&png, &external_png).unwrap();
-    fs::write(fixture.root.join("bad.png"), b"not a png").unwrap();
-    fs::File::create(fixture.root.join("too-large.png"))
+    fs::write(fixture.root().join("bad.png"), b"not a png").unwrap();
+    fs::File::create(fixture.root().join("too-large.png"))
         .unwrap()
         .set_len(8 * 1024 * 1024 + 1)
         .unwrap();
@@ -484,13 +479,13 @@ fn rc5_headless_rejects_read_image_on_a_text_only_route() {
 fn stage2_headless_search_uses_session_directory_and_excludes_shell() {
     let fixture = Fixture::new();
     let outside = Fixture::new();
-    let profile = fixture.root.join("search-profile");
-    let child = fixture.root.join("child");
+    let profile = fixture.root().join("search-profile");
+    let child = fixture.root().join("child");
     fs::create_dir(&profile).unwrap();
     fs::create_dir(&child).unwrap();
     fs::write(child.join("marker.txt"), "search-marker-child").unwrap();
-    fs::write(fixture.root.join("root-only.txt"), "search-marker-root").unwrap();
-    fs::write(outside.root.join("outside.txt"), "search-marker-outside").unwrap();
+    fs::write(fixture.root().join("root-only.txt"), "search-marker-root").unwrap();
+    fs::write(outside.root().join("outside.txt"), "search-marker-outside").unwrap();
     let shell = if cfg!(windows) { "pwsh" } else { "bash" };
     fs::write(profile.join("plugins.json"), json!({ "plugins": [
         { "name": "@deepseek-ai/dsh-tool-working-directory", "enabled": true },
@@ -520,7 +515,7 @@ fn stage2_headless_search_uses_session_directory_and_excludes_shell() {
             tool(
                 "escape",
                 "grep",
-                json!({ "pattern": "search-marker-", "path": outside.root }),
+                json!({ "pattern": "search-marker-", "path": outside.root() }),
             ),
         ]),
         json!({ "choices": [{ "message": { "content": "ok" }, "finish_reason": "stop" }] }),
@@ -579,7 +574,7 @@ fn stage2_headless_search_uses_session_directory_and_excludes_shell() {
 #[ignore = "requires the rc.5 ask-user package"]
 fn stage3_headless_questions_return_a_noninteractive_error() {
     let fixture = Fixture::new();
-    let profile = fixture.root.join("questions-profile");
+    let profile = fixture.root().join("questions-profile");
     fs::create_dir(&profile).unwrap();
     fs::write(
         profile.join("plugins.json"),
@@ -639,12 +634,12 @@ fn stage3_headless_questions_return_a_noninteractive_error() {
 fn stage3_headless_deliverables_round_trip_in_the_session() {
     let fixture = Fixture::new();
     let outside = Fixture::new();
-    let profile = fixture.root.join("delivery-profile");
-    let child = fixture.root.join("child");
+    let profile = fixture.root().join("delivery-profile");
+    let child = fixture.root().join("child");
     fs::create_dir(&profile).unwrap();
     fs::create_dir(&child).unwrap();
     fs::write(child.join("deliverable.txt"), "result").unwrap();
-    let outside_file = outside.root.join("outside.txt");
+    let outside_file = outside.root().join("outside.txt");
     fs::write(&outside_file, "outside").unwrap();
     fs::write(
         profile.join("plugins.json"),
@@ -749,11 +744,15 @@ fn stage3_headless_deliverables_round_trip_in_the_session() {
 #[ignore = "requires the rc.5 skill tool and filesystem provider"]
 fn stage3_headless_skill_is_scoped_and_supports_direct_invocation() {
     let fixture = Fixture::new();
-    let profile = fixture.root.join("skill-profile");
+    let profile = fixture.root().join("skill-profile");
     fs::create_dir(&profile).unwrap();
     for (project, name, body) in [
-        (fixture.root.clone(), "root-only", "ROOT_SKILL_BODY"),
-        (fixture.root.join("child"), "child-only", "CHILD_SKILL_BODY"),
+        (fixture.root().to_path_buf(), "root-only", "ROOT_SKILL_BODY"),
+        (
+            fixture.root().join("child"),
+            "child-only",
+            "CHILD_SKILL_BODY",
+        ),
     ] {
         let skill = project.join(".agents").join("skills").join(name);
         fs::create_dir_all(&skill).unwrap();
@@ -768,7 +767,7 @@ fn stage3_headless_skill_is_scoped_and_supports_direct_invocation() {
         { "name": "@deepseek-ai/dsh-tool-working-directory" },
         { "name": "@deepseek-ai/dsh-skill-filesystem", "config": {
             "includeDefaultRoots": true, "watch": false,
-            "dshHome": fixture.root.join("no-user-dsh"), "agentsHome": fixture.root.join("no-user-agents"),
+            "dshHome": fixture.root().join("no-user-dsh"), "agentsHome": fixture.root().join("no-user-agents"),
         } },
         { "name": "@deepseek-ai/dsh-tool-skill" },
     ] }).to_string()).unwrap();
@@ -844,7 +843,7 @@ fn stage3_headless_skill_is_scoped_and_supports_direct_invocation() {
 #[ignore = "requires rc.5 Web tool and providers"]
 fn stage3_headless_web_uses_official_providers_and_times_out() {
     let fixture = Fixture::new();
-    let profile = fixture.root.join("web-profile");
+    let profile = fixture.root().join("web-profile");
     fs::create_dir(&profile).unwrap();
     let (web, web_url) = model_listener();
     let (server, model_url) = model_listener();
@@ -1013,7 +1012,11 @@ fn cli_input_001_uses_clean_text_and_preserves_stdin() {
     let output = fixture.run(&["--profile", "headless", "--json", "--help"], b"");
     assert_success(&output);
     assert!(output.stdout.starts_with(b"Usage: "));
-    assert!(!fixture.home().exists());
+    assert!(
+        !fixture.home().exists(),
+        "help created a home directory at {:?}",
+        fixture.home()
+    );
 
     let output = fixture.run(
         &["--profile=headless", "--", "--selftest", "你好"],
@@ -1120,7 +1123,7 @@ fn cli_output_001_final_save_failure_emits_error_instead_of_final() {
     let id = session[0]["sessionId"].as_str().unwrap();
     received.recv_timeout(Duration::from_secs(10)).unwrap();
     let path = fixture.log(id);
-    fs::rename(&path, fixture.root.join("before-final.jsonl")).unwrap();
+    fs::rename(&path, fixture.root().join("before-final.jsonl")).unwrap();
     fs::create_dir(&path).unwrap();
     resume.send(()).unwrap();
     worker.join().unwrap();
@@ -1165,7 +1168,7 @@ fn cli_cancel_001_closed_pipe_cancels_a_running_turn() {
     let mut session = String::new();
     stdout.read_line(&mut session).unwrap();
     let session = records(session.as_bytes());
-    assert_eq!(session[0]["type"], "session");
+    assert_eq!(session[0]["type"], "session", "{session:?}");
     received.recv_timeout(Duration::from_secs(10)).unwrap();
     drop(stdout);
     resume.send(()).unwrap();
@@ -1280,8 +1283,8 @@ fn cli_profile_001_loads_dsh_manifest_and_reports_patch_origin() {
         "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } },
     }).to_string()).unwrap();
     let home = fixture.home();
-    let first = fixture.root.join("first.yml");
-    let last = fixture.root.join("last.yml");
+    let first = fixture.root().join("first.yml");
+    let last = fixture.root().join("last.yml");
     fs::write(
         profile.join("cordis.patch.yml"),
         "- id: tool-fs\n  disabled: true\n  config:\n    readImage: true\n",
@@ -1425,7 +1428,7 @@ fn cli_tools_excludes_diagnostics_from_the_model_and_dispatch() {
 #[test]
 fn cli_package_001_console_entry_forwards_stdio_and_exit_status() {
     let fixture = Fixture::new();
-    let bundle = fixture.root.join("bundle");
+    let bundle = fixture.root().join("bundle");
     fs::create_dir_all(bundle.join("bin")).unwrap();
     let launcher = bundle.join("bin/dshr.exe");
     fs::copy(env!("CARGO_BIN_EXE_dshr"), bundle.join("dshr.exe")).unwrap();
