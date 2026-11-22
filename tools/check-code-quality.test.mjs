@@ -57,6 +57,7 @@ test('quality check reports code violations in a tracked change', (t) => {
   write('sidecar/new.mjs', '// new\n'.repeat(1001))
   write('sidecar/broken.mjs', 'const =')
   write('crates/dshr-tool-runtime/src/lib.rs', 'pub fn   example() {}\n')
+  write('apps/desktop-gpui/src/bin/chat/runtime/turn.rs', 'use gpui::Window;\n')
   const crate = 'dshr-compat-dsh-protocol'
   write(`crates/${crate}/Cargo.toml`, crateManifest(crate)
     + '[target.\'cfg(unix)\'.build-dependencies]\ndshr-tool-runtime = { path = "../dshr-tool-runtime" }\n')
@@ -68,6 +69,7 @@ test('quality check reports code violations in a tracked change', (t) => {
   assert.match(output, /\[Node syntax\].*sidecar\/broken\.mjs/)
   assert.match(output, /\[Rust formatting\]/)
   assert.match(output, /\[dependency direction\] dshr-compat-dsh-protocol -> dshr-tool-runtime \(build, cfg\(unix\)\)/)
+  assert.match(output, /turn\.rs: the shared runtime cannot import the desktop view or GPUI/)
 })
 
 test('the baseline shrinks and temporary exceptions expire', (t) => {

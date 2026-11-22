@@ -9,6 +9,8 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const baselinePath = 'tools/code-quality-baseline.json'
 const rustPath = /^(apps|crates)\/[^/]+\/(src|tests)\/.+\.rs$/
 const nodePath = /^(sidecar|tools|schema)\/.+\.(cjs|mjs|js)$/
+const desktopRuntime = /^apps\/desktop-gpui\/src\/bin\/chat\/runtime\/.*\.rs$/
+const windowReferences = /\b(?:gpui|gpui_platform|dshr_ui_gpui)\s*(?:::|as\b|[,};])|\b(?:ChatApp|DesktopTurnUpdate|ComposerAttachment|RenderImage)\b|^\s*use\s+crate::\*/m
 const testScript = /\.test\.(cjs|mjs|js)$/
 const implementationLimit = 1000
 const testLimit = 1500
@@ -139,16 +141,19 @@ function main(args) {
   const changed = new Set(gitPaths('diff', '--name-only', '-z', base, '--'))
   const paths = gitPaths('ls-files', '--cached', '-z')
     .filter(file => isFirstParty(file) && existsSync(resolve(root, file)))
-  const files = new Map(paths.map(file => {
-    const source = readFileSync(resolve(root, file), 'utf8')
-    return [file, { lines: physicalLines(source), limit: sourceLimit(file, source) }]
-  }))
-
   let failures = 0
   const report = (rule, message) => {
     console.error(`[${rule}] ${message}`)
     failures++
   }
+  const files = new Map(paths.map(file => {
+    const source = readFileSync(resolve(root, file), 'utf8')
+    if (desktopRuntime.test(file) && windowReferences.test(source)) {
+      report('dependency direction', `${file}: the shared runtime cannot import the desktop view or GPUI`)
+    }
+    return [file, { lines: physicalLines(source), limit: sourceLimit(file, source) }]
+  }))
+
   const baseline = JSON.parse(readFileSync(resolve(root, baselinePath), 'utf8'))
   const previous = baselineAt(base)
   if (!previous) console.log(`[file length] Initial baseline; ${base.slice(0, 7)} has no existing policy`)

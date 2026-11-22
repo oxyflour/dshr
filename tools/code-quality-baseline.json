@@ -1,6 +1,6 @@
 {
   "limits": {
-    "apps/desktop-gpui/src/bin/chat.rs": 14090,
+    "apps/desktop-gpui/src/bin/chat.rs": 8369,
     "apps/desktop-gpui/src/bin/chat/creator.rs": 1574,
     "apps/desktop-gpui/src/bin/chat/model_settings.rs": 1058,
     "crates/agent-context/src/lib.rs": 1553,
@@ -24,8 +24,7 @@
     "crates/ui-contributions/src/element.rs": 1549,
     "crates/ui-gpui/src/adc.rs": 3147,
     "crates/ui-gpui/src/diff.rs": 1095,
-    "sidecar/dsh-official/sidecar-dsh.mjs": 1967,
-    "tools/conformance.mjs": 1393
+    "sidecar/dsh-official/sidecar-dsh.mjs": 1967
   },
   "exceptions": {}
 }
