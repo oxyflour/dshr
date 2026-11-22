@@ -26,6 +26,11 @@ function fixture(t) {
   function baseline(limits, exceptions = {}) {
     write(baselineFile, JSON.stringify({ limits, exceptions }) + '\n')
   }
+  function commit(message) {
+    mustRun('git', 'add', '-A')
+    mustRun('git', '-c', 'user.name=Quality Test', '-c', 'user.email=quality@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', message)
+    return mustRun('git', 'rev-parse', 'HEAD')
+  }
   function check(expectedStatus, base = 'HEAD') {
     mustRun('git', 'add', '-A')
     const result = run(process.execPath, 'tools/check-code-quality.mjs', '--base', base)
@@ -45,9 +50,8 @@ function fixture(t) {
   write('README.md', '# Fixture\n')
   baseline({ [legacyFile]: 1002 })
   copyFileSync(new URL('./check-code-quality.mjs', import.meta.url), join(cwd, 'tools/check-code-quality.mjs'))
-  mustRun('git', 'add', '-A')
-  mustRun('git', '-c', 'user.name=Quality Test', '-c', 'user.email=quality@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')
-  return { cwd, write, baseline, check, mustRun }
+  commit('fixture')
+  return { cwd, write, baseline, check, commit, mustRun }
 }
 
 test('quality check reports code violations in a tracked change', (t) => {
@@ -91,6 +95,20 @@ test('the baseline shrinks and temporary exceptions expire', (t) => {
   assert.match(check(1), /reduce its baseline to 1001/)
   baseline({ [legacyFile]: 1001 })
   assert.match(check(0), /\[code quality\] PASS/)
+})
+
+test('the supplied base detects growth from an earlier commit in a push', (t) => {
+  const { baseline, check, commit, mustRun, write } = fixture(t)
+  const before = mustRun('git', 'rev-parse', 'HEAD')
+
+  write(legacyFile, '// legacy\n'.repeat(1003))
+  baseline({ [legacyFile]: 1003 })
+  const growth = commit('raise the recorded limit')
+  write('README.md', '# Documentation after the limit change\n')
+  commit('update the documentation')
+
+  assert.match(check(1, before), /the baseline can only shrink/)
+  assert.match(check(0, growth), /\[code quality\] PASS/)
 })
 
 test('an in-limit rename, new tests, and a documentation-only change pass', (t) => {

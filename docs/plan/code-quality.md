@@ -101,4 +101,6 @@ tools\build-env.cmd cargo test --locked --workspace
 - 2026-11-22 ADC、Agent Core 和 Fiber 的入口分别降至 661、571、832 行。迁出另外 13 个超限文件的内联用例，保留原测试模块名。Windows workspace 严格 Clippy 通过。对现有 DSH 结构化错误、公开对话枚举及 GPUI 不捕获 App 借用的 future 保留有原因的局部 lint 例外。质量工作流配置三平台严格 Clippy。
 - 2026-11-22 Windows 完整 conformance 通过 596/596 个已实现检查，workspace 通过 961 项测试，42 项标记为忽略。另行验证的桌面审批、取消、日志恢复、两类子进程恢复、ADC、真实窗口及键盘、剪贴板均通过。来源锁定的官方 `rc.1` 和 `rc.5` 在 Windows 复跑通过 10 项和 27 项。ADC 最慢典型树 P95 为 13.028 ms（上限 50 ms），满配额树 P95 为 2.481 ms（上限 16.7 ms）。
 - 2026-11-22 Linux（WSL）通过源码门禁、workspace 严格 Clippy、360 项宿主与核心回归及 10 项 headless CLI 测试。ADC 面板、日志恢复和子进程崩溃恢复自检通过。外部进程夹具在 Linux 串行运行，避免并行复制与 fork 导致的 `ETXTBSY`，复跑通过全部 23 项。按来源锁定提取官方 `rc.5` 包，并用夹具中的 `node-pty` 源码构建 Linux 扩展后，通过 Bash、后台任务和真实 PTY 的 3 项专项。
+- 2026-11-22 用本地 Git 合并提交直接执行工作流的 Bash 脚本。正常变更通过，Rust 格式、新文件超长、存量增长、错误依赖和 JS 语法各自触发失败。多提交推送能追溯到推送前的基线，并验证缺失基线提交的抓取和结果汇总。新增多提交基线回归后，Windows 和 Linux 的门禁夹具均通过 4 项。
+- 2026-11-22 Windows `rc.5` 调试包通过 48 个官方依赖的来源校验和 ZIP 的 SHA-256 校验。解压后使用包内的 Node 与 PowerShell，真实窗口、官方 Sidecar、CPP 组件、插件安装和 CLI 安装五项自检通过。 [打包脚本](../../tools/package-desktop.ps1) · [归档验证脚本](../../tools/verify-package.ps1)
 - 2026-11-22 GitHub 连接返回该仓库的读取权限。实际 PR 状态检查、macOS runner 和 `master` 必过规则仍需通过具有推送和分支规则权限的仓库会话验证。
