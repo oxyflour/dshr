@@ -37,7 +37,7 @@
     },
     "node-test": {
       "title": "sidecar JS 单测（node --test --test-isolation=none host-services + session-projections）",
-      "command": "node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs",
+      "command": "node tools/conformance.mjs --suite node-test",
       "quick": true,
       "timeout_ms": 120000
     },

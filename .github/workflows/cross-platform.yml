@@ -87,6 +87,7 @@ jobs:
           cargo test --offline
           -p dshr-agent-context
           -p dshr-agent-core
+          -p dshr-compat-acp
           -p dshr-compat-dsh-host
           -p dshr-compat-dsh-protocol
           -p dshr-compat-mcp

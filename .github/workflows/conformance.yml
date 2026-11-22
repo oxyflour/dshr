@@ -65,7 +65,7 @@ jobs:
         run: node tools/perf-gate.mjs --json artifacts/perf-baseline.json
 
       - name: Sidecar node tests
-        run: node --test sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs
+        run: node tools/conformance.mjs --suite node-test --compact
 
       - name: Conformance quick matrix
         if: always()

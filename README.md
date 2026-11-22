@@ -12,6 +12,7 @@ Rust 管理 Agent、会话和工具执行，GPUI 渲染桌面界面。dshr 自�
 | 文件 | 内容 |
 |---|---|
 | [`docs/PLAN.md`](docs/PLAN.md) | 实施计划：目标、架构决策、里程碑、估算 |
+| [代码质量与合并门禁计划](docs/plan/code-quality.md) | 模块现状、整改顺序、门禁规则和验收命令 |
 | [插件作者指南](docs/plugin-authoring.md) | 选择插件入口，开发、打包和安装插件 |
 | [`docs/spec/`](docs/spec/README.md) | 设计规范：ADC-v1、CPP-v1、Sidecar RPC、Session Log |
 | [`docs/decisions/`](docs/decisions/README.md) | ADR：版本 pin、Cordis 选型、不走 Web 壳 |
@@ -104,6 +105,11 @@ Get-Content -Raw .\prompt.txt | .\bin\dshr.exe --profile headless --json
 具名 profile 从数据根的 `profiles/<name>/package.json` 读取，可使用 DSH 的 headless 清单和受支持的静态补丁。
 可用 `DSHR_HOME` 指定数据根，并用 `--patch <path>` 叠加本次运行的配置。
 [输入、退出码与 profile 示例](docs/spec/headless-profile.md)
+
+## 开发校验
+
+将新增源码加入 Git 索引后，运行 `node tools/check-code-quality.mjs`，检查 Rust 格式、文件长度、Cargo 依赖方向和 Node 语法。需要仓库固定的 Rust 工具链。
+运行 `node tools/conformance.mjs --quick --compact`，检查 Schema、文档链接和 Sidecar 单测。 [代码质量与合并门禁计划](docs/plan/code-quality.md)
 
 ## 已固定的版本
 

@@ -82,7 +82,7 @@ title 取测试函数名，notes 追加来源文件。这同时满足「ID 归�
 |---|---|---|---|---|
 | `schema` | `node schema/check.mjs` | 是 | 120s | 输出中 `ok [schema] label` 行；selector 取 `[schema] label` |
 | `links` | `node tools/check-links.mjs` | 是 | 120s | 只有 `all`：suite 整体通过即满足 |
-| `node-test` | `node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs` | 是 | 120s | 从 `✔ name` / TAP `ok N - name` 行匹配 selector（如 `L2JS-001`/`L2JS-021`），并要求输出汇总 `pass`/`fail` 与退出码一致 |
+| `node-test` | `node tools/conformance.mjs --suite node-test` | 是 | 120s | 发现 `sidecar/` 下第一方 `*.test.mjs`、`*.test.js` 和 `*.test.cjs`。按 spec 或 TAP 输出匹配 selector（如 `L2JS-001`/`L2JS-021`），并检查汇总和退出码 |
 | `cargo` | `tools\build-env.cmd cargo test --offline --workspace --no-fail-fast`（Windows；其它平台同样加 `--no-fail-fast`） | 否 | 1200s（20 min） | `all` 要求 workspace 整体通过；包名（如 `dshr-plugin-host`）在该包测试二进制出现、且该包不是失败包时通过——workspace 里其它包的环境失败不会连坐本包。`--no-fail-fast` 保证一个包失败后其余包仍会运行（否则 cargo 中止、后面的包无法判定） |
 
 Windows 上 cargo 必须经 [`tools/build-env.cmd`](../tools/build-env.cmd)（本机 `%TEMP%` 不可写，

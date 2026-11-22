@@ -1,0 +1,32 @@
+{
+  "limits": {
+    "apps/desktop-gpui/src/bin/chat.rs": 18431,
+    "apps/desktop-gpui/src/bin/chat/creator.rs": 1574,
+    "apps/desktop-gpui/src/bin/chat/model_settings.rs": 1058,
+    "crates/agent-context/src/lib.rs": 1553,
+    "crates/agent-core/src/lib.rs": 2619,
+    "crates/agent-core/src/session_tree.rs": 1722,
+    "crates/compat-dsh-host/src/lib.rs": 2355,
+    "crates/compat-dsh-host/src/service.rs": 1367,
+    "crates/compat-dsh-host/src/services.rs": 1486,
+    "crates/compat-dsh-host/src/storage_kv.rs": 1487,
+    "crates/compat-dsh-protocol/src/lib.rs": 1374,
+    "crates/compat-mcp/src/lib.rs": 1027,
+    "crates/llm-deepseek/src/lib.rs": 1206,
+    "crates/plugin-host/src/external.rs": 1302,
+    "crates/plugin-host/src/fiber.rs": 2206,
+    "crates/plugin-host/src/lib.rs": 1392,
+    "crates/plugin-sdk/src/session.rs": 1127,
+    "crates/profile/src/loader.rs": 1633,
+    "crates/profile/src/trust.rs": 1988,
+    "crates/session-store/src/lib.rs": 1154,
+    "crates/session-store/src/session_index.rs": 1311,
+    "crates/tool-runtime/src/lib.rs": 1020,
+    "crates/ui-contributions/src/element.rs": 1549,
+    "crates/ui-gpui/src/adc.rs": 3147,
+    "crates/ui-gpui/src/diff.rs": 1095,
+    "sidecar/dsh-official/sidecar-dsh.mjs": 1967,
+    "tools/conformance.mjs": 1393
+  },
+  "exceptions": {}
+}

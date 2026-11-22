@@ -23,6 +23,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { arch, platform, release } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { nodeTestArgs, parseNodeTestOutput } from './conformance/node-tests.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REGISTRY_PATH = join(REPO_ROOT, 'docs', 'conformance.d', 'registry.json')
@@ -38,9 +39,7 @@ const SUITE_NAMES = ['schema', 'links', 'node-test', 'cargo']
 const SUITE_COMMANDS = {
   schema: 'node schema/check.mjs',
   links: 'node tools/check-links.mjs',
-  // sidecar JS 单测（node:test）。--test-isolation=none 避免受限环境禁止子进程隔离。
-  'node-test':
-    'node --test --test-isolation=none sidecar/dsh-official/lib/host-services.test.mjs sidecar/dsh-official/lib/session-projections.test.mjs',
+  'node-test': 'node tools/conformance.mjs --suite node-test',
   // --no-fail-fast：workspace 里一个包失败时仍跑完其余 target，避免 cargo 中止后
   // 后续包（如 ui-*）被误判为“未运行/失败”，也便于逐包判定。
   cargo: 'tools\\build-env.cmd cargo test --offline --workspace --no-fail-fast',
@@ -665,37 +664,6 @@ function cargoPackageIgnoredState(output, selector) {
 // suite 执行
 // ---------------------------------------------------------------------------
 
-// node:test 输出解析：兼容 spec reporter（✔ name (1.2ms)）与 TAP（ok 1 - name）。
-function parseNodeTestOutput(output) {
-  const okTests = []
-  const failedTests = []
-  for (const rawLine of output.split(/\r?\n/)) {
-    const line = rawLine.replace(/\x1b\[[0-9;]*m/g, '').trimEnd()
-    const specOk = line.match(/^\s*[✔✓]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?\s*$/)
-    if (specOk) {
-      okTests.push(specOk[1].trim())
-      continue
-    }
-    const specFail = line.match(/^\s*[✖✗×]\s+(.+?)(?:\s+\(\d+(?:\.\d+)?ms\))?\s*$/)
-    if (specFail) {
-      failedTests.push(specFail[1].trim())
-      continue
-    }
-    const tapOk = line.match(/^\s*ok\s+\d+\s+-\s+(.+)$/)
-    if (tapOk) {
-      okTests.push(tapOk[1].trim())
-      continue
-    }
-    const tapFail = line.match(/^\s*not ok\s+\d+\s+-\s+(.+)$/)
-    if (tapFail) failedTests.push(tapFail[1].trim())
-  }
-  const count = (label) => {
-    const match = output.match(new RegExp(`(?:ℹ|#)\\s*${label}\\s+(\\d+)`))
-    return match ? Number(match[1]) : null
-  }
-  return { okTests, failedTests, total: count('tests'), passed: count('pass'), failed: count('fail') }
-}
-
 async function runSuite(name, timeoutMs) {
   const startedAt = Date.now()
   let invocation
@@ -707,18 +675,9 @@ async function runSuite(name, timeoutMs) {
       label: SUITE_COMMANDS[name],
     }
   } else if (name === 'node-test') {
-    const args = ['--test']
-    // Node 22 的 CI runtime 不接受 --test-isolation（本地较新 Node 才支持）。
-    if (process.allowedNodeEnvironmentFlags.has('--test-isolation')) {
-      args.push('--test-isolation=none')
-    }
-    args.push(
-      'sidecar/dsh-official/lib/host-services.test.mjs',
-      'sidecar/dsh-official/lib/session-projections.test.mjs',
-    )
     invocation = {
       command: process.execPath,
-      args,
+      args: nodeTestArgs(REPO_ROOT),
       label: SUITE_COMMANDS[name],
     }
   } else {
