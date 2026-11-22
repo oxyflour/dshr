@@ -79,3 +79,5 @@ tools\build-env.cmd cargo test --locked --workspace
 
 - 2026-11-22 完成源文件盘点、关键模块职责与依赖检查，核对本地格式、Node 和 quick conformance 基线。
 - 2026-11-22 提交独立格式清理（`f3e8628`），Rust 格式检查通过。加上本地质量入口、`code quality` 工作流、Sidecar 测试发现和跨平台 `dshr-compat-acp` 测试。临时仓库通过三组用例，覆盖格式、长度、依赖、JS 语法、限时例外、重命名和删除。GitHub PR 与 `master` 必过规则尚待实跑验证。
+- 2026-11-22 独立构建目录的 workspace 测试找出 RPC 类型数量断言过时。保留未知类型拒绝测试，改为直接比较协议枚举和 Schema，补齐跨平台 `dshr-compat-dsh-fs` 和 `dshr-sidecar-guard`。两个契约 crate 通过严格 Clippy。
+- 2026-11-22 迁出桌面 CLI 分发和诊断，入口从格式化后的 18,431 行降至 14,090 行。协议、桌面和 headless 三个目标共 69 个测试通过。审批、取消、崩溃恢复、Sidecar 恢复及 CPP 组件自检全部通过。共享会话运行、工具执行和 GPUI 视图待拆分。

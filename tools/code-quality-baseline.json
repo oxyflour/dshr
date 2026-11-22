@@ -1,6 +1,6 @@
 {
   "limits": {
-    "apps/desktop-gpui/src/bin/chat.rs": 18431,
+    "apps/desktop-gpui/src/bin/chat.rs": 14090,
     "apps/desktop-gpui/src/bin/chat/creator.rs": 1574,
     "apps/desktop-gpui/src/bin/chat/model_settings.rs": 1058,
     "crates/agent-context/src/lib.rs": 1553,
@@ -10,7 +10,6 @@
     "crates/compat-dsh-host/src/service.rs": 1367,
     "crates/compat-dsh-host/src/services.rs": 1486,
     "crates/compat-dsh-host/src/storage_kv.rs": 1487,
-    "crates/compat-dsh-protocol/src/lib.rs": 1374,
     "crates/compat-mcp/src/lib.rs": 1027,
     "crates/llm-deepseek/src/lib.rs": 1206,
     "crates/plugin-host/src/external.rs": 1302,

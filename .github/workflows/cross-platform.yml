@@ -88,6 +88,7 @@ jobs:
           -p dshr-agent-context
           -p dshr-agent-core
           -p dshr-compat-acp
+          -p dshr-compat-dsh-fs
           -p dshr-compat-dsh-host
           -p dshr-compat-dsh-protocol
           -p dshr-compat-mcp
@@ -103,6 +104,7 @@ jobs:
           -p dshr-sandbox
           -p dshr-session-export
           -p dshr-session-store
+          -p dshr-sidecar-guard
           -p dshr-sidecar-guard
           -p dshr-tool-runtime
           -p dshr-ui-contributions
