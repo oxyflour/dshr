@@ -27,6 +27,7 @@ pub const DEMO_SESSION: &str = include_str!("demo_session.jsonl");
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolItem {
     pub call_id: String,
+    pub call_seq: u64,
     pub tool: String,
     /// `native` / `sidecar` / `mcp`
     pub origin: String,
@@ -150,6 +151,7 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                 tool_index.insert(ToolCallKey::from_payload(&event.payload), items.len());
                 items.push(Item::Tool(ToolItem {
                     call_id,
+                    call_seq: event.seq,
                     tool: str_of(&event.payload, "tool"),
                     origin: str_of(&event.payload, "origin"),
                     presentation: event

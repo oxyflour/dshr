@@ -205,7 +205,7 @@ impl ChatApp {
         if let Some(index) = detail {
             body = body.child(self.plugin_detail_view(index, t, cx));
         } else if self.plugin_panels_open {
-            body = body.child(self.plugin_panels(false, t, cx));
+            body = body.child(self.plugin_panels(None, t, cx));
         } else {
             body = body.child(self.installed_plugins(t, cx));
         }

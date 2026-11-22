@@ -14,7 +14,7 @@
 | [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 桌面 sidecar 启动、DSH 插件兼容矩阵与字段映射 | Draft | 随实现更新 |
 | [`headless-profile.md`](headless-profile.md) | Headless CLI 的任务、输出、会话和 DSH 静态声明兼容 | Draft | 首版验收 |
 | [`runtime-components.md`](runtime-components.md) | 基础包 Node、可选 Python 与创造模式构建组件 | Draft | 发行验收 |
-| [`creator-mode.md`](creator-mode.md) | 创造会话、新会话模式、CPP-v1 清单指引、文件写入、本机构建、面板预览与试用 | Draft | 首版验收 |
+| [`creator-mode.md`](creator-mode.md) | 创造会话、新会话模式、CPP-v1 清单指引、文件写入、本机构建、面板预览与对话内试用 | Draft | 首版验收 |
 | [`agent-presets.md`](agent-presets.md) | DSH 预设声明、新会话改选、后台热重载与工具修订 | Draft | 桌面验收 |
 | [`plugin-trust.md`](plugin-trust.md) | 包级信任文件、摘要/可选 ed25519、首装确认、审计、降级拒绝 | Review | M3（G2） |
 | [`cpp-v1.wit`](cpp-v1.wit) | CPP-v1 WASM Component 世界定义（草案；Wasmtime 接入后由 wit-bindgen 校验） | Draft | M3（G3） |

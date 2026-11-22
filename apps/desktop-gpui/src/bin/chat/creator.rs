@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -27,6 +28,37 @@ const PREVIEW_TOOL: &str = "creator_preview_panel";
 
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PACKAGE_ENTRIES: usize = 2048;
+
+pub(super) fn trial_panel_calls(log: &SessionLog) -> HashMap<&str, u64> {
+    let events = log.events();
+    let mut calls = HashMap::new();
+    for result in events
+        .iter()
+        .rev()
+        .filter(|event| event.event_type == "tool.result")
+    {
+        let value = &result.payload["value"];
+        let Some((plugin, seq)) = value["plugin"]
+            .as_str()
+            .zip(result.payload["call_seq"].as_u64())
+        else {
+            continue;
+        };
+        if calls.contains_key(plugin) || result.payload["is_error"] != false {
+            continue;
+        }
+        if let Ok(index) = events.binary_search_by_key(&seq, |event| event.seq) {
+            let call = &events[index];
+            if call.event_type == "tool.call"
+                && call.payload["tool"] == TRY_PLUGIN_TOOL
+                && call.payload["origin"] == "native"
+            {
+                calls.insert(plugin, seq);
+            }
+        }
+    }
+    calls
+}
 const MAX_DIRECTORY_DEPTH: usize = 32;
 
 pub(super) fn is_creator_session(log: &SessionLog) -> bool {
@@ -187,7 +219,7 @@ impl Session<'_> {
             .collect();
         let mut result = json!({ "plugin": plugin_id, "tools": tools, "panels": panels, "replaced": previous.is_some() });
         if !panels.is_empty() {
-            result["panel_location"] = json!("Top of the current conversation, under 试用面板, after this turn finishes.");
+            result["panel_location"] = json!("Inside this trial's result card in the current conversation, after this turn finishes.");
         }
         self.scope.plugins.adopt_candidate(candidate, plugin_id)
             .map_err(|error| format!("插件 {plugin_id} 装载失败: {error}"))?;
@@ -578,7 +610,7 @@ mod tests {
     use super::*;
     use crate::{ChatRuntime, ChatState, DesktopModel, DesktopSettings, PermissionMode};
     use dshr_agent_core::{CompletionRequest, ModelProvider, ModelReply, ModelToolCall};
-    use dshr_session_store::{SessionCreated, SessionIndex, SpawnSource};
+    use dshr_session_store::{EventSpec, SessionCreated, SessionIndex, SpawnSource};
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -588,6 +620,44 @@ mod tests {
             tool: tool.to_owned(),
             arguments,
         }
+    }
+
+    #[test]
+    fn trial_panel_follows_the_latest_success_even_when_call_ids_are_reused() {
+        let mut log = SessionLog::new("creator");
+        let mut settle = |tool: &str, plugin: &str, is_error: bool| {
+            let call_seq = log.len() as u64 + 1;
+            log.append(EventSpec::durable(
+                "tool.call",
+                "1",
+                json!({ "call_id": "reused", "call_seq": call_seq, "tool": tool, "origin": "native" }),
+            ))
+            .unwrap();
+            log.append(EventSpec::durable(
+                "tool.result",
+                "1",
+                json!({
+                    "call_id": "reused",
+                    "call_seq": call_seq,
+                    "is_error": is_error,
+                    "value": { "plugin": plugin, "panels": ["Panel"] }
+                }),
+            ))
+            .unwrap();
+            call_seq
+        };
+
+        settle(TRY_PLUGIN_TOOL, "demo.first", false);
+        let other = settle(TRY_PLUGIN_TOOL, "demo.second", false);
+        let replacement = settle(TRY_PLUGIN_TOOL, "demo.first", false);
+        settle(TRY_PLUGIN_TOOL, "demo.first", true);
+        settle("unrelated", "demo.first", false);
+
+        assert_eq!(
+            trial_panel_calls(&log),
+            HashMap::from([("demo.first", replacement), ("demo.second", other)])
+        );
+        assert!(crate::rows_snapshot(&log, None)[0].has_tool_call(replacement));
     }
 
     fn state(root: &Path, approvals: Arc<ApprovalBroker>) -> ChatState {

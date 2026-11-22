@@ -4,12 +4,12 @@ dshr 通过 Node sidecar 复用部分 DSH 工具包。兼容性取决于包版�
 dshr 自有插件使用 [CPP-v1](cpp-v1.md)，界面扩展使用 [ADC-v1](adc-v1.md)。
 
 新会话工作区旁的「创造模式」选择可覆盖的 `cordis` 预设，支持静态子插件组合、修订和后台配置热重载。dshr 提供 ADC-v1 预览与 CPP-v1 试用工具。
-`creator_inspect` 提供 dshr 的 CPP-v1 清单和可构建的交互面板示例。`creator_build_plugin` 通过 Cargo 构建 Rust 外部进程包，并为构建提供同版本 SDK。`creator_try_plugin` 校验声明的工作区面板并支持在会话内重新试用同一包。试用面板在创造会话的消息列表上方显示。Windows x64 可按需安装随发行配套的 Cargo、链接器和离线 SDK 依赖。原版完整的创造工具组合、`cordisInspect` 和插件管理仍需适配。[Agent 预设契约](agent-presets.md) · [dshr 创造模式契约](creator-mode.md) · [交互面板验收](../plan/creator-mode.md#交互面板故障复盘)
+`creator_inspect` 提供 dshr 的 CPP-v1 清单和可构建的交互面板示例。`creator_build_plugin` 通过 Cargo 构建 Rust 外部进程包，并为构建提供同版本 SDK。`creator_try_plugin` 校验声明的工作区面板并支持在会话内重新试用同一包。DSH Desktop `0.2.2-rc.5` 在最近一次符合条件的 `cordis_run` 卡片内挂载 `tool.view.cordis`。dshr 的 CPP-v1 试用面板挂载在对应插件最近一次成功的 `creator_try_plugin` 卡片内。Windows x64 可按需安装随发行配套的 Cargo、链接器和离线 SDK 依赖。原版完整的创造工具组合、`cordisInspect`、Cordis Client 插槽和插件管理仍需适配。[Agent 预设契约](agent-presets.md) · [dshr 创造模式契约](creator-mode.md) · [对话窗口验收](../plan/creator-mode.md#对话窗口显示复验)
 具名 headless 的 DSH 清单和补丁规则见 [Headless CLI 规范](headless-profile.md#7-dsh-profile-声明兼容)。
 
 ## 兼容矩阵
 
-下表记录实测的包版本和操作。**已验证执行**表示所列操作返回了预期结果或完成了相应的文件、会话或存储变更。
+下表按包版本记录运行结果和源码核对证据。**已验证执行**表示所列操作返回了预期结果或完成了相应的文件、会话或存储变更。
 **仅验证注册**表示观察到了对应的 `tool.register`。**部分可用**表示同一包中有已验证操作，也有明确的能力缺口。
 **静态声明兼容**表示 dshr 识别相应声明并执行表中列出的行为。**需要适配**表示现有加载入口或服务契约无法满足所列用法。
 
@@ -34,6 +34,7 @@ dshr 自有插件使用 [CPP-v1](cpp-v1.md)，界面扩展使用 [ADC-v1](adc-v1
 | `dsh-tool-todo` | `0.2.2-rc.5` | 仅验证注册 | 注册 `todo_write`。尚未复验写入会话事件 | 显式配置 `allowParallelInProgress` 布尔值并协商 v2 `service.proxy` | [本地冒烟记录](#rc5-本地冒烟) |
 | `dsh-tool-working-directory` | `0.2.2-rc.5` | 仅验证注册 | 注册 `working_directory`。尚未复验目录切换 | 显式加入插件并协商 v2 `service.proxy` | [本地冒烟记录](#rc5-本地冒烟) |
 | `dsh-tool-str-replace-editor` | `0.2.2-rc.5` | 部分可用 | `str_replace_editor` 的 `view` 可查看普通文件。查看目录因缺少 `ctx.fs.listDir` 失败，写入子命令尚未验证 | 显式加入插件，使用 sidecar 的 `tools` 和 `fs` | [本地冒烟记录](#rc5-本地冒烟) |
+| `dsh-client-ui-cordis` | `0.2.2-rc.5` | 需要适配 | 安装包源码确认原版在最新有效的 `cordis_run` 卡片内挂载交互视图。dshr 对 CPP-v1 试用采用相同的卡片内挂载方式 | 直接运行原版客户端包需要 Cordis Client 插槽、动态运行器及相关服务 | [参考源码与对话窗口验收](../plan/creator-mode.md#对话窗口显示复验) |
 
 `0.2.2-rc.1` 的依赖调查显示，官方 `dsh-tool-bash` 和 `dsh-tool-pwsh` 需要 `shell` / `shellEnv`，`dsh-tool-fs-search` 的
 `glob` / `grep` 需要 `subprocess`，`dsh-tool-web` 和 `dsh-tool-subagent` 分别需要 `web` 和

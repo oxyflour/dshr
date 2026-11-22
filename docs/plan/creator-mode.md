@@ -19,7 +19,7 @@
 | 13. 新会话选择预设 | 在工作区选择器旁切换空白根会话的模式，保持已有会话的修订绑定。 | `M3-PRESET-004..006` 与 Windows 桌面交互验收 |
 | 14. 定位本机 Cargo | 桌面读取应用内工具链配置，复用自定义安装和离线缓存。 | `CPP-CREATOR-012` 与真实模型构建 |
 | 15. 交互面板开发 | 提供完整面板示例、只读控件预览、首次渲染校验与原会话重试。 | `CPP-CREATOR-013..014` |
-| 16. 会话中显示面板 | 试用结束后把面板快照交给桌面，在消息列表上方显示并随工具调用刷新。 | `CPP-CREATOR-015` |
+| 16. 会话中显示面板 | 试用结束后把面板快照交给桌面，在试用结果卡片内显示并随工具调用刷新。 | `CPP-CREATOR-015` |
 
 持久安装继续使用现有 CLI。
 
@@ -63,9 +63,13 @@ Windows 本机真实模型复验 `s-1795272235422` 一次读取指引、三次�
 
 实际会话 `s-1795271571903` 的 `creator_try_plugin` 已返回「笔记面板」（32）。旧界面只在「插件 → 插件面板」渲染，且面板快照只在试用列表变更时刷新。
 
-Windows 窗口用例要求 `DSHR_HOME` 和 `DSHR_WORKSPACE` 分别指向同一隔离父目录下的数据和工作区。工作区含已构建的 `demo.notes-panel` 包，数据目录含创造根会话。配置真实 DeepSeek 后，运行 `cargo test -p dshr-desktop-gpui --bin dshr live_creator_desktop_displays_trial_panel -- --ignored --nocapture`。在对话中试用 `notes-panel`，再调用 `notes_add`。检查面板自动显示、笔记更新以及折叠和展开入口。测试驱动只批准该测试包的试用。
+Windows 窗口用例要求 `DSHR_HOME` 和 `DSHR_WORKSPACE` 分别指向同一隔离父目录下的数据和工作区。工作区含已构建的 `demo.notes-panel` 包，数据目录含创造根会话。配置真实 DeepSeek 后，运行 `cargo test -p dshr-desktop-gpui --bin dshr live_creator_desktop_displays_trial_panel -- --ignored --nocapture`。在对话中试用 `notes-panel`，再调用 `notes_add`。检查面板在试用结果卡片内自动展开，随对话滚动，支持收起、展开，后续内容刷新到同一卡片。再次试用后检查只有新的结果卡片包含活动面板。测试驱动只批准该测试包的试用。
 
 2026-11-21 使用实际 `notes-panel` 构建产物的副本复验，窗口未进入插件页。会话 `s-1795273308702` 试用成功后，消息列表上方显示「笔记面板」与「1. 面板验收」。下一轮只调用 `notes_add`，同一区域更新为两条笔记并显示「2. 刷新确认」。按「收起面板」和「展开面板」后仍显示两条。35 项常规桌面测试通过。轨迹保存在 `.tmp/notes-panel-window-check/data/sessions/`，Windows x64 发行归档的 SHA-256 为 `8e271c62472b5ef7b2c888a4f0a2f64b0bfc2f756e27097d754f7c9318fa8aea`。
+
+DSH Desktop `0.2.2-rc.5` 的安装包 `dsh-client-ui-cordis/src/client/CordisRunRow.tsx` 和 `slots.ts` 声明，运行中的插件业务视图挂载在最近一次符合条件的 `cordis_run` 卡片内。dshr 采用对应的会话内挂载方式。
+
+2026-11-22 在 Windows 原生窄窗复验。真实 DeepSeek 会话 `s-1795292369542` 对 `demo.notes-panel@0.1.0` 成功试用两次，第二次返回 `replaced: true`（12），随后调用新实例的 `notes_add`（14）。约 721 × 439 逻辑像素的窗口在回合结束后完整显示一张试用结果卡片，面板仅显示新实例的「对话卡片复验」，底部输入框仍可见。会话轨迹和窗口截图位于本地 `.tmp/notes-panel-inline-replay/`。38 项桌面测试和 26 项会话模型测试通过，包含调用 ID 重用、失败重试和两个插件的面板归属。此次窗口复验使用只读截图，未操作折叠和滚动控件。
 
 ## 进度
 

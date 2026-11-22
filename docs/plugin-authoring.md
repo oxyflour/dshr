@@ -28,7 +28,7 @@
 
 默认流程为 `creator_inspect` → 写包 → `creator_build_plugin` → `creator_try_plugin` → 调用插件工具验证。构建阶段为 Rust 插件的 `path = "sdk"` 依赖提供同版本 SDK。Windows x64 可从「设置 → 运行组件」安装创造模式构建组件，组件附带 Cargo、链接器和 SDK 依赖。构建和试用分别在应用内审批。开发者也可在数据根的 `creator-toolchain.json` 指定已有 `cargo` 和 `cargo_home` 的绝对路径。安装组件或保存配置后可在当前会话重试。已有编译产物可直接试用。[构建工具契约](spec/creator-mode.md#对话内构建) · [运行组件](spec/runtime-components.md)
 
-带界面的插件可从 `creator_inspect.workspace_panel` 里的三份文件开始。预览会显示 Button 和 Input 的外观，实际动作在试用面板执行。构建后调用 `creator_try_plugin` 并传 `expect_panel: true`，确认返回的 `panels` 包含面板标题。这一轮结束后，面板会直接出现在当前会话的消息列表上方，可以折叠。修改并重建后，在同一会话用同一路径再试用即可。新实例校验通过后会替换旧面板和工具。[面板示例](../apps/desktop-gpui/src/bin/chat/creator/panel-example.rs) · [试用规则](spec/creator-mode.md#试用与失败条件)
+带界面的插件可从 `creator_inspect.workspace_panel` 里的三份文件开始。预览会显示 Button 和 Input 的外观，实际动作在试用面板执行。构建后调用 `creator_try_plugin` 并传 `expect_panel: true`，确认返回的 `panels` 包含面板标题。这一轮结束后，面板会在对话流中的试用结果卡片内展开，可随消息滚动或单独收起。修改并重建后，在同一会话用同一路径再次试用。新实例校验通过后，活动面板会移到新的试用结果卡片。[面板示例](../apps/desktop-gpui/src/bin/chat/creator/panel-example.rs) · [试用规则](spec/creator-mode.md#试用与失败条件)
 
 从空工作区开始时，用创造根会话提供的 `creator_write_file` 将清单与源码写到同一个新子目录，例如 `hello-world/plugin.toml` 和 `hello-world/src/main.rs`。获准写入时，宿主会补齐缺失的父目录。官方 `write` 用于父目录已存在的文件。`probe_*` 前缀保留给仓库诊断。
 

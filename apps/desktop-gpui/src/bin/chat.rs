@@ -25,7 +25,7 @@
 //!   cargo run ... --bin dshr -- --live "一句话"               # 真实 LLM 单轮（需 API key）
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1100,6 +1100,8 @@ struct AdcPanelView {
     plugin_id: String,
     title: String,
     trial: bool,
+    /// 有活动试用实例时才绑定到对应的工具调用事件。
+    trial_call_seq: Option<u64>,
     /// 面板声明的 view 名（`ui.action` 回传时用于定位插件状态）。
     view: String,
     /// `render_panel` 成功时的元素树；失败为 `None`，错误在 `error`。
@@ -3296,9 +3298,10 @@ impl ChatState {
     fn refresh_adc_panels(&mut self) {
         let mut panels = std::collections::BTreeMap::new();
         if let Some(scope) = self.creator_trials.get_mut(&self.session_id) {
-            Self::render_adc_panels(&mut scope.plugins, true, &mut panels);
+            let calls = creator::trial_panel_calls(&self.log);
+            Self::render_adc_panels(&mut scope.plugins, Some(&calls), &mut panels);
         }
-        Self::render_adc_panels(&mut self.plugins, false, &mut panels);
+        Self::render_adc_panels(&mut self.plugins, None, &mut panels);
         self.adc_panels = panels.into_values().collect();
     }
 
@@ -3324,7 +3327,7 @@ impl ChatState {
 
     fn render_adc_panels(
         plugins: &mut PluginHost,
-        trial: bool,
+        trial_calls: Option<&HashMap<&str, u64>>,
         panels: &mut std::collections::BTreeMap<(String, String), AdcPanelView>,
     ) {
         let registrations: Vec<_> = plugins
@@ -3340,6 +3343,7 @@ impl ChatState {
             })
             .collect();
         for (plugin_id, title, view) in registrations {
+            let trial_call_seq = trial_calls.and_then(|calls| calls.get(plugin_id.as_str()).copied());
             panels
                 .entry((plugin_id.clone(), view.clone()))
                 .or_insert_with(|| {
@@ -3350,7 +3354,8 @@ impl ChatState {
                     AdcPanelView {
                         plugin_id,
                         title,
-                        trial,
+                        trial: trial_calls.is_some(),
+                        trial_call_seq,
                         view,
                         tree,
                         error,
@@ -4412,7 +4417,8 @@ struct ChatApp {
     sidecar_reload_pending: bool,
     /// 插件 ADC 面板快照（渲染路径只读；刷新见加载插件/打开面板处，不持锁渲染）。
     adc_panels: Vec<AdcPanelView>,
-    trial_panels_collapsed: bool,
+    collapsed_trial_cards: HashSet<u64>,
+    reveal_trial_call: Option<u64>,
 }
 
 impl ChatApp {
@@ -4558,7 +4564,7 @@ impl ChatApp {
                             app.rows = rows;
                             // 生成过程中始终跟随最新一行；结束后停止强制滚动，
                             // 用户往上翻历史不会被拽回去。
-                            if app.busy {
+                            if app.busy && finished.is_none() {
                                 if app.follow_transcript {
                                     app.scroll.scroll_to_bottom();
                                 }
@@ -4574,15 +4580,22 @@ impl ChatApp {
                 if closed || finished.is_some() {
                     let _ = this.update(cx, |app, cx| {
                         if let Some((errors, panels)) = finished {
-                            if panels.iter().filter(|panel| panel.trial).any(|panel| {
-                                !app.adc_panels.iter().any(|previous| {
-                                    previous.trial
-                                        && previous.plugin_id == panel.plugin_id
-                                        && previous.view == panel.view
-                                })
-                            }) {
-                                app.trial_panels_collapsed = false;
+                            if app.follow_transcript && !app.activity_open && !app.plugins_open {
+                                let new_call = panels
+                                    .iter()
+                                    .filter_map(|panel| panel.trial_call_seq)
+                                    .filter(|seq| {
+                                        !app.adc_panels
+                                            .iter()
+                                            .any(|panel| panel.trial_call_seq == Some(*seq))
+                                    })
+                                    .max();
+                                app.reveal_trial_call = new_call;
+                                if new_call.is_none() {
+                                    app.scroll.scroll_to_bottom();
+                                }
                             }
+                            app.activity_scroll.scroll_to_bottom();
                             app.plugin_errors = errors;
                             app.adc_panels = panels;
                         }
@@ -5238,7 +5251,8 @@ impl ChatApp {
         self.session_id = id;
         self.open_processes.clear();
         self.copied_message = None;
-        self.trial_panels_collapsed = false;
+        self.collapsed_trial_cards.clear();
+        self.reveal_trial_call = None;
         self.preset_notice = None;
         self.workspace_picker_open = false;
         self.workspace_notice = None;
@@ -5407,70 +5421,36 @@ impl ChatApp {
         cx.notify();
     }
 
-    fn conversation_trial_panels(
-        &self,
-        t: &Theme,
-        height: gpui::Pixels,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !self.adc_panels.iter().any(|panel| panel.trial) {
-            return None;
+    fn inline_trial_call(&self, row: &Row) -> Option<u64> {
+        match row {
+            Row::Tool { call_seq, name, .. }
+                if !self.activity_open
+                    && name == creator::TRY_PLUGIN_TOOL
+                    && self
+                        .adc_panels
+                        .iter()
+                        .any(|panel| panel.trial_call_seq == Some(*call_seq)) =>
+            {
+                Some(*call_seq)
+            }
+            _ => None,
         }
-        let expanded = !self.trial_panels_collapsed;
-        let p = t.palette;
-        Some(
-            div()
-                .flex_none()
-                .w_full()
-                .max_w(t.layout.composer_max_width)
-                .mx_auto()
-                .px(px(16.0))
-                .pb(px(6.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_size(t.type_scale.secondary)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(p.color(p.label_primary))
-                                .child("试用面板"),
-                        )
-                        .child(
-                            chrome_button(
-                                "toggle-trial-panels",
-                                if expanded { "收起面板" } else { "展开面板" },
-                                t,
-                            )
-                            .aria_expanded(expanded)
-                            .focusable()
-                            .on_click(cx.listener(|chat, _, _, cx| {
-                                chat.trial_panels_collapsed = !chat.trial_panels_collapsed;
-                                cx.notify();
-                            })),
-                        ),
-                )
-                .when(expanded, |section| {
-                    section.child(
-                        div()
-                            .id("conversation-trial-panels")
-                            .max_h((height * 0.35).clamp(px(90.0), px(270.0)))
-                            .overflow_y_scroll()
-                            .child(self.plugin_panels(true, t, cx)),
-                    )
-                })
-                .into_any_element(),
-        )
     }
 
-    fn plugin_panels(&self, trial_only: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn plugin_panels(
+        &self,
+        trial_call: Option<u64>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = t.palette;
         let mut list = div().flex().flex_col().gap(px(8.0)).w_full();
         // 绘制快照时不持有 ChatState 锁，也不向插件请求渲染。
-        for (index, panel) in self.adc_panels.iter().enumerate()
-            .filter(|(_, panel)| !trial_only || panel.trial)
+        for (index, panel) in self
+            .adc_panels
+            .iter()
+            .enumerate()
+            .filter(|(_, panel)| trial_call.is_none() || panel.trial_call_seq == trial_call)
         {
             let mut card = div()
                 .id(("adc-panel", index))
@@ -5491,7 +5471,7 @@ impl ChatApp {
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(p.color(p.label_secondary))
                         .text_overflow(TextOverflow::Truncate("…".into()))
-                        .child(if trial_only {
+                        .child(if trial_call.is_some() {
                             panel.title.clone()
                         } else {
                             format!("{} · {}", panel.plugin_id, panel.title)
@@ -6995,20 +6975,29 @@ impl ChatApp {
                                 cx.notify();
                             })),
                     )
-                    .when(open, |group| {
-                        group.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.0))
-                                .pl(px(10.0))
-                                .border_l_1()
-                                .border_color(p.color(p.border_l2))
-                                .children(steps.iter().map(|row| {
-                                    self.render_row(row, index, t, base_font, window, cx)
-                                })),
-                        )
-                    })
+                    .when(
+                        open || steps.iter().any(|step| self.inline_trial_call(step).is_some()),
+                        |group| {
+                            group.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.0))
+                                    .when(open, |steps| {
+                                        steps
+                                            .pl(px(10.0))
+                                            .border_l_1()
+                                            .border_color(p.color(p.border_l2))
+                                    })
+                                    .children(
+                                        steps
+                                            .iter()
+                                            .filter(|row| open || self.inline_trial_call(row).is_some())
+                                            .map(|row| self.render_row(row, index, t, base_font, window, cx)),
+                                    ),
+                            )
+                        },
+                    )
                     .into_any_element()
             }
             Row::Reasoning { text, .. } => div()
@@ -7018,6 +7007,7 @@ impl ChatApp {
                 .child(text.clone())
                 .into_any_element(),
             Row::Tool {
+                call_seq,
                 name,
                 origin,
                 status,
@@ -7026,6 +7016,8 @@ impl ChatApp {
                 pending,
                 card,
             } => {
+                let trial_call = self.inline_trial_call(row);
+                let expanded = !self.collapsed_trial_cards.contains(call_seq);
                 let dot = if *pending {
                     p.state_warn
                 } else if *is_error {
@@ -7059,27 +7051,47 @@ impl ChatApp {
                                     .text_size(t.type_scale.secondary)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(p.color(p.label_primary))
-                                    .child(name.clone()),
+                                    .child(if trial_call.is_some() {
+                                        "试用插件".into()
+                                    } else {
+                                        name.clone()
+                                    }),
                             )
-                            .child(
-                                div()
-                                    .px(px(6.0))
-                                    .py(px(1.0))
-                                    .rounded(t.radii.xs)
-                                    .bg(p.color(p.tag))
-                                    .text_size(t.type_scale.small)
-                                    .text_color(p.color(p.label_tertiary))
-                                    .child(origin.clone()),
-                            )
+                            .when(trial_call.is_none(), |header| {
+                                header.child(
+                                    div()
+                                        .px(px(6.0))
+                                        .py(px(1.0))
+                                        .rounded(t.radii.xs)
+                                        .bg(p.color(p.tag))
+                                        .text_size(t.type_scale.small)
+                                        .text_color(p.color(p.label_tertiary))
+                                        .child(origin.clone()),
+                                )
+                            })
                             .child(div().flex_1())
                             .child(
                                 div()
                                     .text_size(t.type_scale.small)
                                     .text_color(p.color(status_color))
                                     .child(status.clone()),
-                            ),
+                            )
+                            .when_some(trial_call, |header, seq| {
+                                let label = if expanded { "收起面板" } else { "展开面板" };
+                                header.child(
+                                    chrome_button(("toggle-trial-panel", seq), label, t)
+                                        .aria_expanded(expanded)
+                                        .focusable()
+                                        .on_click(cx.listener(move |chat, _, _, cx| {
+                                            if !chat.collapsed_trial_cards.remove(&seq) {
+                                                chat.collapsed_trial_cards.insert(seq);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
                     )
-                    .when(!detail.is_empty(), |el| {
+                    .when(!detail.is_empty() && trial_call.is_none(), |el| {
                         el.child(
                             div()
                                 .text_size(t.type_scale.small)
@@ -7111,6 +7123,31 @@ impl ChatApp {
                             el.child(body)
                         },
                     )
+                    .when_some(trial_call.filter(|_| expanded), |el, seq| {
+                        el.child(
+                            div()
+                                .id(("trial-panel-content", seq))
+                                .max_h(trial_panel_max_height(window))
+                                .overflow_y_scroll()
+                                .child(self.plugin_panels(Some(seq), t, cx)),
+                        )
+                    })
+                    .when_some(trial_call.filter(|_| !expanded), |el, seq| {
+                        let titles = self
+                            .adc_panels
+                            .iter()
+                            .filter(|panel| panel.trial_call_seq == Some(seq))
+                            .map(|panel| panel.title.as_str())
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        el.child(
+                            div()
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_secondary))
+                                .text_overflow(TextOverflow::Truncate("…".into()))
+                                .child(titles),
+                        )
+                    })
                     .into_any_element()
             }
             Row::Meta(text) => div()
@@ -7241,10 +7278,27 @@ impl ChatApp {
             let gap = if index == 0 { 0.0 } else { row_gap };
             let row_index = start + index;
             let height = match row_at(row_index) {
-                Row::Process(steps) if self.open_processes.contains(&row_index) => {
+                Row::Process(steps) => {
+                    let open = self.open_processes.contains(&row_index);
                     26.0 + steps
                         .iter()
-                        .map(|step| estimated_row_height(step) + 6.0)
+                        .filter_map(|step| {
+                            if let Some(seq) = self.inline_trial_call(step) {
+                                let panel_height = if self.collapsed_trial_cards.contains(&seq) {
+                                    0.0
+                                } else {
+                                    let count = self
+                                        .adc_panels
+                                        .iter()
+                                        .filter(|panel| panel.trial_call_seq == Some(seq))
+                                        .count();
+                                    (count as f32 * 130.0).min(trial_panel_max_height(window).as_f32())
+                                };
+                                Some(52.0 + panel_height)
+                            } else {
+                                open.then(|| estimated_row_height(step) + 6.0)
+                            }
+                        })
                         .sum::<f32>()
                 }
                 row => estimated_row_height(row),
@@ -8608,6 +8662,7 @@ enum Row {
         streaming: bool,
     },
     Tool {
+        call_seq: u64,
         name: String,
         origin: String,
         status: String,
@@ -8622,6 +8677,14 @@ enum Row {
 }
 
 impl Row {
+    fn has_tool_call(&self, seq: u64) -> bool {
+        match self {
+            Self::Tool { call_seq, .. } => *call_seq == seq,
+            Self::Process(steps) => steps.iter().any(|step| step.has_tool_call(seq)),
+            _ => false,
+        }
+    }
+
     fn main_text(&self) -> String {
         match self {
             Self::User { text, .. } => format!("你 · {text}"),
@@ -8671,6 +8734,10 @@ fn turn_rail_window(total: usize, active: usize) -> std::ops::Range<usize> {
 
 /// 估计一行的高度（逻辑像素）。用于虚拟化的滚动占位；估算偏差只影响滚动条比例，
 /// 不影响可见行之间的真实排版。按 CJK 宽度保守估计每行字符数。
+fn trial_panel_max_height(window: &Window) -> gpui::Pixels {
+    (window.viewport_size().height * 0.42).clamp(px(90.0), px(360.0))
+}
+
 fn estimated_row_height(row: &Row) -> f32 {
     const LINE: f32 = 23.0;
     match row {
@@ -8757,6 +8824,7 @@ fn describe(item: &Item) -> Row {
                 ToolState::Aborted { reason } => (format!("中止 · {reason}"), false),
             };
             Row::Tool {
+                call_seq: tool.call_seq,
                 name: tool.tool.clone(),
                 origin: tool.origin.clone(),
                 status,
@@ -8901,6 +8969,24 @@ impl Render for ChatApp {
         }
         let mut theme = self.theme();
         let p = theme.palette;
+        if let Some(seq) = self.reveal_trial_call.take() {
+            // 先让新卡片参与布局，再定位，避免流式快照排队的滚动到底覆盖定位。
+            let chat = cx.weak_entity();
+            let session = self.session_id.clone();
+            window.on_next_frame(move |_, cx| {
+                let _ = chat.update(cx, |app, cx| {
+                    if app.session_id == session
+                        && app.follow_transcript
+                        && !app.busy
+                        && !app.activity_open
+                        && !app.plugins_open
+                    {
+                        app.turn_jump = app.rows.iter().rposition(|row| row.has_tool_call(seq));
+                        cx.notify();
+                    }
+                });
+            });
+        }
         if !self.initial_scroll_done && !self.rows.is_empty() {
             self.scroll.scroll_to_bottom();
             self.initial_scroll_done = true;
@@ -9036,7 +9122,6 @@ impl Render for ChatApp {
                 show_window_bar,
                 cx,
             ))
-            .children(self.conversation_trial_panels(&theme, window.viewport_size().height, cx))
             // 启动/加载错误在 GUI 主界面可见（双击启动没有控制台可看 stderr）。
             .when(!self.plugin_errors.is_empty(), |el| {
                 el.child(self.error_banner(&theme))
@@ -14316,7 +14401,8 @@ fn main() {
                             plugin_errors,
                             sidecar_reload_pending: false,
                             adc_panels,
-                            trial_panels_collapsed: false,
+                            collapsed_trial_cards: HashSet::new(),
+                            reveal_trial_call: None,
                         }
                     });
                     // 回车提交：拿到弱引用回 ChatApp；回调返回 true 时输入框自己清空。
