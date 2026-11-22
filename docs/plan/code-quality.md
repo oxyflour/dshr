@@ -1,6 +1,6 @@
 # 代码质量与合并门禁计划
 
-> 2026-11-22 完成热点拆分和门禁实现。源码盘点基线为 `bfd1035`。GitHub PR 和 `master` 必过规则待验收。
+> 2026-11-22 热点重构和门禁验收通过。`master` 已启用 `code quality` 必过检查。源码盘点基线为 `bfd1035`。
 
 先建立可复现的合并检查，再按改动影响分批拆分。优先理清桌面与 headless 共享的运行逻辑，以及 DSH 宿主和 Sidecar 之间的请求归属。保留现有 CLI、Rust 公开接口、会话日志、RPC 语义和插件行为。若整改需要修改公开契约，先更新对应规范、Schema 和契约用例。 [工程质量门槛](../PLAN.md#102-工程质量门槛) · [规范索引](../spec/README.md)
 
@@ -32,7 +32,7 @@
 
 Cargo 元数据表明，桌面应用直接依赖 18 个 workspace 库，只有桌面应用和 `ui-gpui` 直接依赖 GPUI。这条边界已经存在，适合首先纳入自动检查。应用内部拆分先复用同 crate 模块和现有服务接口。对于测试为主的文件，先按场景归档用例，再评估生产代码职责。 [系统所有权](../PLAN.md#21-状态所有权必须唯一)
 
-## 拟定门禁
+## 门禁
 
 | 检查 | 首次启用 | 收紧条件 |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Cargo 元数据表明，桌面应用直接依赖 18 个 workspace 库，只有�
 | Rust lint | Windows 先执行 `cargo clippy --locked --workspace --all-targets`，记录第一方诊断。有编译错误或 Clippy 错误即失败，历史警告先报告。对已清零的 crate 单独启用 `-D warnings`。 | 优先清理影响正确性和资源生命周期的警告，扩大严格检查范围。在各平台 runner 上验证对应条件编译的目标，完成后启用 workspace 严格检查。 |
 | Node 与契约测试 | 使用 CI 现有的 Node 22 对第一方 JS 跑 `node --check`，并复用现有 Sidecar 单测、Schema、文档链接和 conformance 检查。 | 把 Sidecar 单测发现统一到一个入口，保证新增测试被普通 CI 和 conformance 执行。外部官方包用例通过专项脚本记录版本、平台和执行数。 |
 
-第一阶段给 PR 提供一个固定名为 `code quality` 的检查，在 PR 上始终产出结果。等正常 PR 通过、故意制造的违规能阻断，且 push 与 PR 的差异基准验证完成，再由仓库管理员给 `master` 配置必过检查。保留现有 conformance、跨平台和打包流水线。记录正常 PR 和失败 PR，用来验证合并确实受到约束。
+`code quality` 汇总源码检查和三平台严格 Clippy。合并到 `master` 时，GitHub 要求使用最新的目标分支基线，并由 GitHub Actions 报告该检查通过。conformance、跨平台和打包流水线继续提供回归证据。 [必过规则](https://github.com/oxyflour/dshr/rules/27842921)
 
 ## 实施顺序与完成条件
 
@@ -104,3 +104,4 @@ tools\build-env.cmd cargo test --locked --workspace
 - 2026-11-22 用本地 Git 合并提交直接执行工作流的 Bash 脚本。正常变更通过，Rust 格式、新文件超长、存量增长、错误依赖和 JS 语法各自触发失败。多提交推送能追溯到推送前的基线，并验证缺失基线提交的抓取和结果汇总。新增多提交基线回归后，Windows 和 Linux 的门禁夹具均通过 4 项。
 - 2026-11-22 Windows `rc.5` 调试包通过 48 个官方依赖的来源校验和 ZIP 的 SHA-256 校验。解压后使用包内的 Node 与 PowerShell，真实窗口、官方 Sidecar、CPP 组件、插件安装和 CLI 安装五项自检通过。 [打包脚本](../../tools/package-desktop.ps1) · [归档验证脚本](../../tools/verify-package.ps1)
 - 2026-11-22 GitHub 连接返回该仓库的读取权限。实际 PR 状态检查、macOS runner 和 `master` 必过规则仍需通过具有推送和分支规则权限的仓库会话验证。
+- 2026-11-22 GitHub 验收通过。PR #1 的源码检查耗时 19 秒，Windows、Linux、macOS 严格 Clippy、跨平台构建与打包，以及 Windows conformance 均通过。PR #2 逐项报出五类预期违规，`code quality` 失败。`master` 的必过规则启用后，GitHub 确认 PR #2 因失败检查被阻止合并。随后关闭测试 PR 并删除临时分支。 [源码门禁与 Clippy](https://github.com/oxyflour/dshr/actions/runs/45028216214) · [跨平台](https://github.com/oxyflour/dshr/actions/runs/45028216108) · [Conformance](https://github.com/oxyflour/dshr/actions/runs/45028216054) · [失败 PR](https://github.com/oxyflour/dshr/pull/2)
