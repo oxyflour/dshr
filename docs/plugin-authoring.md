@@ -44,6 +44,47 @@
 官方 Sidecar 的 `cordis` 预设可以通过 Loader 声明子插件。桌面自动发布配置变更，新建创造会话使用新修订。返回已打开的创造会话可继续使用原修订。
 [预设配置示例](m3-loader.md#声明创造预设)
 
+### 启用 DSH rc.5 文件工具
+
+把 `0.2.2-rc.5` 的包和依赖抽取到应用资源目录下的 `sidecar/dsh-official/node_modules`，再通过 `plugins.json` 或 Loader 启用相应条目。验证现有安装包可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-rc5-gate.ps1`。脚本从本机 DSH 安装包抽取依赖到隔离目录，也接受 `-AsarPath` 选择其他副本。 [版本与复现说明](spec/dsh-compat-mapping.md#rc5-自动验收)
+
+- 启用 `@deepseek-ai/dsh-tool-working-directory` 后，文件工具的相对路径会按本会话切换后的目录解析。文件写入仍受宿主工作区边界与审批约束。
+- 为 `@deepseek-ai/dsh-tool-fs` 设置 `readImage: true` 可启用 `read_image`。工作区内的 PNG、JPEG、GIF 和 WebP 可在支持图片输入的会话中读取。关闭 `DSHR_HOST_SERVICES` 会关闭图片附件服务。
+- 启用 `@deepseek-ai/dsh-tool-str-replace-editor` 后，`view` 支持文件和目录。`create`、`str_replace`、`insert` 用绝对路径，经宿主批准后写入。 [文件与图片契约](spec/sidecar-rpc.md#77-官方工具图片附件)
+
+### 启用 DSH rc.5 搜索与前台 Shell
+
+- 启用 `@deepseek-ai/dsh-tool-fs-search` 并设置 `sampleOverCapGlobResults: false`。应用优先使用包内对应平台的 ripgrep，也可从启动应用时的 `PATH` 查找。`glob` 和 `grep` 使用会话目录并检查搜索路径是否位于工作区内。
+- 桌面可加载 `@deepseek-ai/dsh-tool-pwsh` 或 `@deepseek-ai/dsh-tool-bash`，设置 `enableRunInBackground: false`。Windows 使用 `PATH` 可找到的 `pwsh.exe`，Linux 使用 `bash`。按桌面策略审批后，命令以当前用户权限在会话目录执行。进程组约束取消和回收。Headless 可用搜索工具，其工具清单过滤通用 Shell。 [前台进程契约](spec/sidecar-rpc.md#78-官方工具前台进程)
+
+### 启用 DSH rc.5 前台提问
+
+启用 `@deepseek-ai/dsh-tool-ask-user` 并使用默认的 `mode: legacy`。桌面提问面板可选择选项、填写答复、跳过其中的问题或取消整次提问。Headless 调用立即返回交互界面不可用的工具错误。 `mode: timed` 的迟到答复投递待适配。 [提问契约](spec/sidecar-rpc.md#79-官方工具提问)
+
+### 启用 DSH rc.5 Skills、网页和文件交付
+
+- 同时启用 `@deepseek-ai/dsh-tool-skill` 和 `@deepseek-ai/dsh-skill-filesystem` 后，可使用官方项目或配置目录下的 `SKILL.md`。会话选择当前项目。直接输入 `/技能名` 可请模型使用该技能。 [Agent 步骤契约](spec/sidecar-rpc.md#711-官方-agent-步骤上下文)
+- 同一配置范围内启用 `@deepseek-ai/dsh-tool-web` 和配套 provider。DeepSeek Web API provider 支持 `searchBaseURL`、`fetchBaseURL`、`searchApiKeyEnv`、`fetchApiKeyEnv`。凭据在启动应用时由显式名称引用，缺少凭据时模型看不到依赖该凭据的网页工具。 [网页契约](spec/sidecar-rpc.md#712-官方网页工具)
+- 启用 `@deepseek-ai/dsh-tool-present` 可提交工作区内已有文件。工具卡片保存交付路径，打开时使用工作区内的当前文件。
+- 启用 `@deepseek-ai/dsh-tool-skill`、`@deepseek-ai/dsh-skill-office`、`@deepseek-ai/dsh-tool-office` 和 `@deepseek-ai/dsh-office-kit`，并安装对应平台的 LibreOffice Kit 引擎。加载 Office Skill 后可调用转换和重算，支持图片输入的模型还可调用渲染。默认临时输出位于工作区的 `.dshr/office-outputs`，长期交付可将输出移到用户选定的文件路径再调用 `present`。 [Office 契约](spec/sidecar-rpc.md#713-官方-office-工具)
+
+### 启用 DSH rc.5 后台任务与持久终端
+
+- 在桌面同一配置范围内启用 `@deepseek-ai/dsh-tool-jobs` 和平台对应的 `dsh-tool-pwsh` 或 `dsh-tool-bash`，设置 Shell 的 `enableRunInBackground: true` 及 `promoteOnTimeout: false`。通过 `run_in_background: true` 启动任务，用 `job_output` 领取或用 `job_kill` 停止。完成提示在所属会话下次模型请求前投递。 [后台任务契约](spec/sidecar-rpc.md#714-官方后台任务)
+- 在桌面启用 `@deepseek-ai/dsh-tool-terminal` 及平台对应的 `dsh-tool-pwsh-persistent` 或 `dsh-tool-bash-persistent`，安装 `dsh-terminal`、`dsh-terminal-bash`、`dsh-subprocess-local` 和本机 PTY 附加组件。Linux 宿主验收使用 Node 24 和 Linux x64 PTY 附加组件。工具名 `pwsh` 和 `bash` 在同一配置范围内各使用一种实现。通用终端执行使用 `enableRunInBackground: false`。 [终端契约](spec/sidecar-rpc.md#715-官方持久终端)
+
+### 启用 DSH rc.5 会话和编排工具
+
+- `@deepseek-ai/dsh-tool-goal` 可在根会话创建和控制目标。目标和已用轮次在重启后可以读取，自动继续需要在直接用户轮次重新激活。`@deepseek-ai/dsh-tool-session-query` 可搜索和追踪当前会话树中同工作区的历史。 [目标和会话查询契约](spec/sidecar-rpc.md#716-官方目标与会话查询)
+- 给 `@deepseek-ai/dsh-tool-subagent` 设置 `provider: local` 和所需的 `maxDepth`，然后启用 `@deepseek-ai/dsh-tool-subagent-control`。子 Agent 使用父会话的模型和工作区权限。启用 `@deepseek-ai/dsh-tool-working-directory` 后，子 Agent 可用 `working_directory({})` 读取会话目录。后台子 Agent 会将需要交互审批的操作交回父会话。需要任务板时，同一配置范围启用 `@deepseek-ai/dsh-tool-agent-team`。 [子 Agent 契约](spec/sidecar-rpc.md#717-官方子-agent-与控制) · [Teams 契约](spec/sidecar-rpc.md#718-官方-agent-teams)
+- 需要审批的 Shell 和终端命令只提供「允许一次」。后台子 Agent 使用委托时保存的权限模式，且无法提交交互审批。 [Shell 审批契约](spec/sidecar-rpc.md#78-官方工具前台进程)
+- `@deepseek-ai/dsh-tool-workflow` 使用 `enableRunInBackground: false`，Ralph 使用 `@deepseek-ai/dsh-tool-ralph`。两者依赖 Node 24、官方 Node PTC 运行时和本机只读进程沙箱。`@deepseek-ai/dsh-tool-schedule` 支持 `this_session`，使用带 `DTSTART` 和 `RRULE` 的规则，在任务所属会话下一次模型步领取到期提醒。 [工作流和 Ralph 契约](spec/sidecar-rpc.md#719-官方前台工作流与-ralph) · [调度契约](spec/sidecar-rpc.md#720-官方调度工具)
+
+### 启用 DSH rc.5 执行与检查插件
+
+- 可在同一 profile 启用 `@deepseek-ai/dsh-tool-call-timeout-policy`，让已声明 `timeoutMs` 的工具收到协作取消信号。用 `@deepseek-ai/dsh-tool-executor-native` 选择官方直接执行器，或用 `@deepseek-ai/dsh-tool-executor-ptc` 启用 `run_code`，两种执行器在每个配置范围选择一种。
+- `run_code` 使用 TypeScript 运行时和本机只读进程沙箱。`tools` 对象由当步的有效 Sidecar 注册生成。通过 `tools.write` 等 API 产生的写入仍需按 Rust 宿主策略授权。用 `@deepseek-ai/dsh-tool-cordis` 查看当前会话的工具 Schema 和协商服务元数据。 [执行与检查契约](spec/sidecar-rpc.md#721-官方执行钩子执行器与-cordis-检查)
+
 ## 2. 5 分钟快速开始
 
 ```powershell

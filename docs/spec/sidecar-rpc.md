@@ -55,6 +55,9 @@ Rust                                    Sidecar
 | `tool.stream` | v1 | Sidecar 可发 `tool.chunk` | 流式工具启用 |
 | `tool.cancel` | v1 | Rust 会发 `tool.cancel` | 每个调用挂 `AbortController` |
 | `fs.write` | v1 | Sidecar 可发 `fs.write.request`（见 §7.5） | **只有收到时才装载官方 `write`/`edit`/`apply_patch`**；未收到时强制只读 |
+| `attachments.image` | v2 | 宿主接受图片附件服务调用（见 §7.7） | 与 `service.proxy` 一起启用官方 `read_image` 所需的服务 |
+| `process.search` | v2 | 宿主提供受控的 ripgrep 进程（见 §7.8） | 为官方 `glob` / `grep` 提供 `ctx.subprocess` |
+| `process.shell` | v2 | 宿主提供经桌面授权的前台 Shell（见 §7.8） | 为平台对应的 `pwsh` 或 `bash` 提供 Shell 服务 |
 | `service.proxy` | v2 | 宿主实现了白名单内的 Host Service，并接受 `host.service.request`（§13.4） | 只有在收到时才允许把 `ctx.<service>` 注入插件；未收到时这些服务视为不存在，依赖它们的插件 fail-fast（不注册工具） |
 | `service.expose` | v2 | 允许 Sidecar 用 `service.publish` 把 JS 实现的服务暴露给宿主（§13.3） | 未收到时收到 `service.publish` 回 `E_SERVICE_DENIED`；v2 **默认关闭**，首批三个服务都不需要它 |
 | `service.attach` | v2 | 宿主支持服务结果的附件引用（§13.8） | 未收到时 > 768 KiB 的服务结果一律 `E_TOO_LARGE`；首批三个服务都声明了分页/小结果 |
@@ -214,6 +217,10 @@ Rust ◄──tool.result──────  Sidecar
 
 ## 7.5 文件写入回调（`fs.write`）
 
+官方 `ctx.fs` 的相对路径以活动调用的会话目录解析。Sidecar 在首次需要默认目录时调用 `working-directory/v1.ensure`，同一调用复用该结果。显式 `cwd` 优先。绝对路径保持原路径语义。未协商 `service.proxy` 或没有活动会话时使用 Sidecar 的工作区根。会话目录查询失败时，文件调用返回宿主错误。
+
+`ctx.fs.listDir` 接受已解析的目录目标，返回直接子项的名称、目标和类型。符号链接保持 `symlink` 类型，调用者可据此避免递归跟随。用户取消或目录读取失败时，工具返回错误。官方 `str_replace_editor` 按包契约接收绝对路径。文件写入子命令使用同一 `fs.write` 权限和文件版本检查。
+
 官方 `@deepseek-ai/dsh-tool-fs` 的 `write`/`edit`/`apply_patch` 不在 Sidecar 直接落盘：
 它们经官方 `ctx.fs` 服务发出写入意图，Sidecar 翻译成 `fs.write.request` 交给 Rust
 裁决（路径边界、审批、写前快照、原子写、版本），结果用 `fs.write.result` 返回。
@@ -230,13 +237,13 @@ Sidecar ◄──fs.write.result────────── Rust
 | 字段 | 必需 | 说明 |
 |---|---|---|
 | `call_id` | 是 | 发起写入的 `tool.invoke.call_id`；审批审计使用同一身份 |
-| `tool` | 是 | `write` / `edit` / `apply_patch`（审批展示用） |
+| `tool` | 是 | 发起操作的工具名，例如 `write`、`edit`、`apply_patch` 或 `str_replace_editor`。用于审批展示 |
 | `operation` | 是 | `write`（create-or-replace，内容即全文）或 `delete` |
 | `path` | 是 | 工作区相对路径，或工作区内绝对路径；Rust 负责归一化与边界校验 |
 | `workspace_root` | 否 | Sidecar 认为的工作区根；与宿主不一致 → `FS_SANDBOX_DENIED`（防混淆代理） |
 | `content` | 条件 | `write` 必填（UTF-8 全文，≤ 1 MiB）；`delete` 必须缺省 |
 | `expected_version` | 否 | 版本守卫 `mtime_ms:size`；不匹配 → `FS_STALE_VERSION` |
-| `intent` | 否 | 官方 `fs/write-intent` 水位；仅透传审计，不参与裁决 |
+| `intent` | 否 | `kind: "createIfAbsent"` 时原子创建。目标已存在时返回 `FS_NOT_OBSERVED`。其他意图透传审计，版本守卫由 `expected_version` 提供 |
 | `mode` | 否 | 说明性字段（当前固定 `workspace-write`；真实约束在 Rust） |
 
 成功答复 payload：`{ok:true, path, operation:create|update|delete, version?, bytes?, snapshot?}`。
@@ -254,6 +261,7 @@ Sidecar ◄──fs.write.result────────── Rust
 4. 未协商 `fs.write` 时 Rust 一律回 `E_FS_CAPABILITY`，不做任何写入。
    桌面可预先协商，以便在同一轮切换权限。「工具免审批」允许工作区内写入，正在等待审批的写入也按新模式裁决。「只读」拒绝正在等待的写入和新的写入请求。宿主在批准后再次核对权限，拒绝返回 `FS_SANDBOX_DENIED`。所有模式均执行路径、版本、大小和快照检查。
    「始终允许」适用于宿主已绑定到活动工具调用的写入请求。授权范围由宿主派发时确定，通过 `tool_request_id` 与活动调用关联。Sidecar 自报的工具名和调用 ID 不能授予权限。
+   宿主在批准后重新核对 `expected_version`。等待批准时出现的新版本以 `FS_STALE_VERSION` 结算。
 5. Sidecar 的写方法只在 `host_caps` 含 `fs.write` 时对插件可见（写工具未注册）；
    即使被直接调用也返回结构化错误。
 
@@ -270,6 +278,116 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
    服务答复时阻塞 `tool.result` 的发送（服务调用超时由 §13.6 裁决）。
 4. **generation 失效**：在途服务调用随 generation 变化一律以 `E_SERVICE_UNAVAILABLE` 结算，
    迟到答复丢弃并记 `service.late_result` 诊断（§13.5）。
+
+## 7.7 官方工具图片附件
+
+桌面和 headless 的官方 Sidecar 在 v2 `service.proxy` 和 `attachments.image` 都可用时提供 `ctx.attachments`。profile 通过 `readImage: true` 启用 `read_image`。缺少附件能力时不注册该工具。
+
+`image-attachments/v1.route` 返回当前会话是否支持图片输入。`image-attachments/v1.save` 接收 `{path, sha256, media_type}`，返回官方图片引用的 `attachmentId`、`mediaType`、`bytes`、`width`、`height`、`name`，缩放时带 `originalDimensions`。两个方法都要求匹配活动的 `read_image` 调用、会话、`tool_request_id` 和 `call_id`。
+
+Sidecar 和宿主只读取解析后位于工作区内的普通文件。宿主从工作区重新读取 `path` 并核对摘要，图片内容留在工作区或附件存储中。接受 PNG、JPEG、GIF 和 WebP，输入上限为 8 MiB、单边 8192 像素和 16 Mi 像素。长边超过 2048 像素时缩小并存为 PNG。超限、格式错误、模型不支持图片、文件变化或路径越界均返回工具错误。
+
+宿主用会话的内容寻址存储保存图片，在会话日志登记附件引用。模型收到正常的工具文本结果，并在同组工具结果之后收到图片。恢复会话时仅解析该会话登记的图片引用。 [会话日志](session-log.md)
+
+## 7.8 官方工具前台进程
+
+宿主通过 `process.search` 和 `process.shell` 分别开放受控搜索进程和前台 Shell。`glob`、`grep` 使用 `ctx.subprocess`，仅运行宿主解析的 ripgrep，可从 headless 调用。`pwsh`、`bash` 使用 `ctx.shell` 和 `ctx.shellEnv`，由桌面工具权限决定能否运行。工作目录来自会话目录和工具参数，进程启动前检查其规范化路径仍位于工作区。
+
+`tool-process/v1.start` 接收进程类别、工作目录、超时和输出上限。Shell 请求还携带命令，宿主核对它与活动工具调用获准的命令完全一致。搜索请求携带官方工具生成的 ripgrep 参数。宿主使用已定位的可执行文件，限制搜索参数为搜索用途，并清理继承环境。Node Sidecar 通过 `poll` 检查终止状态，通过 `read` 分页读取 stdout 与 stderr，通过 `release` 回收。每次请求都绑定活动工具调用及会话。
+
+需要审批的 Shell 和终端命令只支持单次授权。已有的常驻工具授权不适用于这些命令。拒绝、取消和无法进行审批使用各自的结果。Windows `workspace-write` 下的 Shell 当前仍在执行前请求审批，自动放行依赖可验证的进程写入约束。
+
+Rust 将审批绑定到发起调用和获准的命令。进程生命周期由 Windows Job Object 或 Unix 进程组管理。超时、工具取消或 Sidecar 退出时终止并回收未移交的进程。stdout、stderr 的截断状态、退出码、信号和超时状态交回官方插件。缺少对应能力时不提供服务，headless 继续过滤通用 Shell。[Headless 工具配置](headless-profile.md#3-运行配置与工具)
+
+## 7.9 官方工具提问
+
+协商 `user.questions` 后，宿主向官方提问包提供 `ctx.userQuestions`。只有正在执行的 `ask_user_question` 可调用 `user-questions/v1`。服务请求绑定该工具请求、工具调用 ID 和会话。Headless 的 `begin` 立即返回 `E_SERVICE_UNAVAILABLE`，说明当前没有交互界面。
+
+桌面 `user-questions/v1.begin` 接收 1 至 5 个有序问题。问题 ID 在批次内唯一。每个问题可附带最多 8 个选项和多选标志，标签在该问题内唯一。桌面只显示当前会话的问题。提交时对每道问题返回 `{ id, selected, custom? }`。选项值使用原始标签，未选选项且没有填写文字表示跳过。自定义答复上限为 1024 字节。取消返回 `E_CANCELLED`。
+
+Sidecar 用 `poll` 等待答复，Rust 服务线程在等待期间仍可处理其它调用。工具结算、超时、取消或 Sidecar 断开时删除未结算的提问，迟到的 UI 操作无法完成原调用。首个适配配置支持默认 `legacy` 前台模式。需要超时后将回答作为新用户消息投递的 `timed` 配置暂未开放。
+
+## 7.10 官方工具文件交付
+
+协商 `agent.tool-context` 后，工具调用可以携带 `turn`，包含宿主进程从当前会话已保存日志确定的轮次编号和起始事件序号。适配的工具通过 `exec.agent.session` 和 `agents.turnBoundaryOf` 读取本次调用对应的轮次。无打开轮次时，官方 `present` 返回工具错误。
+
+Sidecar 在官方执行结束后派发会话范围内的 `tools/result`。官方 `present` 的观察者在成功时请求追加 `deliverables/presented`。Rust 将请求与活动 `present` 调用绑定，核对轮次和工具调用 ID，并逐个检查文件为工作区内可访问的普通文件。交付事件保存当前文件的工作区路径，重放时通过同一会话工具卡片查看。打开文件时重新检查路径和权限。文件已移动、删除或越界时显示交付记录及不可打开状态。 [会话日志](session-log.md)
+
+## 7.11 官方 Agent 步骤上下文
+
+启用 `agent.tool-context` 后，Rust 可在构造模型请求前发送 `agent.step`，携带固定会话 ID、模型选择、步骤编号和本步候选工具的注册 ID。只在轮次的第一步提供本次用户正文给 `agent/pre-step`。Sidecar 在全局与当前绑定的预设范围内运行钩子，不查阅其它会话。工具存在性核对当前绑定的注册 ID，条件可用性在进入模型请求前生效。Rust 继续校验被调用工具的身份、可用性和权限。
+
+响应使用同一消息类型，携带工具可用性变化、按顺序渲染的 `systemPrompt` 段落及该次钩子产生的 Skills 上下文。Rust 将段落和技能目录投影到本次模型请求。用户显式激活的 Skill 指令在当前轮次的后续步骤复用。此模型上下文与用户正文分开，不写成一条用户发言。
+
+## 7.12 官方网页工具
+
+显式加载官方 Web 工具和对应 provider。搜索和抓取沿用官方 `ctx.web` 注册表、工具定义与结果渲染。工具执行可读取本次模型选择。加载的 provider、所需凭据和当前模型路由决定工具是否进入本步清单。搜索和抓取的服务地址由应用配置提供，模型只提供查询或目标 URL。
+
+应用只向启用官方 Web API provider 的 Sidecar 转交该 provider 显式配置的环境凭据，未指定引用时转交默认的 `DEEPSEEK_API_KEY`。未启用 provider 时沿用原有的凭据环境过滤规则。
+
+直接 HTTP 抓取沿用官方 provider 的 URL、重定向和网络地址限制。企业或测试端点可显式配置在独立的 DeepSeek Web API provider 上。搜索或抓取消耗工具自己的时间预算。超过预算或取消后停止等待并返回工具终态。检索结果的说明文字由官方 `systemPrompt` 段落投影到实际模型请求。
+
+## 7.13 官方 Office 工具
+
+官方 Office 工具由作用域内的 Skills 激活。加载 OfficeKit 和平台引擎后，转换和重算通过 OfficeKit 执行，读取本会话工作区内的普通文件。宿主按写工具授权转换和重算。临时输出写到配置的工作区子目录，默认 `.dshr/office-outputs`，以会话 ID 作为官方输出所有者。
+
+读取先验证文件路径和版本，再按 OfficeKit 后端额度读取所需字节。临时文件可通过 `present` 记录交付。历史中保留转换结果和交付路径。临时输出保留期由 OfficeKit 管理，需长期保留时可把结果写到用户选定的工作区路径后交付。
+
+`office_render` 只对支持图片输入的模型开放。官方包生成的 PNG 通过 `image-attachments/v1.rendered.page` 分片发送，Rust 校验当前调用、会话、偏移、格式和图片预算。最多 20 张且输入总量和存储总量分别限制为 8 MiB。结束或取消时释放尚未完成的缓冲。已完成的图片通过同一会话附件机制交给模型，可在会话重启后恢复。
+
+## 7.14 官方后台任务
+
+桌面显式启用后台任务配套包时，Rust 向 Sidecar 提供 `tool-jobs/v1`。后台 Shell 使用与前台相同的可执行文件、工作区约束、环境过滤及审批。只有活动的获准 Shell 调用可启动同一条命令。宿主分配任务身份，任务归属于工作区和发起会话。工具返回任务 ID 后，进程可以继续运行，启动调用取消且尚未完成交接时由宿主停止进程。
+
+任务列表、输出查询、领取和停止只对所属会话开放。历史任务记录保存在应用数据目录中。已经完成的任务在会话重启后仍可查看，旧宿主未结算的运行任务恢复为已中断。任务启动、停止和完成不依赖模型轮询。模型下一次进入同一会话的步骤时可收到完成提示。接收输出按 Rust 记录的游标结算，重复领取只返回尚未领取的部分。
+
+后台 Shell 通过 `run_in_background: true` 显式启动，单个进程最多运行 15 分钟。完成提示保留任务 ID，输出由 `job_output` 领取。前台超时自动转后台的配置待适配。
+
+## 7.15 官方持久终端
+
+桌面在启用官方终端包和本地 PTY 后端时协商 `process.terminal`。Rust 的 `tool-terminals/v1` 记录终端 ID、会话、工作区、后端和生命周期。打开、发送、信号和关闭遵守同一套桌面工具权限。Rust 检查工作目录位于当前工作区，并在每次操作核对调用、所有者和终端身份。
+
+会话内相邻调用可复用同一正在运行的终端。终端退出或关闭后拒绝新的发送。取消清理未确认创建和在途发送，Sidecar 退出后旧进程随运行时回收。重开会话时，历史终端提供中断或关闭状态。会话范围的 Rust 工具权限切换后，后续发送仍重新授权。
+
+## 7.16 官方目标与会话查询
+
+启用目标工具时，`tool-goals/v1` 只接受由 Rust 路由绑定的 `get_goal`、`create_goal`、`update_goal` 调用。创建和控制必须发生于根会话的直接用户轮次。自动轮次只能完成或报告受阻，且 ID、版本与轮次必须匹配宿主记录。目标变更以 ID 和版本执行比较并交换，过期请求不可覆盖已提交状态。取消后不得确认待提交的变更。
+
+目标快照与累计轮次可从会话日志重放。自动继续的授权仅在当前宿主运行中有效。创建或用户授权继续时激活，暂停、取消、结束或达到轮次上限后停发。重新打开日志后需要用户授权继续。每次自动派发先保存轮次并检查取消、剩余轮次和活动状态。
+
+启用会话查询工具时，`tool-session-query/v1` 仅返回当前工作区中已授权的会话。目标必须是当前会话或同一会话树内具有相同工作区的会话。过滤器和请求中的 ID 不能扩大可读范围。搜索、事件读取和追踪使用宿主日志的稳定序号，并对可读内容设置分页和体积上限。当前轮次的在途调用和私有宿主状态不进入搜索结果。无权访问的会话与不存在的会话使用同一失败语义。
+
+## 7.17 官方子 Agent 与控制
+
+`tool-subagents/v1` 通过 Rust 接收调用方绑定的委托、发现、消息及中断请求。子会话继承宿主工作区和不宽于父会话的工具权限。启动前验证工作目录、树深度、名称和调用方归属，启动结果返回独立会话的名称。宿主给每个子会话写入启动和完成、失败或中断状态。
+
+本地子 Agent 在委托时保存权限模式，后续消息沿用这一模式。旧子会话缺少权限记录时使用只读模式。后台审批策略固定为 `never`。需要审批的命令返回明确失败原因。启用 `working_directory` 时，后台子 Agent 可用空参数读取自己的会话工作目录。
+
+同一授权会话树内可以发现成员及投递消息。中断目标必须为调用者的后代。运行中的子会话独立取消，已空闲的子会话可接受新消息。宿主重启后历史状态可查询，在途执行报告中断。子会话结果在父会话的后续模型步以受限大小投递。
+
+## 7.18 官方 Agent Teams
+
+显式启用 Teams 工具时，`tool-teams/v1` 将任务板绑定到调用方经宿主验证的会话树根。宿主校验成员、任务所有者和当前版本。读取和更新都在同一树范围内，过期版本、阻塞中的认领和循环依赖返回错误。工作范围使用工作区相对路径，仅用于重叠提示。任务板状态以原子写入保存，应用重启后沿用相同任务 ID 和版本。
+
+## 7.19 官方前台工作流与 Ralph
+
+显式启用时，`workflow` 和 `ralph` 走官方 PTC 工作流引擎。宿主为运行程序选择只读的本机进程沙箱。流程委托通过 `tool-subagents/v1` 绑定到同一个 Rust 调用，按调用扣除子会话额度。工作流只可查询或停止自己启动的子会话。调用取消或结算时中止尚未结束的子会话。
+
+Ralph 使用官方内置脚本，每轮启动一个新的子会话。宿主保存每轮的实际执行状态，工具仅返回受限的结构化交接内容与结局。工作流后台执行及切换子会话模型路由待适配。
+
+## 7.20 官方调度工具
+
+`tool-schedules/v1` 将 RRULE 任务和已领取的发生时间保存在根会话的持久状态。创建、修改和删除要求宿主确认直接用户轮次。修改支持 `expectedUpdatedAt`。宿主从同一会话的任务中选择已到期记录，再通过任务 ID 和原发生时间执行比较并交换。领取时原子记录这次投递及下一次到期时间。重启后已领取的发生时间不可再次领取。
+
+初始范围为 `this_session`。到期内容在该会话下一次模型步领取，错过多次时合并到最后一次到期时间。离线运行、新会话目标和桌面空闲时自动唤起另行验证。
+
+## 7.21 官方执行钩子、执行器与 Cordis 检查
+
+`tools/execute` 围绕 Rust 已批准的注册身份执行。插件可以缩短协作取消期限。Rust 的调用预算、取消和最终结算仍然生效。执行器随全局或会话预设的修订安装及撤销。调用使用当步发布的注册身份，预设撤销或代次失效后拒绝新的调用。
+
+PTC 模型步提供 `run_code`。`agent.step` 的可选 `deferred_tools` 列出同一注册快照中只能通过程序调用的 Sidecar 工具。`tool-program/v1` 的 `begin` 接收子调用名、注册 ID、调用 ID 和参数，返回仅供当前父请求使用的子请求 ID 和预算。`finish` 释放该子请求。Rust 先验证父请求、会话、当前注册及参数，再执行权限和审批。子调用的输出及登记身份可审计。程序与常规工具共享取消和超时规则。程序失败后保留此前已经批准并完成的工具副作用。
+
+`cordis_inspect_list` 和 `cordis_inspect_query` 公开当前会话获准访问的只读 provider、方法和 Schema。未知 provider、未声明方法及不合 Schema 的输入返回错误。客户端槽位、原生动态 Cordis 插件运行器及 bundle 菜单按独立兼容项验收。
 
 ## 8. 取消
 
@@ -327,6 +445,7 @@ v2 把"Host Service"纳入同一条执行通道，规范全文见 §13。这里�
 | `FS_SANDBOX_DENIED` | 路径越界 / `workspace_root` 不一致 / 审批拒绝或超时 |
 | `FS_PERMISSION_DENIED` | OS 权限拒绝（也是 Node 侧收到的最终码） |
 | `FS_STALE_VERSION` | `expected_version` 不匹配 |
+| `FS_NOT_OBSERVED` | `createIfAbsent` 的目标已存在 |
 | `FS_TOO_LARGE` | 内容超过 1 MiB |
 | `FS_NOT_FOUND` | 目标/父目录不存在，或删除不存在的文件 |
 | `FS_NOT_REGULAR_FILE` | 目标是目录 |

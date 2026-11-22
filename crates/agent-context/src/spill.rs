@@ -20,7 +20,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dshr_agent_core::{AttachmentFormat, ChatMessage};
+use dshr_agent_core::{tool_image_references, AttachmentFormat, ChatMessage, MediaAttachment};
 use dshr_session_store::{Durability, EventSpec, LogError, SessionLog, ToolCallKey};
 use serde_json::{json, Value};
 
@@ -536,37 +536,48 @@ impl SpillStore {
 
 /// Durable attachment records keyed by the reference used by user messages.
 pub fn user_attachment_refs(log: &SessionLog) -> HashMap<String, SpillRef> {
+    attachment_refs(log, "message.user")
+}
+
+fn attachment_refs(log: &SessionLog, kind: &str) -> HashMap<String, SpillRef> {
     log.events()
         .iter()
         .filter(|event| {
             event.event_type == EVENT_SPILL_CREATED
                 && event.durability == Durability::Durable
-                && event.payload["kind"] == "message.user"
+                && event.payload["kind"] == kind
         })
         .filter_map(|event| SpillRef::from_event_payload(&event.payload))
         .map(|spill| (spill.id.clone(), spill))
         .collect()
 }
 
-/// Resolve retained user attachments newest-first using the same objects as session export.
-pub fn restore_user_attachments(
+/// Resolve retained attachments newest-first using the same objects as session export.
+pub fn restore_history_attachments(
     store: &SpillStore,
     log: &SessionLog,
-    messages: &mut [ChatMessage],
+    messages: &mut Vec<ChatMessage>,
     supports: impl Fn(AttachmentFormat) -> bool,
 ) {
-    if !messages
-        .iter()
-        .any(|message| matches!(message, ChatMessage::UserWithAttachments { .. }))
-    {
+    if !messages.iter().any(|message| {
+        matches!(
+            message,
+            ChatMessage::UserWithAttachments { .. } | ChatMessage::ToolImages(_)
+        )
+    }) {
         return;
     }
-    let refs = user_attachment_refs(log);
+    let user_refs = user_attachment_refs(log);
+    let image_refs = attachment_refs(log, "tool.image");
     let mut remaining = 24 * 1024 * 1024u64;
     let mut count = 20;
     for message in messages.iter_mut().rev() {
-        let ChatMessage::UserWithAttachments { text, attachments } = message else {
-            continue;
+        let (attachments, refs, mut text) = match message {
+            ChatMessage::UserWithAttachments { text, attachments } => {
+                (attachments, &user_refs, Some(text))
+            }
+            ChatMessage::ToolImages(images) => (images, &image_refs, None),
+            _ => continue,
         };
         attachments.retain_mut(|attachment| {
             let result = if !supports(attachment.format) {
@@ -591,19 +602,47 @@ pub fn restore_user_attachments(
                 Err("文件引用无效")
             };
             if let Err(reason) = result {
-                if !text.is_empty() {
-                    text.push('\n');
+                if let Some(text) = text.as_mut() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!("附件 {}（{reason}）", attachment.name));
                 }
-                text.push_str(&format!("附件 {}（{reason}）", attachment.name));
                 false
             } else {
                 true
             }
         });
         if attachments.is_empty() {
-            *message = ChatMessage::User(std::mem::take(text));
+            if let Some(text) = text {
+                *message = ChatMessage::User(std::mem::take(text));
+            }
         }
     }
+    messages
+        .retain(|message| !matches!(message, ChatMessage::ToolImages(images) if images.is_empty()));
+}
+
+pub fn restore_tool_images(
+    store: &SpillStore,
+    log: &SessionLog,
+    content: &Value,
+) -> Vec<MediaAttachment> {
+    let images = tool_image_references(content);
+    if images.is_empty() {
+        return images;
+    }
+    let refs = attachment_refs(log, "tool.image");
+    images
+        .into_iter()
+        .filter_map(|mut image| {
+            let spill = refs
+                .get(&image.reference)
+                .filter(|spill| spill.mime == image.format.mime())?;
+            image.bytes = Some(store.get_verified(spill).ok()?.into());
+            Some(image)
+        })
+        .collect()
 }
 
 /// 计算任意字节的 sha256 小写十六进制串（导出 manifest 复用）。

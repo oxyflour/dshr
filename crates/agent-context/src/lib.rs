@@ -30,7 +30,7 @@ pub use spill::{PendingSpill, RecordedSpill, Retention, SpillPolicy, SpillRef, S
 
 use std::collections::{HashMap, HashSet};
 
-use dshr_agent_core::{AttachmentFormat, ChatMessage, MediaAttachment, ModelToolCall};
+use dshr_agent_core::{tool_image_references, AttachmentFormat, ChatMessage, MediaAttachment, ModelToolCall};
 use dshr_session_store::{Durability, SessionLog, ToolCallKey};
 use serde_json::Value;
 
@@ -210,6 +210,7 @@ pub fn estimate_history_tokens(messages: &[ChatMessage]) -> usize {
                     + 8
             }
             ChatMessage::Tool { content, .. } => estimate_tokens(content) + 4,
+            ChatMessage::ToolImages(images) => 4 + 1_536 * images.len(),
         })
         .sum()
 }
@@ -463,7 +464,9 @@ fn trim_to_budget(
         start -= 1;
     }
     // 不从 Tool 开始：它对应的 assistant.tool_calls 被丢掉了。
-    while start < messages.len() && matches!(messages[start].message, ChatMessage::Tool { .. }) {
+    while start < messages.len()
+        && matches!(messages[start].message, ChatMessage::Tool { .. } | ChatMessage::ToolImages(_))
+    {
         start += 1;
     }
     // 尽量从 User 开始，避免历史以孤立的 assistant 开头。
@@ -547,10 +550,17 @@ fn history_with_seqs_spilled(
     let mut pending = HashSet::new();
     let mut settled = HashSet::new();
     let mut reasoning = String::new();
+    let mut step_images: Option<SeqMessage> = None;
 
     for event in log.events() {
         if event.durability == Durability::Ephemeral || in_range(event.seq) {
             continue;
+        }
+        if matches!(event.event_type.as_str(),
+            "message.user" | "message.assistant.reasoning" | "message.assistant.settled"
+            | "tool.call" | "turn.ended" | "context.compacted")
+        {
+            messages.extend(step_images.take());
         }
         match event.event_type.as_str() {
             "message.user" => {
@@ -656,6 +666,19 @@ fn history_with_seqs_spilled(
                     {
                         format!("ERROR: {text}")
                     } else {
+                        let images = tool_image_references(&content_value);
+                        if !images.is_empty() {
+                            if let Some(SeqMessage { end_seq, message: ChatMessage::ToolImages(existing), .. }) = &mut step_images {
+                                *end_seq = event.seq;
+                                existing.extend(images);
+                            } else {
+                                step_images = Some(SeqMessage {
+                                    start_seq: event.seq,
+                                    end_seq: event.seq,
+                                    message: ChatMessage::ToolImages(images),
+                                });
+                            }
+                        }
                         externalize_tool_content(
                             &call_id,
                             &key,
@@ -687,6 +710,7 @@ fn history_with_seqs_spilled(
         }
     }
 
+    messages.extend(step_images);
     messages
 }
 
@@ -772,7 +796,9 @@ pub fn trim_history(messages: Vec<ChatMessage>, max_messages: usize) -> Vec<Chat
         return messages;
     }
     let mut start = messages.len() - max_messages;
-    while start < messages.len() && matches!(messages[start], ChatMessage::Tool { .. }) {
+    while start < messages.len()
+        && matches!(messages[start], ChatMessage::Tool { .. } | ChatMessage::ToolImages(_))
+    {
         start += 1;
     }
     messages.split_off(start)

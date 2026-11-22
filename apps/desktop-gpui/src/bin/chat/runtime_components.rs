@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -314,6 +314,31 @@ pub(super) fn sidecar_profile(raw: &str) -> Option<String> {
         }
     }
     serde_json::to_string(&entries).ok()
+}
+
+pub(super) fn web_credential_refs(profile: &str) -> BTreeSet<String> {
+    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(profile) else {
+        return BTreeSet::new();
+    };
+    let mut names = BTreeSet::new();
+    for entry in entries.iter().filter(|entry| entry["enabled"] != false) {
+        let fields: &[&str] = match entry["name"].as_str() {
+            Some("@deepseek-ai/dsh-web-deepseek-api") => &["searchApiKeyEnv", "fetchApiKeyEnv"],
+            Some("@deepseek-ai/dsh-web-search-deepseek") => &["apiKeyEnv"],
+            _ => continue,
+        };
+        for field in fields {
+            let name = entry["config"][field].as_str().filter(|value| !value.is_empty())
+                .unwrap_or("DEEPSEEK_API_KEY");
+            let mut bytes = name.bytes();
+            if bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                names.insert(name.to_owned());
+            }
+        }
+    }
+    names
 }
 
 pub(super) fn workspace_dependencies_ready() -> bool {

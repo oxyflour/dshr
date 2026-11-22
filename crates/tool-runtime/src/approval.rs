@@ -55,6 +55,12 @@ pub enum ApprovalOutcome {
     Deny,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalResolution {
+    pub outcome: ApprovalOutcome,
+    pub answerer: &'static str,
+}
+
 impl ApprovalOutcome {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -96,9 +102,13 @@ impl ApprovalBroker {
         Self::with_interaction(true)
     }
 
-    /// Headless runs have no approval answerer.
+    /// Runs without a UI approval answerer, including headless runs and background subagents.
     pub fn noninteractive() -> Arc<Self> {
         Self::with_interaction(false)
+    }
+
+    pub fn is_interactive(&self) -> bool {
+        !self.noninteractive
     }
 
     fn with_interaction(interactive: bool) -> Arc<Self> {
@@ -135,7 +145,7 @@ impl ApprovalBroker {
             timeout,
             None,
             ApprovalSource::Tool,
-        )
+        ).outcome
     }
 
     /// 可取消的审批：等待期间定期检查 `cancel`。
@@ -158,7 +168,7 @@ impl ApprovalBroker {
             timeout,
             Some(cancel),
             ApprovalSource::Tool,
-        )
+        ).outcome
     }
 
     /// Reevaluate a tool's policy while it waits. A manual answer already submitted
@@ -172,6 +182,18 @@ impl ApprovalBroker {
         cancel: &AtomicBool,
         policy: LiveApproval<'_>,
     ) -> ApprovalOutcome {
+        self.request_with_policy_resolution(call_id, tool, arguments, timeout, cancel, policy).outcome
+    }
+
+    pub fn request_with_policy_resolution(
+        &self,
+        call_id: &str,
+        tool: &str,
+        arguments: &Value,
+        timeout: Duration,
+        cancel: &AtomicBool,
+        policy: LiveApproval<'_>,
+    ) -> ApprovalResolution {
         self.request_inner(
             call_id,
             tool,
@@ -198,7 +220,7 @@ impl ApprovalBroker {
             timeout,
             Some(cancel),
             ApprovalSource::UserOnly,
-        )
+        ).outcome
     }
 
     fn request_inner(
@@ -209,10 +231,10 @@ impl ApprovalBroker {
         timeout: Duration,
         cancel: Option<&AtomicBool>,
         source: ApprovalSource<'_>,
-    ) -> ApprovalOutcome {
+    ) -> ApprovalResolution {
         if self.noninteractive {
             self.record(call_id, tool, arguments, ApprovalOutcome::Deny, "headless");
-            return ApprovalOutcome::Deny;
+            return ApprovalResolution { outcome: ApprovalOutcome::Deny, answerer: "headless" };
         }
         // 非交互模式：自检/CI 不应卡在审批上。
         if let Some(mode) = std::env::var("DSHR_APPROVAL_MODE")
@@ -225,7 +247,7 @@ impl ApprovalBroker {
                 _ => ApprovalOutcome::Deny,
             };
             self.record(call_id, tool, arguments, outcome, "auto");
-            return outcome;
+            return ApprovalResolution { outcome, answerer: "auto" };
         }
 
         let grant_key = match &source {
@@ -279,7 +301,7 @@ impl ApprovalBroker {
         state.pending.retain(|item| item.call_id != call_id);
         drop(state);
         self.record(call_id, tool, arguments, outcome, answerer);
-        outcome
+        ApprovalResolution { outcome, answerer }
     }
 
     /// UI 线程调用：允许一次 / 拒绝。

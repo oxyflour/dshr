@@ -53,6 +53,30 @@ pub fn normalize_tool_timeout_ms(raw: Option<u64>) -> Option<u64> {
 pub const CAP_TOOL_STREAM: &str = "tool.stream";
 pub const CAP_TOOL_CANCEL: &str = "tool.cancel";
 pub const CAP_FS_WRITE: &str = "fs.write";
+pub const CAP_IMAGE_ATTACHMENTS: &str = "attachments.image";
+pub const IMAGE_ATTACHMENTS_V1: &str = "image-attachments/v1";
+pub const CAP_SEARCH_PROCESS: &str = "process.search";
+pub const CAP_SHELL_PROCESS: &str = "process.shell";
+pub const TOOL_PROCESS_V1: &str = "tool-process/v1";
+pub const CAP_USER_QUESTIONS: &str = "user.questions";
+pub const USER_QUESTIONS_V1: &str = "user-questions/v1";
+pub const CAP_AGENT_TOOL_CONTEXT: &str = "agent.tool-context";
+pub const CAP_BACKGROUND_JOBS: &str = "process.jobs";
+pub const TOOL_JOBS_V1: &str = "tool-jobs/v1";
+pub const CAP_TERMINAL_PROCESS: &str = "process.terminal";
+pub const TOOL_TERMINALS_V1: &str = "tool-terminals/v1";
+pub const CAP_TOOL_GOALS: &str = "agent.goals";
+pub const TOOL_GOALS_V1: &str = "tool-goals/v1";
+pub const CAP_TOOL_SESSION_QUERY: &str = "agent.session-query";
+pub const TOOL_SESSION_QUERY_V1: &str = "tool-session-query/v1";
+pub const CAP_TOOL_SUBAGENTS: &str = "agent.subagents";
+pub const TOOL_SUBAGENTS_V1: &str = "tool-subagents/v1";
+pub const CAP_TOOL_TEAMS: &str = "agent.teams";
+pub const TOOL_TEAMS_V1: &str = "tool-teams/v1";
+pub const CAP_TOOL_SCHEDULES: &str = "agent.schedules";
+pub const TOOL_SCHEDULES_V1: &str = "tool-schedules/v1";
+pub const CAP_PROGRAM_TOOLS: &str = "agent.program-tools";
+pub const TOOL_PROGRAM_V1: &str = "tool-program/v1";
 /// v2：宿主实现了白名单内的 Host Service，并接受 `host.service.request`（spec §13.4）。
 pub const CAP_SERVICE_PROXY: &str = "service.proxy";
 /// v2：允许 Sidecar 用 `service.publish` 暴露 JS 服务（spec §13.3）；v2 默认关闭。
@@ -718,6 +742,7 @@ pub const KNOWN_KINDS: &[&str] = &[
     "preset.sync",
     "preset.bind",
     "preset.release",
+    "agent.step",
     "tool.invoke",
     "tool.chunk",
     "tool.result",

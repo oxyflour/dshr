@@ -476,7 +476,7 @@ fn require_session(ctx: &ServiceCallContext) -> Result<&str, ServiceError> {
 }
 
 /// 显示用路径：去掉 Windows canonicalize 的 `\\?\` 前缀。
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     let text = path.to_string_lossy().into_owned();
     #[cfg(windows)]
     {
@@ -849,6 +849,8 @@ mod tests {
             plugin_id: PLUGIN.to_owned(),
             generation: "node-0001".to_owned(),
             session_id: session_id.map(str::to_owned),
+            call_id: None,
+            tool_request_id: None,
             depth: 1,
         }
     }

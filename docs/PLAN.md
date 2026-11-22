@@ -408,6 +408,8 @@ export function apply(ctx) {
 
 ## 5. DSH 兼容 Sidecar
 
+官方工具包的验证状态与后续交付顺序见 [兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵) 和 [实施计划](plan/dsh-official-plugin-compatibility.md)。
+
 ### 5.1 兼容策略
 
 Node Sidecar 使用与锁定目标版本一致的**原版 DSH vendored Cordis**、Loader、npm 解析和插件生命周期。Sidecar 负责执行 JS 插件，但不运行第二套主 Agent Loop。

@@ -18,6 +18,7 @@ path = "src/bin/console.rs"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b", features = ["profiler"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "d2a4fb6ded7c470be25d1541281da3882495b65b" }
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+base64 = "=0.22.1"
 serde.workspace = true
 url = "=2.5.8"
 tempfile = "=3.27.0"

@@ -43,6 +43,12 @@ try {
     try {
         & $node --version
         if ($LASTEXITCODE -ne 0) { throw "bundled Node failed: $LASTEXITCODE" }
+        if (Test-Path -LiteralPath (Join-Path $tmp 'sidecar/dsh-official/default-profile.json') -PathType Leaf) {
+            $shell = Join-Path $tmp 'runtime/powershell/pwsh.exe'
+            if (-not (Test-Path -LiteralPath $shell -PathType Leaf)) { throw 'missing bundled PowerShell' }
+            & $shell -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+            if ($LASTEXITCODE -ne 0) { throw "bundled PowerShell failed: $LASTEXITCODE" }
+        }
         foreach ($check in @("window", "official", "cpp-component", "cpp-install", "cpp-cli-install")) {
             $result = Start-Process -FilePath $exe -ArgumentList "--selftest-$check" -Wait -PassThru -NoNewWindow
             if ($result.ExitCode -ne 0) { throw "$check selftest failed: $($result.ExitCode)" }

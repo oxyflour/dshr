@@ -25,6 +25,7 @@ export const SERVICE_KEYS = Object.freeze({
   workingDirectory: 'working-directory/v1',
   sessionLog: 'session-log/v1',
   storageKv: 'storage-kv/v1',
+  imageAttachments: 'image-attachments/v1',
 })
 
 const SERVICE_KEY_RE = /^[a-z][a-z0-9-]*\/v[1-9][0-9]*$/
@@ -101,6 +102,7 @@ export function buildHostServiceRequest({
   args = {},
   sessionId,
   toolRequestId,
+  callId,
   depth = 0,
   version = PROTOCOL_MAX,
   generation = 'node-0001',
@@ -132,6 +134,7 @@ export function buildHostServiceRequest({
     payload: { method, args },
   }
   if (sessionId) envelope.session_id = sessionId
+  if (callId) envelope.call_id = callId
   if (toolRequestId) envelope.payload.tool_request_id = toolRequestId
   return envelope
 }
@@ -280,6 +283,7 @@ export function createHostServiceClient({
           args,
           sessionId,
           toolRequestId,
+          callId,
           depth,
           version,
           generation: effectiveGeneration,

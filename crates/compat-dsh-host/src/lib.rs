@@ -14,6 +14,11 @@
 pub mod service;
 pub mod services;
 pub mod storage_kv;
+pub mod tool_process;
+pub mod tool_jobs;
+pub mod tool_terminals;
+mod program_tools;
+pub use program_tools::ProgramToolScope;
 
 // 集成点（chat.rs / sidecar 读循环）的常用入口，避免深层路径。
 pub use service::{
@@ -25,6 +30,9 @@ pub use services::{
     WORKING_DIRECTORY_CHANGED, WORKING_DIRECTORY_V1,
 };
 pub use storage_kv::{StorageKvService, STORAGE_KV_V1};
+pub use tool_process::{ShellProgram, ToolProcessService};
+pub use tool_jobs::ToolJobService;
+pub use tool_terminals::ToolTerminalService;
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
@@ -43,7 +51,18 @@ use dshr_compat_dsh_protocol::{
     KIND_HOST_SERVICE_REQUEST, KIND_HOST_SERVICE_RESULT, MAX_DEPTH, PROTOCOL_VERSION,
 };
 /// 集成方（chat.rs）构造 v2 Router 需要的协议常量；避免直接依赖 protocol crate。
-pub use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
+pub use dshr_compat_dsh_protocol::{
+    Envelope, HostServiceKind, HostServiceMethod, HostServiceTable, CAP_IMAGE_ATTACHMENTS,
+    CAP_SEARCH_PROCESS, CAP_SERVICE_PROXY, CAP_SHELL_PROCESS, IMAGE_ATTACHMENTS_V1, PROTOCOL_MAX,
+    TOOL_PROCESS_V1, CAP_USER_QUESTIONS, USER_QUESTIONS_V1, CAP_AGENT_TOOL_CONTEXT,
+    CAP_BACKGROUND_JOBS, TOOL_JOBS_V1, CAP_TERMINAL_PROCESS, TOOL_TERMINALS_V1,
+    CAP_TOOL_GOALS, TOOL_GOALS_V1,
+    CAP_TOOL_SESSION_QUERY, TOOL_SESSION_QUERY_V1,
+    CAP_TOOL_SUBAGENTS, TOOL_SUBAGENTS_V1,
+    CAP_TOOL_TEAMS, TOOL_TEAMS_V1,
+    CAP_TOOL_SCHEDULES, TOOL_SCHEDULES_V1,
+    CAP_PROGRAM_TOOLS, TOOL_PROGRAM_V1,
+};
 use dshr_sidecar_guard::{GuardLimits, GuardedChild};
 use dshr_tool_runtime::ToolOrigin;
 use serde_json::{json, Value};
@@ -264,6 +283,14 @@ pub struct BatchInvokeCall {
     pub session_id: Option<String>,
     binding: Option<ToolOrigin>,
     approval_key: Option<String>,
+    turn: Option<OpenToolTurn>,
+    model_route: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct OpenToolTurn {
+    pub number: u64,
+    pub start_seq: u64,
 }
 
 impl BatchInvokeCall {
@@ -281,6 +308,8 @@ impl BatchInvokeCall {
             session_id: None,
             binding: None,
             approval_key: None,
+            turn: None,
+            model_route: None,
         }
     }
 
@@ -297,6 +326,16 @@ impl BatchInvokeCall {
     /// 显式透传会话 id（L2 服务方法按会话授权时必需）。
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn with_turn(mut self, turn: Option<OpenToolTurn>) -> Self {
+        self.turn = turn;
+        self
+    }
+
+    pub fn with_model_route(mut self, provider: &str, model: &str) -> Self {
+        self.model_route = Some((provider.to_owned(), model.to_owned()));
         self
     }
 }
@@ -332,6 +371,8 @@ pub struct SidecarHost {
     registrations: Vec<Registration>,
     retired_sessions: HashSet<String>,
     agent_presets_supported: bool,
+    agent_tool_context_supported: bool,
+    preparing_step: Option<String>,
     preset_definitions: Option<Value>,
     preset_status: Value,
     preset_bindings: HashMap<String, (String, String)>,
@@ -346,14 +387,53 @@ pub struct SidecarHost {
     host_services_active: bool,
     /// 按 tool.invoke 的 request_id 追踪，模型给出的 call_id 可在其他调用中重复。
     active_calls: HashMap<String, ActiveCall>,
+    program_tools: Option<ProgramToolScope>,
     /// sidecar 在启动/装载阶段上报的错误（`log.emit` level=error），供 UI 提示。
     boot_errors: Vec<String>,
 }
 
 struct ActiveCall {
     call_id: String,
+    session_id: String,
+    tool: String,
+    turn: Option<OpenToolTurn>,
+    shell_command: Option<String>,
+    shell_background: bool,
+    job_id: Option<String>,
+    terminal_id: Option<String>,
+    terminal_value: Option<String>,
     cancelled: bool,
     approval_key: Option<String>,
+    goal_arguments: Option<Value>,
+    agent_arguments: Option<Value>,
+    parent: Option<String>,
+    deadline: Option<Instant>,
+}
+
+impl ActiveCall {
+    fn from_batch(call: &BatchInvokeCall, session: &str, turn: Option<OpenToolTurn>) -> Self {
+        Self {
+            call_id: call.call_id.clone(), session_id: session.to_owned(), tool: call.tool.clone(), turn,
+            shell_command: if matches!(call.tool.as_str(), "bash" | "pwsh") {
+                call.arguments["command"].as_str().map(str::to_owned)
+            } else { None },
+            shell_background: call.arguments["run_in_background"] == true,
+            job_id: call.arguments["job_id"].as_str().map(str::to_owned),
+            terminal_id: call.arguments["sessionId"].as_str().map(str::to_owned),
+            terminal_value: match call.tool.as_str() {
+                "terminal_send" => Some(call.arguments["text"].as_str().unwrap_or_default().to_owned()),
+                "terminal_signal" => call.arguments["signal"].as_str().map(str::to_owned),
+                _ => None,
+            },
+            cancelled: false,
+            approval_key: call.approval_key.clone(),
+            goal_arguments: matches!(call.tool.as_str(), "get_goal" | "create_goal" | "update_goal").then(|| call.arguments.clone()),
+            agent_arguments: matches!(call.tool.as_str(), "subagent" | "send_message" | "interrupt_agent"
+                | "team_task_create" | "team_task_update" | "schedule_create" | "schedule_edit").then(|| call.arguments.clone()),
+            parent: None,
+            deadline: (!call.timeout.is_zero()).then(|| Instant::now() + call.timeout),
+        }
+    }
 }
 
 /// 侧车进程句柄：普通 spawn 或 Job Object 包裹（Windows 隔离）。
@@ -524,6 +604,8 @@ impl SidecarHost {
             registrations: Vec::new(),
             retired_sessions: HashSet::new(),
             agent_presets_supported: false,
+            agent_tool_context_supported: false,
+            preparing_step: None,
             preset_definitions: None,
             preset_status: Value::Null,
             preset_bindings: HashMap::new(),
@@ -534,6 +616,7 @@ impl SidecarHost {
             negotiated_protocol: PROTOCOL_VERSION,
             host_services_active: false,
             active_calls: HashMap::new(),
+            program_tools: None,
             boot_errors: Vec::new(),
         };
 
@@ -660,6 +743,11 @@ impl SidecarHost {
             .unwrap_or(false);
         self.host_services_active =
             self.host_services.is_some() && self.negotiated_protocol >= 2 && sidecar_proxy;
+        self.agent_tool_context_supported = self.host_services_active
+            && self.host_caps.iter().any(|cap| cap == CAP_AGENT_TOOL_CONTEXT)
+            && ready.payload["sidecar_caps"].as_array().is_some_and(|caps| {
+                caps.iter().any(|cap| cap == CAP_AGENT_TOOL_CONTEXT)
+            });
         if self.host_services_active {
             if let Some(router) = &self.host_services {
                 let mut router = router
@@ -673,6 +761,34 @@ impl SidecarHost {
 
     pub fn registrations(&self) -> &[Registration] {
         &self.registrations
+    }
+
+    pub fn supports_agent_tool_context(&self) -> bool {
+        self.agent_tool_context_supported
+    }
+
+    pub fn prepare_agent_step(&mut self, session: &str, data: Value) -> Result<Value, HostError> {
+        if !self.agent_tool_context_supported || !self.active_calls.is_empty() {
+            return Err(HostError::Protocol("agent step context is unavailable".to_owned()));
+        }
+        self.seq += 1;
+        let request_id = format!("req-agent-step-{}", self.seq);
+        let envelope = Envelope::host("agent.step", &request_id, data)
+            .with_version(self.negotiated_protocol)
+            .with_generation(self.generation.clone())
+            .with_session(session);
+        self.write(&envelope)?;
+        self.preparing_step = Some(session.to_owned());
+        let result = self.wait_for("agent.step", Some(&request_id), Duration::from_secs(8));
+        self.preparing_step = None;
+        let result = result?;
+        if result.runtime_generation != self.generation || result.session_id.as_deref() != Some(session) {
+            return Err(HostError::Protocol("agent step response has the wrong session or generation".to_owned()));
+        }
+        match result.error {
+            Some(error) => Err(HostError::Protocol(format!("{}: {}", error.code, error.message))),
+            None => Ok(result.payload),
+        }
     }
 
     /// 把 sidecar 注册映射成 Registry 可登记的 `ToolDefinition`。
@@ -942,6 +1058,15 @@ impl SidecarHost {
         .with_generation(self.generation.clone())
         .with_call(&call.call_id)
         .with_session(session_id.unwrap_or("s-probe"));
+        let turn = call.turn.filter(|_| self.agent_tool_context_supported);
+        if let Some(turn) = turn {
+            envelope.payload["turn"] = json!({ "number": turn.number, "start_seq": turn.start_seq });
+        }
+        if self.agent_tool_context_supported {
+            if let Some((provider, model)) = &call.model_route {
+                envelope.payload["model"] = json!({ "provider": provider, "model": model });
+            }
+        }
         if let Some(binding) = binding {
             envelope.registration_id = Some(binding.registration_id.clone());
             if !binding.plugin_id.is_empty() {
@@ -951,11 +1076,7 @@ impl SidecarHost {
         self.write(&envelope)?;
         self.active_calls.insert(
             request_id,
-            ActiveCall {
-                call_id: call.call_id.clone(),
-                cancelled: false,
-                approval_key: call.approval_key.clone(),
-            },
+            ActiveCall::from_batch(call, session_id.unwrap_or("s-probe"), turn),
         );
         Ok(())
     }
@@ -1046,6 +1167,8 @@ impl SidecarHost {
             if let Some(call) = self.active_calls.get_mut(request_id) {
                 call.cancelled = true;
             }
+            self.finish_program_children(request_id);
+            self.release_tool_resources(request_id);
         }
         self.seq += 1;
         let envelope = Envelope::host("tool.cancel", format!("req-cancel-{}", self.seq), payload)
@@ -1148,7 +1271,7 @@ impl SidecarHost {
                     }
                     if slot.cancel_deadline.is_some_and(|deadline| now >= deadline) {
                         slot.done = true;
-                        self.active_calls.remove(&slot.request_id);
+                        self.finish_active_call(&slot.request_id);
                         results[next + offset] = Some(Err(HostError::Cancelled(format!(
                             "tool {} did not settle within {}s of cancellation",
                             slot.call_id,
@@ -1168,7 +1291,7 @@ impl SidecarHost {
                         results[next + offset] =
                             Some(Err(HostError::Timeout(format!("tool {}", slot.call_id))));
                     }
-                    self.active_calls.remove(&slot.request_id);
+                    self.finish_active_call(&slot.request_id);
                 }
                 if slots.iter().all(|slot| slot.done) {
                     break;
@@ -1236,7 +1359,7 @@ impl SidecarHost {
                                 let chunks = std::mem::take(&mut slot.chunks);
                                 let elapsed = slot.started.elapsed();
                                 slot.done = true;
-                                self.active_calls.remove(&slot.request_id);
+                                self.finish_active_call(&slot.request_id);
                                 results[next + offset] = Some(Ok(InvokeOutcome {
                                     chunks,
                                     terminal: envelope,
@@ -1262,7 +1385,7 @@ impl SidecarHost {
 
             if let Some(message) = fatal {
                 for slot in &slots {
-                    self.active_calls.remove(&slot.request_id);
+                    self.finish_active_call(&slot.request_id);
                 }
                 for slot in results.iter_mut().skip(next).take(calls.len() - next) {
                     if slot.is_none() {
@@ -1317,8 +1440,22 @@ impl SidecarHost {
         cancel: Option<&AtomicBool>,
     ) -> Result<InvokeOutcome, HostError> {
         let result = self.wait_terminal_cancellable(request_id, call_id, timeout, cancel);
-        self.active_calls.remove(request_id);
+        self.finish_active_call(request_id);
         result
+    }
+
+    fn finish_active_call(&mut self, request_id: &str) {
+        self.finish_program_children(request_id);
+        self.active_calls.remove(request_id);
+        self.release_tool_resources(request_id);
+    }
+
+    fn release_tool_resources(&self, request_id: &str) {
+        if let Some(router) = &self.host_services {
+            if let Ok(mut router) = router.lock() {
+                router.release_tool_call(request_id);
+            }
+        }
     }
 
     fn wait_terminal_cancellable(
@@ -1575,8 +1712,218 @@ impl SidecarHost {
                 !self
                     .active_calls
                     .get(id)
-                    .is_some_and(|call| !call.cancelled)
+                    .is_some_and(|call| self.call_is_current(call))
             })
+    }
+
+    fn bound_service_call(&self, envelope: &Envelope) -> Option<&ActiveCall> {
+        let request_id = envelope.payload["tool_request_id"].as_str()?;
+        let call = self.active_calls.get(request_id)?;
+        (self.call_is_current(call)
+            && envelope.call_id.as_deref() == Some(call.call_id.as_str())
+            && envelope.session_id.as_deref() == Some(call.session_id.as_str()))
+            .then_some(call)
+    }
+
+    fn service_callback_denial(&self, envelope: &Envelope) -> Option<&'static str> {
+        match envelope.service_key.as_deref() {
+            Some(TOOL_GOALS_V1) => {
+                let args = &envelope.payload["args"];
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_TOOL_GOALS)
+                    && self.bound_service_call(envelope).is_some_and(|call| {
+                        call.turn.is_some_and(|turn| args["start_seq"] == turn.start_seq)
+                            && call.goal_arguments.as_ref() == Some(&args["arguments"]) && args["tool"] == call.tool
+                    });
+                (!allowed).then_some("goal operation requires its matching active tool and open turn")
+            }
+            Some(TOOL_SESSION_QUERY_V1) => {
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_TOOL_SESSION_QUERY)
+                    && self.bound_service_call(envelope).is_some_and(|call| {
+                        call.turn.is_some() && matches!(call.tool.as_str(), "session_search" | "session_event_search"
+                            | "session_trace" | "session_event_trace" | "session_event_read")
+                    });
+                (!allowed).then_some("session query requires a matching active session query tool")
+            }
+            Some(TOOL_SUBAGENTS_V1) => {
+                let method = envelope.payload["method"].as_str().unwrap_or_default();
+                let args = &envelope.payload["args"];
+                let enabled = self.host_caps.iter().any(|cap| cap == CAP_TOOL_SUBAGENTS);
+                let step = method == "notices" && self.preparing_step.is_some()
+                    && envelope.session_id == self.preparing_step && envelope.payload["tool_request_id"].is_null();
+                let allowed = enabled && (step || self.bound_service_call(envelope).is_some_and(|call| {
+                    call.turn.is_some() && match method {
+                        "list" => matches!(call.tool.as_str(), "list_agents" | "send_message" | "interrupt_agent" | "subagent"
+                            | "team_task_list" | "team_task_update"),
+                        "pending" => call.tool == "wait_agent",
+                        "start" if call.tool == "subagent" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                        "message" if call.tool == "send_message" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                        "interrupt" if call.tool == "interrupt_agent" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                        "workflow.start" | "workflow.poll" | "workflow.stop" => matches!(call.tool.as_str(), "workflow" | "ralph"),
+                        _ => false,
+                    }
+                }));
+                (!allowed).then_some("subagent operation requires the matching authorized call and session")
+            }
+            Some(TOOL_TEAMS_V1) => {
+                let method = envelope.payload["method"].as_str().unwrap_or_default();
+                let args = &envelope.payload["args"];
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_TOOL_TEAMS)
+                    && self.bound_service_call(envelope).is_some_and(|call| {
+                        call.turn.is_some() && match method {
+                            "list" => matches!(call.tool.as_str(), "team_task_list" | "team_task_get" | "team_task_update"),
+                            "create" if call.tool == "team_task_create" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                            "update" if call.tool == "team_task_update" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                            _ => false,
+                        }
+                    });
+                (!allowed).then_some("team operation requires the matching authorized team tool and session")
+            }
+            Some(TOOL_SCHEDULES_V1) => {
+                let method = envelope.payload["method"].as_str().unwrap_or_default();
+                let args = &envelope.payload["args"];
+                let enabled = self.host_caps.iter().any(|cap| cap == CAP_TOOL_SCHEDULES);
+                let step = matches!(method, "due" | "claim") && self.preparing_step.is_some()
+                    && envelope.session_id == self.preparing_step && envelope.payload["tool_request_id"].is_null();
+                let allowed = enabled && (step || self.bound_service_call(envelope).is_some_and(|call| {
+                    call.turn.is_some() && match method {
+                        "list" => call.tool == "schedule_list",
+                        "view" => matches!(call.tool.as_str(), "schedule_view" | "schedule_edit"),
+                        "create" if call.tool == "schedule_create" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                        "edit" if call.tool == "schedule_edit" => call.agent_arguments.as_ref() == Some(&args["arguments"]),
+                        _ => false,
+                    }
+                }));
+                (!allowed).then_some("schedule operation requires the matching authorized tool and root session")
+            }
+            Some(SESSION_LOG_V1) if envelope.payload["method"] == "events.append"
+                && envelope.payload["args"]["event_type"].as_str().is_some_and(|name| {
+                    let name = name.trim();
+                    name.starts_with("subagent/") || matches!(name, "goal/change" | "turn.started" | "turn.ended" | "step.started" | "message.user" | "child.spawned" | "child.finished" | "tool.program.admitted")
+                }) => Some("goal and turn authority events must originate with the Rust session runtime"),
+            Some(IMAGE_ATTACHMENTS_V1) => {
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_IMAGE_ATTACHMENTS)
+                    && self.bound_service_call(envelope).is_some_and(|call| {
+                        let method = envelope.payload["method"].as_str();
+                        match call.tool.as_str() {
+                            "read_image" => matches!(method, Some("route" | "save")),
+                            "office_render" => self.agent_tool_context_supported
+                                && matches!(method, Some("route" | "rendered.page")),
+                            _ => false,
+                        }
+                    });
+                (!allowed).then_some("image attachments require a matching active image tool call")
+            }
+            Some(TOOL_PROCESS_V1) => {
+                let allowed = self.bound_service_call(envelope).is_some_and(|call| {
+                    let (cap, engine) = match call.tool.as_str() {
+                        "glob" | "grep" => (CAP_SEARCH_PROCESS, "ripgrep"),
+                        "pwsh" | "bash" => (CAP_SHELL_PROCESS, call.tool.as_str()),
+                        _ => return false,
+                    };
+                    if !self.host_caps.iter().any(|available| available == cap) {
+                        return false;
+                    }
+                    if envelope.payload["method"] != "start" {
+                        return true;
+                    }
+                    let args = &envelope.payload["args"];
+                    args["engine"] == engine && (engine == "ripgrep"
+                        || args["command"].as_str().is_some_and(|command| {
+                            call.shell_command.as_deref() == Some(command)
+                        }))
+                });
+                (!allowed).then_some("tool processes require the matching authorized tool call")
+            }
+            Some(USER_QUESTIONS_V1) => {
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_USER_QUESTIONS)
+                    && self.bound_service_call(envelope)
+                        .is_some_and(|call| call.tool == "ask_user_question");
+                (!allowed).then_some("user questions require a matching active ask_user_question call")
+            }
+            Some(TOOL_JOBS_V1) => {
+                let method = envelope.payload["method"].as_str().unwrap_or_default();
+                let args = &envelope.payload["args"];
+                if method == "notices" {
+                    let allowed = self.host_caps.iter().any(|cap| cap == CAP_BACKGROUND_JOBS)
+                        && self.preparing_step.is_some()
+                        && envelope.session_id == self.preparing_step
+                        && envelope.payload["tool_request_id"].is_null();
+                    return (!allowed).then_some("job notices require an active agent step in the same session");
+                }
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_BACKGROUND_JOBS)
+                    && self.bound_service_call(envelope).is_some_and(|call| {
+                        match method {
+                            "reserve" | "start" | "confirm" => {
+                                call.shell_background
+                                    && matches!(call.tool.as_str(), "pwsh" | "bash")
+                                    && (method != "start" || (args["engine"] == call.tool
+                                        && args["command"].as_str() == call.shell_command.as_deref()))
+                            }
+                            "list" => matches!(call.tool.as_str(), "job_list" | "job_output" | "job_kill"),
+                            "inspect" => matches!(call.tool.as_str(), "job_output" | "job_kill")
+                                && call.job_id.as_deref() == args["id"].as_str(),
+                            "read" | "advance" => call.tool == "job_output"
+                                && call.job_id.as_deref() == args["id"].as_str(),
+                            "stop" => call.tool == "job_kill"
+                                && call.job_id.as_deref() == args["id"].as_str(),
+                            _ => false,
+                        }
+                    });
+                (!allowed).then_some("background jobs require the matching authorized tool call")
+            }
+            Some(TOOL_TERMINALS_V1) => {
+                let method = envelope.payload["method"].as_str().unwrap_or_default();
+                let args = &envelope.payload["args"];
+                let operation = args["operation"].as_str().unwrap_or_default();
+                let allowed = self.host_caps.iter().any(|cap| cap == CAP_TERMINAL_PROCESS)
+                    && self.bound_service_call(envelope).is_some_and(|call| {
+                        let tool = call.tool.as_str();
+                        let same_id = args["id"].as_str() == call.terminal_id.as_deref();
+                        match method {
+                            "reserve" | "confirm" => matches!(tool, "terminal_open" | "pwsh" | "bash"),
+                            "list" => matches!(tool, "terminal_list" | "terminal_read" | "pwsh" | "bash"),
+                            "closed" => (tool == "terminal_close" && same_id) || matches!(tool, "pwsh" | "bash"),
+                            "allow" if matches!(tool, "pwsh" | "bash") => {
+                                match operation {
+                                    "send" => args["origin_command"].as_str() == call.shell_command.as_deref(),
+                                    "read" | "close" => true,
+                                    _ => false,
+                                }
+                            }
+                            "allow" if same_id => match operation {
+                                "send" => tool == "terminal_send" && args["value"].as_str() == call.terminal_value.as_deref(),
+                                "read" => tool == "terminal_read",
+                                "signal" => tool == "terminal_signal" && args["value"].as_str() == call.terminal_value.as_deref(),
+                                "close" => tool == "terminal_close",
+                                _ => false,
+                            },
+                            _ => false,
+                        }
+                    });
+                (!allowed).then_some("terminal operation requires the matching authorized tool and session")
+            }
+            Some(SESSION_LOG_V1)
+                if envelope.payload["method"] == "events.append"
+                    && envelope.payload["args"]["event_type"].as_str().is_some_and(|name| {
+                        matches!(name.trim(), tool_terminals::TERMINAL_OPENED | tool_terminals::TERMINAL_CLOSED)
+                    }) =>
+            {
+                Some("terminal lifecycle events must originate with the Rust terminal service")
+            }
+            Some(SESSION_LOG_V1)
+                if envelope.payload["method"] == "events.append"
+                    && envelope.payload["args"]["event_type"].as_str()
+                        .is_some_and(|name| name.trim() == "deliverables/presented") =>
+            {
+                let data = &envelope.payload["args"]["data"];
+                let allowed = self.bound_service_call(envelope).is_some_and(|call| {
+                    call.tool == "present" && data["callId"] == call.call_id
+                        && call.turn.is_some_and(|turn| data["turn"].as_u64() == Some(turn.number))
+                });
+                (!allowed).then_some("file delivery requires a matching present call inside an open turn")
+            }
+            _ => None,
+        }
     }
 
     /// 读循环的公共服务点：遇到 sidecar 的写入请求就地裁决并回复。
@@ -1631,6 +1978,16 @@ impl SidecarHost {
                     reply.error = Some(RpcError {
                         code: "E_CANCELLED".to_owned(),
                         message: "tool request is no longer active".to_owned(),
+                        retryable: false,
+                    });
+                    reply
+                } else if envelope.service_key.as_deref() == Some(TOOL_PROGRAM_V1) {
+                    self.handle_program_callback(envelope)
+                } else if let Some(message) = self.service_callback_denial(envelope) {
+                    let mut reply = envelope.reply(KIND_HOST_SERVICE_RESULT, json!({}));
+                    reply.error = Some(RpcError {
+                        code: "E_SERVICE_DENIED".to_owned(),
+                        message: message.to_owned(),
                         retryable: false,
                     });
                     reply
@@ -1713,6 +2070,9 @@ impl SidecarHost {
 
 impl Drop for SidecarHost {
     fn drop(&mut self) {
+        for request_id in self.active_calls.keys() {
+            self.release_tool_resources(request_id);
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

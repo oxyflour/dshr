@@ -28,6 +28,7 @@ const roots = rootArgs.length
     ];
 
 const { fd, header, base } = openAsar(ASAR);
+const unpackedRoot = path.join(path.dirname(ASAR), "app.asar.unpacked");
 try {
   const seen = new Set();
   const missing = new Set();
@@ -40,21 +41,29 @@ try {
     seen.add(name);
 
     // 官方包在 asar 的 dsh/node_modules 下；少数前置包在根 node_modules。
-    let node = lookup(header, `dsh/node_modules/${name}`);
-    if (!node) node = lookup(header, `node_modules/${name}`);
+    let packagePath = `dsh/node_modules/${name}`;
+    let node = lookup(header, packagePath);
+    if (!node) {
+      packagePath = `node_modules/${name}`;
+      node = lookup(header, packagePath);
+    }
     if (!node) {
       missing.add(name);
       continue;
     }
 
     const files = [];
-    walk(node, `dsh/node_modules/${name}`, files);
-    const pkgNode = lookup(header, `dsh/node_modules/${name}/package.json`);
+    walk(node, packagePath, files);
+    const manifestPath = `${packagePath}/package.json`;
+    const pkgNode = lookup(header, manifestPath);
     if (!pkgNode) {
       missing.add(name);
       continue;
     }
-    const pkg = JSON.parse(readFile(fd, base, pkgNode).toString("utf8"));
+    const manifest = pkgNode.unpacked
+      ? fs.readFileSync(path.join(unpackedRoot, manifestPath))
+      : readFile(fd, base, pkgNode);
+    const pkg = JSON.parse(manifest.toString("utf8"));
     const deps = {
       ...(pkg.dependencies || {}),
       ...(pkg.peerDependencies || {}),
@@ -63,16 +72,16 @@ try {
     for (const dep of Object.keys(deps)) queue.push(dep);
 
     for (const file of files) {
-      // 只保留运行时代码，跳过 src/types 源码与 sourcemap。
-      if (file.endsWith(".map") || file.includes("/src/")) continue;
+      // Some dependencies import runtime modules from src/ (for example restructure).
+      if (file.endsWith(".map")) continue;
       const entry = lookup(header, file);
       // asar 里的符号链接没有 size/offset，跳过（运行时不需要 .bin 链接）。
       if (!entry || entry.link !== undefined || entry.size === undefined) continue;
-      const outPath = path.join(dest, file.slice("dsh/node_modules/".length));
+      const outPath = path.join(dest, name, file.slice(packagePath.length + 1));
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       if (entry.unpacked) {
         // 原生模块不存 asar 内部，真实文件在 app.asar.unpacked 下。
-        const unpacked = path.join(path.dirname(ASAR), "app.asar.unpacked", file);
+        const unpacked = path.join(unpackedRoot, file);
         if (fs.existsSync(unpacked)) {
           fs.copyFileSync(unpacked, outPath);
           extracted += 1;

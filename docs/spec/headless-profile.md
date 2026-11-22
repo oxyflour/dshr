@@ -39,6 +39,8 @@ dshr --profile headless --session-id s-123 "把上次的总结压缩成两点"
 
 正常 headless 入口保留 `probe_*` 前缀给诊断工具。运行时使用官方 Sidecar，显式选择 `probe` 或 `cordis` 会返回 `E_CONFIG`。
 
+显式启用官方 `ask_user_question` 时，调用立即返回需要桌面交互的工具错误。工具不会等待标准输入或在 headless 中生成提问界面。 [提问和取消契约](sidecar-rpc.md#79-官方工具提问)
+
 ## 4. 输出、终态与退出
 
 ### 4.1 文本模式

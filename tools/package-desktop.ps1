@@ -2,7 +2,10 @@ param(
     [ValidateSet("debug", "release")]
     [string]$Configuration = "debug",
     [string]$OutDir = "dist",
-    [string]$RuntimeComponentCatalog = ""
+    [string]$RuntimeComponentCatalog = "",
+    [string]$DshAsar = $env:DSHR_ASAR,
+    [string]$PowerShellExe,
+    [switch]$BaseSidecar
 )
 
 # M4 G1 最小 Windows 打包：编译 dshr.exe，连同 README/版本信息压成 zip。
@@ -13,6 +16,40 @@ Set-Location $root
 
 $nodeExe = Join-Path $root "runtime/node/node.exe"
 $official = Join-Path $root "sidecar/dsh-official"
+$rc5Debug = $Configuration -eq "debug" -and -not $BaseSidecar
+if ($rc5Debug) {
+    if (-not $DshAsar) {
+        $DshAsar = Join-Path $env:LOCALAPPDATA 'Programs/DeepSeek Harness/resources/app.asar'
+    }
+    $DshAsar = (Resolve-Path -LiteralPath $DshAsar).Path
+    $profileSource = Join-Path $official 'windows-debug-profile.json'
+    $lock = Get-Content -LiteralPath (Join-Path $official 'official-rc5-packages.lock.json') -Encoding UTF8 -Raw | ConvertFrom-Json
+    $packages = @($lock.packages.name | Where-Object { $_ -notin @('@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-bash-persistent') })
+    $profileNames = @((Get-Content -LiteralPath $profileSource -Encoding UTF8 -Raw | ConvertFrom-Json).plugins.name)
+    $windowsTools = @($packages | Where-Object { $_ -like '@deepseek-ai/dsh-tool-*' })
+    if (@($profileNames | Select-Object -Unique).Count -ne $profileNames.Count -or
+        @($profileNames | Where-Object { $_ -notin $packages }).Count -gt 0 -or
+        @($windowsTools | Where-Object { $_ -notin $profileNames }).Count -gt 0) {
+        throw 'Windows debug profile must list each locked Windows tool exactly once and use locked support packages'
+    }
+    if (-not $PowerShellExe) {
+        $command = Get-Command pwsh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { throw 'Windows rc.5 debug packaging needs a standalone x64 PowerShell 7 installation. Pass -PowerShellExe.' }
+        $PowerShellExe = $command.Source
+    }
+    $PowerShellExe = (Resolve-Path -LiteralPath $PowerShellExe).Path
+    $powerShellHome = Split-Path -Parent $PowerShellExe
+    $shellVersion = & $PowerShellExe -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString(); [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()'
+    if ($LASTEXITCODE -ne 0 -or @($shellVersion).Count -ne 2 -or
+        $shellVersion[0] -notmatch '^7\.' -or $shellVersion[1] -ne 'X64') {
+        throw 'Expected a standalone x64 PowerShell 7 runtime'
+    }
+    foreach ($file in @('pwsh.exe', 'coreclr.dll', 'pwsh.runtimeconfig.json', 'LICENSE.txt', 'ThirdPartyNotices.txt')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $powerShellHome $file) -PathType Leaf)) {
+            throw "Missing PowerShell distribution file: $file"
+        }
+    }
+}
 $vswhere = Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) "Microsoft Visual Studio/Installer/vswhere.exe"
 $vcRuntime = if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
     & $vswhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT/vcruntime140.dll" |
@@ -21,13 +58,16 @@ $vcRuntime = if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
 if (-not $vcRuntime -or -not (Test-Path -LiteralPath $vcRuntime -PathType Leaf)) {
     throw "missing x64 vcruntime140.dll in the Visual Studio redistributable directory"
 }
-foreach ($file in @(
+$requiredAssets = @(
     $nodeExe,
-    (Join-Path $official "sidecar-dsh.mjs"),
-    (Join-Path $official "node_modules/@deepseek-ai/cordis/package.json"),
-    (Join-Path $official "node_modules/@deepseek-ai/dsh-tool-fs/package.json"),
-    (Join-Path $official "node_modules/@deepseek-ai/dsh-tool-workspace-dependencies/package.json")
-)) {
+    (Join-Path $official "sidecar-dsh.mjs")
+)
+if (-not $rc5Debug) {
+    $requiredAssets += @('cordis', 'dsh-tool-fs', 'dsh-tool-workspace-dependencies') | ForEach-Object {
+        Join-Path $official "node_modules/@deepseek-ai/$_/package.json"
+    }
+}
+foreach ($file in $requiredAssets) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing required runtime asset: $file" }
 }
 if (-not $RuntimeComponentCatalog -and (Test-Path -LiteralPath "runtime/components.json")) {
@@ -52,7 +92,7 @@ if ($RuntimeComponentCatalog) {
     }
 }
 
-$cargoArgs = @("build", "-p", "dshr-desktop-gpui", "--bin", "dshr", "--bin", "dshr-cli")
+$cargoArgs = @("build", "--locked", "-p", "dshr-desktop-gpui", "--bin", "dshr", "--bin", "dshr-cli")
 if ($Configuration -eq "release") { $cargoArgs += "--release" }
 & (Join-Path $root "tools\build-env.cmd") @(@("cargo") + $cargoArgs)
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $LASTEXITCODE" }
@@ -80,13 +120,34 @@ Copy-Item -LiteralPath $vcRuntime -Destination (Join-Path $stage "bin/vcruntime1
 Write-Host "[package-desktop] node=$nodeExe"
 New-Item -ItemType Directory -Path (Join-Path $stage "runtime/node") -Force | Out-Null
 Copy-Item -LiteralPath $nodeExe (Join-Path $stage "runtime/node/node.exe")
+if ($rc5Debug) {
+    Write-Host "[package-desktop] PowerShell $($shellVersion[0])"
+    Copy-Item -LiteralPath $powerShellHome -Destination (Join-Path $stage 'runtime/powershell') -Recurse
+}
 if ($RuntimeComponentCatalog) {
     Copy-Item -LiteralPath $RuntimeComponentCatalog (Join-Path $stage "runtime/components.json")
 }
 
 $sidecarStage = Join-Path $stage "sidecar"
 New-Item -ItemType Directory -Path $sidecarStage -Force | Out-Null
-Copy-Item -LiteralPath $official -Recurse -Force -Destination (Join-Path $sidecarStage "dsh-official")
+$bundledOfficial = Join-Path $sidecarStage 'dsh-official'
+if ($rc5Debug) {
+    New-Item -ItemType Directory -Path $bundledOfficial | Out-Null
+    $previousAsar = $env:DSHR_ASAR
+    try {
+        $env:DSHR_ASAR = $DshAsar
+        & $nodeExe tools/dsh-vendor.mjs (Join-Path $bundledOfficial 'node_modules') @packages
+        if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Windows rc.5 sidecar dependency tree' }
+        & $nodeExe tools/official-provenance.mjs --check --rc5-dir $bundledOfficial --windows-debug
+        if ($LASTEXITCODE -ne 0) { throw 'Windows rc.5 package provenance check failed' }
+    } finally {
+        $env:DSHR_ASAR = $previousAsar
+    }
+    Copy-Item -LiteralPath (Join-Path $official 'sidecar-dsh.mjs'),(Join-Path $official 'lib') -Recurse -Destination $bundledOfficial
+    Copy-Item -LiteralPath $profileSource -Destination (Join-Path $bundledOfficial 'default-profile.json')
+} else {
+    Copy-Item -LiteralPath $official -Recurse -Force -Destination $bundledOfficial
+}
 
 $componentStage = Join-Path $stage "components/cpp-component"
 New-Item -ItemType Directory -Path $componentStage -Force | Out-Null

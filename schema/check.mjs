@@ -740,6 +740,14 @@ const cases = [
     session_id: 's-1', depth: 1, trace_id: 't-l2',
     ts: '2026-11-12T10:00:00.000Z', payload: { method: 'set', args: { path: 'C:/work' } },
   }, true],
+  ['envelope', 'valid: v2 program child admission request', {
+    version: 2, kind: 'host.service.request', request_id: 'req-104',
+    runtime_generation: 'node-0007', plugin_id: 'dsh-official', service_key: 'tool-program/v1',
+    session_id: 's-program', call_id: 'call-program', depth: 1, trace_id: 't-program',
+    ts: '2026-11-22T10:00:00.000Z',
+    payload: { method: 'begin', tool_request_id: 'req-invoke-1',
+      args: { name: 'read', registration: 'reg-42', call_id: 'call-program:ptc:1', arguments: { file_path: 'notes.md' } } },
+  }, true],
   ['envelope', 'invalid: v2 service_key without major', {
     version: 2, kind: 'host.service.request', request_id: 'req-102',
     runtime_generation: 'node-0007', service_key: 'working-directory',

@@ -1477,6 +1477,7 @@ dependencies = [
  "dshr-session-store",
  "dshr-sidecar-guard",
  "dshr-tool-runtime",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1514,6 +1515,7 @@ dependencies = [
 name = "dshr-desktop-gpui"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "dshr-agent-context",
  "dshr-agent-core",
  "dshr-compat-dsh-fs",
@@ -1634,6 +1636,7 @@ dependencies = [
 name = "dshr-sandbox"
 version = "0.0.0"
 dependencies = [
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

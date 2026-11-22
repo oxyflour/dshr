@@ -194,6 +194,8 @@ export function createSessionProjectionsShim({
           for (const session of sessions.values()) session.cells.delete(definition.key)
         }
       }
+      release.stateOf = (session) => sessions.get(session.id)?.cells.get(definition.key)?.state
+        ?? definition.init(session.header, session.inheritedEventCount ?? 0)
       return release
     },
 

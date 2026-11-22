@@ -212,7 +212,7 @@ jobs:
 
       - name: Package desktop (Windows)
         if: runner.os == 'Windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug -BaseSidecar
 
       - name: Package desktop (Linux/macOS)
         if: runner.os != 'Windows'

@@ -305,6 +305,8 @@ pub enum ChatMessage {
         call_id: String,
         content: String,
     },
+    /// Media projected after all textual results for a tool call batch.
+    ToolImages(Vec<MediaAttachment>),
 }
 
 impl ChatMessage {
@@ -424,6 +426,41 @@ impl ToolOutcome {
     }
 }
 
+pub fn tool_image_references(content: &Value) -> Vec<MediaAttachment> {
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            if block["type"] != "image" {
+                return None;
+            }
+            let reference = block["attachment"]["attachmentId"].as_str()?;
+            let hash = reference.strip_prefix("spill:")?;
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            let format = AttachmentFormat::from_mime(block["attachment"]["mediaType"].as_str()?)?;
+            if format == AttachmentFormat::Pdf {
+                return None;
+            }
+            Some(MediaAttachment {
+                name: block["attachment"]["name"].as_str().unwrap_or("tool image").to_owned(),
+                format,
+                reference: reference.to_owned(),
+                bytes: None,
+            })
+        })
+        .collect()
+}
+
+#[derive(Default)]
+pub struct StepContext {
+    pub system_sections: Vec<String>,
+    pub turn_instructions: Vec<String>,
+    pub unavailable_tools: Vec<String>,
+}
+
 pub trait ToolExecutor {
     fn specs(&self) -> Vec<ToolSpec>;
 
@@ -431,7 +468,14 @@ pub trait ToolExecutor {
     fn prepare_step(&mut self) -> Vec<ToolSpec> {
         self.specs()
     }
+    fn prepare_step_context(&mut self, _step: u32, _user_text: Option<&str>) -> StepContext {
+        StepContext::default()
+    }
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome;
+
+    fn tool_images(&self, _outcome: &ToolOutcome) -> Vec<MediaAttachment> {
+        Vec::new()
+    }
 
     /// 一个 step 内**同一批**工具调用：返回顺序必须与 `calls` 一一对应。
     ///
@@ -758,7 +802,9 @@ impl<P: ModelProvider> Agent<P> {
         let cancel = self.provider.cancel_token();
 
         let mut messages: Vec<ChatMessage> = history.to_vec();
+        let user_text = user_message.user_text().map(str::to_owned);
         messages.push(user_message);
+        let mut turn_instructions = Vec::new();
 
         let mut step: u32 = 1;
         let mut calls = 0usize;
@@ -785,9 +831,24 @@ impl<P: ModelProvider> Agent<P> {
             }
             on_event(&AgentEvent::StepStarted { turn_id, step });
 
+            let mut tool_specs = executor.prepare_step();
+            let context = executor.prepare_step_context(step, if step == 1 {
+                user_text.as_deref()
+            } else {
+                None
+            });
+            if cancel_requested(cancel.as_ref()) {
+                on_event(&AgentEvent::TurnCancelled { reason: CANCEL_REASON.to_owned() });
+                return;
+            }
+            tool_specs.retain(|tool| !context.unavailable_tools.contains(&tool.name));
+            turn_instructions.extend(context.turn_instructions.into_iter().map(ChatMessage::System));
             let request = CompletionRequest {
-                messages: messages.clone(),
-                tool_specs: executor.prepare_step(),
+                messages: context.system_sections.into_iter().map(ChatMessage::System)
+                    .chain(turn_instructions.iter().cloned())
+                    .chain(messages.iter().cloned())
+                    .collect(),
+                tool_specs,
             };
 
             // provider 边流边回调；这里只负责把 delta 转成事件并累计全文。
@@ -916,6 +977,8 @@ impl<P: ModelProvider> Agent<P> {
             }
 
             // 阶段 3：按原顺序发 ToolResult / 写 tool 消息 / 统计重复提醒。
+            let mut images = Vec::new();
+            let mut image_bytes = 0;
             for index in 0..calls_in_step {
                 let tool_call = &reply.tool_calls[index];
                 let call = tool_call_request(tool_call);
@@ -930,6 +993,15 @@ impl<P: ModelProvider> Agent<P> {
                     call_id: call.call_id.clone(),
                     content: tool_content_for_model(&outcome),
                 });
+                if !outcome.is_error {
+                    for image in executor.tool_images(&outcome) {
+                        let size = image.bytes.as_ref().map_or(0, |bytes| bytes.len());
+                        if size > 0 && image_bytes + size <= 24 * 1024 * 1024 {
+                            image_bytes += size;
+                            images.push(image);
+                        }
+                    }
+                }
 
                 // 重复工具调用软提醒：只统计**真正执行**的调用；命中阈值先排队，
                 // 本步工具都执行完后统一注入 System 消息（不打断配对协议）。
@@ -945,6 +1017,23 @@ impl<P: ModelProvider> Agent<P> {
                         ));
                     }
                 }
+            }
+            if !images.is_empty() {
+                let mut remaining = 24 * 1024 * 1024 - image_bytes;
+                for message in messages.iter_mut().rev() {
+                    if let ChatMessage::ToolImages(previous) = message {
+                        previous.retain(|image| {
+                            let size = image.bytes.as_ref().map_or(0, |bytes| bytes.len());
+                            if size > remaining {
+                                return false;
+                            }
+                            remaining -= size;
+                            true
+                        });
+                    }
+                }
+                messages.retain(|message| !matches!(message, ChatMessage::ToolImages(images) if images.is_empty()));
+                messages.push(ChatMessage::ToolImages(images));
             }
             // 本步结束：把命中的软提醒注入历史（system 消息，软提醒不失败）。
             if !pending_reminders.is_empty() {

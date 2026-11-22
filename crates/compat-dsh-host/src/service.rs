@@ -41,6 +41,8 @@ pub struct ServiceCallContext {
     pub plugin_id: String,
     pub generation: String,
     pub session_id: Option<String>,
+    pub call_id: Option<String>,
+    pub tool_request_id: Option<String>,
     pub depth: u32,
 }
 
@@ -103,6 +105,8 @@ pub trait HostService: Send {
         args: &Value,
         ctx: &ServiceCallContext,
     ) -> Result<Value, ServiceError>;
+
+    fn release_tool_call(&mut self, _request_id: &str) {}
 }
 
 /// 最小 JSON Schema 校验失败（spec §13.2 的实现子集：type/required/properties/
@@ -397,6 +401,12 @@ impl HostServiceRouter {
         self.services.keys().map(String::as_str).collect()
     }
 
+    pub(crate) fn release_tool_call(&mut self, request_id: &str) {
+        for service in self.services.values_mut() {
+            service.release_tool_call(request_id);
+        }
+    }
+
     /// generation 变化（spec §13.5）：去重窗口清空、取消标记清空、在途计数归零；
     /// 已发布服务与在途调用由调用方负责 revoke/结算（本层同步实现无在途）。
     pub fn set_generation(&mut self, generation: impl Into<String>) {
@@ -606,6 +616,8 @@ impl HostServiceRouter {
             plugin_id: plugin_id.clone(),
             generation: self.generation.clone(),
             session_id: request.session_id.clone(),
+            call_id: request.call_id.clone(),
+            tool_request_id: request.payload["tool_request_id"].as_str().map(str::to_owned),
             depth: request.depth,
         };
         let started = Instant::now();

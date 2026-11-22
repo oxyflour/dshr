@@ -52,15 +52,23 @@ use dshr_agent_context::{
 use dshr_agent_core::{
     spawn_child_spec, Agent, AgentEvent, AttachmentFormat, ChatMessage, CompletionRequest,
     MockProvider, ModelProvider, ModelReply, ModelToolCall, ReasoningEffort, SessionTreeRuntime,
-    SpawnChildArgs, SpawnContext, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
+    SpawnChildArgs, SpawnContext, StepContext, ToolCallRequest, ToolExecutor, ToolOutcome, ToolSpec,
     DEFAULT_MAX_DEPTH, SPAWN_CHILD_TOOL,
 };
 use dshr_compat_dsh_fs::FsWriteService;
 use dshr_compat_dsh_host::{
     parse_tool_registration, Envelope, EventPage, HostOptions, HostServiceRouter, ServiceError,
     SessionAccess, SessionEventView, SessionHeaderView, SessionLogService, SidecarHost,
-    StorageKvService, WorkingDirectoryService, CAP_SERVICE_PROXY, PROTOCOL_MAX, SESSION_LOG_V1,
-    STORAGE_KV_V1, WORKING_DIRECTORY_V1,
+    ShellProgram, StorageKvService, ToolJobService, ToolProcessService, ToolTerminalService, WorkingDirectoryService,
+    OpenToolTurn, CAP_AGENT_TOOL_CONTEXT, CAP_BACKGROUND_JOBS, CAP_IMAGE_ATTACHMENTS, CAP_SEARCH_PROCESS,
+    CAP_SERVICE_PROXY, CAP_SHELL_PROCESS, CAP_TERMINAL_PROCESS, CAP_TOOL_GOALS, CAP_USER_QUESTIONS,
+    CAP_TOOL_SESSION_QUERY, TOOL_SESSION_QUERY_V1,
+    CAP_TOOL_SUBAGENTS, TOOL_SUBAGENTS_V1,
+    CAP_TOOL_TEAMS, TOOL_TEAMS_V1,
+    CAP_TOOL_SCHEDULES, TOOL_SCHEDULES_V1,
+    CAP_PROGRAM_TOOLS, ProgramToolScope,
+    IMAGE_ATTACHMENTS_V1, PROTOCOL_MAX, SESSION_LOG_V1, TOOL_PROCESS_V1,
+    STORAGE_KV_V1, TOOL_GOALS_V1, TOOL_JOBS_V1, TOOL_TERMINALS_V1, USER_QUESTIONS_V1, WORKING_DIRECTORY_V1,
 };
 use dshr_conversation_model::{build_from_log, CardKind, Item, ToolCard, UserAttachment};
 use dshr_llm_deepseek::DeepSeekProvider;
@@ -82,8 +90,8 @@ use dshr_session_store::{
 };
 use dshr_sidecar_guard::GuardLimits;
 use dshr_tool_runtime::{
-    AllowAll, ApprovalBroker, ApprovalOutcome, ApprovalPolicy, LiveApproval, PendingApproval,
-    PermissionMode, PolicyDecision, RegistryError, ToolDefinition, ToolOrigin, ToolPolicy,
+    AllowAll, ApprovalBroker, ApprovalOutcome, ApprovalPolicy, ApprovalResolution, LiveApproval, PendingApproval,
+    PermissionMode, PolicyDecision, Presentation, RegistryError, ToolDefinition, ToolOrigin, ToolPolicy,
 };
 use dshr_ui_contributions::parse_action;
 use dshr_ui_gpui::{
@@ -99,6 +107,24 @@ const MAX_MEDIA_ATTACHMENT_BYTES: usize = 12 * 1024 * 1024;
 
 #[path = "chat/attachment_preview.rs"]
 mod attachment_preview;
+#[path = "chat/dsh_image_attachments.rs"]
+mod dsh_image_attachments;
+#[path = "chat/dsh_user_questions.rs"]
+mod dsh_user_questions;
+#[path = "chat/dsh_deliverables.rs"]
+mod dsh_deliverables;
+#[path = "chat/dsh_goals.rs"]
+mod dsh_goals;
+#[path = "chat/dsh_session_query.rs"]
+mod dsh_session_query;
+#[path = "chat/dsh_subagents.rs"]
+mod dsh_subagents;
+#[path = "chat/dsh_teams.rs"]
+mod dsh_teams;
+#[path = "chat/dsh_schedules.rs"]
+mod dsh_schedules;
+#[path = "chat/user_question_view.rs"]
+mod user_question_view;
 use attachment_preview::{
     decode_image, AttachmentThumbnail, PreviewSource, StoredAttachment, THUMBNAIL_EDGE,
 };
@@ -780,8 +806,23 @@ fn data_root() -> PathBuf {
 fn prepare_data_env() {
     let root = resolve_data_root();
     let _ = DATA_ROOT.set(root.clone());
+    let debug_assets = if non_empty_env_path("DSHR_APP_ROOT").is_none() {
+        std::env::current_exe()
+            .ok()
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .and_then(windows_debug_assets)
+    } else {
+        None
+    };
+    if let Some(assets) = &debug_assets {
+        set_env_default("DSHR_RUNTIME_DIR", assets.join("runtime"));
+    }
+    let profile = debug_assets
+        .filter(|_| non_empty_env_path("DSHR_HOME").is_none())
+        .map_or_else(|| root.join("profile"), |assets| assets.with_file_name("profile"));
     set_env_default("DSHR_SESSIONS_DIR", root.join("sessions"));
-    set_env_default("DSHR_PROFILE_DIR", root.join("profile"));
+    set_env_default("DSHR_PROFILE_DIR", profile);
     set_env_default("DSHR_SPILL_DIR", root.join("spill"));
     set_env_default("DSHR_CRASH_LOG", root.join("crash.log"));
 }
@@ -815,7 +856,15 @@ fn is_cli_invocation(args: &[String]) -> bool {
     args.iter().skip(1).any(|arg| arg.starts_with("--"))
 }
 
-/// 应用资源根：`DSHR_APP_ROOT` → exe 旁含 `sidecar/` 的目录 → 编译期仓库根（开发机）。
+fn windows_debug_assets(exe_dir: &std::path::Path) -> Option<PathBuf> {
+    if !cfg!(all(windows, debug_assertions)) || exe_dir.join("sidecar").is_dir() {
+        return None;
+    }
+    let assets = exe_dir.join("dshr-debug-assets");
+    assets.join("sidecar/dsh-official/default-profile.json").is_file().then_some(assets)
+}
+
+/// 应用资源根：`DSHR_APP_ROOT` → 包内资源 → 暂存的 Windows 调试资源 → 编译期仓库根。
 /// 打包后整目录拷走即可运行，不再依赖构建机上的源码树。
 fn app_root() -> PathBuf {
     if let Some(root) = non_empty_env_path("DSHR_APP_ROOT") {
@@ -827,6 +876,9 @@ fn app_root() -> PathBuf {
     {
         if dir.join("sidecar").is_dir() {
             return dir;
+        }
+        if let Some(assets) = windows_debug_assets(&dir) {
+            return assets;
         }
     }
     std::path::absolute(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
@@ -978,15 +1030,16 @@ fn now_ts() -> String {
 
 /// 上下文外部化对象目录：默认在会话目录旁的 `spill/`，可用 `DSHR_SPILL_DIR` 覆盖。
 fn spill_dir_for(session_path: &std::path::Path) -> PathBuf {
+    spill_dir_in(session_path.parent().unwrap_or_else(|| std::path::Path::new(".tmp")))
+}
+
+fn spill_dir_in(sessions_dir: &std::path::Path) -> PathBuf {
     if let Ok(dir) = std::env::var("DSHR_SPILL_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir);
         }
     }
-    session_path
-        .parent()
-        .map(|parent| parent.join("spill"))
-        .unwrap_or_else(|| PathBuf::from(".tmp/spill"))
+    sessions_dir.join("spill")
 }
 
 /// 自检重置会话夹具：主文件 + `.bak` + `.corrupt-*` 全部清掉。
@@ -1085,6 +1138,10 @@ fn transcript_text(messages: &[ChatMessage], max_chars: usize) -> String {
                 ("assistant", body)
             }
             ChatMessage::Tool { content, .. } => ("tool", content.clone()),
+            ChatMessage::ToolImages(images) => (
+                "tool",
+                images.iter().map(|image| image.name.as_str()).collect::<Vec<_>>().join(", "),
+            ),
         };
         out.push_str(&format!("[{role}] {text}\n"));
         if out.chars().count() >= max_chars {
@@ -1453,6 +1510,7 @@ fn spawn_sidecar_in(
     }
     // 资源根按 exe 相对解析：`dist/dshr-dev` 整目录拷走后仍能找到 sidecar/（见 `app_root`）。
     let root = app_root();
+    let interactive = live_controls.is_some();
     let mode = std::env::var("DSHR_SIDECAR")
         .ok()
         .filter(|mode| !mode.is_empty())
@@ -1488,6 +1546,16 @@ fn spawn_sidecar_in(
             .ok()
             .and_then(|raw| runtime_components::sidecar_profile(&raw))
         {
+            let credentials: std::collections::BTreeMap<_, _> =
+                runtime_components::web_credential_refs(&effective).into_iter().filter_map(|name| {
+                    std::env::var(&name).ok().map(|value| (name, value))
+                }).collect();
+            if !credentials.is_empty() {
+                options = options.with_env(
+                    "DSHR_WEB_CREDENTIAL_VALUES",
+                    serde_json::to_string(&credentials).expect("string map"),
+                );
+            }
             options = options.with_env("DSHR_DSH_PLUGINS", effective);
         }
     }
@@ -1530,13 +1598,96 @@ fn spawn_sidecar_in(
         .unwrap_or(true);
     if mode == "dsh" && l2_enabled {
         if let Some(access) = l2_access {
+            let search_name = if cfg!(windows) { "rg.exe" } else { "rg" };
+            let arch = match std::env::consts::ARCH {
+                "x86_64" => "x64",
+                "aarch64" => "arm64",
+                "x86" => "ia32",
+                other => other,
+            };
+            let platform = match std::env::consts::OS {
+                "windows" => "win32",
+                "macos" => "darwin",
+                other => other,
+            };
+            let packaged_search = root.join(format!(
+                "sidecar/dsh-official/node_modules/@vscode/ripgrep-{platform}-{arch}/bin/{search_name}"
+            ));
+            let search = if packaged_search.is_file() {
+                Some(packaged_search)
+            } else {
+                path_executable(search_name)
+            };
+            let shell = if interactive {
+                let (name, executable) = if cfg!(windows) { ("pwsh", "pwsh.exe") } else { ("bash", "bash") };
+                let bundled = root.join("runtime/powershell/pwsh.exe");
+                let path = if cfg!(windows) && bundled.is_file() {
+                    Some(bundled)
+                } else {
+                    path_executable(executable)
+                };
+                path.map(|path| ShellProgram { name, path })
+            } else {
+                None
+            };
+            let process_caps = [(search.is_some(), CAP_SEARCH_PROCESS), (shell.is_some(), CAP_SHELL_PROCESS)];
+            let jobs = shell.clone().and_then(|shell| {
+                ToolJobService::new(workspace, data_root().join("tool-jobs"), shell)
+                    .inspect_err(|error| eprintln!("[chat] 官方后台任务不可用: {error}")).ok()
+            });
+            let jobs_available = jobs.is_some();
+            let terminals = shell.as_ref().and_then(|shell| {
+                let terminals = ToolTerminalService::new(workspace, access.clone())
+                    .inspect_err(|error| eprintln!("[chat] 官方终端不可用: {error}")).ok()?;
+                options.env.push(("DSHR_TERMINAL_SHELL".to_owned(), shell.path.to_string_lossy().into_owned()));
+                Some(terminals)
+            });
+            let terminals_available = terminals.is_some();
+            let processes = if process_caps.iter().any(|(enabled, _)| *enabled) {
+                match ToolProcessService::new(workspace, search, shell) {
+                    Ok(service) => Some(service),
+                    Err(error) => {
+                        eprintln!("[chat] 官方进程工具不可用: {error}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let processes_available = processes.is_some();
             match build_l2_router_at(
                 access,
                 data_root().join("storage"),
                 workspace.to_path_buf(),
                 "dsh-official",
+                processes,
+                jobs,
+                terminals,
+                interactive,
             ) {
-                Ok(router) => options = options.with_host_services(router),
+                Ok(router) => {
+                    options = options.with_host_services(router);
+                    options.extra_caps.push(CAP_IMAGE_ATTACHMENTS.to_owned());
+                    options.extra_caps.push(CAP_USER_QUESTIONS.to_owned());
+                    options.extra_caps.push(CAP_AGENT_TOOL_CONTEXT.to_owned());
+                    options.extra_caps.push(CAP_TOOL_GOALS.to_owned());
+                    options.extra_caps.push(CAP_TOOL_SESSION_QUERY.to_owned());
+                    options.extra_caps.push(CAP_TOOL_SUBAGENTS.to_owned());
+                    options.extra_caps.push(CAP_TOOL_TEAMS.to_owned());
+                    options.extra_caps.push(CAP_TOOL_SCHEDULES.to_owned());
+                    options.extra_caps.push(CAP_PROGRAM_TOOLS.to_owned());
+                    if jobs_available {
+                        options.extra_caps.push(CAP_BACKGROUND_JOBS.to_owned());
+                    }
+                    if terminals_available {
+                        options.extra_caps.push(CAP_TERMINAL_PROCESS.to_owned());
+                    }
+                    if processes_available {
+                        options.extra_caps.extend(process_caps.into_iter()
+                            .filter(|(enabled, _)| *enabled)
+                            .map(|(_, cap)| cap.to_owned()));
+                    }
+                }
                 Err(err) => eprintln!("[chat] L2 host-service 不可用（回退 v1）: {err}"),
             }
         }
@@ -1546,12 +1697,24 @@ fn spawn_sidecar_in(
         .map_err(|error| format!("sidecar 启动失败（{mode}）：{error}"))
 }
 
+fn path_executable(name: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 /// 构造 v2 Host Service Router，并在 runtime.ready 协商后更新 generation。
 fn build_l2_router_at(
     access: Arc<ChatSessionAccess>,
     storage_root: PathBuf,
     workspace: PathBuf,
     plugin_id: &str,
+    processes: Option<ToolProcessService>,
+    jobs: Option<ToolJobService>,
+    terminals: Option<ToolTerminalService>,
+    interactive: bool,
 ) -> Result<Arc<Mutex<HostServiceRouter>>, String> {
     let mut router = HostServiceRouter::new(
         "node-pending",
@@ -1567,7 +1730,7 @@ fn build_l2_router_at(
     router
         .register(Box::new(WorkingDirectoryService::new(
             access.clone(),
-            workspace,
+            &workspace,
         )))
         .map_err(|error| {
             format!(
@@ -1575,17 +1738,61 @@ fn build_l2_router_at(
                 error.message, error.code
             )
         })?;
+    let images = dsh_image_attachments::ImageAttachmentService::new(
+        &workspace,
+        access.spill_store(),
+        access.clone(),
+    )
+    .map_err(|error| format!("image-attachments: {error}"))?;
+    router
+        .register(Box::new(images))
+        .map_err(|error| format!("register image-attachments: {} ({})", error.message, error.code))?;
+    router
+        .register(Box::new(dsh_user_questions::UserQuestionService::new(
+            interactive.then(|| access.questions.clone()),
+        )))
+        .map_err(|error| format!("register user-questions: {} ({})", error.message, error.code))?;
+    router.register(Box::new(dsh_goals::GoalService::new(access.clone())))
+        .map_err(|error| format!("register tool-goals: {} ({})", error.message, error.code))?;
+    router.register(Box::new(dsh_session_query::SessionQueryService::new(access.clone())))
+        .map_err(|error| format!("register tool-session-query: {} ({})", error.message, error.code))?;
+    router.register(Box::new(dsh_subagents::SubagentService::new(access.clone())))
+        .map_err(|error| format!("register tool-subagents: {} ({})", error.message, error.code))?;
+    router.register(Box::new(dsh_teams::TeamService::new(access.clone())))
+        .map_err(|error| format!("register tool-teams: {} ({})", error.message, error.code))?;
+    router.register(Box::new(dsh_schedules::ScheduleService::new(access.clone())))
+        .map_err(|error| format!("register tool-schedules: {} ({})", error.message, error.code))?;
     router
         .register(Box::new(SessionLogService::new(access)))
         .map_err(|error| format!("register session-log: {} ({})", error.message, error.code))?;
-    router.register_plugin_inject(
-        plugin_id,
-        vec![
+    let mut inject = vec![
             STORAGE_KV_V1.to_owned(),
             WORKING_DIRECTORY_V1.to_owned(),
             SESSION_LOG_V1.to_owned(),
-        ],
-    );
+            IMAGE_ATTACHMENTS_V1.to_owned(),
+            USER_QUESTIONS_V1.to_owned(),
+            TOOL_GOALS_V1.to_owned(),
+            TOOL_SESSION_QUERY_V1.to_owned(),
+            TOOL_SUBAGENTS_V1.to_owned(),
+            TOOL_TEAMS_V1.to_owned(),
+            TOOL_SCHEDULES_V1.to_owned(),
+    ];
+    if let Some(processes) = processes {
+        router.register(Box::new(processes))
+            .map_err(|error| format!("register tool-process: {} ({})", error.message, error.code))?;
+        inject.push(TOOL_PROCESS_V1.to_owned());
+    }
+    if let Some(jobs) = jobs {
+        router.register(Box::new(jobs))
+            .map_err(|error| format!("register tool-jobs: {} ({})", error.message, error.code))?;
+        inject.push(TOOL_JOBS_V1.to_owned());
+    }
+    if let Some(terminals) = terminals {
+        router.register(Box::new(terminals))
+            .map_err(|error| format!("register tool-terminals: {} ({})", error.message, error.code))?;
+        inject.push(TOOL_TERMINALS_V1.to_owned());
+    }
+    router.register_plugin_inject(plugin_id, inject);
     Ok(Arc::new(Mutex::new(router)))
 }
 
@@ -1653,6 +1860,15 @@ enum DesktopModel {
 }
 
 impl DesktopModel {
+    fn provider_name(&self) -> &'static str {
+        match self {
+            Self::Unconfigured => "",
+            Self::Mock => "mock",
+            Self::DeepSeek(_) => "deepseek",
+            Self::OpenAi(_) => "openai",
+        }
+    }
+
     fn kind(&self) -> ModelKind {
         match self {
             Self::Unconfigured => ModelKind::Unconfigured,
@@ -1854,6 +2070,11 @@ impl ToolPolicy for LivePermission {
 }
 
 fn tool_approval_key(session: &str, workspace: &Path, tool: &ToolDefinition) -> Option<String> {
+    if tool.card() == Presentation::Terminal || matches!(tool.name.as_str(),
+        "pwsh" | "powershell" | "bash" | "shell" | "exec" | "terminal_open" | "terminal_send" | "terminal_signal")
+    {
+        return None;
+    }
     let owner = match &tool.origin {
         ToolOrigin::Native { plugin_id } | ToolOrigin::Sidecar { plugin_id, .. } => plugin_id,
         ToolOrigin::Mcp { .. } => return None,
@@ -1932,19 +2153,26 @@ fn append_repeat_reminders<P: ModelProvider>(
 /// 所以队列事件的 seq 与后续真实日志 seq 一致。
 pub struct ChatSessionAccess {
     inner: Mutex<ChatSessionAccessInner>,
+    questions: Arc<dsh_user_questions::QuestionBroker>,
+    goals: dsh_goals::GoalActivation,
+    children: Arc<dsh_subagents::ChildSupervisor>,
 }
 
 struct ChatSessionAccessInner {
     sessions_dir: PathBuf,
     published: Option<PublishedSession>,
     pending: Vec<PendingSessionEvent>,
+    child_environment: Option<dsh_subagents::ChildEnvironment>,
 }
 
 #[derive(Clone)]
 struct PublishedSession {
     header: SessionHeaderView,
     events: Vec<SessionEventView>,
+    event_times: Vec<String>,
     next_seq: u64,
+    image_input: bool,
+    cancel: Arc<AtomicBool>,
 }
 
 struct PendingSessionEvent {
@@ -1955,17 +2183,25 @@ struct PendingSessionEvent {
 
 impl ChatSessionAccess {
     pub fn new(sessions_dir: PathBuf) -> Arc<Self> {
+        Self::with_children(sessions_dir, Arc::new(dsh_subagents::ChildSupervisor::default()))
+    }
+
+    fn with_children(sessions_dir: PathBuf, children: Arc<dsh_subagents::ChildSupervisor>) -> Arc<Self> {
         Arc::new(Self {
+            questions: Arc::new(dsh_user_questions::QuestionBroker::default()),
+            goals: dsh_goals::GoalActivation::default(),
+            children,
             inner: Mutex::new(ChatSessionAccessInner {
                 sessions_dir,
                 published: None,
                 pending: Vec::new(),
+                child_environment: None,
             }),
         })
     }
 
     /// 用当前内存日志刷新服务层可见的快照（在每次 sidecar 工具调用前调用）。
-    pub fn publish(&self, log: &SessionLog) {
+    pub fn publish(&self, log: &SessionLog, image_input: bool, cancel: Arc<AtomicBool>) {
         let mut inner = self
             .inner
             .lock()
@@ -1981,11 +2217,41 @@ impl ChatSessionAccess {
             })
             .collect();
         let next_seq = events.last().map(|event| event.seq + 1).unwrap_or(1);
+        let event_times = log.events().iter().map(|event| event.ts.clone()).collect();
         inner.published = Some(PublishedSession {
             header,
             events,
+            event_times,
             next_seq,
+            image_input,
+            cancel,
         });
+    }
+
+    fn spill_store(&self) -> SpillStore {
+        let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        SpillStore::new(spill_dir_in(&inner.sessions_dir))
+    }
+
+    fn image_input(&self, session: &str) -> Result<bool, ServiceError> {
+        let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let published = inner.published.as_ref()
+            .filter(|published| published.header.id == session)
+            .ok_or_else(|| ServiceError::new("E_SERVICE_DENIED", "image session is not active"))?;
+        if published.cancel.load(Ordering::Acquire) {
+            return Err(ServiceError::new("E_CANCELLED", "image tool call was cancelled"));
+        }
+        Ok(published.image_input)
+    }
+
+    fn has_image(&self, session: &str, id: &str) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.published.as_ref().is_some_and(|published| {
+            published.header.id == session && published.events.iter().any(|event| {
+                event.event_type == dshr_agent_context::spill::EVENT_SPILL_CREATED
+                    && event.data["kind"] == "tool.image" && event.data["id"] == id
+            })
+        })
     }
 
     /// 取走服务层为 `session_id` 追加的事件（按序写回内存日志）。
@@ -2008,6 +2274,7 @@ impl ChatSessionAccess {
     }
 
     fn clear_snapshot(&self) {
+        self.goals.disarm();
         let mut inner = self
             .inner
             .lock()
@@ -2105,7 +2372,7 @@ impl SessionAccess for ChatSessionAccess {
         &self,
         session_id: &str,
         event_type: &str,
-        data: serde_json::Value,
+        mut data: serde_json::Value,
     ) -> Result<u64, ServiceError> {
         let mut inner = self
             .inner
@@ -2123,12 +2390,22 @@ impl SessionAccess for ChatSessionAccess {
                 format!("session `{session_id}` is not the active session"),
             ));
         }
+        if event_type == dsh_deliverables::PRESENTED_EVENT {
+            if published.cancel.load(Ordering::Acquire) {
+                return Err(ServiceError::new("E_CANCELLED", "file delivery was cancelled"));
+            }
+            let workspace = published.header.cwd.as_deref().ok_or_else(|| {
+                ServiceError::new("E_SERVICE_DENIED", "delivery session has no workspace")
+            })?;
+            data = dsh_deliverables::normalize_event(Path::new(workspace), data)?;
+        }
         let seq = published.next_seq;
         published.events.push(SessionEventView {
             seq,
             event_type: event_type.to_owned(),
             data: data.clone(),
         });
+        published.event_times.push(now_ts());
         published.next_seq += 1;
         inner.pending.push(PendingSessionEvent {
             session_id: session_id.to_owned(),
@@ -2229,6 +2506,7 @@ struct ChatExecutor<'a> {
     approvals: &'a Arc<ApprovalBroker>,
     creator: Option<creator::Session<'a>>,
     step: ToolStep,
+    program_hidden: HashSet<String>,
     headless: bool,
     diagnostics: bool,
     /// 父会话日志（与流式回调共享同一个 RefCell：`spawn_child` 要向它追加
@@ -2269,18 +2547,30 @@ type ToolStep = std::rc::Rc<RefCell<std::collections::BTreeMap<String, ResolvedT
 
 impl ToolExecutor for ChatExecutor<'_> {
     fn specs(&self) -> Vec<ToolSpec> {
-        self.step
-            .borrow()
+        let background_child = self.is_background_child();
+        let tools = self.step.borrow();
+        tools
             .values()
             .map(|tool| ToolSpec {
                 name: tool.definition.name.clone(),
-                description: tool.definition.description.clone(),
+                description: match (background_child, tool.definition.name.as_str()) {
+                    (true, "working_directory") => format!(
+                        "{} Use this tool with an empty object {{}} to read your current session directory.",
+                        tool.definition.description
+                    ),
+                    (true, "pwsh" | "bash") if tools.contains_key("working_directory") => format!(
+                        "{} Use working_directory to read the current session directory. Report commands that require approval to the parent session.",
+                        tool.definition.description
+                    ),
+                    _ => tool.definition.description.clone(),
+                },
                 parameters: tool.definition.input_schema.clone(),
             })
             .collect()
     }
 
     fn prepare_step(&mut self) -> Vec<ToolSpec> {
+        self.program_hidden.clear();
         if let Some(host) = self.host.as_mut() {
             if let Err(error) = host.refresh_registrations() {
                 eprintln!("[chat] sidecar tool registry: {error}");
@@ -2354,8 +2644,89 @@ impl ToolExecutor for ChatExecutor<'_> {
         self.specs()
     }
 
+    fn prepare_step_context(&mut self, step: u32, user_text: Option<&str>) -> StepContext {
+        if !self.host.as_ref().is_some_and(SidecarHost::supports_agent_tool_context) {
+            return StepContext::default();
+        }
+        let registrations: std::collections::BTreeMap<_, _> = self.step.borrow().iter()
+            .filter_map(|(name, tool)| match &tool.definition.origin {
+                ToolOrigin::Sidecar { plugin_id, registration_id, .. } if plugin_id == "dsh-official" => {
+                    Some((name.clone(), registration_id.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let contextual_tools: Vec<_> = registrations.keys().filter(|name| matches!(
+            name.as_str(), "skill" | "web_search" | "web_fetch" | "office_render" | "office_convert"
+                | "office_recalculate" | "job_list" | "job_output" | "job_kill"
+                | "terminal_open" | "terminal_send" | "terminal_read" | "terminal_signal"
+                | "terminal_list" | "terminal_close"
+                | "get_goal" | "create_goal" | "update_goal" | "session_search" | "session_event_search"
+                | "session_trace" | "session_event_trace" | "session_event_read"
+                | "subagent" | "list_agents" | "send_message" | "wait_agent" | "interrupt_agent"
+                | "team_task_create" | "team_task_list" | "team_task_get" | "team_task_update"
+                | "workflow" | "ralph"
+                | "schedule_create" | "schedule_view" | "schedule_list" | "schedule_edit"
+                | "cordis_inspect_list" | "cordis_inspect_query" | "run_code"
+        )).cloned().collect();
+        if contextual_tools.is_empty() {
+            return StepContext::default();
+        }
+        self.publish_l2_snapshot();
+        let model = &self.settings.model;
+        let turn = open_tool_turn(&self.log.borrow()).map(|turn| json!({
+            "number": turn.number, "start_seq": turn.start_seq,
+        }));
+        let reply = self.host.as_mut().expect("checked sidecar capabilities")
+            .prepare_agent_step(self.parent_id, json!({
+                "step": step,
+                "model": {
+                    "provider": model.provider_name(), "model": model.name(),
+                    "image_input": model.supports_attachments(),
+                },
+                "registrations": registrations,
+                "turn": turn,
+                "user_text": user_text,
+            }));
+        self.drain_l2_appends();
+        if let Ok(reply) = &reply {
+            if registrations.contains_key("run_code") {
+                self.program_hidden = reply["deferred_tools"].as_array().into_iter().flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|name| *name != "run_code" && registrations.contains_key(*name))
+                    .map(str::to_owned).collect();
+            }
+        }
+        let mut context = match reply {
+            Ok(reply) => StepContext {
+                unavailable_tools: serde_json::from_value(reply["unavailable_tools"].clone()).unwrap_or_default(),
+                system_sections: serde_json::from_value(reply["system_sections"].clone()).unwrap_or_default(),
+                turn_instructions: serde_json::from_value(reply["turn_instructions"].clone()).unwrap_or_default(),
+            },
+            Err(error) => {
+                eprintln!("[chat] sidecar agent step: {error}");
+                StepContext { unavailable_tools: contextual_tools, ..Default::default() }
+            }
+        };
+        context.unavailable_tools.retain(|name| registrations.contains_key(name));
+        self.step.borrow_mut().retain(|name, _| !context.unavailable_tools.contains(name));
+        context.unavailable_tools.extend(self.program_hidden.iter().cloned());
+        context
+    }
+
     fn execute(&mut self, call: &ToolCallRequest) -> ToolOutcome {
         self.execute_batch(std::slice::from_ref(call), 1).remove(0)
+    }
+
+    fn tool_images(&self, outcome: &ToolOutcome) -> Vec<dshr_agent_core::MediaAttachment> {
+        let Some(access) = &self.l2_access else {
+            return Vec::new();
+        };
+        dshr_agent_context::spill::restore_tool_images(
+            &access.spill_store(),
+            &self.log.borrow(),
+            &outcome.content,
+        )
     }
 
     fn execute_batch(
@@ -2369,8 +2740,13 @@ impl ToolExecutor for ChatExecutor<'_> {
         let mut native_calls = [Vec::new(), Vec::new()];
         let mut native_indices = [Vec::new(), Vec::new()];
         let mut replaced_trials = std::collections::BTreeSet::new();
+        let turn = open_tool_turn(&self.log.borrow());
 
         for (index, call) in calls.iter().enumerate() {
+            if self.program_hidden.contains(&call.tool) {
+                outcomes[index] = ToolOutcome::failure(format!("tool {} requires run_code in this model step", call.tool));
+                continue;
+            }
             let tool = self.step.borrow().get(&call.tool).cloned();
             let Some(ResolvedTool {
                 definition,
@@ -2435,6 +2811,8 @@ impl ToolExecutor for ChatExecutor<'_> {
                             sidecar_tool_timeout(&definition),
                         )
                         .with_session(self.parent_id)
+                        .with_turn(turn)
+                        .with_model_route(self.settings.model.provider_name(), self.settings.model.name())
                         .with_binding(definition.origin)
                         .with_approval_key(grant_key),
                     );
@@ -2452,8 +2830,11 @@ impl ToolExecutor for ChatExecutor<'_> {
 
         if !sidecar_calls.is_empty() {
             self.publish_l2_snapshot();
+            let program = calls.iter().any(|call| call.tool == "run_code").then(|| self.program_scope()).flatten();
             if let Some(host) = self.host.as_mut() {
+                host.set_program_tools(program);
                 let results = host.invoke_batch(&sidecar_calls, max_parallel, Some(self.cancel));
+                host.set_program_tools(None);
                 self.drain_l2_appends();
                 for (index, result) in sidecar_indices.into_iter().zip(results) {
                     outcomes[index] = match result {
@@ -2510,7 +2891,77 @@ impl ToolExecutor for ChatExecutor<'_> {
     }
 }
 
+fn open_tool_turn(log: &SessionLog) -> Option<OpenToolTurn> {
+    let event = log.events().iter().rev().find(|event| {
+        matches!(event.event_type.as_str(), "turn.started" | "turn.ended")
+    })?;
+    (event.event_type == "turn.started").then(|| OpenToolTurn {
+        number: log.events().iter().filter(|event| event.event_type == "turn.started").count() as u64,
+        start_seq: event.seq,
+    })
+}
+
+fn approval_denial_message(approval: ApprovalResolution, background_child: bool, tool: &str) -> String {
+    match approval.answerer {
+        "headless" if background_child => format!("Tool `{tool}` requires approval. Interactive approval is unavailable in this background subagent. Report this operation to the parent session."),
+        "headless" => format!("Tool `{tool}` requires approval. Interactive approval is unavailable in this run."),
+        "cancelled" => format!("Approval for tool `{tool}` was cancelled."),
+        "timeout" => format!("Approval for tool `{tool}` timed out."),
+        "auto" => format!("Tool `{tool}` was denied by the configured approval decision."),
+        "permission_mode" => format!("Tool `{tool}` was denied by the current permission mode."),
+        _ => format!("user denied tool `{tool}`"),
+    }
+}
+
 impl ChatExecutor<'_> {
+    fn is_background_child(&self) -> bool {
+        !self.approvals.is_interactive() && self.log.borrow().created().is_some_and(SessionCreated::is_child)
+    }
+
+    fn program_scope(&self) -> Option<ProgramToolScope> {
+        let access = self.l2_access.clone()?;
+        let session_id = self.parent_id.to_owned();
+        let owner = session_id.clone();
+        let workspace = self.workspace.to_path_buf();
+        let cancel = self.cancel.clone();
+        let permission = self.permission.clone();
+        let approvals = self.approvals.clone();
+        let background_child = self.is_background_child();
+        let headless = self.headless;
+        let tools = self.step.borrow().iter().filter_map(|(name, tool)| {
+            (self.program_hidden.contains(name) && matches!(tool.location, ToolLocation::Global)).then(|| {
+                (name.clone(), (tool.definition.clone(), sidecar_tool_timeout(&tool.definition)))
+            })
+        }).collect();
+        let audit_owner = owner.clone();
+        Some(ProgramToolScope {
+            session_id, tools,
+            authorize: Arc::new(move |definition, call_id, arguments, remaining| {
+                if cancel.load(Ordering::Acquire) { return Err("program was cancelled".to_owned()); }
+                let key = if !headless && permission.mode().is_some() {
+                    tool_approval_key(&owner, &workspace, definition)
+                } else { None };
+                let decide = || permission.check(definition, arguments);
+                match decide() {
+                    PolicyDecision::Allow => return Ok(key),
+                    PolicyDecision::Deny(message) => return Err(message),
+                    PolicyDecision::Ask => {}
+                }
+                let approval = approvals.request_with_policy_resolution(call_id, &definition.name, arguments, remaining,
+                    &cancel, LiveApproval { decide: &decide, grant_key: key.as_deref() });
+                if let PolicyDecision::Deny(message) = decide() { return Err(message); }
+                if cancel.load(Ordering::Acquire) { return Err("program was cancelled".to_owned()); }
+                match approval.outcome {
+                    ApprovalOutcome::AllowOnce | ApprovalOutcome::AllowAlways => Ok(key),
+                    ApprovalOutcome::Deny => Err(approval_denial_message(approval, background_child, &definition.name)),
+                }
+            }),
+            record_admission: Arc::new(move |event| {
+                access.append_event(&audit_owner, "tool.program.admitted", event).map(|_| ()).map_err(|error| error.message)
+            }),
+        })
+    }
+
     fn execute_spawn_child(&mut self, call: &ToolCallRequest) -> ToolOutcome {
         let log = self.log.clone();
         let outcome = TreeCoordinator::spawn_child(&mut log.borrow_mut(), call, self);
@@ -2529,7 +2980,7 @@ impl ChatExecutor<'_> {
             Ok(_) => Ok(()),
             Err(RegistryError::NeedsApproval { tool }) => {
                 let policy = || self.permission.check(definition, &call.arguments);
-                let outcome = self.approvals.request_with_policy(
+                let approval = self.approvals.request_with_policy_resolution(
                     &call.call_id,
                     &tool,
                     &call.arguments,
@@ -2543,7 +2994,10 @@ impl ChatExecutor<'_> {
                 if let PolicyDecision::Deny(reason) = policy() {
                     return Err(ToolOutcome::failure(reason));
                 }
-                match outcome {
+                if self.cancel.load(Ordering::Acquire) {
+                    return Err(ToolOutcome::failure(format!("Approval for tool `{tool}` was cancelled.")));
+                }
+                match approval.outcome {
                     ApprovalOutcome::AllowOnce | ApprovalOutcome::AllowAlways => {
                         dshr_tool_runtime::ToolRegistry::validate_definition(
                             definition,
@@ -2551,9 +3005,9 @@ impl ChatExecutor<'_> {
                         )
                         .map_err(|error| ToolOutcome::failure(error.to_string()))
                     }
-                    ApprovalOutcome::Deny => {
-                        Err(ToolOutcome::failure(format!("user denied tool `{tool}`")))
-                    }
+                    ApprovalOutcome::Deny => Err(ToolOutcome::failure(approval_denial_message(
+                        approval, self.is_background_child(), &tool,
+                    ))),
                 }
             }
             Err(error) => Err(ToolOutcome::failure(error.to_string())),
@@ -2562,7 +3016,15 @@ impl ChatExecutor<'_> {
 
     fn publish_l2_snapshot(&self) {
         if let Some(access) = &self.l2_access {
-            access.publish(&self.log.borrow());
+            access.inner.lock().unwrap_or_else(|error| error.into_inner()).child_environment = Some(dsh_subagents::ChildEnvironment {
+                settings: self.settings.clone(), permission: self.permission.clone(),
+                diagnostics: self.diagnostics,
+            });
+            access.publish(
+                &self.log.borrow(),
+                self.settings.model.supports_attachments(),
+                self.cancel.clone(),
+            );
         }
     }
 
@@ -2757,9 +3219,10 @@ fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHost, headless
     for definition in host.tool_definitions() {
         if headless
             && (definition.presentation.as_deref() == Some("terminal")
+                || definition.name.starts_with("terminal_")
                 || matches!(
                     definition.name.as_str(),
-                    "bash" | "pwsh" | "shell" | "powershell" | "exec"
+                    "bash" | "pwsh" | "shell" | "powershell" | "exec" | "job_list" | "job_output" | "job_kill"
                 ))
         {
             continue;
@@ -3013,6 +3476,19 @@ impl ChatState {
         settings: DesktopSettings,
         runtime: ChatRuntime,
     ) -> Self {
+        Self::from_log_in(path, log, workspace, cancel, approvals, settings, runtime, None)
+    }
+
+    fn from_log_in(
+        path: PathBuf,
+        log: SessionLog,
+        workspace: PathBuf,
+        cancel: &Arc<AtomicBool>,
+        approvals: Arc<ApprovalBroker>,
+        settings: DesktopSettings,
+        runtime: ChatRuntime,
+        inherited: Option<(Arc<dsh_subagents::ChildSupervisor>, LivePermission)>,
+    ) -> Self {
         let (headless, allow_spawn, with_sidecar, diagnostics) = match runtime {
             ChatRuntime::Desktop {
                 allow_spawn,
@@ -3027,11 +3503,15 @@ impl ChatState {
             .unwrap_or_else(|| PathBuf::from("."));
         // L2 会话读写面在 spawn 之前准备好：Router 注册时需要它（chat.rs 只负责构造/注入）。
         let l2_access = if with_sidecar {
-            Some(ChatSessionAccess::new(sessions_dir.clone()))
+            Some(match &inherited {
+                Some((children, _)) => ChatSessionAccess::with_children(sessions_dir.clone(), children.clone()),
+                None => ChatSessionAccess::new(sessions_dir.clone()),
+            })
         } else {
             None
         };
-        let permission = LivePermission::new(settings.permission);
+        let permission = inherited.map(|(_, permission)| permission)
+            .unwrap_or_else(|| LivePermission::new(settings.permission));
         let (host, sidecar_start_error) = if with_sidecar {
             match spawn_sidecar_in(
                 &workspace,
@@ -3530,6 +4010,28 @@ impl ChatState {
         attachments: &[DraftAttachment],
         emit: &mut dyn FnMut(TurnUpdate<'_>),
     ) -> Result<TurnResult, String> {
+        let mut result = self.run_turn_once(text, attachments, None, emit);
+        while let Some(access) = self.l2_access.clone() {
+            if self.cancel.load(Ordering::Acquire)
+                || !result.as_ref().is_ok_and(|turn| turn.reason == TurnReason::Completed)
+            {
+                access.goals.disarm();
+                break;
+            }
+            let Some(round) = access.goals.next_round(&self.log) else { break; };
+            let prompt = format!("Continue the active goal from the current session history.\nObjective: {}", round.objective);
+            result = self.run_turn_once(&prompt, &[], Some(round), emit);
+        }
+        result
+    }
+
+    fn run_turn_once(
+        &mut self,
+        text: &str,
+        attachments: &[DraftAttachment],
+        goal_round: Option<dsh_goals::Goal>,
+        emit: &mut dyn FnMut(TurnUpdate<'_>),
+    ) -> Result<TurnResult, String> {
         self.refresh_agent_presets();
         if let Some(error) = &self.active_preset_error {
             return Err(error.clone());
@@ -3560,11 +4062,17 @@ impl ChatState {
             }
         }
         let current = user_message_from_payload(&payload).expect("nonempty user message");
+        let source = if let Some(goal) = goal_round {
+            goal.record_round(&mut self.log, &ts)?;
+            goal.source()
+        } else {
+            json!({"kind":"user"})
+        };
         self.log
             .append(EventSpec::durable("message.user", &ts, payload))
             .map_err(|error| error.to_string())?;
         self.log.append(EventSpec::durable(
-            "turn.started", &ts, json!({ "turn_id": turn_id, "prompt_message_id": user_id })
+            "turn.started", &ts, json!({ "turn_id": turn_id, "prompt_message_id": user_id, "source": source })
         )).map_err(|error| error.to_string())?;
         self.save_checked()?;
         emit(TurnUpdate::Preview(&self.log, None, None));
@@ -3640,7 +4148,7 @@ impl ChatState {
             history.pop();
         }
         history.push(current);
-        dshr_agent_context::spill::restore_user_attachments(
+        dshr_agent_context::spill::restore_history_attachments(
             &self.spill,
             &self.log,
             &mut history,
@@ -3688,6 +4196,7 @@ impl ChatState {
                     read_only: !self.permission.can_write(),
                 }),
                 step: step.clone(),
+                program_hidden: HashSet::new(),
                 headless: self.headless,
                 diagnostics: self.diagnostics,
                 log: log_cell.clone(),
@@ -3835,6 +4344,13 @@ impl ChatState {
                         emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), Some(&reasoning)));
                     }
                     AgentEvent::TurnEnded { .. } => reason = TurnReason::Completed,
+                    AgentEvent::StepStarted { step, .. } if self.l2_access.is_some() => {
+                        if let Err(error) = log_for_events.borrow_mut().append(EventSpec::durable(
+                            "step.started", now_ts(), json!({ "turn_id": turn_id, "step": step }),
+                        )) {
+                            event_error.get_or_insert_with(|| error.to_string());
+                        }
+                    }
                     AgentEvent::TurnStarted { .. } | AgentEvent::StepStarted { .. } => {}
                 },
             );
@@ -3859,6 +4375,9 @@ impl ChatState {
         // 取消可能由 Agent 的 TurnCancelled 上报，也可能发生在工具返回后，两个来源都覆盖。
         let cancelled_by_flag = self.cancel.load(Ordering::Relaxed);
         if cancelled.is_some() || cancelled_by_flag {
+            if let Some(access) = &self.l2_access {
+                access.children.stop_descendants(&self.session_id);
+            }
             let reason = cancelled
                 .clone()
                 .unwrap_or_else(|| String::from("user_stop"));
@@ -3974,6 +4493,7 @@ impl ChatState {
                 read_only: !self.permission.can_write(),
             }),
             step: step.clone(),
+            program_hidden: HashSet::new(),
             headless: self.headless,
                 diagnostics: self.diagnostics,
             log: log_cell.clone(),
@@ -4387,6 +4907,8 @@ struct ChatApp {
     approvals: Arc<ApprovalBroker>,
     /// 上一次渲染时的 pending 数，用于只在变化时触发重绘。
     pending_approvals: usize,
+    questions: Option<Arc<dsh_user_questions::QuestionBroker>>,
+    question_draft: Option<user_question_view::QuestionDraft>,
     approval_error: Option<(PendingApproval, String)>,
     approval_saving: Option<PendingApproval>,
     tool_approvals_loading: bool,
@@ -4600,12 +5122,14 @@ impl ChatApp {
                             app.adc_panels = panels;
                         }
                         app.busy = false;
+                        app.sync_user_questions(cx);
                         cx.notify();
                     });
                     return;
                 }
                 // 审批可能出现在两个快照之间：轮询 pending，变化时重绘。
                 let _ = this.update(cx, |app, cx| {
+                    app.sync_user_questions(cx);
                     let pending = app.approvals.pending().len();
                     if pending != app.pending_approvals {
                         app.pending_approvals = pending;
@@ -6921,6 +7445,10 @@ impl ChatApp {
                     .filter(|row| matches!(row, Row::Tool { .. }))
                     .count();
                 let thinking = steps.iter().any(|row| matches!(row, Row::Reasoning { .. }));
+                let keep_visible = |row: &Row| {
+                    self.inline_trial_call(row).is_some()
+                        || matches!(row, Row::Tool { delivered_files, .. } if !delivered_files.is_empty())
+                };
                 let active = steps.iter().any(|row| {
                     matches!(
                         row,
@@ -6976,7 +7504,7 @@ impl ChatApp {
                             })),
                     )
                     .when(
-                        open || steps.iter().any(|step| self.inline_trial_call(step).is_some()),
+                        open || steps.iter().any(keep_visible),
                         |group| {
                             group.child(
                                 div()
@@ -6992,7 +7520,7 @@ impl ChatApp {
                                     .children(
                                         steps
                                             .iter()
-                                            .filter(|row| open || self.inline_trial_call(row).is_some())
+                                            .filter(|row| open || keep_visible(row))
                                             .map(|row| self.render_row(row, index, t, base_font, window, cx)),
                                     ),
                             )
@@ -7015,6 +7543,7 @@ impl ChatApp {
                 is_error,
                 pending,
                 card,
+                delivered_files,
             } => {
                 let trial_call = self.inline_trial_call(row);
                 let expanded = !self.collapsed_trial_cards.contains(call_seq);
@@ -7123,6 +7652,27 @@ impl ChatApp {
                             el.child(body)
                         },
                     )
+                    .children(delivered_files.iter().enumerate().map(|(file_index, file)| {
+                        let path = file.path.clone();
+                        let label = file.path.file_name().unwrap_or(file.path.as_os_str()).to_string_lossy().into_owned();
+                        let button_id: gpui::SharedString = format!("delivered-file-{call_seq}").into();
+                        chrome_button((button_id, file_index), "", t)
+                            .aria_label(format!("打开 {label}"))
+                            .child(label)
+                            .focusable()
+                            .when_some(file.description.clone(), |button, description| {
+                                button.child(div().text_color(p.color(p.label_tertiary)).child(description))
+                            })
+                            .on_click(cx.listener(move |chat, _, _, cx| {
+                                match dsh_deliverables::checked_file(&chat.active_workspace, &path) {
+                                    Ok((path, _)) => cx.open_with_system(&path),
+                                    Err(_) => {
+                                        chat.workspace_notice = Some("交付文件已不可用".to_owned());
+                                        cx.notify();
+                                    }
+                                }
+                            }))
+                    }))
                     .when_some(trial_call.filter(|_| expanded), |el, seq| {
                         el.child(
                             div()
@@ -8671,6 +9221,7 @@ enum Row {
         pending: bool,
         /// 结构化卡片（Diff/Terminal 的原生视图从这里取正文）。
         card: Option<ToolCard>,
+        delivered_files: Vec<dsh_deliverables::DeliveredFile>,
     },
     Meta(String),
     Stopped,
@@ -8836,6 +9387,7 @@ fn describe(item: &Item) -> Row {
                 is_error: matches!(tool.state, ToolState::Settled { is_error: true }),
                 pending,
                 card: tool.card.clone(),
+                delivered_files: Vec::new(),
             }
         }
         Item::Compaction { from_seq, to_seq } => {
@@ -8913,8 +9465,18 @@ fn rows_with_preview(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut steps = Vec::new();
+    let mut deliveries = dsh_deliverables::replay(log);
     for item in build_from_log(log) {
-        let row = describe(&item);
+        let mut row = describe(&item);
+        if let Item::Tool(tool) = &item {
+            if tool.origin == "sidecar" && tool.tool == "present"
+                && matches!(tool.state, ToolState::Settled { is_error: false })
+            {
+                if let Row::Tool { delivered_files, .. } = &mut row {
+                    *delivered_files = deliveries.remove(&tool.call_seq).unwrap_or_default();
+                }
+            }
+        }
         if matches!(row, Row::Tool { .. } | Row::Reasoning { .. }) {
             steps.push(row);
         } else {
@@ -9094,6 +9656,7 @@ impl Render for ChatApp {
                     .child(self.plugins_page(&theme, cx)),
             )
             .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
+            .when_some(self.user_question_bar(&theme, cx), |el, bar| el.child(bar))
             .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
                 el.child(bar)
             })
@@ -9130,6 +9693,7 @@ impl Render for ChatApp {
                 body.child(self.transcript(&theme, show_turn_rail, window, cx))
             })
             .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
+            .when_some(self.user_question_bar(&theme, cx), |el, bar| el.child(bar))
             .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
                 el.child(bar)
             })
@@ -13561,7 +14125,7 @@ fn selftest_official_sidecar() -> i32 {
                 .and_then(|payload| payload.as_array().map(Vec::len))
                 .unwrap_or(0);
             drop(host);
-            if protocol == 2 && active && tables == 3 {
+            if protocol == 2 && active && tables >= 4 {
                 println!(
                     "[selftest-official] PASS protocol={protocol} active={active} host_services={tables}"
                 );
@@ -13618,7 +14182,7 @@ fn selftest_l2() -> i32 {
                     .and_then(|payload| payload.as_array().map(Vec::len))
                     .unwrap_or(0);
                 drop(host);
-                if protocol == 2 && active && tables == 3 {
+                if protocol == 2 && active && tables >= 4 {
                     println!(
                         "[selftest-l2] phase A PASS protocol={protocol} active={active} host_services={tables}"
                     );
@@ -13667,6 +14231,10 @@ fn selftest_l2() -> i32 {
         root.join("storage"),
         root.join("workspace"),
         "l2.fixture",
+        None,
+        None,
+        None,
+        false,
     ) {
         Ok(router) => router,
         Err(err) => {
@@ -13758,6 +14326,7 @@ fn selftest_parallel_tools() -> i32 {
         approvals: &state.approvals,
         creator: None,
         step: ToolStep::default(),
+        program_hidden: HashSet::new(),
         headless: state.headless,
         diagnostics: state.diagnostics,
         log: log_cell.clone(),
@@ -14190,7 +14759,8 @@ fn main() {
             Profile::defaults(&profile_dir)
         })
     } else {
-        Profile::load(&profile_dir).unwrap_or_else(|err| {
+        let seed = app_root().join("sidecar/dsh-official/default-profile.json");
+        Profile::load_with_seed(&profile_dir, seed.is_file().then_some(seed.as_path())).unwrap_or_else(|err| {
             eprintln!("[chat] 加载插件 profile 失败（使用默认值）: {err}");
             Profile::defaults(&profile_dir)
         })
@@ -14242,6 +14812,7 @@ fn main() {
         active_preset,
         blank_root,
         permission,
+        questions,
     ) = {
         let guard = state
             .lock()
@@ -14255,6 +14826,7 @@ fn main() {
             guard.log.created().and_then(|created| created.preset.clone()),
             blank_root_created(&guard.log).is_some(),
             guard.permission.clone(),
+            guard.l2_access.as_ref().map(|access| access.questions.clone()),
         )
     };
 
@@ -14380,6 +14952,8 @@ fn main() {
                             pending_delete: None,
                             approvals,
                             pending_approvals: 0,
+                            questions,
+                            question_draft: None,
                             approval_error: None,
                             approval_saving: None,
                             tool_approvals_loading: false,
@@ -14674,6 +15248,1182 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
+    struct OfficialScript(VecDeque<ModelReply>);
+
+    impl ModelProvider for OfficialScript {
+        fn complete(&mut self, _request: &CompletionRequest) -> Result<ModelReply, String> {
+            Ok(self.0.pop_front().expect("unexpected model request"))
+        }
+    }
+
+    fn model_tools(calls: &[(&str, &str, serde_json::Value)]) -> ModelReply {
+        let mut reply = ModelReply::text_only("");
+        reply.tool_calls = calls.iter().map(|(id, name, args)| ModelToolCall {
+            id: (*id).to_owned(), name: (*name).to_owned(), arguments: args.clone(),
+        }).collect();
+        reply
+    }
+
+    fn stage5_runtime(path: &Path, plugins: &[&str]) -> PathBuf {
+        let workspace = path.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let sidecar = PathBuf::from(std::env::var_os("DSHR_OFFICIAL_RC5_DIR").unwrap());
+        std::env::set_var("DSHR_APP_ROOT", sidecar.parent().unwrap().parent().unwrap());
+        std::env::set_var("DSHR_HOME", path.join("home"));
+        std::env::set_var("DSHR_WORKSPACE", &workspace);
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_PROVIDER", "mock");
+        std::env::set_var("DSHR_PERMISSION_MODE", "workspace-write");
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        std::env::set_var("DSHR_DSH_PLUGINS", json!(plugins.iter()
+            .map(|name| {
+                let name = *name;
+                let mut entry = json!({"name": format!("@deepseek-ai/dsh-tool-{name}")});
+                if name == "subagent" { entry["config"] = json!({"provider":"local","maxDepth":2}); }
+                entry
+            }).collect::<Vec<_>>()).to_string());
+        workspace
+    }
+
+    fn logged_tool(log: &SessionLog, id: &str) -> serde_json::Value {
+        log.events().iter().find(|event| event.event_type == "tool.result" && event.payload["call_id"] == id)
+            .unwrap_or_else(|| panic!("missing result for {id}; {:?}", log.events())).payload.clone()
+    }
+
+    fn read_child_model_request(stream: &mut std::net::TcpStream) -> serde_json::Value {
+        use std::io::{BufRead, BufReader};
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" { break; }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn write_child_model_text(stream: &mut std::net::TcpStream, text: &str) -> std::io::Result<()> {
+        write_child_model_reply(stream, json!({"role":"assistant","content":text}))
+    }
+
+    fn write_child_model_reply(stream: &mut std::net::TcpStream, message: serde_json::Value) -> std::io::Result<()> {
+        use std::io::Write;
+        let body = json!({"choices":[{"index":0,"message":message}]}).to_string();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    }
+
+    fn accept_child_model(server: &std::net::TcpListener) -> std::net::TcpStream {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            match server.accept() {
+                Ok((stream, _)) => { stream.set_nonblocking(false).unwrap(); return stream; }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("child model did not receive a request: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 official goal package"]
+    fn stage5_official_goals_persist_revisions_and_bound_automatic_turns() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["goal"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let path = fixture.path().join("s-goal.jsonl");
+        let open = || ChatState::open_diagnostics(path.clone(), "s-goal", &cancel, ApprovalBroker::new());
+        let mut state = open();
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("make", "create_goal", json!({"objective":"Verify persistence","max_goal_rounds":1}))]),
+            ModelReply::text_only("starting"),
+            model_tools(&[("automatic", "get_goal", json!({})),
+                ("forged", "create_goal", json!({"objective":"Change authority","max_goal_rounds":1}))]),
+            ModelReply::text_only("round complete"),
+        ]))));
+        let result = state.run_turn("Keep working on this goal", &[], &mut |_| {}).unwrap();
+        assert_eq!(result.reply, "round complete", "{:?}", state.load_errors());
+        let created = logged_tool(&state.log, "make");
+        let id = created["value"]["goal"]["id"].as_str().expect("goal ID").to_owned();
+        assert_eq!(created["value"]["activation"], "armed");
+        assert_eq!(logged_tool(&state.log, "automatic")["value"]["goal"]["roundsStarted"], 1);
+        assert!(logged_tool(&state.log, "forged")["content"].to_string().contains("direct user turn"));
+        assert_eq!(state.log.events().iter().filter(|event| event.event_type == "turn.started").count(), 2);
+        drop(state);
+
+        let mut reopened = open();
+        reopened.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("observe", "get_goal", json!({})),
+                ("stale", "update_goal", json!({"goal_id":id,"revision":2,"action":"complete"}))]),
+            model_tools(&[("finish", "update_goal", json!({"goal_id":id,"revision":1,"action":"complete"}))]),
+            ModelReply::text_only("verified"),
+        ]))));
+        assert_eq!(reopened.run_turn("Confirm and finish", &[], &mut |_| {}).unwrap().reply, "verified");
+        let observed = logged_tool(&reopened.log, "observe");
+        assert_eq!(observed["value"]["goal"]["roundsStarted"], 1);
+        assert_eq!(observed["value"]["activation"], "disarmed");
+        assert!(logged_tool(&reopened.log, "stale")["content"].to_string().contains("stale"));
+        assert_eq!(logged_tool(&reopened.log, "finish")["value"]["goal"]["phase"], "complete");
+        assert_eq!(logged_tool(&reopened.log, "finish")["value"]["goal"]["revision"], 2);
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 official session query package"]
+    fn stage5_official_query_enforces_the_session_tree_and_reads_prior_events() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["session-query"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let index = SessionIndex::new(fixture.path());
+        let mut state = ChatState::open_diagnostics(index.path_for("s-query"), "s-query", &cancel, ApprovalBroker::new());
+        state.run_turn("root-visible-needle", &[], &mut |_| {}).unwrap();
+        let workspace = state.log.created().unwrap().workspace_id.clone();
+        let put = |id: &str, created: SessionCreated, text: &str| {
+            let mut log = SessionLog::new(id);
+            log.append_created(now_ts(), &created).unwrap();
+            log.append(EventSpec::durable("message.assistant.settled", now_ts(), json!({"message_id":"m-1","text":text}))).unwrap();
+            save_atomic(&index.path_for(id), log.to_jsonl().as_bytes()).unwrap();
+        };
+        put("s-visible", SessionCreated::child(&workspace, "s-query", dshr_session_store::SpawnSource::Agent), "child-visible-needle");
+        put("s-foreign", SessionCreated::root(&workspace), "child-visible-needle unauthorized secret");
+        put("s-outside", SessionCreated::child("outside", "s-query", dshr_session_store::SpawnSource::Agent), "child-visible-needle outside secret");
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[
+                ("sessions", "session_search", json!({"query":"child-visible-needle"})),
+                ("events", "session_event_search", json!({"query":"root-visible-needle"})),
+                ("lineage", "session_trace", json!({"session_id":"s-visible"})),
+                ("trace", "session_event_trace", json!({"session_id":"s-visible","seq":2})),
+                ("read", "session_event_read", json!({"session_id":"s-visible","seq":2,"before":1})),
+                ("denied", "session_event_read", json!({"session_id":"s-foreign","seq":2})),
+                ("outside", "session_event_read", json!({"session_id":"s-outside","seq":2})),
+                ("missing", "session_event_read", json!({"session_id":"s-missing","seq":2})),
+            ]),
+            ModelReply::text_only("query complete"),
+        ]))));
+        state.run_turn("Inspect history", &[], &mut |_| {}).unwrap();
+        let result = |id: &str| logged_tool(&state.log, id);
+        let sessions = result("sessions")["value"].as_str().unwrap().to_owned();
+        assert!(sessions.contains("s-visible") && !sessions.contains("s-foreign") && !sessions.contains("s-outside"), "{sessions}");
+        assert!(result("events")["value"].as_str().unwrap().contains("root-visible-needle"));
+        assert!(result("lineage")["value"].as_str().unwrap().contains("s-query"));
+        assert!(result("trace")["value"].as_str().unwrap().contains("Target: seq 2"));
+        assert!(result("read")["value"].as_str().unwrap().contains("child-visible-needle"));
+        let denied = result("denied")["content"].clone();
+        assert!(denied.to_string().contains("outside the caller workspace"), "{denied}");
+        assert_eq!(denied, result("outside")["content"]);
+        assert_eq!(denied, result("missing")["content"]);
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 official subagent and control packages"]
+    fn stage5_official_subagents_run_wait_resume_and_fail() {
+        let fixture = tempfile::tempdir().unwrap();
+        let (shell, command) = if cfg!(windows) {
+            ("pwsh", "(1..100 | Measure-Object -Sum).Sum")
+        } else {
+            ("bash", "printf 'child shell should not run'")
+        };
+        let workspace = stage5_runtime(fixture.path(), &["subagent", "subagent-control", "working-directory", shell]);
+        let delegated = workspace.join("delegated");
+        std::fs::create_dir(&delegated).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let index = SessionIndex::new(fixture.path());
+        let mut state = ChatState::open_diagnostics(index.path_for("s-lead"), "s-lead", &cancel, ApprovalBroker::new());
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        state.settings.model = Arc::new(DesktopModel::OpenAi(OpenAiProvider::new("test-fixture").with_connection(endpoint, "fixture")));
+        let wire = std::thread::spawn(move || {
+            let mut stream = accept_child_model(&server);
+            let request = read_child_model_request(&mut stream);
+            let calls = vec![
+                json!({"id":"child-cwd","type":"function","function":{"name":"working_directory","arguments":"{}"}}),
+                json!({"id":"child-shell","type":"function","function":{"name":shell,"arguments":
+                    json!({"command":command,"description":"Check background approval"}).to_string()}}),
+            ];
+            write_child_model_reply(&mut stream, json!({"role":"assistant","tool_calls":calls})).unwrap();
+            let mut stream = accept_child_model(&server);
+            read_child_model_request(&mut stream);
+            write_child_model_text(&mut stream, "child-proof complete").unwrap();
+            let mut stream = accept_child_model(&server);
+            let follow_up = read_child_model_request(&mut stream);
+            write_child_model_reply(&mut stream, json!({"role":"assistant","tool_calls":[
+                {"id":"followup-shell","type":"function","function":{"name":shell,"arguments":
+                    json!({"command":command,"description":"Check persisted child permissions"}).to_string()}}
+            ]})).unwrap();
+            let mut stream = accept_child_model(&server);
+            read_child_model_request(&mut stream);
+            write_child_model_text(&mut stream, "follow-up-proof complete").unwrap();
+            (request, follow_up)
+        });
+        let invoke = |id, name, args| model_tools(&[(id, name, args)]);
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            invoke("spawn", "subagent", json!({"prompt":"child-proof","description":"Read sample","name":"reader","cwd":"delegated"})),
+            invoke("wait", "wait_agent", json!({"timeout_ms":10_000})),
+            invoke("list", "list_agents", json!({})),
+            ModelReply::text_only("first turn verified"),
+        ]))));
+        state.run_turn("Start a child", &[], &mut |_| {}).unwrap();
+        state.permission.set(PermissionMode::DangerFullAccess);
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            invoke("message", "send_message", json!({"agent":"reader","message":"follow-up-proof"})),
+            invoke("again", "wait_agent", json!({"timeout_ms":10_000})),
+            invoke("denied", "send_message", json!({"agent":"other-tree","message":"no"})),
+            ModelReply::text_only("verified"),
+        ]))));
+        state.run_turn("Resume the child after changing parent permissions", &[], &mut |_| {}).unwrap();
+        let result = |id: &str| logged_tool(&state.log, id);
+        assert_eq!(result("spawn")["value"]["name"], "reader", "{:?}; {:?}", result("spawn"), state.load_errors());
+        assert_eq!(result("wait")["value"]["timedOut"], false, "{:?}", result("wait"));
+        assert!(result("list")["value"].as_array().unwrap().iter().any(|row| row["name"] == "reader"));
+        assert!(result("message")["value"]["messageId"].as_str().unwrap().starts_with("message-"));
+        assert_eq!(result("again")["value"]["timedOut"], false);
+        assert!(result("denied")["content"].to_string().contains("outside the caller tree"));
+        let (request, follow_up) = wire.join().unwrap();
+        assert!(follow_up["messages"].to_string().contains("follow-up-proof"));
+        let tools = request["tools"].as_array().unwrap();
+        let description = |name| tools.iter().find(|tool| tool["function"]["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name} in {tools:?}"))["function"]["description"].as_str().unwrap();
+        assert!(description("working_directory").contains("empty object {}"));
+        assert!(description(shell).contains("Use working_directory"));
+        let child = index.children_of("s-lead").unwrap().into_iter().next().unwrap();
+        let child_log = load_session_log(fixture.path(), &child.id).unwrap();
+        assert!(child_log.events().iter().any(|event| event.event_type == "subagent/created"
+            && event.payload["permission_mode"] == "workspace-write"));
+        let resumed = logged_tool(&child_log, "followup-shell");
+        assert_eq!(resumed["is_error"], true, "{resumed:?}");
+        assert!(resumed["content"].to_string().contains("Interactive approval is unavailable in this background subagent"), "{resumed:?}");
+        let cwd = logged_tool(&child_log, "child-cwd");
+        assert_eq!(cwd["is_error"], false, "{cwd:?}");
+        let returned = Path::new(cwd["value"]["cwd"].as_str().unwrap());
+        assert_eq!(returned.canonicalize().unwrap(), delegated.canonicalize().unwrap());
+        let shell = logged_tool(&child_log, "child-shell");
+        assert_eq!(shell["is_error"], true, "{shell:?}");
+        assert!(shell["content"].to_string().contains("Interactive approval is unavailable in this background subagent"), "{shell:?}");
+        let settlements: Vec<_> = child_log.events().iter().filter(|event| event.event_type == "subagent/settled").collect();
+        assert_eq!(settlements.len(), 2);
+        assert!(settlements.iter().all(|event| event.payload["outcome"] == "completed"));
+        assert!(settlements[1].payload["reply"].as_str().unwrap().contains("follow-up-proof"));
+        assert_eq!(state.log.events().iter().filter(|event| event.event_type == "subagent/notified").count(), 2);
+
+        state.settings.model = Arc::new(DesktopModel::Unconfigured);
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            invoke("fail-spawn", "subagent", json!({"prompt":"fail-proof","description":"Unavailable model","name":"failure"})),
+            invoke("fail-wait", "wait_agent", json!({"timeout_ms":10_000})),
+            ModelReply::text_only("failure inspected"),
+        ]))));
+        state.run_turn("Check failed child", &[], &mut |_| {}).unwrap();
+        assert_eq!(logged_tool(&state.log, "fail-spawn")["value"]["name"], "failure");
+        assert!(state.log.events().iter().any(|event| event.event_type == "child.finished" && event.payload["outcome"] == "failed"));
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 official Teams tool package"]
+    fn stage5_official_teams_preserve_task_versions_and_dependencies_after_restart() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["agent-team"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let open = |id: &str| ChatState::open_diagnostics(fixture.path().join(format!("{id}.jsonl")), id, &cancel, ApprovalBroker::new());
+        let invoke = |id, name, args| model_tools(&[(id, name, args)]);
+        let mut state = open("s-team");
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            invoke("first", "team_task_create", json!({"subject":"Prepare","description":"Do first","write_scopes":["docs"]})),
+            invoke("second", "team_task_create", json!({"subject":"Review","description":"Do next","blocked_by":["task-1"]})),
+            invoke("blocked", "team_task_update", json!({"task_id":"task-2","expected_revision":1,"action":"claim"})),
+            invoke("cycle", "team_task_update", json!({"task_id":"task-1","expected_revision":1,"action":"set_dependencies","blocked_by":["task-2"]})),
+            invoke("claim", "team_task_update", json!({"task_id":"task-1","expected_revision":1,"action":"claim"})),
+            invoke("stale", "team_task_update", json!({"task_id":"task-1","expected_revision":1,"action":"complete"})),
+            invoke("done", "team_task_update", json!({"task_id":"task-1","expected_revision":2,"action":"complete"})),
+            ModelReply::text_only("tasks settled"),
+        ]))));
+        state.run_turn("Track tasks", &[], &mut |_| {}).unwrap();
+        let result = |id: &str| logged_tool(&state.log, id);
+        assert_eq!(result("first")["value"]["id"], "task-1", "{:?}; {:?}", result("first"), state.load_errors());
+        assert_eq!(result("second")["value"]["ready"], false);
+        assert_eq!(result("blocked")["is_error"], true);
+        assert!(result("cycle")["content"].to_string().contains("cycle"));
+        assert_eq!(result("claim")["value"]["owner"], "lead");
+        assert!(result("stale")["content"].to_string().contains("stale"));
+        assert_eq!(result("done")["value"]["status"], "completed");
+        drop(state);
+
+        let mut reopened = open("s-team");
+        reopened.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            invoke("list", "team_task_list", json!({"ready":true})), ModelReply::text_only("verified"),
+        ]))));
+        reopened.run_turn("Find ready tasks", &[], &mut |_| {}).unwrap();
+        let ready = logged_tool(&reopened.log, "list");
+        assert_eq!(ready["value"]["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(ready["value"]["tasks"][0]["id"], "task-2");
+        let mut unrelated = open("s-unrelated");
+        unrelated.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            invoke("get", "team_task_get", json!({"task_id":"task-1"})), ModelReply::text_only("checked"),
+        ]))));
+        unrelated.run_turn("Inspect unrelated tasks", &[], &mut |_| {}).unwrap();
+        assert_eq!(logged_tool(&unrelated.log, "get")["is_error"], true);
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 official workflow engine and local process sandbox"]
+    fn stage5_official_workflow_runs_guest_and_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["workflow","ralph"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-flow.jsonl"), "s-flow", &cancel, ApprovalBroker::new());
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("flow", "workflow", json!({"meta":{"name":"example","description":"Exercise the guest"},
+                "script":"const value = await agent('workflow-child-proof'); return { value, sandbox: typeof process };"}))]),
+            ModelReply::text_only("workflow checked"),
+        ]))));
+        state.run_turn("Run the workflow", &[], &mut |_| {}).unwrap();
+        let flow = logged_tool(&state.log, "flow");
+        assert_eq!(flow["value"]["kind"], "foreground", "{flow:?}; {:?}", state.load_errors());
+        assert_eq!(flow["value"]["agentsStarted"], 1);
+        assert!(flow["value"]["result"]["value"].as_str().unwrap().contains("workflow-child-proof"));
+        assert_eq!(flow["value"]["result"]["sandbox"], "undefined");
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 Ralph and the foreground workflow sandbox"]
+    fn stage5_official_ralph_passes_a_bounded_report_to_a_fresh_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["ralph"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-ralph.jsonl"), "s-ralph", &cancel, ApprovalBroker::new());
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        state.settings.model = Arc::new(DesktopModel::OpenAi(OpenAiProvider::new("test-fixture").with_connection(endpoint, "fixture")));
+        let wire = std::thread::spawn(move || {
+            let mut first = accept_child_model(&server);
+            let first_request = read_child_model_request(&mut first);
+            write_child_model_text(&mut first, &json!({"status":"continue","summary":"first","evidence":[],"nextSteps":["handoff-proof"],"blocker":""}).to_string()).unwrap();
+            let mut second = accept_child_model(&server);
+            let second_request = read_child_model_request(&mut second);
+            write_child_model_text(&mut second, &json!({"status":"complete","summary":"done","evidence":["evidence-proof"],"nextSteps":[],"blocker":""}).to_string()).unwrap();
+            (first_request, second_request)
+        });
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("ralph-loop", "ralph", json!({"objective":"fresh-round-proof","max_rounds":2}))]),
+            ModelReply::text_only("rounds checked"),
+        ]))));
+        state.run_turn("Run Ralph with two fresh rounds", &[], &mut |_| {}).unwrap();
+        let result = logged_tool(&state.log, "ralph-loop");
+        assert_eq!(result["value"]["result"]["status"], "complete", "{result:?}; {:?}", state.load_errors());
+        assert_eq!(result["value"]["result"]["roundsStarted"], 2);
+        let (first, second) = wire.join().unwrap();
+        assert!(first.to_string().contains("fresh-round-proof"));
+        assert!(second.to_string().contains("handoff-proof"));
+        let children = SessionIndex::new(fixture.path()).children_of("s-ralph").unwrap();
+        assert_eq!(children.len(), 2);
+        assert_ne!(children[0].id, children[1].id);
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 workflow and a controllable HTTP child"]
+    fn stage5_official_workflow_cancels_its_active_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["workflow"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-stop-flow.jsonl"), "s-stop-flow", &cancel, ApprovalBroker::new());
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        state.settings.model = Arc::new(DesktopModel::OpenAi(OpenAiProvider::new("test-fixture").with_connection(endpoint, "fixture")));
+        let cancel_parent = cancel.clone();
+        let wire = std::thread::spawn(move || {
+            let mut stream = accept_child_model(&server);
+            let request = read_child_model_request(&mut stream);
+            cancel_parent.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = write_child_model_text(&mut stream, "late response");
+            request
+        });
+        state.agent = Agent::new(cancel_aware(OfficialScript(VecDeque::from([
+            model_tools(&[("cancel-workflow", "workflow", json!({"meta":{"name":"stop","description":"Cancel the guest"},
+                "script":"return await agent('cancel-child-proof');"}))]),
+            ModelReply::text_only("cancelled workflow settled"),
+        ])), &cancel));
+        let result = state.run_turn("Run and stop", &[], &mut |_| {}).unwrap();
+        assert!(result.reason == TurnReason::Cancelled);
+        assert!(state.log.events().iter().any(|event| event.event_type == "tool.aborted"));
+        assert!(wire.join().unwrap().to_string().contains("cancel-child-proof"));
+        let child = SessionIndex::new(fixture.path()).children_of("s-stop-flow").unwrap().into_iter().next().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let log = load_session_log(fixture.path(), &child.id).unwrap();
+            if let Some(finish) = log.events().iter().find(|event| event.event_type == "subagent/settled") {
+                assert_eq!(finish.payload["outcome"], "interrupted");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "child did not record cancellation");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 official schedule and recurrence packages"]
+    fn stage5_official_schedules_claim_each_occurrence_once_across_restart() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["schedule"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let path = fixture.path().join("s-schedule.jsonl");
+        let open = || ChatState::open_diagnostics(path.clone(), "s-schedule", &cancel, ApprovalBroker::new());
+        let mut state = open();
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("create", "schedule_create", json!({"title":"Hourly proof","prompt":"schedule-proof-needle",
+                "target":"this_session","rrule":"DTSTART:20200101T000000Z\nRRULE:FREQ=HOURLY"}))]),
+            ModelReply::text_only("schedule ready"),
+        ]))));
+        state.run_turn("Schedule this reminder", &[], &mut |_| {}).unwrap();
+        let create = logged_tool(&state.log, "create");
+        let id = create["value"]["id"].as_str().unwrap_or_else(|| panic!("{create:?}; {:?}", state.load_errors())).to_owned();
+        assert_eq!(create["value"]["status"], "active");
+        let original_stamp = create["value"]["updatedAt"].clone();
+        drop(state);
+
+        let ledger = fixture.path().join("schedules/s-schedule.json");
+        let mut saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&ledger).unwrap()).unwrap();
+        let next = saved["tasks"][0]["scheduledAt"].as_u64().unwrap();
+        // Use the previous real occurrence of this hourly rule and restart on that durable record.
+        saved["tasks"][0]["scheduledAt"] = json!(next - 3_600_000);
+        save_atomic(&ledger, &serde_json::to_vec(&saved).unwrap()).unwrap();
+
+        struct ScheduleNoticeModel(bool);
+        impl ModelProvider for ScheduleNoticeModel {
+            fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+                let delivered = request.messages.iter().any(|message| matches!(message,
+                    ChatMessage::System(text) if text.contains("[SCHEDULE REMINDER BATCH]") && text.contains("schedule-proof-needle")));
+                assert_eq!(delivered, self.0, "{:?}", request.messages);
+                Ok(ModelReply::text_only("checked deliveries"))
+            }
+        }
+        let mut reopened = open();
+        reopened.agent = Agent::new(Box::new(ScheduleNoticeModel(true)));
+        reopened.run_turn("Show due reminders", &[], &mut |_| {}).unwrap();
+        drop(reopened);
+        let mut recovered = open();
+        recovered.agent = Agent::new(Box::new(ScheduleNoticeModel(false)));
+        recovered.run_turn("Check reminders again", &[], &mut |_| {}).unwrap();
+
+        recovered.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("view", "schedule_view", json!({"id":id})),
+                ("stale", "schedule_edit", json!({"id":id,"action":"update","active":false,"expectedUpdatedAt":original_stamp}))]),
+            model_tools(&[("pause", "schedule_edit", json!({"id":id,"action":"update","active":false}))]),
+            ModelReply::text_only("verified"),
+        ]))));
+        recovered.run_turn("Review and pause the reminder", &[], &mut |_| {}).unwrap();
+        let view = logged_tool(&recovered.log, "view");
+        assert_eq!(view["value"]["lastDelivery"]["targetSessionId"], "s-schedule");
+        assert_eq!(logged_tool(&recovered.log, "stale")["value"]["code"], "schedule_conflict");
+        assert_eq!(logged_tool(&recovered.log, "pause")["value"]["status"], "paused");
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 native executor and timeout policy packages"]
+    fn stage6_official_native_and_timeout_apply_to_dispatched_tools() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &[]);
+        let probe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/compat-dsh-host/tests/fixtures/execution-probe.mjs");
+        let probe = format!("file:///{}", probe.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/"));
+        std::env::set_var("DSHR_DSH_PLUGINS", json!([
+            {"name":"@deepseek-ai/dsh-tool-executor-native"},
+            {"name":"@deepseek-ai/dsh-tool-call-timeout-policy"},
+            {"name":probe},
+        ]).to_string());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-native.jsonl"), "s-native", &cancel, ApprovalBroker::new());
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("echo", "execution_probe_echo", json!({"text":"native-proof"})),
+                ("deadline", "execution_probe_delay", json!({}))]),
+            ModelReply::text_only("verified"),
+        ]))));
+        state.run_turn("Execute the tool probes", &[], &mut |_| {}).unwrap();
+        let echo = logged_tool(&state.log, "echo");
+        assert_eq!(echo["value"], "native-proof", "{echo:?}; {:?}", state.load_errors());
+        let timeout = logged_tool(&state.log, "deadline");
+        assert_eq!(timeout["is_error"], true);
+        assert!(timeout["content"].to_string().contains("after 80ms"), "{timeout:?}");
+        assert!(state.load_errors().is_empty(), "{:?}", state.load_errors());
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 Cordis inspection"]
+    fn stage6_official_inspection_lists_only_the_active_host_registration_snapshot() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["cordis","fs"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-inspect.jsonl"), "s-inspect", &cancel, ApprovalBroker::new());
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("list", "cordis_inspect_list", json!({})),
+                ("tools", "cordis_inspect_query", json!({"platform":"host","provider":"Tool","method":"listTools","input":{}})),
+                ("denied", "cordis_inspect_query", json!({"platform":"host","provider":"Tool","method":"listTools","input":{"session_id":"other"}}))]),
+            ModelReply::text_only("verified"),
+        ]))));
+        state.run_turn("Inspect session tools", &[], &mut |_| {}).unwrap();
+        let listed = logged_tool(&state.log, "list");
+        assert!(listed["value"]["providers"].to_string().contains("listTools"), "{listed:?}; {:?}", state.load_errors());
+        let scope = logged_tool(&state.log, "tools");
+        let tools = scope["value"]["data"]["tools"].as_array().unwrap_or_else(|| panic!("{scope:?}"));
+        assert!(tools.iter().any(|tool| tool["name"] == "read"));
+        assert!(tools.iter().all(|tool| tool["name"] != "probe_native"));
+        assert_eq!(logged_tool(&state.log, "denied")["is_error"], true);
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 PTC executor and the local sandbox"]
+    fn stage6_official_ptc_reuses_rust_registration_and_write_approval() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = stage5_runtime(fixture.path(), &["executor-ptc","fs"]);
+        std::fs::write(workspace.join("source.txt"), "scoped-source-proof").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-ptc.jsonl"), "s-ptc", &cancel, ApprovalBroker::new());
+        std::env::set_var("DSHR_APPROVAL_MODE", "deny");
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("direct", "read", json!({"file_path":"source.txt"})),
+                ("program-read", "run_code", json!({"description":"Read test file","code":"return await tools.read({file_path:'source.txt'});"})),
+                ("denied", "run_code", json!({"description":"Try denied write","code":"return await tools.write({file_path:'denied.txt',content:'must not write'});"}))]),
+            ModelReply::text_only("verified read"),
+        ]))));
+        state.run_turn("Try the scoped program", &[], &mut |_| {}).unwrap();
+        let direct = logged_tool(&state.log, "direct");
+        assert!(direct["content"].to_string().contains("requires run_code"), "{direct:?}; {:?}", state.load_errors());
+        let read = logged_tool(&state.log, "program-read");
+        assert!(read["content"].to_string().contains("scoped-source-proof"), "{read:?}");
+        assert!(!workspace.join("denied.txt").exists());
+        assert!(logged_tool(&state.log, "denied")["content"].to_string().contains("denied"));
+
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+            model_tools(&[("allowed", "run_code", json!({"description":"Write a test file","code":"return await tools.write({file_path:'approved.txt',content:'approved proof'});"}))]),
+            ModelReply::text_only("verified write"),
+        ]))));
+        state.run_turn("Approve program write", &[], &mut |_| {}).unwrap();
+        let allowed = logged_tool(&state.log, "allowed");
+        assert_eq!(allowed["is_error"], false, "{allowed:?}");
+        assert_eq!(std::fs::read_to_string(workspace.join("approved.txt")).unwrap(), "approved proof");
+        let admissions: Vec<_> = state.log.events().iter().filter(|event| event.event_type == "tool.program.admitted").collect();
+        assert_eq!(admissions.len(), 2);
+        assert!(admissions.iter().all(|event| event.payload["registration_id"].as_str().unwrap().starts_with("reg-")));
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 executor packages in a scoped preset"]
+    fn stage6_official_preset_revokes_the_program_transport_on_release() {
+        let fixture = tempfile::tempdir().unwrap();
+        stage5_runtime(fixture.path(), &["executor-native"]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(fixture.path().join("s-revision.jsonl"), "s-revision", &cancel, ApprovalBroker::new());
+        let host = state.host.as_mut().expect("official host");
+        let catalog = json!({"program": [
+            {"name":"@deepseek-ai/dsh-tool-executor-ptc"},
+            {"name":"@deepseek-ai/dsh-tool-fs"},
+        ]});
+        let roster = host.sync_presets(&catalog).unwrap();
+        assert!(roster["program"]["revision"].is_string(), "{roster:?}");
+        host.bind_preset("s-revision", "program", None).unwrap();
+        let tools = host.preset_tool_definitions("s-revision");
+        let program = tools.iter().find(|tool| tool.name == "run_code").expect("scoped program transport");
+        assert!(host.preset_tool_definitions("s-other").is_empty());
+        assert!(!host.tool_definitions().iter().any(|tool| tool.name == "run_code"));
+        let ids: serde_json::Map<_, _> = tools.iter().filter_map(|tool| match &tool.origin {
+            ToolOrigin::Sidecar { registration_id, .. } => Some((tool.name.clone(), json!(registration_id))),
+            _ => None,
+        }).collect();
+        let published = host.prepare_agent_step("s-revision", json!({
+            "step":1, "registrations":ids, "model":{"provider":"mock","model":"fixture"},
+        })).unwrap();
+        assert!(published["deferred_tools"].as_array().is_some_and(|tools| tools.contains(&json!("read"))), "{published:?}");
+
+        host.sync_presets(&json!({})).unwrap();
+        assert!(host.preset_tool_definitions("s-revision").iter().any(|tool| tool.name == "run_code"));
+        host.release_preset("s-revision").unwrap();
+        assert!(host.preset_tool_definitions("s-revision").is_empty());
+        assert!(host.registrations().iter().all(|registration| registration.name != "run_code"));
+        let stale = dshr_compat_dsh_host::BatchInvokeCall::new("stale-program", "run_code",
+            json!({"description":"Expired transport","code":"return 42;"}), Duration::from_secs(2))
+            .with_session("s-revision").with_binding(program.origin.clone());
+        let result = host.invoke_batch(&[stale], 1, None);
+        assert!(result[0].as_ref().unwrap_err().to_string().contains("E_TOOL_UNAVAILABLE"), "{result:?}");
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 terminal packages and the platform PTY backend"]
+    fn stage4_official_terminals_keep_state_and_replay_closed_sessions() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let sidecar = PathBuf::from(std::env::var_os("DSHR_OFFICIAL_RC5_DIR").unwrap());
+        std::env::set_var("DSHR_APP_ROOT", sidecar.parent().unwrap().parent().unwrap());
+        std::env::set_var("DSHR_HOME", fixture.path().join("home"));
+        std::env::set_var("DSHR_WORKSPACE", &workspace);
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_PROVIDER", "mock");
+        std::env::set_var("DSHR_PERMISSION_MODE", "workspace-write");
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        let (engine, assign, echo, persistent_assign, persistent_echo) = if cfg!(windows) {
+            ("pwsh", "$terminalMarker='state-ok'", "Write-Output $terminalMarker",
+             "$persistentMarker='persist-ok'", "Write-Output $persistentMarker")
+        } else {
+            ("bash", "terminalMarker=state-ok", "printf '%s\\n' \"$terminalMarker\"",
+             "persistentMarker=persist-ok", "printf '%s\\n' \"$persistentMarker\"")
+        };
+        std::env::set_var("DSHR_DSH_PLUGINS", json!([
+            { "name": "@deepseek-ai/dsh-tool-terminal", "config": { "enableRunInBackground": false } },
+            { "name": format!("@deepseek-ai/dsh-tool-{engine}-persistent"), "config": { "timeoutMs": 8_000 } },
+        ]).to_string());
+        let abort = Arc::new(AtomicBool::new(false));
+        let session = "s-terminal";
+        let log = fixture.path().join("terminals.jsonl");
+        let open = |path: PathBuf, session: &str| {
+            ChatState::open_diagnostics(path, session, &abort, ApprovalBroker::new())
+        };
+        let run = |state: &mut ChatState, id: &str, tool: &str, arguments| {
+            state.execute_tool(&ToolCallRequest { call_id: id.to_owned(), tool: tool.to_owned(), arguments })
+        };
+        let mut state = open(log.clone(), session);
+        let outside = run(&mut state, "outside", "terminal_open", json!({
+            "type": "shell", "cwd": fixture.path(),
+        }));
+        assert!(outside.is_error, "{outside:?}");
+        let opened = run(&mut state, "open", "terminal_open", json!({ "type": "shell", "name": "work" }));
+        assert!(!opened.is_error, "{opened:?}; {:?}", state.load_errors());
+        let terminal = opened.value["sessionId"].as_str().expect("host terminal identity");
+        assert!(terminal.starts_with("term-"));
+        let send = |text| json!({ "sessionId": terminal, "text": text });
+        let first = run(&mut state, "send-a", "terminal_send", send(assign));
+        assert!(!first.is_error, "{first:?}");
+        let sent = run(&mut state, "send-b", "terminal_send", send(echo));
+        assert!(!sent.is_error && sent.value["viewport"].to_string().contains("state-ok"), "{sent:?}");
+        let scroll = run(&mut state, "read", "terminal_read", json!({ "sessionId": terminal }));
+        assert!(!scroll.is_error && scroll.value.to_string().contains("state-ok"), "{scroll:?}");
+
+        let start = run(&mut state, "persistent-a", engine, json!({ "command": persistent_assign }));
+        assert!(!start.is_error, "{start:?}");
+        let persistence = run(&mut state, "persistent-b", engine, json!({ "command": persistent_echo }));
+        assert!(persistence.value.as_str().is_some_and(|text| text.contains("persist-ok")), "{persistence:?}");
+        state.save_checked().unwrap();
+        state.switch_session(fixture.path().join("other.jsonl"), "s-other");
+        let other = run(&mut state, "outsider", "terminal_read", json!({ "sessionId": terminal }));
+        assert!(other.is_error, "{other:?}");
+        assert_eq!(run(&mut state, "other-list", "terminal_list", json!({})).value, json!([]));
+        state.switch_session(log.clone(), session);
+        let closing = run(&mut state, "close", "terminal_close", json!({ "sessionId": terminal }));
+        assert!(!closing.is_error && closing.value["outcome"] == "closed", "{closing:?}");
+        assert!(run(&mut state, "send-after-close", "terminal_send", send(echo)).is_error);
+        let marker = workspace.join("started.txt");
+        let cancel = abort.clone();
+        let watcher = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(6);
+            while !marker.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            cancel.store(true, Ordering::Release);
+            marker.exists()
+        });
+        let slow = if cfg!(windows) {
+            "Set-Content -LiteralPath started.txt -Value started; Start-Sleep -Milliseconds 1200; Set-Content -LiteralPath late.txt -Value late"
+        } else {
+            "printf started > started.txt; sleep 1.2; printf late > late.txt"
+        };
+        let cancelled = run(&mut state, "cancel-send", engine, json!({ "command": slow }));
+        assert!(watcher.join().unwrap(), "persistent terminal did not start the command");
+        assert!(cancelled.is_error, "{cancelled:?}");
+        std::thread::sleep(Duration::from_millis(1300));
+        assert!(!workspace.join("late.txt").exists());
+        abort.store(false, Ordering::Release);
+        state.save_checked().unwrap();
+        drop(state);
+
+        let mut reopened = open(log, session);
+        let list = run(&mut reopened, "replay", "terminal_list", json!({}));
+        let sessions = list.value.as_array().unwrap_or_else(|| panic!("{list:?}"));
+        assert_eq!(sessions.len(), 2, "{list:?}");
+        assert!(sessions.iter().all(|session| session["status"]["kind"] == "exited"), "{list:?}");
+        std::env::remove_var("DSHR_APPROVAL_MODE");
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 jobs and platform shell packages"]
+    fn stage4_official_jobs_claim_stop_and_survive_restart() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let sidecar = PathBuf::from(std::env::var_os("DSHR_OFFICIAL_RC5_DIR").unwrap());
+        std::env::set_var("DSHR_APP_ROOT", sidecar.parent().unwrap().parent().unwrap());
+        std::env::set_var("DSHR_HOME", fixture.path().join("home"));
+        std::env::set_var("DSHR_WORKSPACE", &workspace);
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_PROVIDER", "mock");
+        std::env::set_var("DSHR_PERMISSION_MODE", "workspace-write");
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        let (engine, command, slow) = if cfg!(windows) {
+            ("pwsh", "Write-Output 'background-proof'",
+                "Start-Sleep -Seconds 12; Set-Content -LiteralPath finished.txt -Value bad")
+        } else {
+            ("bash", "printf 'background-proof\\n'",
+                "sleep 12; printf bad > finished.txt")
+        };
+        std::env::set_var("DSHR_DSH_PLUGINS", json!([
+            { "name": "@deepseek-ai/dsh-tool-jobs", "config": { "completionDelivery": "quiet" } },
+            { "name": format!("@deepseek-ai/dsh-tool-{engine}"), "config": { "enableRunInBackground": true, "promoteOnTimeout": false } },
+        ]).to_string());
+        let session = "s-job";
+        let log = fixture.path().join("jobs.jsonl");
+        let abort = Arc::new(AtomicBool::new(false));
+        let open = |path: PathBuf, session: &str| {
+            ChatState::open_diagnostics(path, session, &abort, ApprovalBroker::new())
+        };
+        let run = |state: &mut ChatState, id: &str, tool: &str, arguments| {
+            state.execute_tool(&ToolCallRequest { call_id: id.to_owned(), tool: tool.to_owned(), arguments })
+        };
+        let shell = |command: &str| json!({ "command": command, "description": "Background process check", "run_in_background": true });
+        let mut state = open(log.clone(), session);
+        let first = run(&mut state, "start-a", engine, shell(command));
+        assert!(!first.is_error, "{first:?}");
+        let first_id = first.value["jobId"].as_str().expect("official background id");
+        assert_eq!(first.value["kind"], "background");
+
+        let claimed = run(&mut state, "claim-a", "job_output", json!({
+            "job_id": first_id, "wait": true, "timeout_ms": 4_000,
+        }));
+        assert!(!claimed.is_error, "{claimed:?}");
+        assert_eq!(claimed.value["job"]["status"], "completed");
+        assert!(claimed.value["text"].as_str().unwrap().contains("background-proof"));
+        let repeat = run(&mut state, "claim-again", "job_output", json!({ "job_id": first_id }));
+        assert_eq!(repeat.value["text"], "", "{repeat:?}");
+
+        let denied_background = {
+            std::env::set_var("DSHR_APPROVAL_MODE", "deny");
+            let result = run(&mut state, "deny", engine, shell(slow));
+            std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+            result
+        };
+        assert!(denied_background.is_error);
+        let second = run(&mut state, "start-b", engine, shell(slow));
+        assert!(!second.is_error, "{second:?}");
+        let second_id = second.value["jobId"].as_str().unwrap();
+        let killed = run(&mut state, "stop-b", "job_kill", json!({ "job_id": second_id, "reason": "test cleanup" }));
+        assert_eq!(killed.value["outcome"], "cancellation-requested", "{killed:?}");
+        let settled = run(&mut state, "claim-b", "job_output", json!({
+            "job_id": second_id, "wait": true, "timeout_ms": 4_000,
+        }));
+        assert_eq!(settled.value["job"]["status"], "killed", "{settled:?}");
+        assert!(!workspace.join("finished.txt").exists());
+        let third = run(&mut state, "start-c", engine, shell(command));
+        let third_id = third.value["jobId"].as_str().unwrap_or_else(|| panic!("{third:?}"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            let list = run(&mut state, "list-before-restart", "job_list", json!({}));
+            if list.value.as_array().is_some_and(|jobs| {
+                jobs.iter().any(|job| job["id"] == third_id && job["status"] == "completed")
+            }) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "{list:?}");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        drop(state);
+
+        let mut reopened = open(log, session);
+        let list = run(&mut reopened, "list", "job_list", json!({}));
+        let listed = list.value.as_array().unwrap_or_else(|| panic!("{list:?}"));
+        assert_eq!(listed.len(), 3, "{list:?}");
+        assert!(listed.iter().any(|job| job["id"] == first_id && job["status"] == "completed"));
+        assert!(listed.iter().any(|job| job["id"] == second_id && job["status"] == "killed"));
+        assert_eq!(run(&mut reopened, "claimed", "job_output", json!({ "job_id": first_id })).value["text"], "");
+        struct NoticeModel {
+            id: String,
+            notice: bool,
+        }
+        impl ModelProvider for NoticeModel {
+            fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+                let prefix = format!("background job {}", self.id);
+                let found = request.messages.iter().any(|message| {
+                    matches!(message, ChatMessage::System(text) if text.contains(&prefix))
+                });
+                assert_eq!(found, self.notice, "{:?}", request.messages);
+                self.notice = false;
+                Ok(ModelReply::text_only("done"))
+            }
+        }
+        reopened.agent = Agent::new(Box::new(NoticeModel { id: third_id.to_owned(), notice: true }));
+        reopened.run_turn("Inspect the background tasks", &[], &mut |_| {}).unwrap();
+        reopened.run_turn("Continue", &[], &mut |_| {}).unwrap();
+        let retained = run(&mut reopened, "claim-after-restart", "job_output", json!({ "job_id": third_id }));
+        assert!(retained.value["text"].as_str().is_some_and(|text| text.contains("background-proof")), "{retained:?}");
+        reopened.switch_session(fixture.path().join("other.jsonl"), "s-other");
+        let forbidden = run(&mut reopened, "outsider", "job_output", json!({ "job_id": first_id }));
+        assert!(forbidden.is_error, "{forbidden:?}");
+        assert_eq!(run(&mut reopened, "other-list", "job_list", json!({})).value, json!([]));
+        std::env::remove_var("DSHR_APPROVAL_MODE");
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 Office tool, OfficeKit, and a matching native engine"]
+    fn stage3_official_office_converts_recalculates_and_delivers() {
+        use std::io::Write;
+
+        fn create_odf(path: &Path, family: &str, extra: &str, content: &str) {
+            let mime = format!("application/vnd.oasis.opendocument.{family}");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("mimetype", options).unwrap();
+            zip.write_all(mime.as_bytes()).unwrap();
+            zip.start_file("content.xml", options).unwrap();
+            write!(zip,
+                r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" office:version="1.2" {extra}><office:body>{content}</office:body></office:document-content>"#,
+            ).unwrap();
+            zip.start_file("META-INF/manifest.xml", options).unwrap();
+            write!(zip,
+                r#"<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2"><manifest:file-entry manifest:full-path="/" manifest:media-type="{mime}" manifest:version="1.2"/><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/></manifest:manifest>"#,
+            ).unwrap();
+            zip.finish().unwrap();
+        }
+
+        #[derive(Default)]
+        struct OfficeModel(usize);
+
+        impl ModelProvider for OfficeModel {
+            fn complete(&mut self, request: &CompletionRequest) -> Result<ModelReply, String> {
+                self.0 += 1;
+                let call = |id: &str, name: &str, arguments| ModelToolCall {
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    arguments,
+                };
+                let calls = match self.0 {
+                    1 => {
+                        let offered: Vec<_> = request.tool_specs.iter().map(|t| t.name.as_str()).collect();
+                        assert!(offered.contains(&"office_convert"), "{offered:?}");
+                        assert!(offered.contains(&"office_recalculate"));
+                        assert!(offered.contains(&"office_render"));
+                        vec![
+                            call("convert", "office_convert", json!({ "input": "source.odt", "format": "pdf" })),
+                            call("recalculate", "office_recalculate", json!({ "input": "source.ods", "format": "ods" })),
+                        ]
+                    }
+                    2 => {
+                        let output_path = |id| {
+                            let content = request.messages.iter().find_map(|message| match message {
+                                ChatMessage::Tool { call_id, content } if call_id == id => Some(content.as_str()),
+                                _ => None,
+                            }).expect("office result");
+                            assert!(!content.starts_with("ERROR:"), "{content}");
+                            content.lines().next().unwrap().split_once("): ")
+                                .unwrap_or_else(|| panic!("missing output in {content}")).1
+                        };
+                        vec![
+                            call("delivery", "present", json!({ "files": [
+                                { "path": output_path("convert") },
+                                { "path": output_path("recalculate") },
+                            ] })),
+                            call("render", "office_render", json!({
+                                "input": "source.odt", "pages": [1, 2], "dpi": 96,
+                            })),
+                        ]
+                    }
+                    3 => {
+                        let images = request.messages.iter().find_map(|message| match message {
+                            ChatMessage::ToolImages(images) => Some(images),
+                            _ => None,
+                        });
+                        assert_pngs(images.expect("native Office images in the model request"));
+                        return Ok(ModelReply::text_only("done"));
+                    }
+                    _ => return Ok(ModelReply::text_only("done")),
+                };
+                Ok(ModelReply { reasoning: String::new(), text: String::new(), tool_calls: calls })
+            }
+        }
+
+        fn assert_pngs(images: &[dshr_agent_core::MediaAttachment]) {
+            assert_eq!(images.len(), 2, "{images:?}");
+            assert!(images.iter().all(|image| {
+                image.bytes.as_ref().is_some_and(|bytes| bytes.starts_with(b"\x89PNG\r\n\x1a\n"))
+            }));
+        }
+
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        create_odf(
+            &workspace.join("source.odt"), "text",
+            r#"xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0""#,
+            &format!("<office:text>{}</office:text>", "<text:p>Office gate report</text:p>".repeat(160)),
+        );
+        create_odf(
+            &workspace.join("source.ods"), "spreadsheet",
+            r#"xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:of="urn:oasis:names:tc:opendocument:xmlns:of:1.2""#,
+            r#"<office:spreadsheet><table:table table:name="Sheet1"><table:table-row><table:table-cell table:formula="of:=1+2" office:value-type="float" office:value="0"/></table:table-row></table:table></office:spreadsheet>"#,
+        );
+        let sidecar = PathBuf::from(std::env::var_os("DSHR_OFFICIAL_RC5_DIR").unwrap());
+        std::env::set_var("DSHR_APP_ROOT", sidecar.parent().unwrap().parent().unwrap());
+        std::env::set_var("DSHR_HOME", fixture.path().join("home"));
+        std::env::set_var("DSHR_WORKSPACE", &workspace);
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_PROVIDER", "mock");
+        std::env::set_var("DSHR_PERMISSION_MODE", "workspace-write");
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        std::env::set_var("DSHR_DSH_PLUGINS", json!([
+            { "name": "@deepseek-ai/dsh-skill-office" },
+            { "name": "@deepseek-ai/dsh-tool-skill" },
+            { "name": "@deepseek-ai/dsh-office-kit" },
+            { "name": "@deepseek-ai/dsh-tool-office" },
+            { "name": "@deepseek-ai/dsh-tool-present" },
+        ]).to_string());
+        let session = "s-office";
+        let log = fixture.path().join("office.jsonl");
+        let mut state = ChatState::open_diagnostics(log.clone(), session, &Arc::new(AtomicBool::new(false)), ApprovalBroker::new());
+        state.agent = Agent::new(Box::new(OfficeModel::default()));
+        let reply = state.run_turn("Use /office please", &[], &mut |_| {}).unwrap();
+        assert_eq!(reply.reply, "done");
+        let spill = state.spill.clone();
+        drop(state);
+        let replayed = SessionLog::from_jsonl(session, &std::fs::read_to_string(&log).unwrap()).unwrap();
+        let mut history = history_from_log(&replayed);
+        dshr_agent_context::spill::restore_history_attachments(&spill, &replayed, &mut history, |_| true);
+        assert_pngs(history.iter().find_map(|message| match message {
+            ChatMessage::ToolImages(images) => Some(images.as_slice()),
+            _ => None,
+        }).expect("replayed Office images"));
+        let deliveries = dsh_deliverables::replay(&replayed);
+        assert_eq!(deliveries.len(), 1, "{:?}", replayed.events());
+        let files = deliveries.values().next().unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(std::fs::read(workspace.join(&files[0].path)).unwrap().starts_with(b"%PDF-"));
+        let mut ods = zip::ZipArchive::new(std::fs::File::open(workspace.join(&files[1].path)).unwrap()).unwrap();
+        let mut sheet = String::new();
+        ods.by_name("content.xml").unwrap().read_to_string(&mut sheet).unwrap();
+        assert!(sheet.contains("office:value=\"3\""), "{sheet}");
+        std::env::remove_var("DSHR_APPROVAL_MODE");
+    }
+
+    #[test]
+    #[ignore = "requires the rc.5 ask-user package"]
+    fn stage3_official_questions_round_trip_in_the_desktop_runtime() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let sidecar = PathBuf::from(std::env::var_os("DSHR_OFFICIAL_RC5_DIR").unwrap());
+        std::env::set_var("DSHR_APP_ROOT", sidecar.parent().unwrap().parent().unwrap());
+        std::env::set_var("DSHR_HOME", fixture.path().join("home"));
+        std::env::set_var("DSHR_WORKSPACE", &workspace);
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_PROVIDER", "mock");
+        std::env::set_var("DSHR_DSH_PLUGINS", json!([
+            { "name": "@deepseek-ai/dsh-tool-ask-user" },
+        ]).to_string());
+        let abort = Arc::new(AtomicBool::new(false));
+        let session = "s-question";
+        let mut state = ChatState::open_diagnostics(
+            fixture.path().join("questions.jsonl"),
+            session,
+            &abort,
+            ApprovalBroker::new(),
+        );
+        let broker = state.l2_access.as_ref().unwrap().questions.clone();
+        let call = |id: &str| ToolCallRequest {
+            call_id: id.to_owned(),
+            tool: "ask_user_question".to_owned(),
+            arguments: json!({ "questions": [
+                { "id": "choice", "question": "Choose items", "multi_select": true,
+                  "options": [{ "label": "One", "description": "First item" }, { "label": "Two" }] },
+                { "id": "skip", "question": "Any notes?" },
+            ] }),
+        };
+
+        let wait_for_prompt = |broker: &dsh_user_questions::QuestionBroker| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(prompt) = broker.first(session, None) {
+                    return Some(prompt);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let run = |state: &mut ChatState, id, answer| {
+            let input = broker.clone();
+            let reader = std::thread::spawn(move || {
+                let Some(prompt) = wait_for_prompt(&input) else { return None; };
+                assert_eq!(prompt.questions[0].question, "Choose items");
+                assert!(input.first("another-session", None).is_none());
+                assert!(input.resolve("another-session", prompt.ticket, None).is_err());
+                assert!(input.resolve(session, prompt.ticket, Some(vec![
+                    (vec!["Unknown".to_owned()], String::new()), (Vec::new(), String::new()),
+                ])).is_err());
+                input.resolve(session, prompt.ticket, answer).unwrap();
+                Some(prompt.ticket)
+            });
+            let outcome = state.execute_tool(&call(id));
+            let ticket = reader.join().unwrap().unwrap_or_else(|| panic!("no desktop question: {outcome:?}"));
+            assert!(broker.resolve(session, ticket, None).is_err());
+            outcome
+        };
+
+        let answered = run(&mut state, "answer", Some(vec![
+            (vec!["One".to_owned(), "Two".to_owned()], "其他答复".to_owned()),
+            (Vec::new(), String::new()),
+        ]));
+        assert!(!answered.is_error, "{answered:?}");
+        assert_eq!(answered.value["answers"], json!([
+            { "id": "choice", "selected": ["One", "Two"], "custom": "其他答复" },
+            { "id": "skip", "selected": [] },
+        ]));
+
+        let dismissed = run(&mut state, "dismiss", None);
+        assert!(dismissed.is_error, "{dismissed:?}");
+
+        let input = broker.clone();
+        let cancel = abort.clone();
+        let watcher = std::thread::spawn(move || {
+            let prompt = wait_for_prompt(&input);
+            cancel.store(true, Ordering::Release);
+            prompt.map(|prompt| prompt.ticket)
+        });
+        let cancelled = state.execute_tool(&call("cancel"));
+        let ticket = watcher.join().unwrap().expect("no question to cancel");
+        assert!(cancelled.is_error, "{cancelled:?}");
+        assert!(broker.first(session, None).is_none());
+        assert!(broker.resolve(session, ticket, None).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires rc.5 shell tool packages and the platform shell in PATH"]
+    fn stage2_official_shell_uses_desktop_approvals_and_process_cancellation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("workspace");
+        let child = workspace.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        let resource =
+            PathBuf::from(std::env::var_os("DSHR_OFFICIAL_RC5_DIR").expect("isolated rc.5 sidecar"));
+        let root = resource.parent().and_then(std::path::Path::parent).unwrap();
+        std::env::set_var("DSHR_APP_ROOT", root);
+        std::env::set_var("DSHR_HOME", fixture.path().join("home"));
+        std::env::set_var("DSHR_WORKSPACE", &workspace);
+        std::env::set_var("DSHR_SIDECAR", "dsh");
+        std::env::set_var("DSHR_PROVIDER", "mock");
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        let (name, command, denied, slow, cancellable) = if cfg!(windows) {
+            (
+                "pwsh",
+                "Write-Output $env:DSH_SESSION_ID; Write-Output $PSHOME; [Console]::Error.WriteLine('stderr marker'); exit 7",
+                "Set-Content -LiteralPath blocked.txt -Value denied",
+                "Start-Sleep -Seconds 10",
+                "Set-Content -LiteralPath started.txt -Value started; Start-Sleep -Seconds 10; Set-Content -LiteralPath finished.txt -Value finished",
+            )
+        } else {
+            (
+                "bash",
+                "printf '%s\\n' \"$DSH_SESSION_ID\"; printf '%s\\n' 'stderr marker' >&2; exit 7",
+                "printf denied > blocked.txt",
+                "sleep 10",
+                "printf started > started.txt; sleep 10; printf finished > finished.txt",
+            )
+        };
+        std::env::set_var("DSHR_DSH_PLUGINS", json!([
+            { "name": format!("@deepseek-ai/dsh-tool-{name}"), "config": { "enableRunInBackground": false } },
+            { "name": "@deepseek-ai/dsh-tool-working-directory" },
+        ]).to_string());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = ChatState::open_diagnostics(
+            fixture.path().join("shell-session.jsonl"),
+            "s-shell",
+            &cancel,
+            ApprovalBroker::new(),
+        );
+        state.permission.set(PermissionMode::WorkspaceWrite);
+        let cwd = state.execute_tool(&ToolCallRequest {
+            call_id: "cwd".to_owned(),
+            tool: "working_directory".to_owned(),
+            arguments: json!({ "cd": "child" }),
+        });
+        assert!(!cwd.is_error, "{cwd:?}");
+
+        let call = |id: &str, command: &str, timeout: u64| ToolCallRequest {
+            call_id: id.to_owned(),
+            tool: name.to_owned(),
+            arguments: json!({
+                "description": "Run an isolated process check",
+                "command": command,
+                "timeoutMs": timeout,
+            }),
+        };
+        let result = state.execute_tool(&call("run", command, 6000));
+        assert!(!result.is_error, "{result:?}");
+        assert_eq!(result.value["exitCode"], 7, "{result:?}");
+        let mut stdout = result.value["stdout"]["text"].as_str().unwrap().lines();
+        assert_eq!(stdout.next(), Some("s-shell"));
+        let bundled = root.join("runtime/powershell");
+        if cfg!(windows) && bundled.join("pwsh.exe").is_file() {
+            let actual = PathBuf::from(stdout.next().expect("PowerShell home"));
+            assert_eq!(actual.canonicalize().unwrap(), bundled.canonicalize().unwrap());
+        }
+        assert_eq!(result.value["stderr"]["text"].as_str().unwrap().trim(), "stderr marker");
+        assert!(result.value["cwd"]
+            .as_str()
+            .is_some_and(|cwd| std::path::Path::new(cwd).ends_with("child")));
+
+        std::env::set_var("DSHR_APPROVAL_MODE", "deny");
+        let result = state.execute_tool(&call("denied", denied, 6000));
+        assert!(result.is_error, "{result:?}");
+        assert!(!child.join("blocked.txt").exists());
+        std::env::remove_var("DSHR_APPROVAL_MODE");
+        for (id, decision) in [
+            ("approved-once", ApprovalOutcome::AllowOnce),
+            ("asked-again", ApprovalOutcome::Deny),
+        ] {
+            let approvals = state.approvals.clone();
+            let answer = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(6);
+                while std::time::Instant::now() < deadline {
+                    if let Some(pending) = approvals.pending().into_iter().find(|pending| pending.call_id == id) {
+                        let one_shot = !pending.supports_always_allow();
+                        approvals.resolve(id, decision);
+                        return one_shot;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                approvals.cancel_pending();
+                false
+            });
+            let result = state.execute_tool(&call(id, command, 6000));
+            assert!(answer.join().unwrap(), "expected one-shot approval {id}");
+            assert_eq!(result.is_error, decision == ApprovalOutcome::Deny, "{result:?}");
+        }
+        std::env::set_var("DSHR_APPROVAL_MODE", "allow");
+        let result = state.execute_tool(&call("timeout", slow, 100));
+        assert_eq!(result.value["timedOut"], true, "{result:?}");
+        let marker = child.join("started.txt");
+        let stop = cancel.clone();
+        let watcher = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(6);
+            while !marker.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stop.store(true, Ordering::Release);
+            marker.exists()
+        });
+        let result = state.execute_tool(&call("cancel", cancellable, 10000));
+        assert!(
+            watcher.join().unwrap(),
+            "the official shell did not reach the running state"
+        );
+        assert!(result.is_error, "{result:?}");
+        assert!(!child.join("finished.txt").exists());
+        std::env::remove_var("DSHR_APPROVAL_MODE");
+    }
+
     use super::*;
 
     #[test]

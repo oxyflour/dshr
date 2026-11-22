@@ -31,6 +31,7 @@ const E_SANDBOX_DENIED: &str = "FS_SANDBOX_DENIED";
 const E_STALE_VERSION: &str = "FS_STALE_VERSION";
 const E_TOO_LARGE: &str = "FS_TOO_LARGE";
 const E_NOT_FOUND: &str = "FS_NOT_FOUND";
+const E_NOT_OBSERVED: &str = "FS_NOT_OBSERVED";
 const E_NOT_REGULAR_FILE: &str = "FS_NOT_REGULAR_FILE";
 const E_PERMISSION_DENIED: &str = "FS_PERMISSION_DENIED";
 const E_IO: &str = "FS_IO_ERROR";
@@ -190,6 +191,13 @@ impl FsWriteService {
                         ),
                     ));
                 }
+                let create_only = request.intent.as_ref().and_then(|intent| intent["kind"].as_str())
+                    == Some("createIfAbsent");
+                if create_only && fs::symlink_metadata(&absolute).is_ok() {
+                    return Err(map_sandbox_error(SandboxError::AlreadyExists(
+                        absolute.display().to_string(),
+                    )));
+                }
                 self.check_version(request, &absolute, current_version.as_deref())?;
                 let operation = if metadata.is_some() {
                     "update"
@@ -197,10 +205,13 @@ impl FsWriteService {
                     "create"
                 };
                 self.approve(request, &absolute, operation, bytes, grant_key)?;
-                let receipt = self
-                    .workspace
-                    .write_text(&relative.to_string_lossy(), content)
-                    .map_err(map_sandbox_error)?;
+                self.check_version_after_approval(request, &absolute)?;
+                let requested = relative.to_string_lossy();
+                let receipt = if create_only {
+                    self.workspace.create_text(&requested, content)
+                } else {
+                    self.workspace.write_text(&requested, content)
+                }.map_err(map_sandbox_error)?;
                 let after = fs::metadata(&absolute).map_err(map_io_error)?;
                 let version = version_of(&after)?;
                 Ok(FsWriteResult {
@@ -229,6 +240,7 @@ impl FsWriteService {
                 self.check_version(request, &absolute, current_version.as_deref())?;
                 let bytes = meta.len();
                 self.approve(request, &absolute, "delete", bytes, grant_key)?;
+                self.check_version_after_approval(request, &absolute)?;
                 let snapshot = self
                     .workspace
                     .snapshot(&absolute)
@@ -322,6 +334,22 @@ impl FsWriteService {
                 current.unwrap_or("<absent>")
             ),
         ))
+    }
+
+    fn check_version_after_approval(
+        &self,
+        request: &FsWriteRequest,
+        absolute: &Path,
+    ) -> Result<(), WriteFailure> {
+        if request.expected_version.is_none() {
+            return Ok(());
+        }
+        let version = match fs::metadata(absolute) {
+            Ok(info) => Some(version_of(&info)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(map_io_error(error)),
+        };
+        self.check_version(request, absolute, version.as_deref())
     }
 
     fn approve(
@@ -431,6 +459,10 @@ fn map_sandbox_error(error: SandboxError) -> WriteFailure {
             E_NOT_FOUND,
             format!("parent directory does not exist: {path}"),
         ),
+        SandboxError::AlreadyExists(path) => (
+            E_NOT_OBSERVED,
+            format!("cannot create \"{path}\": a file already exists"),
+        ),
         SandboxError::Io(message) => (E_IO, message),
     };
     WriteFailure::new(code, message)
@@ -524,6 +556,37 @@ mod tests {
             expected_version: None,
             intent: None,
             mode: Some("workspace-write".to_owned()),
+        }
+    }
+
+    #[test]
+    fn editor_respects_concurrent_changes_during_approval() {
+        for (create, expected_error) in [(true, E_NOT_OBSERVED), (false, E_STALE_VERSION)] {
+            let (service, root) = service("editor-approval-race");
+            let path = root.join("editor.txt");
+            let mut request = write_request("editor.txt", "editor contents");
+            if create {
+                request.intent = Some(json!({ "kind": "createIfAbsent" }));
+            } else {
+                fs::write(&path, "old").unwrap();
+                request.expected_version = Some(version_of(&fs::metadata(&path).unwrap()).unwrap());
+            }
+            let worker_service = service.clone();
+            let worker = thread::spawn(move || worker_service.handle(&request));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let pending = loop {
+                if let Some(pending) = service.approvals().pending().into_iter().next() {
+                    break pending;
+                }
+                assert!(Instant::now() < deadline, "editor did not reach approval");
+                thread::sleep(Duration::from_millis(1));
+            };
+            fs::write(&path, "written while approval was pending").unwrap();
+            service.approvals().resolve(&pending.call_id, ApprovalOutcome::AllowOnce);
+            let result = worker.join().unwrap();
+            assert_eq!(result.error.unwrap().code, expected_error);
+            assert_eq!(fs::read_to_string(path).unwrap(), "written while approval was pending");
+            fs::remove_dir_all(root).unwrap();
         }
     }
 

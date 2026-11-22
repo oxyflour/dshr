@@ -314,26 +314,14 @@ fn message_json(
             json!({ "role": "user", "content": content })
         }
         ChatMessage::UserWithAttachments { text, attachments } => {
-            let mut content = Vec::new();
-            if !text.is_empty() {
-                content.push(json!({ "type": "text", "text": text }));
+            media_message_json(text, attachments, uploaded_pdfs)
+        }
+        ChatMessage::ToolImages(images) => {
+            if supports_attachments {
+                media_message_json("工具返回的图片", images, uploaded_pdfs)
+            } else {
+                json!({ "role": "user", "content": "当前模型不支持工具返回的图片" })
             }
-            for attachment in attachments {
-                content
-                    .push(json!({ "type": "text", "text": format!("附件：{}", attachment.name) }));
-                let part = if attachment.format == AttachmentFormat::Pdf {
-                    uploaded_pdfs
-                        .get(&attachment.reference)
-                        .map(|file| json!({ "type": "file", "file_id": file.id }))
-                } else {
-                    attachment
-                        .data_url()
-                        .map(|url| json!({ "type": "image_url", "image_url": { "url": url } }))
-                };
-                content
-                    .push(part.unwrap_or_else(|| json!({ "type": "text", "text": "文件未加载" })));
-            }
-            json!({ "role": "user", "content": content })
         }
         ChatMessage::Assistant {
             text, tool_calls, ..
@@ -371,6 +359,31 @@ fn message_json(
             "content": content,
         }),
     }
+}
+
+fn media_message_json(
+    text: &str,
+    attachments: &[dshr_agent_core::MediaAttachment],
+    uploaded_pdfs: &HashMap<String, UploadedPdf>,
+) -> Value {
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    for attachment in attachments {
+        content.push(json!({ "type": "text", "text": format!("附件：{}", attachment.name) }));
+        let part = if attachment.format == AttachmentFormat::Pdf {
+            uploaded_pdfs
+                .get(&attachment.reference)
+                .map(|file| json!({ "type": "file", "file_id": file.id }))
+        } else {
+            attachment
+                .data_url()
+                .map(|url| json!({ "type": "image_url", "image_url": { "url": url } }))
+        };
+        content.push(part.unwrap_or_else(|| json!({ "type": "text", "text": "文件未加载" })));
+    }
+    json!({ "role": "user", "content": content })
 }
 
 /// 读取可选数值型 env：未设置 / 空白 / 非法都返回 `None`（= 不发送该参数）。
@@ -1053,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn serializes_reasoning_effort_and_disable_switch() {
+    fn m3_default_031_deepseek_serializes_reasoning_effort_and_disable_switch() {
         let request = request(vec![ChatMessage::user("hi")]);
         for (choice, mode, level) in [
             (None, Value::Null, Value::Null),

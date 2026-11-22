@@ -23,7 +23,7 @@
         "runtime.hello", "runtime.ready", "runtime.reject", "runtime.crashed",
         "plugin.load", "plugin.loaded", "plugin.failed", "plugin.unload", "plugin.unloaded",
         "tool.register", "tool.unregister",
-        "preset.sync", "preset.bind", "preset.release",
+        "preset.sync", "preset.bind", "preset.release", "agent.step",
         "tool.invoke", "tool.chunk", "tool.result", "tool.cancel", "tool.aborted",
         "fs.write.request", "fs.write.result",
         "service.publish", "service.revoke", "service.invoke", "service.result",
@@ -53,7 +53,11 @@
       "minLength": 1,
       "description": "Stable opaque session ID. For tool.register and tool.unregister, omission denotes a global binding."
     },
-    "call_id": { "type": "string", "minLength": 1 },
+    "call_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model tool call identity. Scoped tool services require this with session_id and payload.tool_request_id. For tool-program/v1 begin and finish this identifies the parent run_code call."
+    },
     "depth": { "type": "integer", "minimum": 0, "maximum": 4 },
     "trace_id": { "type": "string", "minLength": 1, "maxLength": 64 },
     "ts": {

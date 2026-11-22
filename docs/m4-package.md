@@ -23,7 +23,9 @@ Windows 的 debug 和 release 构建都用 Windows SDK 的 `fxc.exe` 预编译�
 构建时可用 `GPUI_FXC_PATH` 指定 `fxc.exe`。解压后的应用可以脱离构建机的 Cargo 缓存启动。
 Windows 打包通过 `vswhere.exe` 查找 Visual Studio 的 x64 可再发行 `vcruntime140.dll`，并放在桌面与控制台可执行文件旁。用户解压后即可运行。[运行组件规范](spec/runtime-components.md)
 
-打包前运行 `npm ci --ignore-scripts --prefix sidecar/dsh-official` 安装锁定的官方 Sidecar 依赖。Windows 可运行 `node tools/vendor-node.mjs` 准备 Node。Windows x64 release 还需要运行组件目录。以下离线示例把两份 ZIP 和目录文件留在 `.tmp/runtime-component-assets`。
+Windows x64 调试包从本机 DeepSeek Harness 的 `app.asar` 抽取 Windows 已验收的 `rc.5` 工具和配套依赖，打包时按来源锁校验。使用 `-DshAsar` 指定其他入口。打包时从 `PATH` 或 `-PowerShellExe` 指定的位置复制独立的 x64 PowerShell 7 发行目录，解压后使用包内运行时。首次启动会用包内默认配置生成 `profile/plugins.json`，已有配置继续优先。前台 PowerShell 和 Native 执行器默认启用，持久 PowerShell 与 PTC 可在插件页切换。Office 需要激活 Office Skill，网页调用依赖可用凭据。[兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵)
+
+Windows 可运行 `node tools/vendor-node.mjs` 准备 Node。Windows release、其他平台，以及 CI 中带 `-BaseSidecar` 的 Windows 调试构建，打包前运行 `npm ci --ignore-scripts --prefix sidecar/dsh-official` 安装基础 Sidecar 依赖。Windows x64 release 还需要运行组件目录。以下离线示例把两份 ZIP 和目录文件留在 `.tmp/runtime-component-assets`。
 
 ~~~powershell
 py tools/build-runtime-components.py --out .tmp/runtime-component-assets
@@ -32,7 +34,33 @@ py tools/build-runtime-components.py --out .tmp/runtime-component-assets
 
 在线发行时给生成脚本传入 `--base-url`，指向发行方的 HTTPS 资源目录，并把 `runtime-packages/` 中的两个 ZIP 发布到该 URL 下。离线发行可将 `runtime-packages/` 交给用户放到解压后的应用目录，再从「设置 → 运行组件」按需安装。基础归档只带目录清单。Python 与 Rust 输入版本及 SHA-256 记录在生成脚本中。[运行组件契约](spec/runtime-components.md) · [验收步骤](plan/runtime-components.md)
 
+### 直接启动 Cargo 调试版
+
+准备好上文的 `rc.5` 调试包后，关闭正在运行的 `target/debug/dshr.exe`，然后从仓库根目录执行以下命令。
+
+```powershell
+tools\build-env.cmd cargo build --locked -p dshr-desktop-gpui --bin dshr
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/stage-windows-debug.ps1
+.\target\debug\dshr.exe
+```
+
+暂存脚本默认从 `dist/rc5/dshr-debug-windows-x64` 复制已校验的 Sidecar、Node 和 PowerShell。开发版从 `target/debug/profile/plugins.json` 读取插件配置，暂存脚本给这个文件补齐模板缺项。已有配置和开关优先，改写前会备份。若要导入当前使用的其他 profile，可向暂存脚本传入 `-ExistingProfile` 和原文件路径。开发版仍从原数据根载入会话、工作区和用户设置。显式指定的资源根、数据根和 profile 按原有规则优先。
+
+实测直接启动 `target/debug/dshr.exe` 后，插件页显示 31 项，其中 29 项启用。待办开关可以来回切换。开发版文件写入自检和使用暂存 PowerShell 的调用测试均通过。
+
 ## 2. 本机实测
+
+Windows x64 `rc.5` 调试包位于 `dist/rc5/dshr-debug-windows-x64.zip`，大小为 260,941,409 B，SHA-256 为 `79d6b57eed2b379211bf6cae8cad29312321641114fa1d192c221df4de2484b6`。常规启动的插件页显示 31 项，其中 27 项是工具包，4 项是配套插件，共有 29 项默认启用。两组互斥插件均可在插件页来回切换。待办插件停用后从模型工具清单移除，重新启用后成功写入会话待办。桌面聊天也调用了文件读取、文件搜索、Cordis 检查和工作区依赖查询。调用由本地测试模型触发，工具由包内 Sidecar 执行。工作区依赖查询使用本机 DeepSeek Harness 的 primary runtime。
+
+ZIP 校验、窗口与组件自检均通过。包内 PowerShell 7.6.5 在仅包含 Windows 系统目录的 `PATH` 下可启动，官方 PowerShell 工具测试核对了进程返回的 `$PSHOME`。下面的兼容验收直接使用包内 Sidecar，校验了 48 个官方包的版本与散列，27 项测试全部通过。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug -OutDir dist/rc5
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Archive dist/rc5/dshr-debug-windows-x64.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-rc5-gate.ps1 -PackagedSidecar dist/rc5/dshr-debug-windows-x64/sidecar/dsh-official
+```
+
+历史归档记录如下。
 
 | 平台 | 产物 | 大小 | SHA-256 |
 |---|---|---|---|
@@ -93,7 +121,5 @@ bash tools/verify-package.sh dist/dshr-debug-linux-x86_64.tar.gz
 ## 5. 明确未做
 
 - 没有 macOS `.app`/签名/公证；Windows 没有 MSI/NSIS 或 Authenticode；Linux 没有 deb/AppImage。
-- 归档含 `dshr`、`runtime/node`、`dsh-official`（含 node_modules）与
-  `components/cpp-component`；但 `.tmp/dsh-tools-all` 等本机工具包不随包，官方工具全量
-  仍依赖这些 fixture。
+- Windows `rc.5` 调试包附带已验收工具的依赖。其他官方工具的兼容范围及限制见[兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵)。
 - 没有安装器/签名/自动更新/差分回滚；G1 仍不能因归档可运行标完成。

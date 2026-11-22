@@ -884,6 +884,8 @@ mod tests {
             plugin_id: plugin.to_owned(),
             generation: "node-0001".to_owned(),
             session_id: None,
+            call_id: None,
+            tool_request_id: None,
             depth: 0,
         }
     }

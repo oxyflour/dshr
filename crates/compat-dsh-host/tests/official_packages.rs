@@ -23,6 +23,12 @@ use dshr_compat_dsh_host::{
     WorkingDirectoryService, SESSION_LOG_V1, SESSION_PROJECTIONS_V1, STORAGE_KV_V1,
     WORKING_DIRECTORY_V1,
 };
+#[cfg(unix)]
+use dshr_compat_dsh_host::{
+    ShellProgram, ToolJobService, ToolProcessService, ToolTerminalService, CAP_AGENT_TOOL_CONTEXT,
+    CAP_BACKGROUND_JOBS, CAP_SHELL_PROCESS, CAP_TERMINAL_PROCESS, TOOL_JOBS_V1, TOOL_PROCESS_V1,
+    TOOL_TERMINALS_V1,
+};
 use dshr_compat_dsh_protocol::{Envelope, CAP_SERVICE_PROXY, PROTOCOL_MAX};
 use dshr_tool_runtime::{ApprovalBroker, ApprovalOutcome};
 use serde_json::{json, Value};
@@ -134,7 +140,12 @@ struct FakeAccess {
 impl FakeAccess {
     fn with_session(session_id: &str, cwd: &str) -> Arc<Self> {
         let access = Arc::new(Self::default());
-        access.sessions.lock().expect("sessions").insert(
+        access.add_session(session_id, cwd);
+        access
+    }
+
+    fn add_session(&self, session_id: &str, cwd: &str) {
+        self.sessions.lock().expect("sessions").insert(
             session_id.to_owned(),
             FakeSession {
                 header: SessionHeaderView {
@@ -147,7 +158,6 @@ impl FakeAccess {
                 events: Vec::new(),
             },
         );
-        access
     }
 
     /// 测试侧读取已落库事件（`events.append` 断言用）。
@@ -317,7 +327,23 @@ fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
     if !driver.exists() {
         panic!("#[{label}] 缺少 sidecar/dsh-official/lib/official-l2-driver.mjs");
     }
+    Some(spawn_fixture(
+        label,
+        &sidecar_dir,
+        official_plugins(&file_url(&driver), include_todo),
+    ))
+}
 
+fn spawn_fixture(label: &str, sidecar_dir: &Path, plugins: String) -> Fixture {
+    spawn_fixture_with(label, sidecar_dir, plugins, |_, _, _, _, _| {})
+}
+
+fn spawn_fixture_with(
+    label: &str,
+    sidecar_dir: &Path,
+    plugins: String,
+    configure: impl FnOnce(&Path, &Arc<FakeAccess>, &mut HostServiceRouter, &mut Vec<String>, &mut HostOptions),
+) -> Fixture {
     let workspace = temp_dir(&format!("{label}-ws"));
     let target = temp_dir(&format!("{label}-target"));
     let storage = temp_dir(&format!("{label}-storage"));
@@ -345,41 +371,224 @@ fn spawn_official_sidecar(label: &str, include_todo: bool) -> Option<Fixture> {
     router
         .register(Box::new(SessionProjectionsService::new(access.clone())))
         .expect("register session-projections");
-    router.register_plugin_inject(
-        "dsh-official",
-        vec![
+    let mut inject = vec![
             STORAGE_KV_V1.to_owned(),
             WORKING_DIRECTORY_V1.to_owned(),
             SESSION_LOG_V1.to_owned(),
             SESSION_PROJECTIONS_V1.to_owned(),
-        ],
-    );
+    ];
     let broker = ApprovalBroker::new();
     let fs_write = Arc::new(
         FsWriteService::open(&workspace, broker.clone()).expect("fs write service opens"),
     );
-    let options = HostOptions::default()
-        .with_env(
-            "DSHR_DSH_PLUGINS",
-            official_plugins(&file_url(&driver), include_todo),
-        )
+    let mut options = HostOptions::default()
+        .with_env("DSHR_DSH_PLUGINS", plugins)
+        .with_env("DSHR_WORKSPACE", workspace.to_string_lossy())
         .with_registration_window(Duration::from_secs(8))
-        .with_fs_write(fs_write)
-        .with_host_services(Arc::new(Mutex::new(router)));
+        .with_fs_write(fs_write);
+    configure(&workspace, &access, &mut router, &mut inject, &mut options);
+    router.register_plugin_inject("dsh-official", inject);
+    let options = options.with_host_services(Arc::new(Mutex::new(router)));
     let script = sidecar_dir.join("sidecar-dsh.mjs");
-    match SidecarHost::spawn_with(&script, &script, options) {
-        Ok(host) => Some(Fixture {
-            host,
-            workspace,
-            target,
-            storage,
-            access,
-            broker,
-        }),
-        Err(error) => {
-            panic!("#[{label}] sidecar 启动失败（official-package gate 不静默跳过）: {error}");
-        }
+    let host = SidecarHost::spawn_with(&script, &script, options)
+        .unwrap_or_else(|error| panic!("#[{label}] sidecar 启动失败: {error}"));
+    Fixture {
+        host,
+        workspace,
+        target,
+        storage,
+        access,
+        broker,
     }
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires rc.5 Bash package and /bin/bash"]
+fn stage2_official_bash_runs_on_linux() {
+    let sidecar = std::env::var_os("DSHR_OFFICIAL_RC5_DIR").expect("isolated rc.5 sidecar");
+    let mut fixture = spawn_fixture_with(
+        "rc5-bash",
+        Path::new(&sidecar),
+        json!([
+            { "name": "@deepseek-ai/dsh-tool-bash", "config": { "enableRunInBackground": false } },
+            { "name": "@deepseek-ai/dsh-tool-working-directory" },
+        ])
+        .to_string(),
+        |workspace, _, router, inject, options| {
+            let service = ToolProcessService::new(
+                workspace,
+                None,
+                Some(ShellProgram {
+                    name: "bash",
+                    path: "/bin/bash".into(),
+                }),
+            )
+            .unwrap();
+            router.register(Box::new(service)).unwrap();
+            inject.push(TOOL_PROCESS_V1.to_owned());
+            options.extra_caps.push(CAP_SHELL_PROCESS.to_owned());
+        },
+    );
+    let directory = fixture.workspace.join("child");
+    std::fs::create_dir(&directory).unwrap();
+    let result = invoke(
+        &mut fixture.host,
+        "working_directory",
+        json!({ "cd": "child" }),
+    );
+    assert_eq!(result.payload["is_error"], false, "{result:?}");
+    let result = invoke(
+        &mut fixture.host,
+        "bash",
+        json!({
+            "description": "Check bash exit and output",
+            "command": "printf '%s\\n' \"$DSH_SESSION_ID\"; printf '%s\\n' 'stderr marker' >&2; exit 7",
+        }),
+    );
+    assert_eq!(result.payload["is_error"], false, "{result:?}");
+    let value = &result.payload["value"];
+    assert_eq!(value["exitCode"], 7);
+    assert_eq!(value["stdout"]["text"].as_str().unwrap().trim(), "s-probe");
+    assert_eq!(
+        value["stderr"]["text"].as_str().unwrap().trim(),
+        "stderr marker"
+    );
+    assert_eq!(value["cwd"], norm(&directory));
+    let timed = invoke(
+        &mut fixture.host,
+        "bash",
+        json!({
+            "description": "Validate foreground timeout",
+            "command": "sleep 10",
+            "timeoutMs": 100,
+        }),
+    );
+    assert_eq!(timed.payload["value"]["timedOut"], true, "{timed:?}");
+    assert_eq!(timed.payload["value"]["signal"], "SIGKILL");
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = cancelled.clone();
+    let marker = directory.join("started.txt");
+    let watcher = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        marker.exists()
+    });
+    let result = fixture.host.invoke_as_cancellable_in_session(
+        "bash-cancel",
+        Some("s-probe"),
+        "bash",
+        json!({
+            "description": "Cancel a running Bash command",
+            "command": "printf started > started.txt; sleep 10; printf finished > finished.txt",
+        }),
+        Duration::from_secs(15),
+        Some(&cancelled),
+    );
+    assert!(
+        watcher.join().unwrap(),
+        "Bash did not reach its running state"
+    );
+    assert!(match result {
+        Err(dshr_compat_dsh_host::HostError::Cancelled(_)) => true,
+        Ok(result) =>
+            result.terminal.kind == "tool.aborted"
+                || result
+                    .terminal
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "E_CANCELLED"),
+        _ => false,
+    });
+    assert!(!directory.join("finished.txt").exists());
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires rc.5 Bash and job packages"]
+fn stage4_official_bash_background_jobs_return_the_host_output() {
+    let sidecar = std::env::var_os("DSHR_OFFICIAL_RC5_DIR").expect("isolated rc.5 sidecar");
+    let mut fixture = spawn_fixture_with(
+        "rc5-bash-jobs",
+        Path::new(&sidecar),
+        json!([
+            { "name": "@deepseek-ai/dsh-tool-jobs", "config": { "completionDelivery": "quiet" } },
+            { "name": "@deepseek-ai/dsh-tool-bash", "config": { "promoteOnTimeout": false } },
+        ]).to_string(),
+        |workspace, _, router, inject, options| {
+            let bash = ShellProgram { name: "bash", path: "/bin/bash".into() };
+            let processes = ToolProcessService::new(workspace, None, Some(bash.clone())).unwrap();
+            let jobs = ToolJobService::new(workspace, workspace.join("job-proof"), bash).unwrap();
+            router.register(Box::new(processes)).unwrap();
+            router.register(Box::new(jobs)).unwrap();
+            inject.extend([TOOL_PROCESS_V1.to_owned(), TOOL_JOBS_V1.to_owned()]);
+            options.extra_caps.extend([
+                CAP_AGENT_TOOL_CONTEXT.to_owned(), CAP_SHELL_PROCESS.to_owned(), CAP_BACKGROUND_JOBS.to_owned(),
+            ]);
+        },
+    );
+    let started = invoke(&mut fixture.host, "bash", json!({
+        "command": "printf 'linux-background-proof\\n'",
+        "description": "Check background output", "run_in_background": true,
+    }));
+    assert!(!started.is_error(), "{started:?}");
+    let id = started.payload["value"]["jobId"].as_str().unwrap();
+    let claimed = invoke(&mut fixture.host, "job_output", json!({
+        "job_id": id, "wait": true, "timeout_ms": 3000,
+    }));
+    assert_eq!(claimed.payload["value"]["job"]["status"], "completed", "{claimed:?}");
+    assert!(claimed.payload["value"]["text"].as_str().unwrap().contains("linux-background-proof"));
+    let repeated = invoke(&mut fixture.host, "job_output", json!({ "job_id": id }));
+    assert_eq!(repeated.payload["value"]["text"], "", "{repeated:?}");
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires rc.5 Bash terminal packages and the installed POSIX PTY backend"]
+fn stage4_official_bash_persistent_uses_a_real_pty() {
+    let sidecar = std::env::var_os("DSHR_OFFICIAL_RC5_DIR").expect("isolated rc.5 sidecar");
+    let mut fixture = spawn_fixture_with(
+        "rc5-bash-persistent",
+        Path::new(&sidecar),
+        json!([
+            { "name": "@deepseek-ai/dsh-tool-terminal", "config": { "enableRunInBackground": false } },
+            { "name": "@deepseek-ai/dsh-tool-bash-persistent", "config": { "timeoutMs": 8_000 } },
+        ]).to_string(),
+        |workspace, access, router, inject, options| {
+            router.register(Box::new(ToolTerminalService::new(workspace, access.clone()).unwrap())).unwrap();
+            inject.push(TOOL_TERMINALS_V1.to_owned());
+            options.extra_caps.extend([CAP_TERMINAL_PROCESS.to_owned(), CAP_AGENT_TOOL_CONTEXT.to_owned()]);
+            options.env.push(("DSHR_TERMINAL_SHELL".to_owned(), "/bin/bash".to_owned()));
+        },
+    );
+    let first = invoke(&mut fixture.host, "bash", json!({
+        "command": "test -t 0 && marker=retained-in-bash",
+    }));
+    assert!(!first.is_error(), "{first:?}");
+    let second = invoke(&mut fixture.host, "bash", json!({
+        "command": r#"printf '%s\n' "$marker""#,
+    }));
+    assert!(!second.is_error(), "{second:?}");
+    assert!(second.payload["value"].as_str().is_some_and(|text| text.contains("retained-in-bash")), "{second:?}");
+    let list = invoke(&mut fixture.host, "terminal_list", json!({}));
+    let rows = list.payload["value"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{list:?}");
+    let terminal = rows[0]["sessionId"].as_str().unwrap();
+    fixture.access.add_session("s-outsider", &norm(&fixture.workspace));
+    let foreign = fixture.host.invoke_as_cancellable_in_session(
+        "wrong-terminal", Some("s-outsider"), "terminal_read",
+        json!({ "sessionId": terminal }), Duration::from_secs(15), None,
+    ).unwrap();
+    assert!(foreign.terminal.is_error(), "{:?}", foreign.terminal);
+    let closed = invoke(&mut fixture.host, "terminal_close", json!({ "sessionId": terminal }));
+    assert_eq!(closed.payload["value"]["outcome"], "closed", "{closed:?}");
+    assert!(fixture.access.events("s-probe").iter().any(|event| event.event_type == "terminal/closed"));
+    fixture.cleanup();
 }
 
 fn registration_names(host: &SidecarHost) -> Vec<String> {
@@ -402,6 +611,195 @@ fn invoke(host: &mut SidecarHost, tool: &str, arguments: Value) -> Envelope {
         outcome.terminal
     );
     outcome.terminal
+}
+
+#[test]
+#[ignore = "requires the rc.5 fixture prepared by tools/official-rc5-gate.ps1"]
+fn rc5_files_use_the_bound_session_and_host_write_service() {
+    let sidecar = std::env::var_os("DSHR_OFFICIAL_RC5_DIR").expect("isolated rc.5 sidecar");
+    let runtime = std::env::var("DSHR_OFFICIAL_RC5_RUNTIME").expect("rc.5 primary-runtime");
+    let plugins = json!([
+        { "name": "@deepseek-ai/dsh-tool-workspace-dependencies", "config": { "source": runtime } },
+        { "name": "@deepseek-ai/dsh-tool-fs", "config": { "read": true, "readImage": true } },
+        { "name": "@deepseek-ai/dsh-tool-todo", "config": { "allowParallelInProgress": true } },
+        { "name": "@deepseek-ai/dsh-tool-str-replace-editor" },
+    ]);
+    let mut fixture = spawn_fixture("rc5-files", Path::new(&sidecar), plugins.to_string());
+    let python = invoke(&mut fixture.host, "load_workspace_dependencies", json!({}));
+    assert_eq!(python.payload["is_error"], false, "{python:?}");
+    assert!(python.payload.to_string().to_lowercase().contains("python"));
+    assert!(!registration_names(&fixture.host)
+        .iter()
+        .any(|name| name == "read_image"));
+
+    let first = fixture.workspace.join("one");
+    let second = fixture.workspace.join("two");
+    for (directory, marker) in [(&first, "first"), (&second, "second")] {
+        std::fs::create_dir(directory).unwrap();
+        std::fs::write(directory.join("marker.txt"), marker).unwrap();
+    }
+    std::fs::write(fixture.workspace.join("marker.txt"), "workspace root").unwrap();
+    fixture
+        .access
+        .add_session("s-other", &norm(&fixture.workspace));
+    let roster = fixture
+        .host
+        .sync_presets(&json!({
+            "cordis": [{ "name": "@deepseek-ai/dsh-tool-working-directory" }]
+        }))
+        .unwrap();
+    assert!(roster["cordis"]["error"].is_null(), "{roster}");
+    for (session, directory, marker) in
+        [("s-probe", &first, "first"), ("s-other", &second, "second")]
+    {
+        fixture.host.bind_preset(session, "cordis", None).unwrap();
+        let result = invoke_session(
+            &mut fixture.host,
+            session,
+            "working_directory",
+            json!({ "cd": directory }),
+        );
+        assert_eq!(result.payload["is_error"], false, "{result:?}");
+        assert_eq!(result.payload["value"]["cwd"], norm(directory));
+        let read = invoke_session(
+            &mut fixture.host,
+            session,
+            "read",
+            json!({ "file_path": "marker.txt" }),
+        );
+        assert_eq!(
+            read.payload["value"]["lines"][0]["text"], marker,
+            "{read:?}"
+        );
+    }
+
+    let todo = invoke(
+        &mut fixture.host,
+        "todo_write",
+        json!({
+            "todos": [{ "content": "verify rc.5", "status": "completed" }]
+        }),
+    );
+    assert_eq!(todo.payload["is_error"], false, "{todo:?}");
+    assert!(fixture.access.events("s-probe").iter().any(|event| {
+        event.event_type == "todo/write" && event.data["todos"][0]["status"] == "completed"
+    }));
+
+    let listing = invoke(
+        &mut fixture.host,
+        "str_replace_editor",
+        json!({ "command": "view", "path": first }),
+    );
+    assert_eq!(listing.payload["is_error"], false, "{listing:?}");
+    assert!(
+        listing.payload.to_string().contains("marker.txt"),
+        "{listing:?}"
+    );
+    let editor_path = first.join("editor.txt");
+    for (args, decision, expected) in [
+        (
+            json!({ "command": "create", "path": editor_path, "file_text": "hello" }),
+            ApprovalOutcome::AllowOnce,
+            "hello",
+        ),
+        (
+            json!({ "command": "str_replace", "path": editor_path, "old_str": "hello", "new_str": "changed" }),
+            ApprovalOutcome::Deny,
+            "hello",
+        ),
+        (
+            json!({ "command": "str_replace", "path": editor_path, "old_str": "hello", "new_str": "changed" }),
+            ApprovalOutcome::AllowOnce,
+            "changed",
+        ),
+        (
+            json!({ "command": "insert", "path": editor_path, "insert_line": 1, "new_str": "next" }),
+            ApprovalOutcome::AllowOnce,
+            "changed\nnext",
+        ),
+    ] {
+        let denied = decision == ApprovalOutcome::Deny;
+        let resolver = resolve_one_approval(fixture.broker.clone(), decision);
+        let result = invoke(&mut fixture.host, "str_replace_editor", args);
+        resolver.join().unwrap();
+        assert_eq!(result.payload["is_error"], denied, "{result:?}");
+        assert_eq!(std::fs::read_to_string(&editor_path).unwrap(), expected);
+    }
+
+    let resolver = resolve_one_approval(fixture.broker.clone(), ApprovalOutcome::AllowOnce);
+    let result = invoke(
+        &mut fixture.host,
+        "write",
+        json!({ "file_path": "relative.txt", "content": "one" }),
+    );
+    resolver.join().unwrap();
+    assert_eq!(result.payload["is_error"], false, "{result:?}");
+    assert_eq!(
+        std::fs::read_to_string(first.join("relative.txt")).unwrap(),
+        "one"
+    );
+    assert!(!fixture.workspace.join("relative.txt").exists());
+    let result = invoke(
+        &mut fixture.host,
+        "write",
+        json!({ "file_path": fixture.target.join("outside.txt"), "content": "denied" }),
+    );
+    assert_eq!(result.payload["is_error"], true, "{result:?}");
+    assert!(!fixture.target.join("outside.txt").exists());
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    let cancelled = fixture.host.invoke_as_cancellable_in_session(
+        "cancelled-write",
+        Some("s-probe"),
+        "write",
+        json!({ "file_path": "cancelled.txt", "content": "must not be written" }),
+        Duration::from_secs(5),
+        Some(&stop),
+    );
+    assert!(
+        match cancelled {
+            Err(dshr_compat_dsh_host::HostError::Cancelled(_)) => true,
+            Ok(result) =>
+                result.terminal.kind == "tool.aborted"
+                    || result
+                        .terminal
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.code == "E_CANCELLED"),
+            _ => false,
+        },
+        "cancelled write must abort"
+    );
+    assert!(!first.join("cancelled.txt").exists());
+    fixture.cleanup();
+}
+
+fn invoke_session(host: &mut SidecarHost, session: &str, tool: &str, arguments: Value) -> Envelope {
+    host.invoke_in_session(
+        tool,
+        Some(session),
+        tool,
+        arguments,
+        Duration::from_secs(10),
+    )
+    .unwrap()
+    .terminal
+}
+
+fn resolve_one_approval(
+    broker: Arc<ApprovalBroker>,
+    decision: ApprovalOutcome,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Some(pending) = broker.pending().first() {
+                broker.resolve(&pending.call_id, decision);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("official tool did not reach host approval");
+    })
 }
 
 /// RPC-L2-201（P1-5）：未修改官方 `@deepseek-ai/dsh-tool-todo` 在 v2 sidecar 下装载绿：

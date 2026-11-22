@@ -46,7 +46,8 @@
 | `session.created` | durable | `workspace_id`（必需）, `parent_session_id?`, `spawn_source?`(`user`/`agent`), `preset?` |
 | `session.title` | durable | `title`, `source` |
 | `session.archived` / `session.unarchived` | durable | — |
-| `turn.started` | durable | `turn_id`, `prompt_message_id` |
+| `turn.started` | durable | `turn_id`, `prompt_message_id`, 可选的宿主标记 `source`（直接用户输入或已准入的目标轮次） |
+| `step.started` | durable | `turn_id`, `step`。会话查询用作当前模型步的历史截点 |
 | `turn.ended` | durable | `turn_id`, `reason`(`completed`/`cancelled`/`error`) |
 | `step.started` | durable | `step_id`, `turn_id`, `model` |
 | `step.ended` | durable | `step_id`, `stop_reason`, `usage` |
@@ -104,7 +105,14 @@
 |---|---|---|
 | `context.measured` | durable | `tokens{input,output,total}`, `window`, `ratio` |
 | `context.compacted` | durable | `from_seq`, `to_seq`, `summary_message_id`, `tokens_before/after` |
-| `spill.created` | durable | `id`, `hash`, `size`, `mime`, `retention` |
+| `spill.created` | durable | `id`, `hash`, `size`, `mime`, `retention`。官方工具保存的图片使用 `kind: "tool.image"` |
+| `deliverables/presented` | durable | `turn`, `callId`, `files`。文件项保存经宿主校验的工作区路径和可选描述，随成功的官方 `present` 工具结果回放 |
+| `terminal/opened` / `terminal/closed` | durable | 官方持久终端的宿主分配 ID 及状态。重启后，旧运行时的终端显示为已中断或关闭 |
+| `goal/change` | durable | 目标状态快照及累计已开始轮次。自动继续授权存在于当前宿主内存，重开会话后解除 |
+| `subagent/created` | durable | 子会话的名称、标签及初始工作目录 |
+| `subagent/started` / `subagent/settled` | durable | 子会话执行的开始及终态。终态记录结局及受限的回复摘要 |
+| `subagent/notified` | durable | 父会话已接收的子会话通知标识，用于重放时跳过重复投递 |
+| `tool.program.admitted` | durable | Rust 已批准的程序子调用，记录父子调用 ID、工具名、注册 ID 和 Sidecar 代次 |
 
 ### 3.6 会话树
 

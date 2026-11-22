@@ -9,6 +9,7 @@
 | 文件 | 标题 | 类别 | 状态 | 首次记录 |
 |---|---|---|---|---|
 | [0001](0001-ime-candidate-first-composition.md) | 中文 IME 首次组合输入时候选窗落在屏幕右下角 | Platform | **Open**（已缓解，未根治） | 2026-11-09 |
+| [0002](0002-windows-shell-sandbox-write-scope.md) | Windows Shell 沙箱写入范围复验失败 | Environment | **Open** | 2026-11-22 |
 
 ## 模板
 

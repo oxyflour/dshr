@@ -8,10 +8,10 @@
 |---|---|---|---|
 | [`adc-v1.md`](adc-v1.md) | Agent Desktop Client API v1：slot 注册表、元素词汇表、绑定与动作 | **Frozen** | M3（ADR-0011） |
 | [`cpp-v1.md`](cpp-v1.md) | Cordis Portable Profile v1：Rust 插件 manifest、生命周期、Service/Effect/Tool | Draft | M3（G2） |
-| [`sidecar-rpc.md`](sidecar-rpc.md) | Rust ↔ Node DSH Sidecar 协议、工具作用域与注册身份 | Review | M3（v2：host-service 代理） |
+| [`sidecar-rpc.md`](sidecar-rpc.md) | Rust ↔ Node DSH Sidecar 协议、会话服务、Shell 审批、执行器与嵌套调用授权 | Review | M3（v2：host-service 代理） |
 | [`session-log.md`](session-log.md) | Session 事件日志：信封、事件类型、回放与上下文事件 | Review | M2 已实现；M3 复核 |
 | [`desktop-conversation.md`](desktop-conversation.md) | 桌面对话过程、推理等级、权限与消息操作 | Draft | 桌面验收 |
-| [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 桌面 sidecar 启动、DSH 插件兼容矩阵与字段映射 | Draft | 随实现更新 |
+| [`dsh-compat-mapping.md`](dsh-compat-mapping.md) | 桌面 sidecar 启动、官方 DSH 工具包按版本的兼容矩阵与字段映射 | Draft | 随实现更新 |
 | [`headless-profile.md`](headless-profile.md) | Headless CLI 的任务、输出、会话和 DSH 静态声明兼容 | Draft | 首版验收 |
 | [`runtime-components.md`](runtime-components.md) | 基础包 Node、可选 Python 与创造模式构建组件 | Draft | 发行验收 |
 | [`creator-mode.md`](creator-mode.md) | 创造会话、新会话模式、CPP-v1 清单指引、文件写入、本机构建、面板预览与对话内试用 | Draft | 首版验收 |

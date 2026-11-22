@@ -221,27 +221,9 @@ fn message_json(message: &ChatMessage) -> Value {
         ChatMessage::System(text) => json!({ "role": "system", "content": text }),
         ChatMessage::User(text) => json!({ "role": "user", "content": text }),
         ChatMessage::UserWithAttachments { text, attachments } => {
-            let mut content = Vec::new();
-            if !text.is_empty() {
-                content.push(json!({ "type": "text", "text": text }));
-            }
-            for attachment in attachments {
-                match attachment.data_url() {
-                    Some(data) if attachment.format == AttachmentFormat::Pdf => {
-                        content.push(json!({ "type": "file", "file": {
-                            "filename": attachment.name,
-                            "file_data": data,
-                        } }));
-                    }
-                    Some(data) => {
-                        content.push(json!({ "type": "text", "text": format!("图片：{}", attachment.name) }));
-                        content.push(json!({ "type": "image_url", "image_url": { "url": data } }));
-                    }
-                    None => content.push(json!({ "type": "text", "text": format!("附件 {}（未加载）", attachment.name) })),
-                }
-            }
-            json!({ "role": "user", "content": content })
+            media_message_json(text, attachments)
         }
+        ChatMessage::ToolImages(images) => media_message_json("工具返回的图片", images),
         ChatMessage::Assistant {
             text, tool_calls, ..
         } => {
@@ -271,6 +253,32 @@ fn message_json(message: &ChatMessage) -> Value {
             "content": content,
         }),
     }
+}
+
+fn media_message_json(text: &str, attachments: &[dshr_agent_core::MediaAttachment]) -> Value {
+    let mut content = Vec::new();
+    if !text.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    for attachment in attachments {
+        match attachment.data_url() {
+            Some(data) if attachment.format == AttachmentFormat::Pdf => {
+                content.push(json!({ "type": "file", "file": {
+                    "filename": attachment.name,
+                    "file_data": data,
+                } }));
+            }
+            Some(data) => {
+                content
+                    .push(json!({ "type": "text", "text": format!("图片：{}", attachment.name) }));
+                content.push(json!({ "type": "image_url", "image_url": { "url": data } }));
+            }
+            None => content.push(
+                json!({ "type": "text", "text": format!("附件 {}（未加载）", attachment.name) }),
+            ),
+        }
+    }
+    json!({ "role": "user", "content": content })
 }
 
 fn parse_reply(body: &Value) -> Result<ModelReply, String> {

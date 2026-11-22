@@ -12,7 +12,7 @@
 pub mod approval;
 
 pub use approval::{
-    ApprovalBroker, ApprovalOutcome, ApprovalRecord, LiveApproval, PendingApproval,
+    ApprovalBroker, ApprovalOutcome, ApprovalRecord, ApprovalResolution, LiveApproval, PendingApproval,
 };
 
 use std::collections::BTreeMap;
@@ -371,6 +371,13 @@ pub const MUTATING_TOOL_NAMES: &[&str] = &[
     "edit",
     "apply_patch",
     "applyPatch",
+    "office_convert",
+    "office_recalculate",
+    "job_kill",
+    "terminal_open",
+    "terminal_send",
+    "terminal_signal",
+    "terminal_close",
     "bash",
     "pwsh",
     "shell",
