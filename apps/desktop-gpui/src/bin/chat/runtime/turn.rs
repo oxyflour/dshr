@@ -2,7 +2,7 @@ use super::attachments::user_message_payload;
 use super::{
     ChatExecutor, ChatState, DraftAttachment, ToolStep, TurnReason, TurnResult, TurnUpdate,
 };
-use crate::{creator, dsh_goals, now_ts, SUMMARY_PROMPT};
+use crate::{creator, dsh_goals, now_ts};
 use dshr_agent_context::{estimate_tokens, user_message_from_payload};
 use dshr_agent_core::{
     Agent, AgentEvent, ChatMessage, CompletionRequest, ModelProvider, ToolCallRequest,
@@ -655,3 +655,6 @@ fn record_reasoning(
     }
     Ok(())
 }
+
+const SUMMARY_PROMPT: &str = "你是对话压缩器。把下面的对话压缩成 200 字以内的中文摘要，\
+保留：任务目标、已确认的事实、关键决定、未完成的步骤、工具调用的结论。只输出摘要，不要客套。";

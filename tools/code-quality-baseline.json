@@ -1,6 +1,5 @@
 {
   "limits": {
-    "apps/desktop-gpui/src/bin/chat.rs": 8369,
     "apps/desktop-gpui/src/bin/chat/creator.rs": 1574,
     "apps/desktop-gpui/src/bin/chat/model_settings.rs": 1058,
     "crates/agent-context/src/lib.rs": 1553,
