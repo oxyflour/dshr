@@ -1,5 +1,6 @@
 param(
-    [string]$Archive = "dist/dshr-debug-windows-x64.zip"
+    [string]$Archive = "dist/dshr-debug-windows-x64.zip",
+    [switch]$RequireRc5
 )
 
 # M4 G1：校验归档 SHA-256、解压、跑包内真实窗口和运行时自检，再清理临时目录。
@@ -29,6 +30,29 @@ try {
     }
     $node = Join-Path $tmp "runtime/node/node.exe"
     if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw "missing bundled Node" }
+    $sidecar = Join-Path $tmp 'sidecar/dsh-official'
+    $seed = Join-Path $sidecar 'default-profile.json'
+    if ($RequireRc5) {
+        if (-not (Test-Path -LiteralPath $seed -PathType Leaf)) { throw 'missing rc.5 default profile' }
+        if (-not (Test-Path -LiteralPath (Join-Path $sidecar 'official.zip') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $sidecar 'native/node_modules') -PathType Container) -or
+            (Test-Path -LiteralPath (Join-Path $sidecar 'node_modules'))) {
+            throw 'Windows rc.5 package must use the official ZIP and native dependency layout'
+        }
+        $repo = Split-Path -Parent $PSScriptRoot
+        $expectedSeed = Join-Path $repo 'sidecar/dsh-official/windows-debug-profile.json'
+        if ((Get-FileHash -LiteralPath $seed).Hash -ne (Get-FileHash -LiteralPath $expectedSeed).Hash) {
+            throw 'bundled rc.5 default profile does not match the Windows debug template'
+        }
+        & $node --experimental-vfs (Join-Path $PSScriptRoot 'official-provenance.mjs') --check --rc5-dir $sidecar --windows-debug
+        if ($LASTEXITCODE -ne 0) { throw 'Windows rc.5 package provenance check failed' }
+        $nativeModules = Join-Path $sidecar 'native/node_modules/@deepseek-ai'
+        $runner = Join-Path $nativeModules 'dsh-subprocess-local/lib/runner.js'
+        & $node --import ([Uri]::new($runner).AbsoluteUri) -e 'void 0'
+        if ($LASTEXITCODE -ne 0) { throw 'Windows rc.5 subprocess runner cannot load its physical dependencies' }
+        & $node --check (Join-Path $nativeModules 'dsh-sandbox-windows-acl/lib/runner.js')
+        if ($LASTEXITCODE -ne 0) { throw 'Windows rc.5 is missing the physical ACL runner' }
+    }
     foreach ($asset in @("probe-sidecar.mjs", "probe-plugin.mjs", "cordis")) {
         if (Test-Path -LiteralPath (Join-Path $tmp "sidecar/$asset")) {
             throw "diagnostic sidecar asset in desktop package: $asset"
@@ -43,13 +67,15 @@ try {
     try {
         & $node --version
         if ($LASTEXITCODE -ne 0) { throw "bundled Node failed: $LASTEXITCODE" }
-        if (Test-Path -LiteralPath (Join-Path $tmp 'sidecar/dsh-official/default-profile.json') -PathType Leaf) {
+        if (Test-Path -LiteralPath $seed -PathType Leaf) {
             $shell = Join-Path $tmp 'runtime/powershell/pwsh.exe'
             if (-not (Test-Path -LiteralPath $shell -PathType Leaf)) { throw 'missing bundled PowerShell' }
             & $shell -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
             if ($LASTEXITCODE -ne 0) { throw "bundled PowerShell failed: $LASTEXITCODE" }
         }
-        foreach ($check in @("window", "official", "cpp-component", "cpp-install", "cpp-cli-install")) {
+        $checks = @("window", "official", "cpp-component", "cpp-install", "cpp-cli-install")
+        if ($RequireRc5) { $checks += 'dsh-write' }
+        foreach ($check in $checks) {
             $result = Start-Process -FilePath $exe -ArgumentList "--selftest-$check" -Wait -PassThru -NoNewWindow
             if ($result.ExitCode -ne 0) { throw "$check selftest failed: $($result.ExitCode)" }
         }

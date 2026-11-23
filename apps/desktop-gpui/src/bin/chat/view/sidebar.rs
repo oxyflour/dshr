@@ -801,10 +801,6 @@ fn workspace_sessions<'a>(
     groups
 }
 
-/// 离线安装插件：`dshr --install-plugin <本地包目录>`。
-///
-/// 复制到 `sidecar/dsh-official/node_modules/<name>` 并追加 profile 条目；
-/// 不解析 npm 依赖（包需要在本地已完整）。
 /// 会话树前序顺序 + 深度（父在前、子紧随其后），侧栏与自检共用。
 pub(crate) fn session_tree_order(store: &SessionIndex) -> Vec<(String, u32)> {
     match store.tree() {

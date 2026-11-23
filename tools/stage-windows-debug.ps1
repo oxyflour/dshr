@@ -25,7 +25,9 @@ $seed = Join-Path $official 'default-profile.json'
 foreach ($file in @($node, $seed, (Join-Path $package 'runtime/powershell/pwsh.exe'))) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing packaged rc.5 asset: $file" }
 }
-& $node tools/official-provenance.mjs --check --rc5-dir $official --windows-debug
+$nodeArgs = @()
+if (Test-Path -LiteralPath (Join-Path $official 'official.zip') -PathType Leaf) { $nodeArgs += '--experimental-vfs' }
+& $node @nodeArgs tools/official-provenance.mjs --check --rc5-dir $official --windows-debug
 if ($LASTEXITCODE -ne 0) { throw 'Packaged rc.5 provenance check failed' }
 
 $profileDir = Join-Path $destination 'profile'
@@ -57,7 +59,7 @@ $effective.plugins = @($effective.plugins) + $missing
 $assets = Join-Path $destination 'dshr-debug-assets'
 New-Item -ItemType Directory -Path $assets,$profileDir -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $package 'sidecar'),(Join-Path $package 'runtime') -Destination $assets -Recurse -Force
-& $node tools/official-provenance.mjs --check --rc5-dir (Join-Path $assets 'sidecar/dsh-official') --windows-debug
+& $node @nodeArgs tools/official-provenance.mjs --check --rc5-dir (Join-Path $assets 'sidecar/dsh-official') --windows-debug
 if ($LASTEXITCODE -ne 0) { throw 'Staged rc.5 provenance check failed' }
 
 if ($profileSource -ne $profile -or $missing.Count -gt 0) {

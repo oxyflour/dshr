@@ -128,7 +128,8 @@ pub(crate) fn selftest_external_plugin() -> i32 {
         false,
         false,
     );
-    let errors = load_enabled_external_plugins(&mut state.plugins, &setup.profile, &setup.sidecar);
+    let errors =
+        load_enabled_external_plugins(&mut state.plugins, &setup.profile, &[&setup.sidecar]);
     if !errors.is_empty() {
         for error in &errors {
             eprintln!("[selftest-external] {error}");
@@ -147,7 +148,7 @@ pub(crate) fn selftest_external_plugin() -> i32 {
         .unwrap_or(false);
     let unloaded = state.plugins.unload("selftest.external").is_ok();
     let reload_errors =
-        load_enabled_external_plugins(&mut state.plugins, &setup.profile, &setup.sidecar);
+        load_enabled_external_plugins(&mut state.plugins, &setup.profile, &[&setup.sidecar]);
     let reload_ok = reload_errors.is_empty()
         && state.plugins.is_loaded("selftest.external")
         && state
@@ -303,7 +304,7 @@ timeout_ms = 30000
         return 1;
     }
     let mut plugins = PluginHost::new(AllowAll);
-    let errors = load_enabled_external_plugins(&mut plugins, &profile, &sidecar_dir);
+    let errors = load_enabled_external_plugins(&mut plugins, &profile, &[&sidecar_dir]);
     if !errors.is_empty() {
         eprintln!("[selftest-cpp-install] FAIL：装载: {errors:?}");
         return 1;
@@ -386,7 +387,7 @@ timeout_ms = 30000
         }
     };
     let mut plugins = PluginHost::new(AllowAll);
-    let errors = load_enabled_external_plugins(&mut plugins, &profile, &sidecar_dir);
+    let errors = load_enabled_external_plugins(&mut plugins, &profile, &[&sidecar_dir]);
     if !errors.is_empty() {
         eprintln!("[selftest-cpp-cli-install] FAIL：装载: {errors:?}");
         return 1;
@@ -556,7 +557,7 @@ location = "right"
 
     // 3) 从 profile 装载（产品路径：loader 内部分发到 WASM 分支）。
     let mut plugins = PluginHost::new(ApprovalPolicy::desktop());
-    let errors = load_enabled_external_plugins(&mut plugins, &profile, &sidecar);
+    let errors = load_enabled_external_plugins(&mut plugins, &profile, &[&sidecar]);
     if !errors.is_empty() {
         for error in &errors {
             eprintln!("[selftest-wasm] {error}");
@@ -645,7 +646,8 @@ pub(crate) fn selftest_adc_panel() -> i32 {
         false,
         false,
     );
-    let errors = load_enabled_external_plugins(&mut state.plugins, &setup.profile, &setup.sidecar);
+    let errors =
+        load_enabled_external_plugins(&mut state.plugins, &setup.profile, &[&setup.sidecar]);
     if !errors.is_empty() {
         for error in &errors {
             eprintln!("[selftest-adc-panel] {error}");

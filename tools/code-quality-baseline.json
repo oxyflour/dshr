@@ -4,7 +4,7 @@
     "crates/compat-mcp/src/lib.rs": 1027,
     "crates/plugin-host/src/external.rs": 1302,
     "crates/profile/src/loader.rs": 1633,
-    "crates/profile/src/trust.rs": 1988,
+    "crates/profile/src/trust.rs": 1839,
     "crates/ui-contributions/src/element.rs": 1549
   },
   "exceptions": {}

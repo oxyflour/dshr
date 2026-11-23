@@ -56,7 +56,7 @@ pub(crate) fn selftest_cordis() -> i32 {
 pub(crate) fn selftest_dsh() -> i32 {
     // 资源根按 exe 相对解析（打包后不依赖源码树）。
     let root = app_root();
-    if !root.join("sidecar/dsh-official/node_modules").exists() {
+    if !official_sidecar_ready(&root.join("sidecar/dsh-official")) {
         println!("[selftest-dsh] SKIP: 先运行 `node tools/dsh-vendor.mjs` 准备官方插件依赖");
         return 0;
     }
@@ -145,7 +145,7 @@ pub(crate) fn selftest_dsh() -> i32 {
 pub(crate) fn selftest_dsh_write() -> i32 {
     // 资源根按 exe 相对解析（打包后不依赖源码树）。
     let root = app_root();
-    if !root.join("sidecar/dsh-official/node_modules").exists() {
+    if !official_sidecar_ready(&root.join("sidecar/dsh-official")) {
         println!("[selftest-dsh-write] SKIP: 先运行 `node tools/dsh-vendor.mjs`");
         return 2;
     }
@@ -332,7 +332,7 @@ pub(crate) fn selftest_approval() -> i32 {
 /// `runtime/node` 布局。失败即 exit 1，不做 SKIP。
 pub(crate) fn selftest_official_sidecar() -> i32 {
     let dsh_dir = app_root().join("sidecar/dsh-official");
-    if !dsh_dir.join("sidecar-dsh.mjs").exists() || !dsh_dir.join("node_modules").exists() {
+    if !official_sidecar_ready(&dsh_dir) {
         eprintln!(
             "[selftest-official] FAIL 缺少官方 sidecar: {}",
             dsh_dir.display()
@@ -397,7 +397,7 @@ pub(crate) fn selftest_l2() -> i32 {
 
     // Phase A：真实官方 sidecar（无 vendored 依赖时 SKIP，不算失败）。
     let dsh_dir = app_root().join("sidecar/dsh-official");
-    if dsh_dir.join("sidecar-dsh.mjs").exists() && dsh_dir.join("node_modules").exists() {
+    if official_sidecar_ready(&dsh_dir) {
         let l2 = ChatSessionAccess::new(sessions_dir_from_env());
         let env_keys = [
             "DSHR_SIDECAR",

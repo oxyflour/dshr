@@ -343,7 +343,7 @@ pub(crate) fn launch() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let external_errors =
-            load_enabled_external_plugins(&mut guard.plugins, &profile, &sidecar_dir_for_app());
+            load_enabled_external_plugins(&mut guard.plugins, &profile, &sidecar_plugin_roots());
         guard.external_plugin_errors.extend(external_errors);
         // external-process 面板也在这里取一次树（之后渲染只读缓存）。
         guard.refresh_adc_panels();

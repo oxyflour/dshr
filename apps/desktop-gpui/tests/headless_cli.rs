@@ -10,6 +10,9 @@ use std::time::Duration;
 use dshr_session_store::try_lock_session;
 use serde_json::{json, Value};
 
+#[path = "fixtures/official-plugin-layout.rs"]
+mod official_plugin_layout;
+
 struct Fixture {
     directory: tempfile::TempDir,
 }
@@ -555,7 +558,12 @@ fn stage2_headless_search_uses_session_directory_and_excludes_shell() {
             .find(|event| event["type"] == "tool.result" && event["payload"]["call_id"] == call_id)
             .unwrap()["payload"]
     };
-    assert_eq!(outcome("glob")["value"]["paths"], json!(["marker.txt"]));
+    assert_eq!(
+        outcome("glob")["value"]["paths"],
+        json!(["marker.txt"]),
+        "{}",
+        outcome("glob")
+    );
     assert_eq!(
         outcome("grep")["value"]["matches"]
             .as_array()

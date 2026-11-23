@@ -14,7 +14,8 @@ dshr 自有插件使用 [CPP-v1](cpp-v1.md)，界面扩展使用 [ADC-v1](adc-v1
 **静态声明兼容**表示 dshr 识别相应声明并实现所列行为。**需要适配**表示当前宿主缺少源码所需的服务、执行语义或装载入口。证据栏注明实际验证方式。
 
 所有行均使用 `@deepseek-ai/` 包名前缀。桌面默认启动官方 DSH sidecar，并按已启用的 profile 条目注册工具。
-无打包默认配置时，基础 profile 包含 `dsh-tool-workspace-dependencies` 和 `dsh-tool-fs`。Windows x64 调试包为首次启动的桌面 profile 提供 27 个 Windows 已验收的 `rc.5` 工具包及所需的配套插件。打包从官方安装档抽取依赖，逐包校验来源锁，缺失或不匹配时打包失败。无官方安装档的 CI 使用显式指定的基础 Sidecar 调试配置。已有 `profile/plugins.json` 或 Loader 配置优先。
+无打包默认配置时，基础 profile 包含 `dsh-tool-workspace-dependencies` 和 `dsh-tool-fs`。Windows x64 调试包为首次启动的桌面 profile 提供 27 个 Windows 已验收的 `rc.5` 工具包及 4 个可配置的配套插件。打包可从官方安装档抽取依赖，也可使用 npm 锁定的官方包目录。两种来源都须通过同一份版本和文件散列校验。Windows 校验也接受来源锁明确列出的 npm 清单散列。`dsh-subprocess-local` 的 npm 清单额外声明 `postinstall`，安装时禁用脚本，入口 JS 使用同一散列。
+GitHub 跨平台工作流的 `desktop-package-windows-latest` 必须带上 `rc.5` 依赖、默认 profile 和 PowerShell 7。归档验证在缺少默认 profile、依赖缺失、散列不符或 PowerShell 无法启动时失败。`desktop-windows-latest` 提供供调试使用的单个可执行文件。`-BaseSidecar` 用于显式构建基础调试包。已有 `profile/plugins.json` 或 Loader 配置优先。
 调试包的默认配置使用前台 PowerShell 和 Native 执行器。持久 PowerShell 和 PTC 在列表中可选，启用任一套实现时关闭对应的互斥项。前台 PowerShell、后台任务和终端优先使用调试包内的 PowerShell 7。未提供包内 PowerShell 时，宿主沿用 `PATH` 查找。网页工具依赖可用凭据，Office 工具通过 Office Skill 激活。 [Windows 打包说明](../m4-package.md#1-命令)
 Windows 上直接启动 Cargo 调试版时，可先将调试包资源暂存到可执行文件旁的 `dshr-debug-assets`。暂存脚本校验官方依赖来源，复制调试包资源，并把模板缺项补进 `target/debug/profile/plugins.json`，保留已有条目与开关。开发版使用这个独立 profile，会话和其他数据继续使用原数据根。`DSHR_APP_ROOT`、`DSHR_HOME`、`DSHR_PROFILE_DIR` 和 Loader 仍可显式覆盖对应配置。未暂存时，Cargo 调试版沿用基础资源与 profile。验收时直接打开 `target/debug/dshr.exe`，插件页应显示暂存的工具，且可启停和调用。 [暂存命令](../m4-package.md#直接启动-cargo-调试版)
 其他包需先准备 Sidecar 可解析的包及依赖，再在 `plugins.json` 或 Loader 派生的 profile 中显式配置。
@@ -77,6 +78,14 @@ Windows 上直接启动 Cargo 调试版时，可先将调试包资源暂存到�
 核对插件依赖时同时检查 `inject`、`apply` 和 `execute`，包括可选注入、执行上下文与事件钩子。 [rc.1 官方工具依赖调查](../m3-l2-services.md)
 
 ## 启用条件与适配边界
+
+### 官方归档与用户安装目录
+
+Windows x64 `rc.5` 调试包从只读 `sidecar/dsh-official/official.zip` 加载官方 Sidecar 和支持归档读取的依赖。需要真实路径的原生模块、外部程序和子进程依赖随包放在 `sidecar/dsh-official/native/node_modules`，启动时直接使用。归档缺失、损坏或 Node 缺少相应 VFS 支持时，已选择归档布局的 Sidecar 启动失败。源码开发、基础包和旧发行包可以继续使用普通 `node_modules`。Windows `rc.5` 打包验证须从归档与原生目录读取并校验锁定的官方包文件。
+
+桌面与 headless 的安装、更新与卸载使用 `<profile 目录>/node_modules`。显式设置 `DSHR_SIDECAR_DIR` 时改用 `<指定目录>/node_modules`。安装仍接受本地目录或 `.tgz`，沿用插件信任链。停用通过 profile 完成。资源根下保留的旧 `sidecar/dsh-official/node_modules` 中的用户插件仍可读取，重新安装同名插件后优先使用用户目录中的版本。若更换了资源根，可从旧安装包重新安装插件，或显式设置 `DSHR_SIDECAR_DIR`。卸载须移除 profile 选择，并且只删除可写安装目录中的包。
+
+Sidecar 的顶层插件入口先解析发行附带的包，再解析 profile 用户目录或旧安装目录中的用户插件。加载用户插件的依赖时，Cordis 使用宿主的同一模块实例，其余依赖沿用 Node 包解析，缺少的依赖可从发行侧依赖解析。旧安装目录和用户目录均不得覆盖随包官方入口。验证须覆盖官方工具调用、用户插件与 Cordis 共享实例、旧布局回退、安装与卸载不写归档，以及真实路径执行的搜索、终端、Office 和 PTC。 [插件信任链](plugin-trust.md) · [归档实施计划](../plan/dsh-sidecar-archive.md)
 
 基础包带 Node 与 Sidecar。Python 与创造模式构建能力分别由可选组件提供。[运行组件契约](runtime-components.md)
 

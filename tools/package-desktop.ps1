@@ -4,7 +4,9 @@ param(
     [string]$OutDir = "dist",
     [string]$RuntimeComponentCatalog = "",
     [string]$DshAsar = $env:DSHR_ASAR,
+    [string]$DshNodeModules,
     [string]$PowerShellExe,
+    [string]$NodeExe = '',
     [switch]$BaseSidecar
 )
 
@@ -14,14 +16,27 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$nodeExe = Join-Path $root "runtime/node/node.exe"
+if (-not $NodeExe) { $NodeExe = Join-Path $root 'runtime/node/node.exe' }
+$nodeExe = (Resolve-Path -LiteralPath $NodeExe).Path
 $official = Join-Path $root "sidecar/dsh-official"
 $rc5Debug = $Configuration -eq "debug" -and -not $BaseSidecar
+if ($DshNodeModules -and (-not $rc5Debug -or $PSBoundParameters.ContainsKey('DshAsar'))) {
+    throw 'Use -DshNodeModules only for an rc.5 debug package without an explicit -DshAsar'
+}
 if ($rc5Debug) {
-    if (-not $DshAsar) {
-        $DshAsar = Join-Path $env:LOCALAPPDATA 'Programs/DeepSeek Harness/resources/app.asar'
+    $zipVfs = & $nodeExe --experimental-vfs -p "Boolean(require('node:vfs').ZipProvider && require('node:zlib').ZipBuffer)"
+    if ($LASTEXITCODE -ne 0 -or $zipVfs -ne 'true') { throw 'Windows rc.5 packaging requires Node with ZIP VFS support (see docs/m4-package.md)' }
+    if ($DshNodeModules) {
+        $DshNodeModules = (Resolve-Path -LiteralPath $DshNodeModules).Path
+        if (-not (Test-Path -LiteralPath $DshNodeModules -PathType Container)) {
+            throw "Invalid rc.5 node_modules directory: $DshNodeModules"
+        }
+    } else {
+        if (-not $DshAsar) {
+            $DshAsar = Join-Path $env:LOCALAPPDATA 'Programs/DeepSeek Harness/resources/app.asar'
+        }
+        $DshAsar = (Resolve-Path -LiteralPath $DshAsar).Path
     }
-    $DshAsar = (Resolve-Path -LiteralPath $DshAsar).Path
     $profileSource = Join-Path $official 'windows-debug-profile.json'
     $lock = Get-Content -LiteralPath (Join-Path $official 'official-rc5-packages.lock.json') -Encoding UTF8 -Raw | ConvertFrom-Json
     $packages = @($lock.packages.name | Where-Object { $_ -notin @('@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-bash-persistent') })
@@ -132,18 +147,34 @@ $sidecarStage = Join-Path $stage "sidecar"
 New-Item -ItemType Directory -Path $sidecarStage -Force | Out-Null
 $bundledOfficial = Join-Path $sidecarStage 'dsh-official'
 if ($rc5Debug) {
-    New-Item -ItemType Directory -Path $bundledOfficial | Out-Null
-    $previousAsar = $env:DSHR_ASAR
+    $fixture = $null
     try {
-        $env:DSHR_ASAR = $DshAsar
-        & $nodeExe tools/dsh-vendor.mjs (Join-Path $bundledOfficial 'node_modules') @packages
-        if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Windows rc.5 sidecar dependency tree' }
-        & $nodeExe tools/official-provenance.mjs --check --rc5-dir $bundledOfficial --windows-debug
-        if ($LASTEXITCODE -ne 0) { throw 'Windows rc.5 package provenance check failed' }
+        $inputModules = $DshNodeModules
+        if (-not $inputModules) {
+            $fixture = Join-Path $output ('.rc5-vendor-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $fixture | Out-Null
+            $inputModules = Join-Path $fixture 'node_modules'
+            $previousAsar = $env:DSHR_ASAR
+            try {
+                $env:DSHR_ASAR = $DshAsar
+                & $nodeExe tools/dsh-vendor.mjs $inputModules @packages
+                if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Windows rc.5 sidecar dependency tree' }
+            } finally {
+                $env:DSHR_ASAR = $previousAsar
+            }
+        }
+        & $nodeExe tools/archive-official-sidecar.mjs $inputModules $bundledOfficial
+        if ($LASTEXITCODE -ne 0) { throw 'Could not archive the Windows rc.5 sidecar' }
     } finally {
-        $env:DSHR_ASAR = $previousAsar
+        if ($fixture) {
+            $temporary = Get-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
+            if ($temporary -and $temporary.Parent.FullName -eq $output -and ($temporary.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+                Remove-Item -LiteralPath $temporary.FullName -Recurse -Force
+            }
+        }
     }
-    Copy-Item -LiteralPath (Join-Path $official 'sidecar-dsh.mjs'),(Join-Path $official 'lib') -Recurse -Destination $bundledOfficial
+    & $nodeExe --experimental-vfs tools/official-provenance.mjs --check --rc5-dir $bundledOfficial --windows-debug
+    if ($LASTEXITCODE -ne 0) { throw 'Windows rc.5 package provenance check failed' }
     Copy-Item -LiteralPath $profileSource -Destination (Join-Path $bundledOfficial 'default-profile.json')
 } else {
     Copy-Item -LiteralPath $official -Recurse -Force -Destination $bundledOfficial
@@ -192,8 +223,8 @@ if (-not $commit) { $commit = "dirty" }
 
 $zip = Join-Path $output "dshr-$Configuration-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
-Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip
-$hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -ErrorAction Stop
+$hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
 $leaf = Split-Path $zip -Leaf
 "$hash  $leaf" | Set-Content -Encoding ASCII "$zip.sha256"
 Write-Host "[package-desktop] $zip"

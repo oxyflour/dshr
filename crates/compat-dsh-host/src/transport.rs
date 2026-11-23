@@ -64,6 +64,7 @@ impl SidecarHost {
             .unwrap_or_else(|| PathBuf::from("node"));
         let mut command = Command::new(&program);
         command
+            .args(&options.program_args)
             .arg(&script)
             .arg(&plugin)
             .stdin(Stdio::piped())

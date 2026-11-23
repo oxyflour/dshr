@@ -188,12 +188,16 @@ pub(crate) fn host_sdk_version() -> HostVersion {
 pub(crate) fn load_enabled_external_plugins(
     plugins: &mut PluginHost,
     profile: &Profile,
-    sidecar_dir: &std::path::Path,
+    sidecar_dirs: &[impl AsRef<Path>],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let node_modules = sidecar_dir.join("node_modules");
     for entry in profile.entries().iter().filter(|entry| entry.enabled) {
-        let package_dir = node_modules.join(&entry.name);
+        let Some(package_dir) = sidecar_dirs.iter().find_map(|directory| {
+            let path = directory.as_ref().join("node_modules").join(&entry.name);
+            path.is_dir().then_some(path)
+        }) else {
+            continue;
+        };
         let manifest_path = package_dir.join("plugin.toml");
         if !manifest_path.is_file() {
             continue;

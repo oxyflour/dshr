@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { mountOfficialArchive } from '../sidecar/dsh-official/lib/official-archive.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const RC1_PACKAGES = [
@@ -86,13 +87,14 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
-function collect(packageRoot, packages) {
+function collect(packageRoots, packages) {
   const entries = []
   for (const pkg of packages) {
-    const root = resolve(packageRoot, pkg.source)
-    if (!existsSync(root)) {
-      throw new Error(`缺少官方包目录 ${pkg.source}`)
+    const roots = packageRoots.map(base => resolve(base, pkg.source)).filter(existsSync)
+    if (roots.length !== 1) {
+      throw new Error(`官方包目录 ${pkg.source} 应只出现一次，实际为 ${roots.length}`)
     }
+    const [root] = roots
     const packageJson = JSON.parse(
       readFileSync(resolve(root, 'package.json'), 'utf8'),
     )
@@ -132,7 +134,14 @@ function main() {
   const inScope = pkg => !windowsDebug || !LINUX_ONLY_TOOLS.has(pkg.name)
   const lockName = rc5Directory ? 'official-rc5-packages.lock.json' : 'official-packages.lock.json'
   const lock = resolve(ROOT, 'sidecar/dsh-official', lockName)
-  const actual = collect(rc5Directory ?? ROOT, rc5Directory ? RC5_PACKAGES.filter(inScope) : RC1_PACKAGES)
+  const archive = rc5Directory && existsSync(resolve(rc5Directory, 'official.zip')) && mountOfficialArchive(rc5Directory)
+  const packageRoots = archive ? [archive.directory, resolve(rc5Directory, 'native')] : [rc5Directory ?? ROOT]
+  let actual
+  try {
+    actual = collect(packageRoots, rc5Directory ? RC5_PACKAGES.filter(inScope) : RC1_PACKAGES)
+  } finally {
+    if (archive) archive.close()
+  }
   if (update) {
     writeFileSync(lock, `${JSON.stringify(actual, null, 2)}\n`)
     console.log(`[official-provenance] 已写入 ${lock}`)
@@ -160,7 +169,8 @@ function main() {
       problems.push(`${wanted.name} 版本 ${got.version} != lock ${wanted.version}`)
     }
     for (const [file, hash] of Object.entries(wanted.files ?? {})) {
-      if (got.files[file] !== hash) {
+      const npmHash = windowsDebug ? wanted.npm_files?.[file] ?? null : null
+      if (got.files[file] !== hash && got.files[file] !== npmHash) {
         problems.push(`${wanted.name}/${file} SHA-256 变化（期望 ${hash}，实际 ${got.files[file]}）`)
       }
     }

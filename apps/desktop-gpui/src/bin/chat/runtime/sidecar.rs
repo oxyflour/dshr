@@ -138,9 +138,11 @@ pub(crate) fn spawn_sidecar_in(
         ),
         "dsh" => {
             let dir = root.join("sidecar/dsh-official");
-            let modules = dir.join("node_modules");
-            if !modules.is_dir() {
-                return Err(format!("官方 DSH sidecar 缺少依赖：{}", modules.display()));
+            if !official_sidecar_ready(&dir) {
+                return Err(format!(
+                    "官方 DSH sidecar 缺少入口或依赖：{}",
+                    dir.display()
+                ));
             }
             let script = dir.join("sidecar-dsh.mjs");
             // 官方侧车不需要插件路径参数，但协议签名保持两个文件参数。
@@ -157,7 +159,14 @@ pub(crate) fn spawn_sidecar_in(
     let mut options = HostOptions::default()
         .with_current_dir(workspace)
         .with_env("DSHR_WORKSPACE", workspace.to_string_lossy());
+    let archived = mode == "dsh" && script.with_file_name("official.zip").is_file();
     if mode == "dsh" {
+        if archived {
+            options = options.with_program_arg("--experimental-vfs");
+        }
+        let plugin_root = std::path::absolute(sidecar_dir_for_app())
+            .map_err(|error| format!("解析用户插件安装目录失败：{error}"))?;
+        options = options.with_env("DSHR_PLUGIN_ROOT", plugin_root.to_string_lossy());
         if let Some(effective) = std::env::var("DSHR_DSH_PLUGINS")
             .ok()
             .and_then(|raw| runtime_components::sidecar_profile(&raw))
@@ -176,7 +185,20 @@ pub(crate) fn spawn_sidecar_in(
             options = options.with_env("DSHR_DSH_PLUGINS", effective);
         }
     }
-    match dshr_sidecar_guard::resolve_node() {
+    let packaged_node = if archived
+        && non_empty_env_path("DSHR_NODE").is_none()
+        && non_empty_env_path("DSHR_RUNTIME_DIR").is_none()
+    {
+        dshr_sidecar_guard::node::find_vendored_node(&root).map(|program| {
+            dshr_sidecar_guard::NodeRuntime {
+                program,
+                source: dshr_sidecar_guard::NodeSource::Vendored,
+            }
+        })
+    } else {
+        None
+    };
+    match packaged_node.or_else(dshr_sidecar_guard::resolve_node) {
         Some(node) => {
             eprintln!(
                 "[chat] sidecar node={}（{:?}）",
@@ -227,14 +249,14 @@ pub(crate) fn spawn_sidecar_in(
                 "macos" => "darwin",
                 other => other,
             };
-            let packaged_search = root.join(format!(
-                "sidecar/dsh-official/node_modules/@vscode/ripgrep-{platform}-{arch}/bin/{search_name}"
-            ));
-            let search = if packaged_search.is_file() {
-                Some(packaged_search)
-            } else {
-                path_executable(search_name)
-            };
+            let search_path =
+                format!("node_modules/@vscode/ripgrep-{platform}-{arch}/bin/{search_name}");
+            let dsh_dir = root.join("sidecar/dsh-official");
+            let search = [dsh_dir.join("native"), dsh_dir]
+                .into_iter()
+                .map(|directory| directory.join(&search_path))
+                .find(|path| path.is_file())
+                .or_else(|| path_executable(search_name));
             let shell = if interactive {
                 let (name, executable) = if cfg!(windows) {
                     ("pwsh", "pwsh.exe")
@@ -507,11 +529,21 @@ pub(crate) fn register_sidecar_tools(plugins: &mut PluginHost, host: &SidecarHos
     }
 }
 
-/// 侧车/插件安装目录（与 `--install-plugin`、sidecar 启动同源）。
+pub(crate) fn official_sidecar_ready(directory: &Path) -> bool {
+    directory.join("sidecar-dsh.mjs").is_file()
+        && (directory.join("official.zip").is_file() || directory.join("node_modules").is_dir())
+}
+
+/// 用户插件安装目录。显式覆盖可用于已有的定制安装。
 pub(crate) fn sidecar_dir_for_app() -> PathBuf {
-    std::env::var("DSHR_SIDECAR_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| app_root().join("sidecar/dsh-official"))
+    non_empty_env_path("DSHR_SIDECAR_DIR").unwrap_or_else(profile_dir_for_app)
+}
+
+pub(crate) fn sidecar_plugin_roots() -> [PathBuf; 2] {
+    [
+        sidecar_dir_for_app(),
+        app_root().join("sidecar/dsh-official"),
+    ]
 }
 
 /// profile 目录（与 `--install-plugin` 同源）。

@@ -106,6 +106,8 @@ pub struct HostOptions {
     pub registration_window: Option<Duration>,
     /// Node 可执行文件路径；缺省用 PATH 上的 `node`。
     pub program: Option<PathBuf>,
+    /// Node 参数，位于脚本入口之前。
+    pub program_args: Vec<String>,
     /// 是否用 Windows Job Object 包裹 sidecar（资源上限 + 随宿主退出）。
     /// 默认关：测试/开发机行为不变；chat 启动时显式打开（见 docs/m2-runtime.md）。
     pub guard: bool,
@@ -134,6 +136,11 @@ impl HostOptions {
     /// 指定 Node 可执行文件（例如 `runtime/node/node.exe`）。
     pub fn with_program(mut self, program: impl Into<PathBuf>) -> Self {
         self.program = Some(program.into());
+        self
+    }
+
+    pub fn with_program_arg(mut self, argument: impl Into<String>) -> Self {
+        self.program_args.push(argument.into());
         self
     }
 

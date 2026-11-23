@@ -46,7 +46,7 @@
 
 ### 启用 DSH rc.5 文件工具
 
-把 `0.2.2-rc.5` 的包和依赖抽取到应用资源目录下的 `sidecar/dsh-official/node_modules`，再通过 `plugins.json` 或 Loader 启用相应条目。验证现有安装包可运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-rc5-gate.ps1`。脚本从本机 DSH 安装包抽取依赖到隔离目录，也接受 `-AsarPath` 选择其他副本。 [版本与复现说明](spec/dsh-compat-mapping.md#rc5-自动验收)
+Windows `0.2.2-rc.5` 调试包已提供官方依赖，可通过 `plugins.json` 或 Loader 启用相应条目。源码开发可把官方包和依赖抽取到 `sidecar/dsh-official/node_modules`。用 `dshr --install-plugin <目录或 .tgz>` 安装用户插件时，包写入 profile 下的 `node_modules`。设置 `DSHR_SIDECAR_DIR` 可指定自定义安装根。运行 `powershell -NoProfile -ExecutionPolicy Bypass -File tools\official-rc5-gate.ps1` 可从本机 DSH 安装包抽取并验收。传入 `-PackagedSidecar` 可验证发行布局。 [版本与复现说明](spec/dsh-compat-mapping.md#rc5-自动验收)
 
 - 启用 `@deepseek-ai/dsh-tool-working-directory` 后，文件工具的相对路径会按本会话切换后的目录解析。文件写入仍受宿主工作区边界与审批约束。
 - 为 `@deepseek-ai/dsh-tool-fs` 设置 `readImage: true` 可启用 `read_image`。工作区内的 PNG、JPEG、GIF 和 WebP 可在支持图片输入的会话中读取。关闭 `DSHR_HOST_SERVICES` 会关闭图片附件服务。

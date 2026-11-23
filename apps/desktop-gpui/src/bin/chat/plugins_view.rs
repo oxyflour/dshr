@@ -1,5 +1,5 @@
 use super::{
-    chrome_button, desktop_icon, sidecar_dir_for_app, toolbar_icon_button, ChatApp, Profile, Theme,
+    chrome_button, desktop_icon, sidecar_plugin_roots, toolbar_icon_button, ChatApp, Profile, Theme,
 };
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, Context, Div, ElementId, FontWeight, Role, Stateful, Window};
@@ -7,11 +7,12 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 fn installed_manifest(name: &str) -> Option<PathBuf> {
-    let path = sidecar_dir_for_app()
-        .join("node_modules")
-        .join(name)
-        .join("plugin.toml");
-    path.is_file().then_some(path)
+    sidecar_plugin_roots()
+        .into_iter()
+        .map(|root| root.join("node_modules").join(name))
+        .find(|path| path.is_dir())
+        .map(|path| path.join("plugin.toml"))
+        .filter(|path| path.is_file())
 }
 
 fn plugin_name(id: &str) -> &str {

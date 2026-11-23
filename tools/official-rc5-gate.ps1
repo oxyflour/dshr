@@ -49,7 +49,11 @@ try {
     $env:DSHR_OFFICIAL_RC5_DIR = $sidecar
     $env:DSHR_OFFICIAL_RC5_RUNTIME = $PrimaryRuntime
     if ($PackagedSidecar) {
-        & node tools/official-provenance.mjs --check --rc5-dir $sidecar --windows-debug
+        $packageRoot = Split-Path -Parent (Split-Path -Parent $sidecar)
+        $node = Join-Path $packageRoot 'runtime/node/node.exe'
+        $nodeArgs = @()
+        if (Test-Path -LiteralPath (Join-Path $sidecar 'official.zip') -PathType Leaf) { $nodeArgs += '--experimental-vfs' }
+        & $node @nodeArgs tools/official-provenance.mjs --check --rc5-dir $sidecar --windows-debug
         if ($LASTEXITCODE -ne 0) { throw 'Packaged rc.5 official package provenance check failed' }
     } else {
         $source = Join-Path $root 'sidecar/dsh-official'
@@ -63,7 +67,7 @@ try {
     }
 
     Invoke-GateTests 'dshr-compat-dsh-host' '--test' 'official_packages' 'rc5_files_' 1
-    Invoke-GateTests 'dshr-desktop-gpui' '--test' 'headless_cli' 'rc5_' 4
+    Invoke-GateTests 'dshr-desktop-gpui' '--test' 'headless_cli' 'rc5_' 5
     Invoke-GateTests 'dshr-desktop-gpui' '--test' 'headless_cli' 'stage2_headless_' 1
     Invoke-GateTests 'dshr-desktop-gpui' '--bin' 'dshr' 'stage2_official_shell_' 1
     Invoke-GateTests 'dshr-desktop-gpui' '--test' 'headless_cli' 'stage3_headless_questions_' 1

@@ -391,6 +391,12 @@ fn spawn_fixture_with(
         .with_env("DSHR_WORKSPACE", workspace.to_string_lossy())
         .with_registration_window(Duration::from_secs(8))
         .with_fs_write(fs_write);
+    if sidecar_dir.join("official.zip").is_file() {
+        let root = sidecar_dir.parent().unwrap().parent().unwrap();
+        options = options
+            .with_program(root.join("runtime/node/node.exe"))
+            .with_program_arg("--experimental-vfs");
+    }
     configure(&workspace, &access, &mut router, &mut inject, &mut options);
     router.register_plugin_inject("dsh-official", inject);
     let options = options.with_host_services(Arc::new(Mutex::new(router)));

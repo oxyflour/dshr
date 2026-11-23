@@ -27,10 +27,10 @@ pub mod uninstall;
 
 pub use install::{install_package, InstallReport};
 pub use trust::{
-    add_trust_key, install_package_trusted, package_digest, read_installed_meta, remove_trust_key,
-    revoke_trust_key, rotate_trust_key, verify_package, AuditRecord, InstallPreview, InstalledMeta,
-    KeyAuditRecord, KeyChangeReport, SignatureStatus, TrustError, TrustKey, TrustPolicy,
-    TrustReport, TrustStore, TrustedInstallReport, TRUST_FILE,
+    add_trust_key, install_package_trusted, install_package_trusted_with_legacy, package_digest,
+    read_installed_meta, remove_trust_key, revoke_trust_key, rotate_trust_key, verify_package,
+    AuditRecord, InstallPreview, InstalledMeta, KeyAuditRecord, KeyChangeReport, SignatureStatus,
+    TrustError, TrustKey, TrustPolicy, TrustReport, TrustStore, TrustedInstallReport, TRUST_FILE,
 };
 pub use uninstall::{uninstall_package, UninstallReport};
 

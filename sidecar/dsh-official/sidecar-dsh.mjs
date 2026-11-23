@@ -62,6 +62,12 @@ import { WORKFLOW_PLUGIN, RALPH_PLUGIN, mountWorkflowEngine } from './lib/workfl
 import { SCHEDULE_CAP, SCHEDULE_CATALOG, SCHEDULE_PLUGIN, createSchedules } from './lib/schedules.mjs'
 import { INSPECT_PLUGIN, mountCordisInspection } from './lib/cordis-inspect.mjs'
 import { NATIVE_EXECUTOR_PLUGIN, PTC_EXECUTOR_PLUGIN, PROGRAM_TOOL, PROGRAM_CAP, PROGRAM_CATALOG } from './lib/executors.mjs'
+import { registerModuleRoots } from './lib/module-roots.mjs'
+
+const virtualRoot = process.getBuiltinModule('node:vfs')?.vfsBase()
+if (!virtualRoot || !import.meta.dirname.startsWith(virtualRoot)) {
+  registerModuleRoots(import.meta.url, { user: process.env.DSHR_PLUGIN_ROOT })
+}
 
 const PROTOCOL_MAX = 2
 // 协商结果：min(host, sidecar)。v1 宿主（M2 及以前）保持纯 v1 行为。

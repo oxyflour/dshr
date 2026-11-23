@@ -12,8 +12,8 @@ bash tools/package-desktop.sh debug
 `-Configuration release` / `release` 走 release 构建。脚本会：
 
 1. `cargo build -p dshr-desktop-gpui --bin dshr`；
-2. 把 `dshr`/`dshr.exe`、`runtime/node`、`sidecar/dsh-official`（含
-   node_modules）与 `README.txt` 放到 `dist/dshr-<config>-<os>-<arch>/`；
+2. 把 `dshr`/`dshr.exe`、`runtime/node`、`sidecar/dsh-official` 与 `README.txt` 放到
+   `dist/dshr-<config>-<os>-<arch>/`；
 3. 压成 zip（Windows）或 tar.gz（Linux/macOS），并生成同名 `.sha256` 校验文件。
 
 Windows 脚本通过 `tools/build-env.cmd`（TMP/TEMP 处理），Linux 脚本可用
@@ -23,9 +23,19 @@ Windows 的 debug 和 release 构建都用 Windows SDK 的 `fxc.exe` 预编译�
 构建时可用 `GPUI_FXC_PATH` 指定 `fxc.exe`。解压后的应用可以脱离构建机的 Cargo 缓存启动。
 Windows 打包通过 `vswhere.exe` 查找 Visual Studio 的 x64 可再发行 `vcruntime140.dll`，并放在桌面与控制台可执行文件旁。用户解压后即可运行。[运行组件规范](spec/runtime-components.md)
 
-Windows x64 调试包从本机 DeepSeek Harness 的 `app.asar` 抽取 Windows 已验收的 `rc.5` 工具和配套依赖，打包时按来源锁校验。使用 `-DshAsar` 指定其他入口。打包时从 `PATH` 或 `-PowerShellExe` 指定的位置复制独立的 x64 PowerShell 7 发行目录，解压后使用包内运行时。首次启动会用包内默认配置生成 `profile/plugins.json`，已有配置继续优先。前台 PowerShell 和 Native 执行器默认启用，持久 PowerShell 与 PTC 可在插件页切换。Office 需要激活 Office Skill，网页调用依赖可用凭据。[兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵)
+Windows x64 调试包默认从本机 DeepSeek Harness 的 `app.asar` 抽取 Windows 已验收的 `rc.5` 工具和配套依赖。使用 `-DshAsar` 指定安装档，或使用 `-DshNodeModules` 指定由 npm 锁定的依赖目录。两种来源都按同一份来源锁校验。打包时从 `PATH` 或 `-PowerShellExe` 指定的位置复制独立的 x64 PowerShell 7 发行目录，解压后使用包内运行时。首次启动会用包内默认配置生成 `profile/plugins.json`，已有配置继续优先。前台 PowerShell 和 Native 执行器默认启用，持久 PowerShell 与 PTC 可在插件页切换。Office 需要激活 Office Skill，网页调用依赖可用凭据。[兼容矩阵](spec/dsh-compat-mapping.md#兼容矩阵)
 
-Windows 可运行 `node tools/vendor-node.mjs` 准备 Node。Windows release、其他平台，以及 CI 中带 `-BaseSidecar` 的 Windows 调试构建，打包前运行 `npm ci --ignore-scripts --prefix sidecar/dsh-official` 安装基础 Sidecar 依赖。Windows x64 release 还需要运行组件目录。以下离线示例把两份 ZIP 和目录文件留在 `.tmp/runtime-component-assets`。
+从 GitHub Actions 下载时，选择 `desktop-package-windows-latest` 并完整解压其中的 Windows ZIP。`desktop-windows-latest` 提供用于调试的单个可执行文件。把完整调试包解压到新目录并启动即可体验 31 项默认插件，同时保留旧目录的 `profile/plugins.json`。显式设置的 `DSHR_HOME`、`DSHR_PROFILE_DIR` 或 Loader 配置仍按原有优先级读取。
+
+Windows CI 用 npm 锁文件安装官方依赖，再用 Node `26.13.1` 生成只读 `official.zip`。Sidecar 直接加载归档和 `native/node_modules` 中的真实路径。原生依赖随外层发行 ZIP 一起解压。本机可以指定带 ZIP VFS 的 Windows x64 Node，可执行文件通过 `-NodeExe` 传入。省略该参数时使用 `runtime/node/node.exe`。现有 Node 24 仍可用于基础包。
+
+```powershell
+npm ci --ignore-scripts --prefix sidecar/rc5-windows
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug -DshNodeModules sidecar/rc5-windows/node_modules -NodeExe (Get-Command node.exe).Source
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Archive dist/dshr-debug-windows-x64.zip -RequireRc5
+```
+
+Windows release、其他平台及显式带 `-BaseSidecar` 的基础调试包，打包前运行 `npm ci --ignore-scripts --prefix sidecar/dsh-official` 安装基础 Sidecar 依赖。Windows x64 release 还需要运行组件目录。以下离线示例把两份 ZIP 和目录文件留在 `.tmp/runtime-component-assets`。
 
 ~~~powershell
 py tools/build-runtime-components.py --out .tmp/runtime-component-assets
@@ -50,13 +60,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/stage-windows-debug.ps
 
 ## 2. 本机实测
 
-Windows x64 `rc.5` 调试包位于 `dist/rc5/dshr-debug-windows-x64.zip`，大小为 260,941,409 B，SHA-256 为 `79d6b57eed2b379211bf6cae8cad29312321641114fa1d192c221df4de2484b6`。常规启动的插件页显示 31 项，其中 27 项是工具包，4 项是配套插件，共有 29 项默认启用。两组互斥插件均可在插件页来回切换。待办插件停用后从模型工具清单移除，重新启用后成功写入会话待办。桌面聊天也调用了文件读取、文件搜索、Cordis 检查和工作区依赖查询。调用由本地测试模型触发，工具由包内 Sidecar 执行。工作区依赖查询使用本机 DeepSeek Harness 的 primary runtime。
+切换到只读归档之前，Windows x64 `rc.5` 调试包位于 `dist/rc5/dshr-debug-windows-x64.zip`，大小为 260,941,409 B，SHA-256 为 `79d6b57eed2b379211bf6cae8cad29312321641114fa1d192c221df4de2484b6`。常规启动的插件页显示 31 项，其中 27 项是工具包，4 项是配套插件，共有 29 项默认启用。两组互斥插件均可在插件页来回切换。待办插件停用后从模型工具清单移除，重新启用后成功写入会话待办。桌面聊天也调用了文件读取、文件搜索、Cordis 检查和工作区依赖查询。调用由本地测试模型触发，工具由包内 Sidecar 执行。工作区依赖查询使用本机 DeepSeek Harness 的 primary runtime。
 
 ZIP 校验、窗口与组件自检均通过。包内 PowerShell 7.6.5 在仅包含 Windows 系统目录的 `PATH` 下可启动，官方 PowerShell 工具测试核对了进程返回的 `$PSHOME`。下面的兼容验收直接使用包内 Sidecar，校验了 48 个官方包的版本与散列，27 项测试全部通过。
 
+归档发行的文件数、冷启动和工具兼容验收见 [Sidecar 归档验收](plan/dsh-sidecar-archive.md)。
+
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug -OutDir dist/rc5
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Archive dist/rc5/dshr-debug-windows-x64.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-desktop.ps1 -Configuration debug -OutDir dist/rc5 -NodeExe (Get-Command node.exe).Source
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify-package.ps1 -Archive dist/rc5/dshr-debug-windows-x64.zip -RequireRc5
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/official-rc5-gate.ps1 -PackagedSidecar dist/rc5/dshr-debug-windows-x64/sidecar/dsh-official
 ```
 

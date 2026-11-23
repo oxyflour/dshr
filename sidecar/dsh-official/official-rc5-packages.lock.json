@@ -117,6 +117,9 @@
       "files": {
         "package.json": "4294ccb7aeb0d15729c924268c583e162c7078f2f04e413d9a5fe1e95d9a6da9",
         "lib/index.js": "152b009a77e0b5f846af5a86b25a35346c9aca5f380c82054a35bde722500752"
+      },
+      "npm_files": {
+        "package.json": "bfd911899d0d42fe1af4cf68b37683f26c1b86e8b33f186884851257ab830463"
       }
     },
     {

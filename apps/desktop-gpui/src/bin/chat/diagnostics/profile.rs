@@ -82,7 +82,7 @@ pub(crate) fn selftest_profile() -> i32 {
         .any(|entry| entry.name == "@deepseek-ai/dsh-tool-fs" && !entry.enabled);
     let json_ok = all_json.contains("dsh-tool-fs") && !disabled_json.contains("dsh-tool-fs");
 
-    let vendored = PathBuf::from("sidecar/dsh-official/node_modules").exists();
+    let vendored = official_sidecar_ready(&app_root().join("sidecar/dsh-official"));
     let mut sidecar_ok = true;
     if vendored {
         std::env::set_var("DSHR_SIDECAR", "dsh");

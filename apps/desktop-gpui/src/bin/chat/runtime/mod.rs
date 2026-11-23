@@ -34,8 +34,9 @@ mod sidecar;
 pub(crate) use sidecar::ProcessServices;
 pub(crate) use sidecar::{
     blank_root_created, build_l2_router_at, creator_preset_id, loader_inputs,
-    prepare_desktop_sidecar, profile_dir_for_app, read_agent_presets, read_agent_presets_from,
-    register_sidecar_tools, sidecar_dir_for_app, spawn_sidecar, spawn_sidecar_in, workspace_root,
+    official_sidecar_ready, prepare_desktop_sidecar, profile_dir_for_app, read_agent_presets,
+    read_agent_presets_from, register_sidecar_tools, sidecar_dir_for_app, sidecar_plugin_roots,
+    spawn_sidecar, spawn_sidecar_in, workspace_root,
 };
 
 mod plugins;

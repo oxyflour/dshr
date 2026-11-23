@@ -1,4 +1,5 @@
 use crate::*;
+use std::path::Path;
 
 pub(crate) struct InstallCliOptions {
     pub(crate) package: PathBuf,
@@ -11,7 +12,7 @@ pub(crate) fn install_plugin_cli(package: PathBuf) -> i32 {
     let args: Vec<String> = std::env::args().collect();
     let sidecar_dir = sidecar_dir_for_app();
     let profile_dir = profile_dir_for_app();
-    install_plugin_with_options(
+    install_plugin_from_paths(
         &InstallCliOptions {
             package,
             yes_install: args.iter().any(|arg| arg == "--yes-install"),
@@ -19,6 +20,7 @@ pub(crate) fn install_plugin_cli(package: PathBuf) -> i32 {
         },
         &sidecar_dir,
         &profile_dir,
+        Some(&app_root().join("sidecar/dsh-official")),
     )
 }
 
@@ -27,6 +29,15 @@ pub(crate) fn install_plugin_with_options(
     options: &InstallCliOptions,
     sidecar_dir: &std::path::Path,
     profile_dir: &std::path::Path,
+) -> i32 {
+    install_plugin_from_paths(options, sidecar_dir, profile_dir, None)
+}
+
+fn install_plugin_from_paths(
+    options: &InstallCliOptions,
+    sidecar_dir: &Path,
+    profile_dir: &Path,
+    legacy_dir: Option<&Path>,
 ) -> i32 {
     if let Err(err) = std::fs::create_dir_all(sidecar_dir) {
         eprintln!("[install] 创建 sidecar 目录失败: {err}");
@@ -54,32 +65,41 @@ pub(crate) fn install_plugin_with_options(
     };
     let package = options.package.clone();
     let yes_install = options.yes_install;
-    let result = install_package_trusted(sidecar_dir, &package, &mut profile, &policy, |preview| {
-        // 非交互 CLI：必须显式 --yes-install；打印与 spec §5 一致的预览项。
-        println!(
-            "[install] 待安装: {} {}（{}）",
-            preview.name,
-            preview.version,
-            preview.signature_status.as_str()
-        );
-        println!(
-            "[install] 来源: {}；摘要: {}",
-            package.display(),
-            preview.digest_sha256
-        );
-        if let Some(key_id) = &preview.key_id {
-            println!("[install] 签名 key: {key_id}");
-        }
-        if let Some(installed) = &preview.installed_version {
-            println!("[install] 已安装版本: {installed}");
-        }
-        println!("[install] 会获得的权限: {}", preview.permissions_hint);
-        println!("[install] 警告: 该插件可在你的用户权限下执行任意代码");
-        if !yes_install {
-            eprintln!("[install] 未验证签名的包需要显式确认：加 --yes-install 重跑（本次未安装）");
-        }
-        yes_install
-    });
+    let result = dshr_profile::install_package_trusted_with_legacy(
+        sidecar_dir,
+        legacy_dir,
+        &package,
+        &mut profile,
+        &policy,
+        |preview| {
+            // 非交互 CLI：必须显式 --yes-install；打印与 spec §5 一致的预览项。
+            println!(
+                "[install] 待安装: {} {}（{}）",
+                preview.name,
+                preview.version,
+                preview.signature_status.as_str()
+            );
+            println!(
+                "[install] 来源: {}；摘要: {}",
+                package.display(),
+                preview.digest_sha256
+            );
+            if let Some(key_id) = &preview.key_id {
+                println!("[install] 签名 key: {key_id}");
+            }
+            if let Some(installed) = &preview.installed_version {
+                println!("[install] 已安装版本: {installed}");
+            }
+            println!("[install] 会获得的权限: {}", preview.permissions_hint);
+            println!("[install] 警告: 该插件可在你的用户权限下执行任意代码");
+            if !yes_install {
+                eprintln!(
+                    "[install] 未验证签名的包需要显式确认：加 --yes-install 重跑（本次未安装）"
+                );
+            }
+            yes_install
+        },
+    );
     match result {
         Ok(report) => {
             println!(
