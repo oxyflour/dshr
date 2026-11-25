@@ -569,6 +569,7 @@ impl ChatApp {
                         cx.listener(|this, _, window, cx| this.toggle_plugins_panel(window, cx)),
                     ),
             )
+            .children(self.adc_workspace_links(false, t, cx))
             .child(
                 div()
                     .flex()
@@ -718,6 +719,7 @@ impl ChatApp {
                         cx.listener(|chat, _, window, cx| chat.toggle_plugins_panel(window, cx)),
                     ),
             )
+            .children(self.adc_workspace_links(true, t, cx))
             .child(div().flex_1())
             .child(self.settings_trigger(true, t, cx))
             .into_any_element()

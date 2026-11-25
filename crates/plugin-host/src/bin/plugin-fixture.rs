@@ -9,7 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use dshr_plugin_sdk::{
-    CancelFlag, ChildSession, PanelDecl, ReadyDecls, ToolCall, ToolDecl, ToolError, ToolResult,
+    CancelFlag, ChatNodeContext, ChildSession, FileViewContext, PanelDecl, ReadyDecls, ToolCall,
+    ToolDecl, ToolError, ToolResult, ToolViewContext, ViewHandler,
 };
 use serde_json::{json, Value};
 
@@ -59,7 +60,54 @@ fn declarations() -> ReadyDecls {
         .with_location("bottom")
         .with_order(200.0),
     ];
-    ReadyDecls::new(tools, panels)
+    let declarations = ReadyDecls::new(tools, panels);
+    match std::env::var("DSHR_PLUGIN_ID") {
+        Ok(plugin_id) => declarations.with_slots(
+            [
+                "conversation.input.left",
+                "conversation.input.right",
+                "settings.general.item",
+                "settings.section",
+                "workspace.sidebar.tab",
+                "workspace.page",
+                "status.bar.item",
+            ]
+            .into_iter()
+            .map(|slot| {
+                json!({
+                    "slot_id": slot, "plugin_id": plugin_id, "id": "fixture.quick",
+                    "label": "Fixture Quick Action", "view": "fixture.quick"
+                })
+            })
+            .chain([
+                json!({
+                    "slot_id": "conversation.chat.node", "plugin_id": plugin_id,
+                    "key": "fixture.note", "view": "fixture.node"
+                }),
+                json!({
+                    "slot_id": "viewer.tab", "plugin_id": plugin_id, "key": "txt", "view": "fixture.file"
+                }),
+                json!({
+                    "slot_id": "command", "plugin_id": plugin_id, "id": "fixture.refresh",
+                    "label": "Refresh fixture", "run": "fixture.refresh", "keys": ["Ctrl+Shift+G"]
+                }),
+                json!({
+                    "slot_id": "menu.item", "plugin_id": plugin_id, "key": "composer.add",
+                    "id": "fixture.add", "label": "Refresh fixture from menu", "run": "fixture.refresh"
+                }),
+                json!({
+                    "slot_id": "tool.call.toolview", "plugin_id": plugin_id,
+                    "key": "echo", "view": "fixture.tool"
+                }),
+                json!({
+                    "slot_id": "tool.result.extra", "plugin_id": plugin_id, "id": "fixture.extra",
+                    "label": "Fixture Result", "view": "fixture.extra"
+                }),
+            ])
+            .collect(),
+        ),
+        Err(_) => declarations,
+    }
 }
 
 fn handler(call: &ToolCall, cancel: &CancelFlag) -> Result<ToolResult, ToolError> {
@@ -69,7 +117,16 @@ fn handler(call: &ToolCall, cancel: &CancelFlag) -> Result<ToolResult, ToolError
                 .argument("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            Ok(ToolResult::json(json!({ "echo": text })))
+            let result = ToolResult::json(json!({ "echo": text }));
+            Ok(
+                if call.argument("publish_node").and_then(Value::as_bool) == Some(true) {
+                    result.with_meta(json!({"adc_node": {
+                        "key": "fixture.note", "fallback": "saved note", "data": text
+                    }}))
+                } else {
+                    result
+                },
+            )
         }
         "slow" => {
             let millis = call
@@ -112,6 +169,13 @@ fn handler(call: &ToolCall, cancel: &CancelFlag) -> Result<ToolResult, ToolError
 
 fn render_view(view: &str, state_seq: u64, action_count: u64) -> Result<Value, ToolError> {
     match view {
+        "fixture.quick" => Ok(json!({
+            "type": "Button",
+            "props": {
+                "label": format!("actions={action_count}"), "a11yLabel": "Refresh",
+                "onPress": { "call": "refresh" }
+            }
+        })),
         "fixture.one" => Ok(json!({
             "type": "Text",
             "props": { "text": format!("fixture one seq={state_seq}") },
@@ -162,16 +226,69 @@ fn render_view(view: &str, state_seq: u64, action_count: u64) -> Result<Value, T
     }
 }
 
-fn main() {
-    let actions = Arc::new(Mutex::new(0u64));
-    let views_actions = Arc::clone(&actions);
-    let actions_in = Arc::clone(&actions);
-    let views = move |view: &str, state_seq: u64| {
-        let count = *views_actions.lock().unwrap();
+struct FixtureViews(Arc<Mutex<u64>>);
+
+impl ViewHandler for FixtureViews {
+    fn render(&mut self, view: &str, state_seq: u64) -> Result<Value, ToolError> {
+        let count = *self.0.lock().unwrap();
         render_view(view, state_seq, count)
-    };
-    let action_handler = move |_view: &str, action: &str, _payload: &Value| {
-        if action == "call" {
+    }
+
+    fn render_tool(
+        &mut self,
+        view: &str,
+        _state_seq: u64,
+        context: &ToolViewContext,
+    ) -> Result<Value, ToolError> {
+        Ok(json!({ "type": "Text", "props": {
+            "value": format!("{view}:{}:{}:{}:{}", context.call_seq, context.tool, context.arguments["text"], context.value["echo"])
+        } }))
+    }
+
+    fn render_file(
+        &mut self,
+        view: &str,
+        _: u64,
+        context: &FileViewContext,
+    ) -> Result<Value, ToolError> {
+        if view != "fixture.file" {
+            return Err(ToolError::invalid_arguments("unknown file view"));
+        }
+        Ok(
+            json!({"type": "Text", "props": {"value": format!("{}:{}:{}", context.name, context.file_type, context.text.as_deref().unwrap_or("[binary]"))}}),
+        )
+    }
+
+    fn render_node(
+        &mut self,
+        view: &str,
+        _: u64,
+        context: &ChatNodeContext,
+    ) -> Result<Value, ToolError> {
+        if view != "fixture.node" {
+            return Err(ToolError::invalid_arguments(
+                "unknown conversation node view",
+            ));
+        }
+        let data = context.data.as_str().unwrap_or_default();
+        Ok(
+            json!({"type": "Text", "props": {"value": format!("{}:{}:{data}", context.key, context.call_seq)}}),
+        )
+    }
+}
+
+fn main() {
+    let actions_in = Arc::new(Mutex::new(0u64));
+    let views = FixtureViews(Arc::clone(&actions_in));
+    let action_handler = move |view: &str, action: &str, payload: &Value| {
+        if action == "call"
+            || (action == "command"
+                && view == "fixture.refresh"
+                && matches!(
+                    payload["id"].as_str(),
+                    Some("fixture.refresh" | "fixture.add")
+                ))
+        {
             *actions_in.lock().unwrap() += 1;
             Ok(())
         } else {

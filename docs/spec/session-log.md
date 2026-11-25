@@ -80,6 +80,10 @@
 | `tool.repeat` | durable | `tool`, `count`, `threshold`, `message`（M3：同一工具+参数在本轮第 N 次调用触发软提醒；actor=`system`；**不失败、不改变工具结果**；读取端必须容忍未知 type，UI 可不渲染，用于自激诊断/审计） |
 
 新事件保留模型返回的 `call_id`，用可选的 `call_seq`（对应 `tool.call` 的事件序号）配对调用、终态和外部化结果。历史事件按 `call_id` 配对。
+
+原生插件的 `tool.call.plugin_id` 记注册表解析出的包 ID。历史记录可以省略该字段。日志可独立回放工具结果。实时 ADC 工具卡使用执行时的注册身份和内存快照。
+
+原生插件成功的 `tool.result.meta.adc_node` 记录已准入的对话节点。`tool.call.plugin_id` 确定发布者，`call_seq` 确定实例，终态事件顺序确定展示顺序。回放使用有界 `fallback` 文本。节点字段不参与模型对话或工具结算。 [节点上下文](cpp-v1.md#对话节点上下文)
 每次调用至多有一个终态（`tool.result` 或 `tool.aborted`）。
 `tool.repeat` 是旁路诊断事件，不参与工具结算，也不影响 `tool.call/tool.result` 的配对。
 

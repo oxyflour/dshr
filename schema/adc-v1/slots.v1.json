@@ -35,7 +35,7 @@
   "contributions": {
     "panel": {
       "doc": "面板（PLAN §4.6.2 的 panel）",
-      "slots": ["workspace.panel"]
+      "slots": ["workspace.panel", "workspace.sidebar.tab", "workspace.page"]
     },
     "tool_renderer": {
       "doc": "工具调用结果渲染器（PLAN §4.6.2 的 tool_renderer）",
@@ -113,7 +113,7 @@
       "kind": "string[]",
       "maxItems": 8,
       "items": { "pattern": "^[A-Za-z0-9+.-]+$" },
-      "doc": "可选快捷键序列，最多 8 个"
+      "doc": "可选单次组合键，最多 8 个。桌面按 ADC-v1 §5.2 验证按键和修饰键"
     },
     "run": {
       "kind": "string",
@@ -153,7 +153,7 @@
       },
       "key_domain": {
         "mode": "open",
-        "doc": "文件类型：由查看器注册表决定（插件可为自己产生的文件类型注册查看器）"
+        "doc": "桌面按显式选中的交付文件分派。key 为符合 ADC-v1 §5.2 的小写扩展名"
       }
     },
     {
@@ -207,7 +207,7 @@
       "key_domain": {
         "mode": "closed",
         "source": "host",
-        "doc": "菜单名由 Host 菜单目录声明；非法 key 由 Host 拒绝（具体菜单名不在 catalog 固化，避免与宿主菜单演进耦合）"
+        "doc": "桌面菜单键由 Host 按运行平台声明并通过 creator_inspect 返回；非法 key 由 Host 拒绝"
       }
     },
     {
@@ -223,7 +223,7 @@
       },
       "key_domain": {
         "mode": "open",
-        "doc": "node id：由会话树节点决定"
+        "doc": "节点类型：插件注册后由自己的成功工具结果发布；实例按调用事件序号区分"
       }
     },
     {
@@ -285,6 +285,30 @@
       "exclusive": false,
       "replacement_risk": "none",
       "contribution": "status",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "workspace.sidebar.tab",
+      "kind": "list",
+      "scope": "session",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "panel",
+      "registration": {
+        "required": ["id", "label", "view"],
+        "optional": ["order"]
+      }
+    },
+    {
+      "slot_id": "workspace.page",
+      "kind": "list",
+      "scope": "root",
+      "exclusive": false,
+      "replacement_risk": "none",
+      "contribution": "panel",
       "registration": {
         "required": ["id", "label", "view"],
         "optional": ["order"]

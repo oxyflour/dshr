@@ -118,6 +118,7 @@ impl ChatApp {
             let finished = DesktopTurnUpdate::Finished {
                 plugin_errors: guard.load_errors(),
                 adc_panels: guard.adc_panels.clone(),
+                adc_actions: guard.adc_action_entries(),
             };
             drop(_writer);
             drop(guard);
@@ -136,8 +137,9 @@ impl ChatApp {
                         Ok(DesktopTurnUpdate::Finished {
                             plugin_errors,
                             adc_panels,
+                            adc_actions,
                         }) => {
-                            finished = Some((plugin_errors, adc_panels));
+                            finished = Some((plugin_errors, adc_panels, adc_actions));
                         }
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
@@ -171,7 +173,7 @@ impl ChatApp {
                 }
                 if closed || finished.is_some() {
                     let _ = this.update(cx, |app, cx| {
-                        if let Some((errors, panels)) = finished {
+                        if let Some((errors, panels, actions)) = finished {
                             if app.follow_transcript && !app.activity_open && !app.plugins_open {
                                 let new_call = panels
                                     .iter()
@@ -190,6 +192,7 @@ impl ChatApp {
                             app.activity_scroll.scroll_to_bottom();
                             app.plugin_errors = errors;
                             app.adc_panels = panels;
+                            app.adc_actions = actions;
                         }
                         app.busy = false;
                         app.reload_sessions();
@@ -224,7 +227,7 @@ impl ChatApp {
         let input = input.read(cx);
         let text = input.content();
         let slash_text =
-            (!self.busy && !input.is_composing() && slash_commands(text).next().is_some())
+            (!self.busy && !input.is_composing() && self.matching_commands(text).next().is_some())
                 .then_some(text);
         if slash_text != self.slash_text.as_deref() {
             self.slash_text = slash_text.map(str::to_owned);
@@ -253,15 +256,19 @@ impl ChatApp {
             return false;
         }
         if self.composer_menu == Some(ComposerMenu::Commands) {
-            let Some(command) = slash_commands(text).nth(self.selected_command) else {
+            let Some((_, _, command)) = self.matching_commands(text).nth(self.selected_command)
+            else {
                 return false;
             };
             self.composer_menu = None;
             let chat = cx.weak_entity();
+            let session = self.session_id.clone();
             // TextInput 调用此回调时仍在更新自身。先让它清空，再执行会切换焦点的指令。
             window.defer(cx, move |window, cx| {
                 let _ = chat.update(cx, |chat, cx| {
-                    chat.run_slash_command(command, window, cx);
+                    if chat.session_id == session {
+                        chat.run_command_choice(command, window, cx);
+                    }
                 });
             });
             return true;
@@ -273,7 +280,7 @@ impl ChatApp {
         let Some(text) = self.slash_text.as_deref() else {
             return;
         };
-        let count = slash_commands(text).count();
+        let count = self.matching_commands(text).count();
         if self.composer_menu == Some(ComposerMenu::Commands) && count > 0 {
             self.selected_command =
                 (self.selected_command as isize + delta).rem_euclid(count as isize) as usize;

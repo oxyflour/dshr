@@ -17,6 +17,8 @@ use tempfile::TempDir;
 
 #[path = "creator/build.rs"]
 mod build;
+#[path = "creator/inspection.rs"]
+mod inspection;
 
 pub(super) const PRESET: &str = "dshr-creator";
 pub(super) const CORDIS_PRESET: &str = "cordis";
@@ -71,22 +73,22 @@ pub(super) fn specs() -> [ToolSpec; 4] {
     [
         ToolSpec {
             name: INSPECT_TOOL.to_owned(),
-            description: "Start here for a plugin task. Read workspace_panel for a complete, compilable panel with an Input and Button, including their action payloads. Read it before writing or extending a plugin UI.".to_owned(),
-            parameters: object_schema(None),
+            description: "Start with {} to discover available contracts and templates. Before writing plugin code, query each unfamiliar slot, ADC element, or SDK interface by the exact section and name from queries. For example, {\"section\":\"slot\",\"name\":\"viewer.tab\"} returns registration, callbacks, and how to verify the view.".to_owned(),
+            parameters: inspection::arguments_schema(),
         },
         ToolSpec {
             name: PREVIEW_TOOL.to_owned(),
-            description: "Optional visual preview of an ADC-v1 tree, including controls. The preview never dispatches actions or registers a panel. Copy the element and action format from creator_inspect.workspace_panel before calling; then build and try the plugin.".to_owned(),
-            parameters: object_schema(Some(("element", "object"))),
+            description: "Optional read-only preview of an ADC-v1 tree. Query each unfamiliar element with creator_inspect section=element for its exact props and action format. Build and try the plugin to exercise callbacks.".to_owned(),
+            parameters: object_schema("element", "object"),
         },
         ToolSpec {
             name: BUILD_PLUGIN_TOOL.to_owned(),
             description: "Build a Rust external-process plugin. Pass the workspace-relative directory containing plugin.toml, Cargo.toml and src/. The host supplies the SDK, requests approval and writes the executable to runtime.entry. Fix compiler errors before retrying.".to_owned(),
-            parameters: object_schema(Some(("path", "string"))),
+            parameters: object_schema("path", "string"),
         },
         ToolSpec {
             name: TRY_PLUGIN_TOOL.to_owned(),
-            description: "Try a built CPP-v1 plugin, or replace the trial of the same package after a rebuild. For UI tasks pass expect_panel:true and require a nonempty panels result. This checks the first render; report actual clicks only if exercised.".to_owned(),
+            description: "Try a built CPP-v1 plugin or replace its trial after rebuilding. For workspace.panel pass expect_panel:true and check panels. Otherwise check slots: validation=rendered confirms the initial tree; validation=registration confirms the declaration. Trigger contextual views and commands separately using their creator_inspect slot contract. Report actions only after exercising them.".to_owned(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -100,15 +102,11 @@ pub(super) fn specs() -> [ToolSpec; 4] {
     ]
 }
 
-fn object_schema(property: Option<(&str, &str)>) -> Value {
-    let (properties, required) = match property {
-        Some((name, kind)) => (json!({ (name): { "type": kind } }), json!([name])),
-        None => (json!({}), json!([])),
-    };
+fn object_schema(name: &str, kind: &str) -> Value {
     json!({
         "type": "object",
-        "properties": properties,
-        "required": required,
+        "properties": { (name): { "type": kind } },
+        "required": [name],
         "additionalProperties": false
     })
 }
@@ -134,6 +132,7 @@ impl Session<'_> {
         };
         let result = match call.tool.as_str() {
             INSPECT_TOOL if args.is_empty() => Ok(inspect(self.preset, tool_names)),
+            INSPECT_TOOL => inspection::query(args).map(json_outcome),
             PREVIEW_TOOL if args.len() == 1 && args.contains_key("element") => {
                 preview_panel(&args["element"])
             }
@@ -227,6 +226,7 @@ impl Session<'_> {
         super::load_cpp_package(&mut candidate, manifest, trial.directory.path())?;
         let plugin_id = &trial.plugin_id;
         let panels = validate_trial_panels(&mut candidate, plugin_id, expect_panel)?;
+        let slots = validate_trial_slots(&mut candidate, plugin_id)?;
         if cancel.load(Ordering::Relaxed) {
             return Err("插件试用已取消".to_owned());
         }
@@ -244,6 +244,9 @@ impl Session<'_> {
         if !panels.is_empty() {
             result["panel_location"] = json!("Inside this trial's result card in the current conversation, after this turn finishes.");
         }
+        if !slots.is_empty() {
+            result["slots"] = json!(slots);
+        }
         self.scope
             .plugins
             .adopt_candidate(candidate, plugin_id)
@@ -256,6 +259,33 @@ impl Session<'_> {
         self.scope.revision += 1;
         Ok(json_outcome(result))
     }
+}
+
+fn validate_trial_slots(candidate: &mut PluginHost, plugin_id: &str) -> Result<Vec<Value>, String> {
+    let mut slots = Vec::new();
+    for (slot, location) in dshr_plugin_host::desktop_slots() {
+        let records: Vec<_> = candidate
+            .slot_registrations(slot)
+            .into_iter()
+            .cloned()
+            .collect();
+        for record in records {
+            let validation = match record.view.as_deref() {
+                Some(view) if inspection::renders_at_trial(slot) => {
+                    super::render_slot_tree(candidate, plugin_id, view).map_err(|error| {
+                        format!("{slot}: {error}. 调用 creator_inspect，传 section=slot 和 name={slot}。")
+                    })?;
+                    "rendered"
+                }
+                _ => "registration",
+            };
+            slots.push(json!({
+                "slot_id": slot, "id": record.registration_id, "key": record.key, "label": record.label,
+                "view": record.view, "run": record.run, "location": location, "validation": validation
+            }));
+        }
+    }
+    Ok(slots)
 }
 
 fn validate_trial_panels(
@@ -325,6 +355,7 @@ fn inspect(preset: &str, tools: &[String]) -> ToolOutcome {
     json_outcome(json!({
         "preset": preset,
         "tools": tools,
+        "queries": inspection::directory(),
         "creator_tools": [INSPECT_TOOL, PREVIEW_TOOL, WRITE_FILE_TOOL, BUILD_PLUGIN_TOOL, TRY_PLUGIN_TOOL],
         "build": build,
         "plugin_manifest": "plugin.toml",
@@ -346,7 +377,17 @@ fn inspect(preset: &str, tools: &[String]) -> ToolOutcome {
             "Cargo.toml": "[package]\nname = \"hello-panel\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndshr-plugin-sdk = { path = \"sdk\" }\nserde_json = \"=1.0.154\"\n\n[workspace]\n",
             "src/main.rs": include_str!("creator/panel-example.rs"),
             "workflow": "Write these files in one package directory. Use the direct serde_json dependency for json! and Value. Build injects sdk/ into a temporary directory. Build and then try with expect_panel:true. Confirm panels is nonempty before saying the panel is available.",
-            "actions": "Use props.a11yLabel and props.onChange/onPress {\"call\":\"method\",\"args\":{}}. On Input submit the SDK receives (view, \"call\", {\"method\":\"method\",\"args\":{\"value\":\"typed text\"}}). A command receives (view, \"command\", {\"id\":\"command id\"}). The preview cannot trigger these callbacks."
+            "actions": "Use props.a11yLabel and props.onChange/onPress {\"call\":\"method\",\"args\":{}}. On Input submit the SDK receives (view, \"call\", {\"method\":\"method\",\"args\":{\"value\":\"typed text\"}}). A registered command receives (run, \"command\", {\"id\":\"registration id\"}). The preview cannot trigger these callbacks."
+        },
+        "adc_slots": {
+            "supported": inspection::supported_slots(),
+            "chat_node": "Declare conversation.chat.node with a key and view. Publish meta.adc_node {key, fallback, data} from a successful tool owned by the plugin. Override ViewHandler::render_node for ChatNodeContext. The trial checks registration; a successful tool call displays the node. History retains fallback text.",
+            "file_preview": "Declare viewer.tab with a lowercase file extension as key, without a dot. Override ViewHandler::render_file for FileViewContext. The Preview button opens the selected delivered file in a right sidebar tab. The trial checks registration. File content is available only after user selection.",
+            "menu_keys": dshr_plugin_host::DESKTOP_MENU_KEYS,
+            "commands": "Use a declared command id in the / and Add menus. Use menu.item.key from menu_keys. Handle (run, \"command\", {\"id\": registration_id}) in the ActionHandler when the user selects the entry. ADC command actions only trigger commands from the current plugin instance. Read-only and busy sessions cannot run plugin commands.",
+            "registration": "Use ReadyDecls::with_slots(vec![json!(example)]), replacing plugin_id with the manifest ID. Use serve_with_views_and_actions to implement the declared view. Trial views belong to the current session.",
+            "tool_views": "Declare the tool in the same ReadyDecls. tool.call.toolview.key is its tool name; tool.result.extra applies to the plugin's own successful tools. Override ViewHandler::render_tool for ToolViewContext (call_seq, tool, arguments, value). The trial result validates the registration. Run a declared tool successfully to see the card. Card actions are copy and openExternal.",
+            "workspace_panel_location": "In the current trial result card after the turn, and in the desktop plugin panel list. The legacy location field does not select where the panel mounts."
         },
         "panel_slot": "workspace.panel",
         "panel_contract": "ADC-v1",
@@ -358,7 +399,7 @@ fn preview_panel(tree: &Value) -> Result<ToolOutcome, String> {
     let parsed = parse_tree(tree);
     if let Some(diagnostic) = parsed.diagnostics.first() {
         return Err(format!(
-            "ADC 预览在 {} 校验失败: {}。查看 creator_inspect.workspace_panel 的元素与动作示例。",
+            "ADC 预览在 {} 校验失败: {}。用 creator_inspect 的 element 查询检查元素的 props 与动作格式。",
             diagnostic.path, diagnostic.message
         ));
     }

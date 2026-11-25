@@ -66,20 +66,34 @@ pub(crate) fn drive_notes_panel_approval(approvals: &Arc<ApprovalBroker>) {
 #[test]
 #[ignore = "requires a real DeepSeek connection and native Cargo with cached SDK dependencies"]
 fn live_creator_authors_and_invokes_hello_world() {
-    run_live_creator(false);
+    run_live_creator(CreatorScenario::Tool);
 }
 
 // CPP-CREATOR-014
 #[test]
 #[ignore = "requires a real DeepSeek connection and the Rust build component"]
 fn live_creator_authors_and_exercises_an_interactive_panel() {
-    run_live_creator(true);
+    run_live_creator(CreatorScenario::Panel);
 }
 
-fn run_live_creator(with_panel: bool) {
+#[test]
+#[ignore = "requires a real DeepSeek connection and the Rust build component"]
+fn live_creator_authors_a_slider_from_exact_contracts() {
+    run_live_creator(CreatorScenario::Slider);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreatorScenario {
+    Tool,
+    Panel,
+    Slider,
+}
+
+fn run_live_creator(scenario: CreatorScenario) {
     let root =
         PathBuf::from(std::env::var_os("DSHR_LIVE_CREATOR_DIR").expect("isolated workspace"));
-    let existing = !with_panel && root.join("hello-world/plugin.toml").is_file();
+    let existing =
+        scenario == CreatorScenario::Tool && root.join("hello-world/plugin.toml").is_file();
     assert!(
         existing || std::fs::read_dir(&root).unwrap().next().is_none(),
         "use an empty workspace or a copy of the hello-world package"
@@ -231,12 +245,11 @@ fn run_live_creator(with_panel: bool) {
         }
     });
 
-    let prompt = if with_panel {
-        "做一个带界面的 Hello World 插件，有名字输入框和打招呼按钮。输入名字后点击按钮，面板显示问候语。"
-    } else if existing {
-        "请先检查创造模式的构建环境，再继续构建和试用工作区已有的 hello-world 插件。遇到编译错误请用 edit 或 creator_write_file 修正源码，最终实际调用注册的问候工具。"
-    } else {
-        "做一个 hello world 插件，并试运行。"
+    let prompt = match scenario {
+        CreatorScenario::Slider => "做一个创造模式插件，在聊天右侧栏的独立页签里用滑块调音量，范围 0 到 10，默认 2。用创造模式的查询结果了解接口，构建并试用。",
+        CreatorScenario::Panel => "做一个带界面的 Hello World 插件，有名字输入框和打招呼按钮。输入名字后点击按钮，面板显示问候语。",
+        CreatorScenario::Tool if existing => "请先检查创造模式的构建环境，再继续构建和试用工作区已有的 hello-world 插件。遇到编译错误请用 edit 或 creator_write_file 修正源码，最终实际调用注册的问候工具。",
+        CreatorScenario::Tool => "做一个 hello world 插件，并试运行。",
     };
     let result = state.stream_turn(prompt, &mut |_| {});
     done.store(true, Ordering::Release);
@@ -277,7 +290,7 @@ fn run_live_creator(with_panel: bool) {
                 .as_str()
                 .is_some_and(|tool| tool.starts_with("probe_"))
     }));
-    if with_panel {
+    if scenario == CreatorScenario::Panel {
         let panels = trial.payload["value"]["panels"].as_array().unwrap();
         assert!(!panels.is_empty(), "agent must successfully try the panel");
         let try_call = events
@@ -298,6 +311,44 @@ fn run_live_creator(with_panel: bool) {
         println!("LIVE_CREATOR_PANEL_PASS {}", store.path_for(&id).display());
         return;
     }
+    if scenario == CreatorScenario::Slider {
+        let first_write = events
+            .iter()
+            .find(|event| {
+                event.event_type == "tool.call"
+                    && matches!(
+                        event.payload["tool"].as_str(),
+                        Some(WRITE_FILE_TOOL | "write")
+                    )
+            })
+            .expect("agent must write the package");
+        let queries: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.seq < first_write.seq
+                    && event.event_type == "tool.result"
+                    && event.payload["is_error"] == false
+                    && event.payload["value"]["contract"].is_object()
+            })
+            .map(|event| &event.payload["value"])
+            .collect();
+        assert!(queries
+            .iter()
+            .any(|value| value["section"] == "slot" && value["name"] == "workspace.sidebar.tab"));
+        assert!(queries
+            .iter()
+            .any(|value| value["section"] == "element" && value["name"] == "Slider"));
+        assert!(queries.iter().any(|value| value["section"] == "sdk"));
+        assert!(!events.iter().any(|event| event.event_type == "tool.result" && event.payload["is_error"] == true),
+            "the queried contracts should support a first-pass build and trial");
+        let plugin_id = trial.payload["value"]["plugin"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_slider_action(&mut state, &plugin_id);
+        println!("LIVE_CREATOR_SLIDER_PASS {}", store.path_for(&id).display());
+        return;
+    }
     let registered = trial.payload["value"]["tools"].as_array().unwrap();
     assert!(
         registered
@@ -315,6 +366,44 @@ fn run_live_creator(with_panel: bool) {
         "agent must invoke a registered greeting tool"
     );
     println!("LIVE_CREATOR_PASS {}", store.path_for(&id).display());
+}
+
+fn assert_slider_action(state: &mut ChatState, plugin_id: &str) {
+    let find_slider = |state: &ChatState| {
+        let panel = state
+            .adc_panels
+            .iter()
+            .find(|panel| {
+                panel.trial
+                    && panel.plugin_id == plugin_id
+                    && panel
+                        .slot
+                        .as_ref()
+                        .is_some_and(|slot| slot.slot_id == "workspace.sidebar.tab")
+            })
+            .expect("sidebar tab contribution");
+        let target = dshr_plugin_host::SlotTarget::from(panel.slot.as_ref().unwrap());
+        let tree = parse_tree(panel.tree.as_ref().expect("slot rendered"));
+        assert!(tree.diagnostics.is_empty());
+        let mut slider = None;
+        tree.root.walk(&mut |node| {
+            if node.kind == ElementKind::Slider && slider.is_none() {
+                slider = Some((node.f64_prop("value"), node.action("onChange")));
+            }
+        });
+        let (value, action) = slider.expect("Slider in the contribution");
+        (target, value, action)
+    };
+    let (target, initial, action) = find_slider(state);
+    assert_eq!(initial, Some(2.0));
+    let Some(AdcAction::Call { method, mut args }) = action else {
+        panic!("Slider requires a call action");
+    };
+    args["value"] = json!(7.5);
+    state
+        .apply_adc_slot_action(target, "call", &json!({"method": method, "args": args}))
+        .unwrap();
+    assert_eq!(find_slider(state).1, Some(7.5));
 }
 
 fn assert_panel_actions(state: &mut ChatState, plugin_id: &str) {

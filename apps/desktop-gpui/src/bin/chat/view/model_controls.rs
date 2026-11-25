@@ -324,12 +324,12 @@ impl ChatApp {
                 } else {
                     "/"
                 };
-                for (index, command) in slash_commands(text).enumerate() {
+                for (index, (name, label, command)) in self.matching_commands(text).enumerate() {
                     options = options.child(
                         composer_option(
                             ("slash-command", index),
-                            &format!("/{}", command.name()),
-                            command.description(),
+                            &format!("/{name}"),
+                            label,
                             typed_slash && index == self.selected_command,
                             t,
                         )
@@ -340,10 +340,26 @@ impl ChatApp {
                                 if typed_slash {
                                     chat.input.update(cx, |input, cx| input.clear(window, cx));
                                 }
-                                chat.run_slash_command(command, window, cx);
+                                chat.run_command_choice(command, window, cx);
                             },
                         )),
                     );
+                }
+                if !typed_slash {
+                    if let Some((label, target)) =
+                        self.adc_menu_item(dshr_plugin_host::COMPOSER_ADD_MENU)
+                    {
+                        options = options.child(
+                            composer_option("add-plugin-menu-item", label, "", false, t)
+                                .role(Role::MenuItem)
+                                .focusable()
+                                .on_click(cx.listener(move |chat, _, window, cx| {
+                                    chat.composer_menu = None;
+                                    chat.run_adc_command(target, cx);
+                                    chat.focus_composer(window, cx);
+                                })),
+                        );
+                    }
                 }
             }
         }

@@ -189,9 +189,9 @@ impl ChatApp {
 
     fn window_menu_panel(&self, menu: WindowMenu, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
-        let entries = match menu {
-            WindowMenu::Application => APPLICATION,
-            WindowMenu::Edit => EDIT,
+        let (entries, menu_key) = match menu {
+            WindowMenu::Application => (APPLICATION, dshr_plugin_host::APPLICATION_MENU),
+            WindowMenu::Edit => (EDIT, dshr_plugin_host::EDIT_MENU),
         };
         let menu = div()
             .id("window-menu-items")
@@ -230,7 +230,22 @@ impl ChatApp {
                                 window.dispatch_action(action.action(), cx);
                             }))
                     }),
-            );
+            )
+            .when_some(self.adc_menu_item(menu_key), |menu, (label, target)| {
+                menu.child(
+                    chrome_button("window-plugin-menu-item", "", t)
+                        .role(Role::MenuItem)
+                        .aria_label(label.to_owned())
+                        .child(label.to_owned())
+                        .focusable()
+                        .h(px(MENU_ROW_HEIGHT))
+                        .w_full()
+                        .on_click(cx.listener(move |chat, _, _, cx| {
+                            chat.close_window_menu(cx);
+                            chat.run_adc_command(target, cx);
+                        })),
+                )
+            });
         gpui::deferred(menu).with_priority(13).into_any_element()
     }
 

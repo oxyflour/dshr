@@ -2,7 +2,7 @@
   "limits": {
     "crates/agent-core/src/session_tree.rs": 1722,
     "crates/compat-mcp/src/lib.rs": 1027,
-    "crates/plugin-host/src/external.rs": 1302,
+    "crates/plugin-host/src/external.rs": 1256,
     "crates/profile/src/loader.rs": 1633,
     "crates/profile/src/trust.rs": 1839,
     "crates/ui-contributions/src/element.rs": 1549

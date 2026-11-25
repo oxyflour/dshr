@@ -97,7 +97,7 @@ type SpecRow = (
     &'static str,
 );
 
-/// spec §5 的 12 个 slot 人读镜像（目录必须逐项一致）。
+/// spec §5 的 slot 人读镜像（目录必须逐项一致）。
 fn spec_table() -> Vec<SpecRow> {
     vec![
         (
@@ -196,6 +196,22 @@ fn spec_table() -> Vec<SpecRow> {
             vec!["order"],
             "status",
         ),
+        (
+            "workspace.sidebar.tab",
+            SlotKind::List,
+            SlotScope::Session,
+            vec!["id", "label", "view"],
+            vec!["order"],
+            "panel",
+        ),
+        (
+            "workspace.page",
+            SlotKind::List,
+            SlotScope::Root,
+            vec!["id", "label", "view"],
+            vec!["order"],
+            "panel",
+        ),
     ]
 }
 
@@ -204,9 +220,9 @@ fn spec_table() -> Vec<SpecRow> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn adc_slot_001_builtin_catalog_loads_twelve_slots() {
+fn adc_slot_001_builtin_catalog_loads_all_slots() {
     let catalog = SlotCatalog::builtin();
-    assert_eq!(catalog.len(), 12);
+    assert_eq!(catalog.len(), dshr_ui_contributions::SLOT_COUNT);
     assert_eq!(catalog.version(), 1);
     assert_eq!(catalog.catalog_name(), Some("adc.slots/v1"));
     assert_eq!(catalog.status(), Some("Review"));

@@ -2,6 +2,7 @@ use crate::*;
 
 impl Render for ChatApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.retain_adc_file_preview();
         if std::env::var("DSHR_UI_TRACE").as_deref() == Ok("1") {
             eprintln!(
                 "[ui-trace] bounds={:?} viewport={:?} scale={} rows={} busy={} last={:?}",
@@ -103,7 +104,8 @@ impl Render for ChatApp {
             theme.layout.sidebar_width
         };
         let available_width = width - sidebar_width;
-        let right_sidebar_visible = self.right_sidebar_open && !self.plugins_open;
+        let page = self.adc_workspace_page(&theme, cx);
+        let right_sidebar_visible = self.right_sidebar_open && !self.plugins_open && page.is_none();
         let right_sidebar_overlay = available_width < px(744.0);
         let right_sidebar_width = px(264.0).min(available_width.max(px(0.0)));
         let body_width = if right_sidebar_visible && !right_sidebar_overlay {
@@ -140,7 +142,15 @@ impl Render for ChatApp {
             .border_l_1()
             .border_color(p.color(p.border_l3))
             .bg(p.color(p.bg_base));
-        let body = if self.plugins_open {
+        let body = if let Some(page) = page {
+            body.child(page)
+                .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
+                .when_some(self.user_question_bar(&theme, cx), |el, bar| el.child(bar))
+                .when(self.settings_tab.is_none(), |el| {
+                    el.children(self.external_confirm_bar(&theme, cx))
+                        .children(self.adc_editor_bar(&theme, cx))
+                })
+        } else if self.plugins_open {
             body.child(
                 div()
                     .flex_1()
@@ -149,10 +159,10 @@ impl Render for ChatApp {
             )
             .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
             .when_some(self.user_question_bar(&theme, cx), |el, bar| el.child(bar))
-            .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
-                el.child(bar)
+            .when(self.settings_tab.is_none(), |el| {
+                el.children(self.external_confirm_bar(&theme, cx))
+                    .children(self.adc_editor_bar(&theme, cx))
             })
-            .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
         } else {
             let menu_top = px(0.0);
             #[cfg(target_os = "windows")]
@@ -179,10 +189,10 @@ impl Render for ChatApp {
                 })
                 .when_some(self.approval_bar(&theme, cx), |el, bar| el.child(bar))
                 .when_some(self.user_question_bar(&theme, cx), |el, bar| el.child(bar))
-                .when_some(self.external_confirm_bar(&theme, cx), |el, bar| {
-                    el.child(bar)
+                .when(self.settings_tab.is_none(), |el| {
+                    el.children(self.external_confirm_bar(&theme, cx))
+                        .children(self.adc_editor_bar(&theme, cx))
                 })
-                .when_some(self.adc_editor_bar(&theme, cx), |el, bar| el.child(bar))
                 .child(if hero {
                     self.empty_composer(composer, &theme, cx)
                 } else {
@@ -190,7 +200,7 @@ impl Render for ChatApp {
                 })
         };
         let shell = shell
-            .child(body)
+            .child(body.children(self.adc_status_bar(&theme, cx)))
             .when(right_sidebar_visible, |shell| {
                 shell.child(self.right_sidebar(
                     right_sidebar_width,
@@ -219,6 +229,7 @@ impl Render for ChatApp {
             });
         frame
             .child(shell)
+            .on_key_down(cx.listener(Self::adc_command_keydown))
             .on_action(cx.listener(Self::shortcut_new_session))
             .on_action(cx.listener(Self::shortcut_focus_composer))
             .on_action(cx.listener(Self::shortcut_toggle_sidebar))
@@ -352,6 +363,7 @@ pub(crate) fn launch() {
         rows,
         plugin_errors,
         adc_panels,
+        adc_actions,
         active_workspace,
         creator_mode,
         active_preset,
@@ -366,6 +378,7 @@ pub(crate) fn launch() {
             rows_snapshot(&guard.log, None),
             guard.load_errors(),
             guard.adc_panels.clone(),
+            guard.adc_action_entries(),
             guard.workspace.clone(),
             creator::is_creator_session(&guard.log),
             guard
@@ -495,6 +508,8 @@ pub(crate) fn launch() {
                             header_menu: None,
                             header_notice: None,
                             right_sidebar_open: false,
+                            adc_navigation: Default::default(),
+                            adc_page_focus: cx.focus_handle(),
                             show_archived: false,
                             workspace_session_limits: Default::default(),
                             session_id: active,
@@ -531,6 +546,7 @@ pub(crate) fn launch() {
                             plugin_errors,
                             sidecar_reload_pending: false,
                             adc_panels,
+                            adc_actions,
                             collapsed_trial_cards: HashSet::new(),
                             reveal_trial_call: None,
                         }
@@ -602,6 +618,12 @@ pub(crate) fn launch() {
         }
         if std::env::var("DSHR_COMPOSER_FLOW").as_deref() == Ok("1") {
             composer_flow::run(window_handle, cx);
+        }
+        if std::env::var("DSHR_ADC_COMMAND_FLOW").as_deref() == Ok("1") {
+            composer_flow::run_adc_command_flow(window_handle, cx);
+        }
+        if std::env::var("DSHR_ADC_FILE_FLOW").as_deref() == Ok("1") {
+            super::adc_file_preview::run_file_preview_flow(window_handle, cx);
         }
         #[cfg(target_os = "windows")]
         if std::env::var("DSHR_TITLEBAR_FLOW").as_deref() == Ok("1") {

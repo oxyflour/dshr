@@ -63,7 +63,7 @@ Cargo 元数据表明，桌面应用直接依赖 18 个 workspace 库，只有�
 | --- | ---: | --- |
 | `agent-core/src/session_tree.rs` | 1,722 | 父子关系、重放、中断传播和 drain 共用同一运行状态。先保留这一状态机及其用例，后续按树状态与持久化接线拆分。 |
 | `compat-mcp/src/lib.rs` | 1,027 | 单个 MCP 客户端拥有初始化、请求响应及关闭状态。拆传输时须同步验证超时、迟到答复和重启。 |
-| `plugin-host/src/external.rs` | 1,302 | 外部进程插件的帧限制、超时和清理共用进程句柄。当前阶段调整 Fiber 生命周期实现，独立进程适配保留现有实现。 |
+| `plugin-host/src/external.rs` | 1,256 | 外部进程插件的帧校验、超时和清理共用进程句柄。ADC 视图声明、请求与动作封装位于 `external/views.rs`。 |
 | `profile/src/loader.rs` | 1,633 | Include、group 展开和 patch 覆盖依赖处理顺序及相对路径基准。后续按解析与装配拆分并复验预设升级。 |
 | `profile/src/trust.rs` | 1,988 | 摘要、确认、安装记录与密钥审计有兼容测试。后续按包验证和密钥生命周期拆分并验证事务及审计结果。 |
 | `ui-contributions/src/element.rs` | 1,549 | 声明解析、归一化及诊断是 ADC 契约实现。本轮拆分渲染层，保留该契约实现的原有分支和配额规则。 |

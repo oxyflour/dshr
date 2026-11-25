@@ -1,3 +1,6 @@
+mod adc_commands;
+mod adc_file_preview;
+mod adc_workspace;
 mod approvals;
 mod attachments;
 mod chrome;

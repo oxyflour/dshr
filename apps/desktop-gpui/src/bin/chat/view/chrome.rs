@@ -34,6 +34,7 @@ impl ChatApp {
 
     /// 打开/关闭插件管理页；打开时补一次 ADC 面板快照。
     pub(crate) fn toggle_plugins_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.adc_navigation.page = None;
         self.plugins_open = !self.plugins_open;
         self.plugin_detail = None;
         self.plugin_manifest_path = None;
@@ -47,6 +48,7 @@ impl ChatApp {
             // 与点击入口一致：用 try_lock，工作线程持锁时不阻塞 UI 渲染。
             if let Ok(guard) = self.state.try_lock() {
                 self.adc_panels = guard.adc_panels.clone();
+                self.adc_actions = guard.adc_action_entries();
             }
             window.focus(&self.plugin_focus, cx);
         } else {
@@ -131,7 +133,15 @@ impl ChatApp {
         if self.close_attachment_preview(window, cx) {
             return;
         }
-        if self.close_settings(window, cx) {
+        if self.settings_tab.is_some() {
+            if self.adc_editor.is_some() {
+                self.cancel_adc_edit(cx);
+                window.focus(&self.settings_focus, cx);
+            } else if self.pending_external.take().is_some() {
+                cx.notify();
+            } else {
+                self.close_settings(window, cx);
+            }
             return;
         }
         if self.session_menu.take().is_some() {
@@ -204,6 +214,9 @@ impl ChatApp {
     }
 
     pub(crate) fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.adc_navigation.page.take().is_some() {
+            cx.notify();
+        }
         if self.plugins_open && self.settings_tab.is_none() {
             self.toggle_plugins_panel(window, cx);
             return;

@@ -1,5 +1,11 @@
+mod adc_commands;
+mod adc_file_preview;
+mod adc_tool_views;
 mod session_access;
 mod tools;
+
+pub(crate) use adc_commands::AdcActionBinding;
+pub(crate) use adc_file_preview::render_delivered_file;
 
 pub(crate) use session_access::{chat_header_from_log, load_session_log, ChatSessionAccess};
 #[cfg(test)]
@@ -19,7 +25,8 @@ pub(crate) use providers::{
 mod state;
 pub(crate) use state::SessionInput;
 pub(crate) use state::{
-    AdcPanelView, ChatRuntime, ChatState, ParsedAgentPresets, TurnReason, TurnResult, TurnUpdate,
+    render_slot_tree, AdcPanelView, ChatRuntime, ChatState, ParsedAgentPresets, TurnReason,
+    TurnResult, TurnUpdate,
 };
 mod turn;
 pub(crate) use turn::append_repeat_reminders;

@@ -473,7 +473,7 @@ impl PanelDecl {
     }
 }
 
-/// `process.ready` 的声明集合（工具 + 面板）。
+/// `process.ready` 的声明集合。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadyDecls {
@@ -481,11 +481,23 @@ pub struct ReadyDecls {
     pub tools: Vec<ToolDecl>,
     #[serde(default)]
     pub panels: Vec<PanelDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<Value>,
 }
 
 impl ReadyDecls {
     pub fn new(tools: Vec<ToolDecl>, panels: Vec<PanelDecl>) -> Self {
-        Self { tools, panels }
+        Self {
+            tools,
+            panels,
+            slots: Vec::new(),
+        }
+    }
+
+    /// 添加 ADC 槽位声明，由宿主按目录校验。
+    pub fn with_slots(mut self, slots: Vec<Value>) -> Self {
+        self.slots = slots;
+        self
     }
 
     /// 按名字查声明。
@@ -539,6 +551,8 @@ pub struct ReadyPayload {
     pub tools: Vec<ToolDecl>,
     #[serde(default)]
     pub panels: Vec<PanelDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<Value>,
 }
 
 /// `tool.invoke`（host → child）。
@@ -585,6 +599,116 @@ pub struct RenderPayload {
     pub state_seq: u64,
 }
 
+/// Inputs for a settled tool card owned by this plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolViewContext {
+    pub call_seq: std::num::NonZeroU64,
+    pub tool: String,
+    pub arguments: Value,
+    pub value: Value,
+}
+
+/// Data of one conversation node published by the calling plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatNodeContext {
+    pub key: String,
+    pub call_seq: std::num::NonZeroU64,
+    pub data: Value,
+}
+
+impl ChatNodeContext {
+    pub fn valid_key(key: &str) -> bool {
+        (1..=64).contains(&key.len())
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    }
+}
+
+/// A bounded preview of a file selected in the current desktop session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileViewContext {
+    pub name: String,
+    pub file_type: String,
+    pub size_bytes: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub text: Option<String>,
+    pub truncated: bool,
+}
+
+impl FileViewContext {
+    pub const MAX_TEXT_BYTES: usize = 16 * 1024;
+
+    pub fn valid_file_type(file_type: &str) -> bool {
+        let key = file_type.as_bytes();
+        !key.is_empty()
+            && key.len() <= 32
+            && key[0].is_ascii_alphanumeric()
+            && key.iter().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_+-".contains(byte)
+            })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        !self.name.is_empty()
+            && Self::valid_file_type(&self.file_type)
+            && self
+                .text
+                .as_ref()
+                .is_none_or(|text| text.len() <= Self::MAX_TEXT_BYTES)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RenderRequest {
+    pub view: String,
+    #[serde(default)]
+    pub state_seq: u64,
+    #[serde(default, deserialize_with = "deserialize_tool_context")]
+    pub tool_context: Option<ToolViewContext>,
+    #[serde(default, deserialize_with = "deserialize_file_context")]
+    pub file_context: Option<FileViewContext>,
+    #[serde(default, deserialize_with = "deserialize_node_context")]
+    pub node_context: Option<ChatNodeContext>,
+}
+
+fn deserialize_node_context<'de, D>(deserializer: D) -> Result<Option<ChatNodeContext>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let context = ChatNodeContext::deserialize(deserializer)?;
+    if !ChatNodeContext::valid_key(&context.key) {
+        return Err(serde::de::Error::custom("invalid conversation node key"));
+    }
+    Ok(Some(context))
+}
+
+fn deserialize_file_context<'de, D>(deserializer: D) -> Result<Option<FileViewContext>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let context = FileViewContext::deserialize(deserializer)?;
+    if !context.is_valid() {
+        return Err(serde::de::Error::custom("invalid file preview context"));
+    }
+    Ok(Some(context))
+}
+
+fn deserialize_tool_context<'de, D>(deserializer: D) -> Result<Option<ToolViewContext>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let context = ToolViewContext::deserialize(deserializer)?;
+    if context.tool.is_empty() {
+        return Err(serde::de::Error::custom("tool name must not be empty"));
+    }
+    Ok(Some(context))
+}
+
 /// `ui.action`（host → child）：ADC 交互动作回传给插件。
 ///
 /// `action` 是 ADC-v1 的动作类别（`call` / `command`），`payload` 是动作参数：
@@ -606,6 +730,29 @@ pub struct ActionPayload {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tool_view_context_preserves_legacy_requests_and_rejects_malformed_context() {
+        let legacy: RenderRequest = serde_json::from_value(json!({"view": "legacy"})).unwrap();
+        assert_eq!(legacy.state_seq, 0);
+        assert!(legacy.tool_context.is_none());
+        let mut payload = json!({
+            "view": "result", "tool_context": {
+                "tool": "fixture", "call_seq": 1, "arguments": {}, "value": null
+            }
+        });
+        let request: RenderRequest = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(request.tool_context.unwrap().value, Value::Null);
+        payload["tool_context"]
+            .as_object_mut()
+            .unwrap()
+            .remove("value");
+        assert!(serde_json::from_value::<RenderRequest>(payload).is_err());
+        assert!(serde_json::from_value::<RenderRequest>(
+            json!({"view": "result", "tool_context": null})
+        )
+        .is_err());
+    }
 
     // CPP-PROC-001..010：协议形状、版本、帧上限、声明校验。
     #[test]
@@ -784,8 +931,10 @@ mod tests {
             generation: Some(1),
             tools: decls.tools.clone(),
             panels: decls.panels.clone(),
+            slots: Vec::new(),
         };
         let json = serde_json::to_value(&payload).unwrap();
+        assert!(json.get("slots").is_none());
         let parsed: ReadyPayload = serde_json::from_value(json).unwrap();
         assert_eq!(parsed, payload);
         assert_eq!(parsed.tools[0].timeout_ms, DEFAULT_TOOL_TIMEOUT_MS);

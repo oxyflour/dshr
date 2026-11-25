@@ -1,4 +1,5 @@
 use crate::*;
+use dshr_plugin_host::SlotTarget;
 
 impl ChatApp {
     /// ADC Input/Textarea 点击：打开真实 TextInput 模态；提交时把值注入 onChange。
@@ -6,6 +7,7 @@ impl ChatApp {
         &mut self,
         plugin_id: String,
         view: String,
+        slot: Option<SlotTarget>,
         args: serde_json::Value,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -31,6 +33,7 @@ impl ChatApp {
         self.adc_editor = Some(AdcEditor {
             plugin_id,
             view,
+            slot,
             path,
             on_change,
             input,
@@ -53,6 +56,7 @@ impl ChatApp {
                 self.dispatch_adc_action(
                     &editor.plugin_id,
                     &editor.view,
+                    editor.slot,
                     "call",
                     json!({ "method": method, "args": args }),
                     cx,
@@ -62,6 +66,7 @@ impl ChatApp {
                 self.dispatch_adc_action(
                     &editor.plugin_id,
                     &editor.view,
+                    editor.slot,
                     "command",
                     json!({ "id": id }),
                     cx,
@@ -280,6 +285,7 @@ impl ChatApp {
         &mut self,
         plugin_id: &str,
         view: &str,
+        slot: Option<SlotTarget>,
         action: &str,
         payload: serde_json::Value,
         cx: &mut Context<Self>,
@@ -292,9 +298,13 @@ impl ChatApp {
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let result = guard.apply_adc_action(plugin_id, view, action, &payload);
+            let result = match slot {
+                Some(target) => guard.apply_adc_slot_action(target, action, &payload),
+                None => guard.apply_adc_action(plugin_id, view, action, &payload),
+            };
             if result.is_ok() {
                 self.adc_panels = guard.adc_panels.clone();
+                self.adc_actions = guard.adc_action_entries();
             }
             result
         };
@@ -320,6 +330,184 @@ impl ChatApp {
         }
     }
 
+    pub(crate) fn adc_body(
+        &self,
+        panel: &AdcPanelView,
+        tree: &serde_json::Value,
+        t: &Theme,
+        cx: &Context<Self>,
+    ) -> (AnyElement, Vec<dshr_ui_contributions::Diagnostic>) {
+        if self.busy {
+            return adc_panel_body(t, tree);
+        }
+        let weak = cx.entity().downgrade();
+        let plugin = panel.plugin_id.clone();
+        let view = panel.view.clone();
+        let slot = panel.slot.as_ref().map(SlotTarget::from);
+        let trial = panel.trial;
+        let trial_call_seq = panel.trial_call_seq;
+        let tool_call_seq = panel.tool_call_seq;
+        let session = self.session_id.clone();
+        let handler: AdcActionHandler = std::rc::Rc::new(move |action, window, app| {
+            let _ = weak.update(app, |chat, cx| {
+                if chat.busy
+                    || chat.session_id != session
+                    || slot.is_some_and(|target| {
+                        !chat.adc_panels.iter().any(|panel| {
+                            panel.tree.is_some()
+                                && panel.slot.as_ref().map(SlotTarget::from) == Some(target)
+                                && panel.tool_call_seq == tool_call_seq
+                        })
+                    })
+                    || (trial
+                        && slot.is_none()
+                        && !chat.adc_panels.iter().any(|panel| {
+                            panel.trial
+                                && panel.tree.is_some()
+                                && panel.plugin_id == plugin
+                                && panel.view == view
+                                && panel.trial_call_seq == trial_call_seq
+                        }))
+                {
+                    return;
+                }
+                match action {
+                    AdcAction::Call { .. } | AdcAction::Command { .. }
+                        if tool_call_seq.is_some() => {}
+                    AdcAction::Copy { text } => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    }
+                    AdcAction::Call { method, args } if method == "__adc_edit" => {
+                        chat.open_adc_editor(
+                            plugin.clone(),
+                            view.clone(),
+                            slot,
+                            args.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                    AdcAction::Call { method, args } => {
+                        let payload = json!({ "method": method, "args": args });
+                        chat.dispatch_adc_action(&plugin, &view, slot, "call", payload, cx);
+                    }
+                    AdcAction::Command { id } => {
+                        chat.run_adc_view_command(&plugin, trial, id, cx);
+                    }
+                    AdcAction::OpenExternal { url } => chat.request_open_external(url.clone(), cx),
+                    _ => eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略"),
+                }
+            });
+        });
+        adc_panel_body_with_handler(t, tree, handler)
+    }
+
+    pub(crate) fn adc_tool_card_views(
+        &self,
+        call_seq: u64,
+        t: &Theme,
+        cx: &Context<Self>,
+    ) -> (Option<AnyElement>, Vec<AnyElement>) {
+        let mut body = None;
+        let mut extras = Vec::new();
+        for view in self
+            .adc_panels
+            .iter()
+            .filter(|view| view.tool_call_seq == Some(call_seq))
+        {
+            let (Some(slot), Some(tree)) = (&view.slot, &view.tree) else {
+                continue;
+            };
+            if !dshr_plugin_host::is_tool_view_slot(&slot.slot_id) {
+                continue;
+            }
+            let element = div()
+                .id(gpui::SharedString::from(format!(
+                    "adc-tool-{call_seq}-{}-{}",
+                    slot.generation,
+                    slot.handle.value()
+                )))
+                .max_h(px(240.0))
+                .overflow_y_scroll()
+                .child(self.adc_body(view, tree, t, cx).0)
+                .into_any_element();
+            if slot.slot_id == dshr_plugin_host::TOOL_CALL_VIEW {
+                body = Some(element);
+            } else {
+                extras.push(element);
+            }
+        }
+        (body, extras)
+    }
+
+    pub(crate) fn adc_chat_node_view(
+        &self,
+        node: &dshr_conversation_model::ChatNode,
+    ) -> Option<(&AdcPanelView, &serde_json::Value)> {
+        self.adc_panels.iter().find_map(|view| {
+            let slot = view.slot.as_ref()?;
+            if view.tool_call_seq != Some(node.call_seq)
+                || view.plugin_id != node.plugin_id
+                || slot.slot_id != dshr_plugin_host::CHAT_NODE
+                || slot.key.as_deref() != Some(&node.key)
+            {
+                return None;
+            }
+            Some((view, view.tree.as_ref()?))
+        })
+    }
+
+    pub(crate) fn adc_slot_elements(
+        &self,
+        name: &str,
+        t: &Theme,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        self.adc_panels
+            .iter()
+            .filter_map(|panel| {
+                let slot = panel.slot.as_ref().filter(|slot| slot.slot_id == name)?;
+                let tree = panel.tree.as_ref()?;
+                let (body, _) = self.adc_body(panel, tree, t, cx);
+                Some(
+                    div()
+                        .id(format!(
+                            "adc-{}-{}-{}",
+                            slot.slot_id,
+                            slot.generation,
+                            slot.handle.value()
+                        ))
+                        .min_w(px(0.0))
+                        .child(body)
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn adc_composer_slot(
+        &self,
+        name: &'static str,
+        t: &Theme,
+        cx: &Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let views = self.adc_slot_elements(name, t, cx);
+        (!views.is_empty()).then(|| {
+            div()
+                .id(name)
+                .flex()
+                .min_w(px(0.0))
+                .max_w(px(144.0))
+                .max_h(px(36.0))
+                .overflow_x_scroll()
+                .children(views)
+        })
+    }
+
+    pub(crate) fn has_workspace_panels(&self) -> bool {
+        self.adc_panels.iter().any(|panel| panel.slot.is_none())
+    }
+
     pub(crate) fn plugin_panels(
         &self,
         trial_call: Option<u64>,
@@ -329,12 +517,9 @@ impl ChatApp {
         let p = t.palette;
         let mut list = div().flex().flex_col().gap(px(8.0)).w_full();
         // 绘制快照时不持有 ChatState 锁，也不向插件请求渲染。
-        for (index, panel) in self
-            .adc_panels
-            .iter()
-            .enumerate()
-            .filter(|(_, panel)| trial_call.is_none() || panel.trial_call_seq == trial_call)
-        {
+        for (index, panel) in self.adc_panels.iter().enumerate().filter(|(_, panel)| {
+            panel.slot.is_none() && (trial_call.is_none() || panel.trial_call_seq == trial_call)
+        }) {
             let mut card = div()
                 .id(("adc-panel", index))
                 .w_full()
@@ -362,55 +547,7 @@ impl ChatApp {
                 );
             match &panel.tree {
                 Some(tree) => {
-                    let weak = cx.entity().downgrade();
-                    let plugin_id = panel.plugin_id.clone();
-                    let view = panel.view.clone();
-                    let handler: AdcActionHandler =
-                        std::rc::Rc::new(move |action, window, app| match action {
-                            AdcAction::Copy { text } => {
-                                app.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                                eprintln!("[adc] copy {} bytes", text.len());
-                            }
-                            AdcAction::Call { method, args } => {
-                                if method == "__adc_edit" {
-                                    let plugin_id = plugin_id.clone();
-                                    let view = view.clone();
-                                    let args = args.clone();
-                                    let _ = weak.update(app, |chat, cx| {
-                                        chat.open_adc_editor(plugin_id, view, args, window, cx);
-                                    });
-                                } else {
-                                    let payload = json!({ "method": method, "args": args });
-                                    let _ = weak.update(app, |chat, cx| {
-                                        chat.dispatch_adc_action(
-                                            &plugin_id, &view, "call", payload, cx,
-                                        );
-                                    });
-                                }
-                            }
-                            AdcAction::Command { id } => {
-                                let payload = json!({ "id": id });
-                                let _ = weak.update(app, |chat, cx| {
-                                    chat.dispatch_adc_action(
-                                        &plugin_id, &view, "command", payload, cx,
-                                    );
-                                });
-                            }
-                            AdcAction::OpenExternal { url } => {
-                                let url = url.clone();
-                                let _ = weak.update(app, |chat, cx| {
-                                    chat.request_open_external(url, cx);
-                                });
-                            }
-                            _ => {
-                                eprintln!("[adc] 未知动作（ADC-v1 新增类型），已忽略");
-                            }
-                        });
-                    let (body, diagnostics) = if self.busy {
-                        adc_panel_body(t, tree)
-                    } else {
-                        adc_panel_body_with_handler(t, tree, handler)
-                    };
+                    let (body, diagnostics) = self.adc_body(panel, tree, t, cx);
                     card = card.child(body);
                     if !diagnostics.is_empty() {
                         // 未知元素 Placeholder / 配额裁剪仍然可见，诊断只作提示。

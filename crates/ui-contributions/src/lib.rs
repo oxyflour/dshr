@@ -68,5 +68,5 @@ pub const ELEMENT_TYPE_NAMES: [&str; 26] = [
     "Accordion",
 ];
 
-/// ADC-v1 slot 数量（spec §5 的 12 个首批 slot）。
-pub const SLOT_COUNT: usize = 12;
+/// ADC-v1 slot 目录当前的条目数量（spec §5）。
+pub const SLOT_COUNT: usize = 14;

@@ -20,8 +20,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::protocol::{
-    error_code, kind, ActionPayload, Envelope, HelloPayload, InvokePayload, ProtocolError,
-    ReadyDecls, ReadyPayload, RenderPayload, MAX_FRAME_BYTES, PROTOCOL_VERSION,
+    error_code, kind, ActionPayload, ChatNodeContext, Envelope, FileViewContext, HelloPayload,
+    InvokePayload, ProtocolError, ReadyDecls, ReadyPayload, RenderRequest, ToolViewContext,
+    MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 use crate::{ToolResult, MAX_TOOL_TIMEOUT_MS};
 
@@ -137,6 +138,33 @@ where
 /// 渲染本身由宿主/`ui-gpui` 负责，SDK 只负责把树送过去。
 pub trait ViewHandler: Send + 'static {
     fn render(&mut self, view: &str, state_seq: u64) -> Result<Value, ToolError>;
+
+    fn render_tool(
+        &mut self,
+        view: &str,
+        state_seq: u64,
+        _context: &ToolViewContext,
+    ) -> Result<Value, ToolError> {
+        self.render(view, state_seq)
+    }
+
+    fn render_file(
+        &mut self,
+        view: &str,
+        state_seq: u64,
+        _context: &FileViewContext,
+    ) -> Result<Value, ToolError> {
+        self.render(view, state_seq)
+    }
+
+    fn render_node(
+        &mut self,
+        view: &str,
+        state_seq: u64,
+        _context: &ChatNodeContext,
+    ) -> Result<Value, ToolError> {
+        self.render(view, state_seq)
+    }
 }
 
 impl<F> ViewHandler for F
@@ -161,7 +189,8 @@ impl ViewHandler for NoViews {
 
 /// ADC 交互动作处理器（`ui.action`，M4 W3）。
 ///
-/// `action` 为 `call` / `command`，`payload` 为其参数；fire-and-forget，返回错误只写
+/// `action` 为 `call` / `command`，`payload` 为其参数。命令槽位传 `run` 方法名作为
+/// `view`，并在 `payload.id` 中传注册 ID。fire-and-forget，返回错误只写
 /// stderr，不影响协议 stdout。
 pub trait ActionHandler: Send + 'static {
     fn action(&mut self, view: &str, action: &str, payload: &Value) -> Result<(), ToolError>;
@@ -347,6 +376,7 @@ impl ChildSession {
                         generation: Some(hello.generation),
                         tools: decls.tools.clone(),
                         panels: decls.panels.clone(),
+                        slots: decls.slots.clone(),
                     };
                     write_envelope(
                         &writer,
@@ -486,7 +516,7 @@ impl ChildSession {
 
 fn render_result(views: &Arc<Mutex<Box<dyn ViewHandler>>>, envelope: &Envelope) -> Envelope {
     let request_id = envelope.request_id.clone();
-    let payload: RenderPayload = match serde_json::from_value(envelope.payload.clone()) {
+    let payload: RenderRequest = match serde_json::from_value(envelope.payload.clone()) {
         Ok(payload) => payload,
         Err(error) => {
             return Envelope::with_error(
@@ -497,12 +527,39 @@ fn render_result(views: &Arc<Mutex<Box<dyn ViewHandler>>>, envelope: &Envelope) 
             )
         }
     };
+    if usize::from(payload.tool_context.is_some())
+        + usize::from(payload.file_context.is_some())
+        + usize::from(payload.node_context.is_some())
+        > 1
+    {
+        return Envelope::with_error(
+            kind::UI_RESULT,
+            request_id,
+            error_code::E_PROTOCOL,
+            "ui.render must specify at most one context",
+        );
+    }
     let rendered = {
         let mut guard = views
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         catch_unwind(AssertUnwindSafe(|| {
-            guard.render(&payload.view, payload.state_seq)
+            match (
+                payload.tool_context.as_ref(),
+                payload.file_context.as_ref(),
+                payload.node_context.as_ref(),
+            ) {
+                (Some(context), _, _) => {
+                    guard.render_tool(&payload.view, payload.state_seq, context)
+                }
+                (_, Some(context), _) => {
+                    guard.render_file(&payload.view, payload.state_seq, context)
+                }
+                (_, _, Some(context)) => {
+                    guard.render_node(&payload.view, payload.state_seq, context)
+                }
+                _ => guard.render(&payload.view, payload.state_seq),
+            }
         }))
     };
     match rendered {

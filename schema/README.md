@@ -4,10 +4,12 @@
 
 | 文件 | 对应规范 | 用途 |
 |---|---|---|
-| `adc-v1/slots.v1.json` | [`adc-v1.md`](../docs/spec/adc-v1.md) §5 | slot 目录 v1（12 slot、kind/scope/注册契约/key 域），**唯一事实源**；数据文件，不是 JSON Schema |
+| `adc-v1/slots.v1.json` | [`adc-v1.md`](../docs/spec/adc-v1.md) §5 | slot 目录 v1（kind、scope、注册契约、key 域），记录现有槽位及追加项 |
 | `adc-v1/element.schema.json` | [`adc-v1.md`](../docs/spec/adc-v1.md) §6 | 元素树（递归节点、26 元素字段级 props、类型枚举、上限） |
 | `adc-v1/slot-registration.schema.json` | [`adc-v1.md`](../docs/spec/adc-v1.md) §4.4 | slot 注册条目（view/run × unkeyed/keyed 四种载荷形状） |
+| `creator-mode/inspect-arguments.schema.json` | [创造模式精确查询](../docs/spec/creator-mode.md#精确查询) | `creator_inspect` 的目录与精确查询参数 |
 | `cpp-v1/manifest.schema.json` | [`cpp-v1.md`](../docs/spec/cpp-v1.md) §3 | `plugin.toml` 的 JSON 投影（含 fuel 上限、`min_host_version`、`ui[].location`） |
+| `cpp-v1/render-request.schema.json` | [CPP-v1 工具视图](../docs/spec/cpp-v1.md#工具视图上下文) · [文件视图](../docs/spec/cpp-v1.md#文件视图上下文) · [对话节点](../docs/spec/cpp-v1.md#对话节点上下文) | `ui.render` 的请求参数和可选的工具、文件或节点上下文 |
 | `cpp-v1/trust.schema.json` | [`plugin-trust.md`](../docs/spec/plugin-trust.md) §2 | 包级信任文件 `dshr-trust.json`（摘要 + 可选 ed25519 签名） |
 | `cpp-v1/trust-keys.schema.json` | [`plugin-trust.md`](../docs/spec/plugin-trust.md) §4 | 本机信任密钥库 `trust-keys.json`（时间窗/吊销字段） |
 | `sidecar-rpc/envelope.schema.json` | [`sidecar-rpc.md`](../docs/spec/sidecar-rpc.md) §4 | 控制消息信封（L2 host-service 代理 kind 与 `service_key`） |
@@ -22,7 +24,7 @@
 node schema/check.mjs
 ```
 
-`check.mjs` 内置一个够用即可的 JSON Schema 子集校验器（`$ref`/`type`/`enum`/`const`/`required`/`properties`/`additionalProperties`/`items`/长度/正则/数值范围/`oneOf`·`allOf`·`anyOf`），并对每个 schema 跑正反用例；另对 `slots.v1.json` 做目录自检与 kind 级注册契约校验（当前 76 条用例）。
+`check.mjs` 内置一个够用即可的 JSON Schema 子集校验器（`$ref`/`type`/`enum`/`const`/`required`/`properties`/`additionalProperties`/`items`/长度/正则/数值范围/`oneOf`·`allOf`·`anyOf`），并对每个 schema 跑正反用例。另对 `slots.v1.json` 做目录自检与 kind 级注册契约校验。
 
 **这是临时实现**：JS 工具链 pin 之后换成 `ajv` + `ajv-cli`，用例列表保持不动即可平滑迁移。
 

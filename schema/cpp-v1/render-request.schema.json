@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CPP-v1 ui.render payload",
+  "type": "object",
+  "required": ["view"],
+  "additionalProperties": false,
+  "properties": {
+    "view": { "type": "string" },
+    "state_seq": { "type": "integer", "minimum": 0 },
+    "tool_context": {
+      "type": "object",
+      "required": ["call_seq", "tool", "arguments", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "call_seq": { "type": "integer", "minimum": 1 },
+        "tool": { "type": "string", "minLength": 1 },
+        "arguments": {},
+        "value": {}
+      }
+    },
+    "file_context": {
+      "type": "object",
+      "required": ["name", "file_type", "size_bytes", "text", "truncated"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "file_type": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_+-]{0,31}$" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "text": { "type": ["string", "null"], "maxLength": 16384 },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "node_context": {
+      "type": "object",
+      "required": ["key", "call_seq", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
+        "call_seq": { "type": "integer", "minimum": 1 },
+        "data": {}
+      }
+    }
+  },
+  "oneOf": [
+    {"properties": {"tool_context": false, "file_context": false, "node_context": false}},
+    {"required": ["tool_context"], "properties": {"file_context": false, "node_context": false}},
+    {"required": ["file_context"], "properties": {"tool_context": false, "node_context": false}},
+    {"required": ["node_context"], "properties": {"tool_context": false, "file_context": false}}
+  ]
+}

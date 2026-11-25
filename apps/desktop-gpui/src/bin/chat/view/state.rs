@@ -5,6 +5,7 @@ pub(crate) enum DesktopTurnUpdate {
     Finished {
         plugin_errors: Vec<String>,
         adc_panels: Vec<AdcPanelView>,
+        adc_actions: Vec<AdcActionBinding>,
     },
 }
 
@@ -12,6 +13,7 @@ pub(crate) enum DesktopTurnUpdate {
 pub(crate) struct AdcEditor {
     pub(crate) plugin_id: String,
     pub(crate) view: String,
+    pub(crate) slot: Option<dshr_plugin_host::SlotTarget>,
     pub(crate) path: String,
     pub(crate) on_change: AdcAction,
     pub(crate) input: Entity<TextInput>,
@@ -202,6 +204,8 @@ pub(crate) struct ChatApp {
     pub(crate) header_menu: Option<session_header::HeaderMenu>,
     pub(crate) header_notice: Option<(bool, String)>,
     pub(crate) right_sidebar_open: bool,
+    pub(crate) adc_navigation: super::adc_workspace::AdcNavigation,
+    pub(crate) adc_page_focus: FocusHandle,
     pub(crate) show_archived: bool,
     pub(crate) workspace_session_limits: HashMap<String, usize>,
     pub(crate) session_id: String,
@@ -251,6 +255,7 @@ pub(crate) struct ChatApp {
     pub(crate) sidecar_reload_pending: bool,
     /// 插件 ADC 面板快照（渲染路径只读；刷新见加载插件/打开面板处，不持锁渲染）。
     pub(crate) adc_panels: Vec<AdcPanelView>,
+    pub(crate) adc_actions: Vec<AdcActionBinding>,
     pub(crate) collapsed_trial_cards: HashSet<u64>,
     pub(crate) reveal_trial_call: Option<u64>,
 }

@@ -175,6 +175,7 @@ pub struct PluginContext {
     plugin_id: String,
     tools: Vec<ToolDefinition>,
     panels: Vec<PanelContribution>,
+    slots: Vec<Value>,
 }
 
 impl PluginContext {
@@ -183,6 +184,7 @@ impl PluginContext {
             plugin_id: plugin_id.into(),
             tools: Vec::new(),
             panels: Vec::new(),
+            slots: Vec::new(),
         }
     }
 
@@ -200,6 +202,14 @@ impl PluginContext {
 
     pub fn register_panel(&mut self, panel: PanelContribution) {
         self.panels.push(panel);
+    }
+
+    pub fn register_slots(&mut self, declarations: impl IntoIterator<Item = Value>) {
+        self.slots.extend(declarations);
+    }
+
+    pub fn take_slots(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.slots)
     }
 
     /// 宿主在 `apply` 成功后取走声明；之后再调用为空。
@@ -235,6 +245,30 @@ pub trait Plugin: Send {
         Err(PluginError::Invalid(
             "plugin does not render views".to_owned(),
         ))
+    }
+
+    /// Render a tool card with data from one successful call owned by this plugin.
+    fn render_tool_view(&mut self, view: &str, _context: &Value) -> Result<Value, PluginError> {
+        self.render_view(view)
+    }
+
+    /// Render a bounded snapshot of the file selected by the desktop user.
+    fn render_file_view(&mut self, view: &str, _context: &Value) -> Result<Value, PluginError> {
+        self.render_view(view)
+    }
+
+    fn render_chat_node(&mut self, view: &str, _context: &Value) -> Result<Value, PluginError> {
+        self.render_view(view)
+    }
+
+    /// Extract UI-only publication metadata from a tool result envelope.
+    fn take_chat_node(&self, _result: &mut Value) -> Option<Value> {
+        None
+    }
+
+    /// Project a successful call's value for rendering. Transport adapters can unwrap results.
+    fn tool_view_value<'a>(&self, result: &'a Value) -> Option<&'a Value> {
+        Some(result)
     }
 
     /// 处理 ADC `ui.action`（M4 W3）：`action` 为 `call` / `command`，`payload` 是其参数。

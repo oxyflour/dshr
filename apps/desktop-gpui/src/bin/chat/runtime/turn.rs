@@ -1,3 +1,4 @@
+use super::adc_tool_views::{ToolViewBinding, ToolViewRequests};
 use super::attachments::user_message_payload;
 use super::{
     ChatExecutor, ChatState, DraftAttachment, ToolStep, TurnReason, TurnResult, TurnUpdate,
@@ -14,6 +15,11 @@ use dshr_tool_runtime::ToolOrigin;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
+
+struct PendingToolCall {
+    seq: u64,
+    views: Vec<ToolViewBinding>,
+}
 
 impl ChatState {
     pub(crate) fn run_turn(
@@ -191,6 +197,7 @@ impl ChatState {
         let mut reasoning = String::new();
         let mut reason = TurnReason::Error;
         let mut event_error = None;
+        let mut tool_view_requests = ToolViewRequests::default();
         // 非失败结束原因（用户取消）：决定 TurnEnded 后写 session.interrupted 而不是“处理失败”。
         let mut cancelled: Option<String> = None;
         let trial_revision_before_turn = self
@@ -237,7 +244,7 @@ impl ChatState {
                 l2_access: self.l2_access.clone(),
             };
             let log_for_events = log_cell.clone();
-            let mut pending_call_seqs: HashMap<String, VecDeque<u64>> = HashMap::new();
+            let mut pending_calls: HashMap<String, VecDeque<PendingToolCall>> = HashMap::new();
             self.agent.run_turn_streaming_message(
                 &history,
                 current,
@@ -255,15 +262,12 @@ impl ChatState {
                     }
                     AgentEvent::ToolCall(call) => {
                         let tools = step.borrow();
-                        let definition = tools.get(&call.tool).map(|tool| &tool.definition);
+                        let resolved = tools.get(&call.tool);
+                        let definition = resolved.map(|tool| &tool.definition);
+                        let views = resolved.map(|tool| tool.views.clone()).unwrap_or_default();
                         let origin = definition.map_or("unknown", |tool| tool.origin.kind());
                         let presentation = definition.and_then(|tool| tool.presentation.as_deref())
                             .unwrap_or("generic");
-                        let registration = match definition.map(|tool| &tool.origin) {
-                            Some(ToolOrigin::Sidecar { registration_id, generation, plugin_id }) =>
-                                Some((registration_id, generation, plugin_id)),
-                            _ => None,
-                        };
                         let mut data = json!({
                             "call_id": call.call_id,
                             "tool": call.tool,
@@ -271,10 +275,16 @@ impl ChatState {
                             "presentation": presentation,
                             "arguments": call.arguments
                         });
-                        if let Some((id, generation, plugin_id)) = registration {
-                            data["registration_id"] = json!(id);
-                            data["generation"] = json!(generation);
-                            data["plugin_id"] = json!(plugin_id);
+                        match definition.map(|tool| &tool.origin) {
+                            Some(ToolOrigin::Sidecar { registration_id, generation, plugin_id }) => {
+                                data["registration_id"] = json!(registration_id);
+                                data["generation"] = json!(generation);
+                                data["plugin_id"] = json!(plugin_id);
+                            }
+                            Some(ToolOrigin::Native { plugin_id }) => {
+                                data["plugin_id"] = json!(plugin_id);
+                            }
+                            _ => {}
                         }
                         drop(tools);
                         {
@@ -286,7 +296,7 @@ impl ChatState {
                             data["call_seq"] = json!(call_seq);
                             match log.append(EventSpec::durable("tool.call", &ts, data)) {
                                 Ok(seq) => {
-                                    pending_call_seqs.entry(call.call_id.clone()).or_default().push_back(seq);
+                                    pending_calls.entry(call.call_id.clone()).or_default().push_back(PendingToolCall { seq, views });
                                     emit(TurnUpdate::Call { seq, tool: &call.tool });
                                 }
                                 Err(error) => { event_error.get_or_insert_with(|| error.to_string()); }
@@ -295,7 +305,7 @@ impl ChatState {
                         emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), None));
                     }
                     AgentEvent::ToolResult { call_id, outcome } => {
-                        let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
+                        let Some(PendingToolCall { seq: call_seq, views }) = pending_calls.get_mut(call_id).and_then(VecDeque::pop_front) else {
                             return;
                         };
                         let status = {
@@ -328,7 +338,12 @@ impl ChatState {
                                 ), if outcome.is_error { "error" } else { "completed" })
                             };
                             match log.append(event) {
-                                Ok(_) => Some(status),
+                                Ok(result_seq) => {
+                                    if !outcome.is_error {
+                                        tool_view_requests.settled(call_seq, result_seq, views, outcome.meta.as_ref());
+                                    }
+                                    Some(status)
+                                }
                                 Err(error) => {
                                     event_error.get_or_insert_with(|| error.to_string());
                                     None
@@ -341,7 +356,7 @@ impl ChatState {
                         emit(TurnUpdate::Preview(&log_for_events.borrow(), Some(&reply), None));
                     }
                     AgentEvent::ToolCancelled { call_id, reason } => {
-                        let Some(call_seq) = pending_call_seqs.get_mut(call_id).and_then(VecDeque::pop_front) else {
+                        let Some(PendingToolCall { seq: call_seq, .. }) = pending_calls.get_mut(call_id).and_then(VecDeque::pop_front) else {
                             return;
                         };
                         let aborted = {
@@ -418,10 +433,14 @@ impl ChatState {
             .get(&self.session_id)
             .map_or(0, |scope| scope.revision)
             != trial_revision_before_turn
-            || self.adc_panels.iter().any(|panel| panel.trial)
+            || self
+                .adc_panels
+                .iter()
+                .any(|panel| panel.trial || panel.slot.is_some())
         {
             self.refresh_adc_panels();
         }
+        self.mount_tool_views(tool_view_requests);
 
         // 审批痕迹落盘（在工具事件之后：审批链用于审计/回放，不影响模型输入）。
         let records = self.approvals.take_records();

@@ -99,14 +99,16 @@ slot 全集由 Host 维护；下表是 v1 的首批集合，后续只增不改�
 | `settings.general.item` | list | root | `id, order?, label, view` | none |
 | `command` | list | root | `id, label, keys?, run` | none |
 | `menu.item` | keyed | root | `key`（菜单名）, `id, order?, label, run` | none |
-| `conversation.chat.node` | keyed | session | `key`（node id）, `view` | none |
+| `conversation.chat.node` | keyed | session | `key`（节点类型）, `view` | none |
 | `conversation.input.left` | list | session | `id, order?, label, view` | none |
 | `conversation.input.right` | list | session | `id, order?, label, view` | none |
 | `tool.call.toolview` | keyed | session | `key`（工具名）, `view` | none |
 | `tool.result.extra` | list | session | `id, order?, label, view` | none |
 | `status.bar.item` | list | root | `id, order?, label, view` | none |
+| `workspace.sidebar.tab` | list | session | `id, order?, label, view` | none |
+| `workspace.page` | list | root | `id, order?, label, view` | none |
 
-Contribution 分组（用于文档与权限归类，不参与运行时分派）：`panel` → `workspace.panel`；`tool_renderer` → `tool.call.toolview`；`widget` → `conversation.chat.node`；`command`/`menu` → `command` 与 `menu.item`；`viewer` → `viewer.tab`；`settings` → `settings.section` 与 `settings.general.item`。v1 追加（PLAN §4.6.2 的"新增"两行与状态栏）：`input` → `conversation.input.left`/`conversation.input.right`；`tool_extra` → `tool.result.extra`；`status` → `status.bar.item`。
+Contribution 分组（用于文档与权限归类，不参与运行时分派）：`panel` → `workspace.panel`、`workspace.sidebar.tab` 与 `workspace.page`；`tool_renderer` → `tool.call.toolview`；`widget` → `conversation.chat.node`；`command`/`menu` → `command` 与 `menu.item`；`viewer` → `viewer.tab`；`settings` → `settings.section` 与 `settings.general.item`；`input` → `conversation.input.left`/`conversation.input.right`；`tool_extra` → `tool.result.extra`；`status` → `status.bar.item`。
 
 ### 5.1 目录 JSON 是唯一事实源
 
@@ -119,7 +121,7 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 | `slot_id` | 点分小写标识（`command` 为 v1 保留的历史短名）；规则见 [`README.md`](README.md) §3 |
 | `kind` | `single` / `list` / `keyed` / `chain`，语义见 §4.2 |
 | `scope` | `root` / `session` / `session-maybe`，语义见 §4.3 |
-| `exclusive` | 仅影响覆盖语义：`true` 时拒绝后注册者；v1 的 12 个 slot 全部为 `false` |
+| `exclusive` | 仅影响覆盖语义：`true` 时拒绝后注册者；目录现有槽位均为 `false` |
 | `replacement_risk` | `none` / `shadows-shipped-ui`；v1 全部为 `none` |
 | `contribution` | 文档与权限分组，取值见本节末段 |
 | `registration` | 注册契约：`required` / `optional` 字段名；字段类型与取值范围见目录的 `field_types` |
@@ -127,7 +129,39 @@ Contribution 分组（用于文档与权限归类，不参与运行时分派）�
 
 注册校验分两层，缺一不可：① [`slot-registration.schema.json`](../../schema/adc-v1/slot-registration.schema.json) 做 kind 级载荷形状校验（view 型必须带 `view`；run 型必须带 `run`，如 `command`/`menu.item`；keyed 必须带 `key`）；② Host 按 `slot_id` 查目录，按 `registration` 逐字段校验并拒绝未知字段。schema 不知道 `slot_id`，所以字段级必填（如 `workspace.panel` 的 `label`/`location`）只由目录表达。
 
-v1 只注册 `list` 与 `keyed`；`single`/`chain` 保留 kind 语义但目录中没有条目，新增属于 minor 变更（先改目录与本节表格）。keyed slot 的 key 域：`viewer.tab`（文件类型）、`conversation.chat.node`（node id）、`tool.call.toolview`（工具名）为 open——值域由对应的插件/宿主注册表决定；`menu.item`（菜单名）为 closed，值域由 Host 菜单目录声明，非法 key 由 Host 拒绝。
+v1 只注册 `list` 与 `keyed`；`single`/`chain` 保留 kind 语义但目录中没有条目，新增属于 minor 变更（先改目录与本节表格）。keyed slot 的 key 域：`viewer.tab`（文件类型）、`conversation.chat.node`（节点类型）、`tool.call.toolview`（工具名）为 open——值域由对应的插件/宿主注册表决定；`menu.item`（菜单名）为 closed，值域由 Host 菜单目录声明，非法 key 由 Host 拒绝。
+
+### 5.2 桌面槽位注册
+
+CPP-v1 外部进程通过 `process.ready.slots` 声明输入和设置贡献。`conversation.input.left`、`conversation.input.right` 分别挂在输入卡工具行左侧和发送按钮前。`settings.general.item` 挂在「设置 → 常规」。`settings.section` 在设置导航加一个独立页面，选中的贡献卸载或不可渲染时回到常规。工作区面板沿用 `panels`。未知或桌面尚未接通的 `slot_id` 使声明失败。 [CPP-v1 声明](cpp-v1.md#123-声明processready)
+
+宿主同时校验包身份、目录字段和同一注册表内的 ID 冲突。列表按 `order`、`id` 排序。安装的贡献在当前桌面会话可见。创造模式试用贡献仅在所属会话可见。卸载和成功替换会撤销旧注册，旧控件的动作以注册身份检查后派发。
+
+视图复用 `ui.render` 和 `ui.action`。桌面渲染读取快照，树无效或插件取树失败时跳过该视图，输入和设置的内建控件继续可用。生成中显示已有快照。试用逐一校验视图，并返回通过校验的槽位及显示位置。`creator_inspect` 提供实际接通的位置和注册示例。
+
+`workspace.sidebar.tab` 在聊天右侧栏添加独立页签，使用声明的 `label`。右侧栏默认打开既有的面板列表。页签可以关闭并重新打开，关停贡献或切换会话时回到面板列表。已关闭页签只影响当前会话的显示。文件预览保留 `viewer.tab` 的文件类型语义。
+
+`viewer.tab.key` 是小写 ASCII 文件扩展名，规则为 `^[a-z0-9][a-z0-9_+-]{0,31}$`。桌面按交付记录中文件名的最后一个扩展名查找注册，大小写归一，优先使用当前会话的试用注册。同一注册表使用 keyed 替换语义。匹配时，成功交付的文件获得「预览」入口，打开右栏的文件页签。新预览替换旧文件页签，关闭页签、切换会话或撤销贡献释放预览资源。「系统打开」仍可使用。
+
+宿主在用户明确选择后重新检查文件及其已打开句柄的位置，且只向匹配插件发送 [文件视图上下文](cpp-v1.md#文件视图上下文)。工作区外、丢失、文件类型不符和异常句柄不读取内容。渲染失败时右栏显示错误，并保留系统打开入口。预览树使用 `copy` 和受确认保护的 `openExternal`，预览本身不写入会话日志。Agent 试用回报文件类型和注册状态，选择匹配文件后才验证渲染。
+
+`workspace.page` 用一项注册同时添加左侧导航入口和中央页面，用户通过「返回会话」或选择会话回到对话。入口和页面随同一注册撤销或失效。试用页的可见性随所属会话，安装的页在各桌面会话可选择。
+
+`status.bar.item` 显示在主内容区底部的状态栏。无有效贡献时不占用高度。可交互的状态项继续通过当前注册派发动作。
+
+`tool.call.toolview` 用注册的 `key` 匹配同一插件声明的工具名，替换对应成功调用的卡片正文。`tool.result.extra` 在同一插件的成功工具卡下方追加内容，沿用列表顺序。工具卡保留名称、状态和交付文件入口，旧版 `meta.ui` 仍可展示。两种注册只接收所属插件的会话内调用，使用 [工具视图上下文](cpp-v1.md#工具视图上下文)。试用返回注册校验结果，调用成功时才渲染对应视图。
+
+宿主在桌面工作线程取得并校验工具视图，当前会话保留最近 16 个工具视图快照。渲染失败、树无效、插件撤销、重开日志或快照退出缓存时，使用内建工具卡和已有结果。调用错误和取消保留内建状态。工具卡动作只支持 `copy` 和 `openExternal`，沿用宿主处理及 URL 确认。
+
+`conversation.chat.node` 在对话流中渲染由同一插件发布的独立节点。`key` 是可复用的类型，格式为 1–64 位 ASCII 字母、数字或 `._-`。同一个宿主中，每个节点类型归一个插件注册。同一插件可以更新自己的注册。插件通过成功工具结果的 `meta.adc_node` 发布一个节点。宿主用该工具的 `tool.call` 事件序号区分实例，并按工具结算顺序投影。节点只读取自己的数据，支持 `copy` 与受宿主确认的 `openExternal`。
+
+有效节点在工具结算后即显示回退文本。当前轮取得正确的 ADC 树后用视图替换回退。历史会话直接回放文本。未知类型、失败调用或畸形声明不生成节点。视图无效、超时、过期或插件卸载时恢复文本。试用报告注册状态，实际调用插件工具后校验渲染。 [节点视图上下文](cpp-v1.md#对话节点上下文)
+
+`command` 在输入框的 `/` 命令菜单和「添加」菜单公开 `/<id>`。内建命令 ID 保留。`keys` 可声明单次组合键，用 `+` 或 `-` 连接修饰键与按键。至少包含 `Ctrl` 或 `Cmd`（`Meta`、`Super` 同义），可再加 `Alt`、`Shift`。按键支持 ASCII 字母、数字、`F1` 至 `F24`、`Enter`、`Esc`、`Space`、`Tab`、编辑键和方向键。内建快捷键优先。多个可见插件命令登记同一组合键时该键不派发，命令仍可从菜单执行。
+
+`menu.item` 的桌面菜单键为 `composer.add`，Windows 另提供 `window.application` 和 `window.edit`。每个键保留一条贡献，按现有 keyed 替换语义注册。插件条目追加在内建项之后。未知键使声明失败，实际菜单键由 `creator_inspect` 返回。
+
+两类动作只对当前可见注册派发，试用只在所属会话生效。试用注册与安装注册使用同一 ID 或菜单键时，当前会话优先使用试用注册。只读模式和生成中拒绝派发。ADC `{ "command": "<id>" }` 动作只解析当前视图所属插件实例的有效命令。动作使用 CPP-v1 的 `ui.action`，由 `run` 定位插件处理器。 [命令派发](cpp-v1.md#桌面命令派发)
 
 ## 6. 元素词汇表
 

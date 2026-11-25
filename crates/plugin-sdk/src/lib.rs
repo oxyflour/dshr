@@ -43,10 +43,11 @@ pub mod session;
 pub mod tool_result;
 
 pub use protocol::{
-    error_code, kind, ActionPayload, CancelPayload, Envelope, EnvelopeError, HelloPayload,
-    InvokePayload, PanelDecl, ProtocolError, ReadyDecls, ReadyPayload, RenderPayload,
-    ShutdownPayload, ToolDecl, DEFAULT_SHUTDOWN_TIMEOUT_MS, DEFAULT_TOOL_TIMEOUT_MS,
-    MAX_FRAME_BYTES, MAX_SCHEMA_BYTES, MAX_TOOL_TIMEOUT_MS, PROTOCOL_VERSION,
+    error_code, kind, ActionPayload, CancelPayload, ChatNodeContext, Envelope, EnvelopeError,
+    FileViewContext, HelloPayload, InvokePayload, PanelDecl, ProtocolError, ReadyDecls,
+    ReadyPayload, RenderPayload, ShutdownPayload, ToolDecl, ToolViewContext,
+    DEFAULT_SHUTDOWN_TIMEOUT_MS, DEFAULT_TOOL_TIMEOUT_MS, MAX_FRAME_BYTES, MAX_SCHEMA_BYTES,
+    MAX_TOOL_TIMEOUT_MS, PROTOCOL_VERSION,
 };
 pub use session::{
     ActionHandler, CancelFlag, ChildSession, SessionError, ToolCall, ToolError, ToolHandler,

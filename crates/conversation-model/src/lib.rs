@@ -46,6 +46,14 @@ pub struct UserAttachment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatNode {
+    pub key: String,
+    pub call_seq: u64,
+    pub plugin_id: String,
+    pub fallback: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
     clippy::large_enum_variant,
     reason = "Keep the public Item::Tool(ToolItem) payload by value."
@@ -61,6 +69,7 @@ pub enum Item {
     Reasoning(String),
     Stopped,
     Tool(ToolItem),
+    ChatNode(ChatNode),
     Compaction {
         from_seq: u64,
         to_seq: u64,
@@ -81,6 +90,37 @@ pub struct Stats {
 pub fn build(jsonl: &str, session_id: &str) -> Result<Vec<Item>, LogError> {
     let log = SessionLog::from_jsonl(session_id, jsonl)?;
     Ok(build_from_log(&log))
+}
+
+fn project_chat_node(log: &SessionLog, call_seq: u64, result: &Value) -> Option<ChatNode> {
+    if result["call_seq"].as_u64() != Some(call_seq) {
+        return None;
+    }
+    let index = usize::try_from(call_seq).ok()?.checked_sub(1)?;
+    let call = log
+        .events()
+        .get(index)
+        .filter(|event| event.seq == call_seq && event.event_type == "tool.call")?;
+    let plugin_id = call.payload["plugin_id"].as_str()?;
+    let published = &result["meta"]["adc_node"];
+    let key = published["key"].as_str()?;
+    let fallback = published["fallback"].as_str()?;
+    if plugin_id.is_empty()
+        || !(1..=64).contains(&key.len())
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        || fallback.trim().is_empty()
+        || fallback.len() > 2048
+    {
+        return None;
+    }
+    Some(ChatNode {
+        plugin_id: plugin_id.to_owned(),
+        key: key.to_owned(),
+        call_seq,
+        fallback: fallback.to_owned(),
+    })
 }
 
 pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
@@ -207,6 +247,11 @@ pub fn build_from_log(log: &SessionLog) -> Vec<Item> {
                         extra.as_ref(),
                     )
                 });
+                if !is_error && tool.origin == "native" {
+                    if let Some(node) = project_chat_node(log, tool.call_seq, &event.payload) {
+                        items.push(Item::ChatNode(node));
+                    }
+                }
             }
             "tool.aborted" => {
                 let Some(ix) = tool_index
@@ -244,7 +289,7 @@ pub fn stats(items: &[Item]) -> Stats {
         match item {
             Item::User { .. } => stats.user += 1,
             Item::Assistant { .. } => stats.assistant += 1,
-            Item::Reasoning(_) | Item::Stopped => {}
+            Item::Reasoning(_) | Item::Stopped | Item::ChatNode(_) => {}
             Item::Tool(tool) => {
                 stats.tools += 1;
                 match tool.state {

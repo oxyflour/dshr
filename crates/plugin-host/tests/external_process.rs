@@ -25,6 +25,7 @@ use dshr_plugin_api::{HostVersion, Plugin, PluginError};
 use dshr_plugin_host::external::{
     MAX_STDERR_LINE_BYTES, STDERR_TAIL_BYTES_LIMIT, STDERR_TAIL_LINE_LIMIT,
 };
+use dshr_plugin_host::SlotTarget;
 use dshr_plugin_host::{ExternalPlugin, ExternalPluginSpec, HostError, PluginHost};
 use dshr_profile::{
     install_package_trusted, package_digest, Profile, SignatureStatus, TrustPolicy,
@@ -820,6 +821,18 @@ fn m4_adc_003_dispatch_action_reaches_plugin_and_updates_view() {
         text_after.contains("actions=1"),
         "plugin 应收到 ui.action 并更新状态: {text_after}"
     );
+    let registrations = host.slot_registrations("conversation.input.left");
+    assert_eq!(registrations.len(), 1);
+    let registration = registrations[0];
+    assert_eq!(registration.plugin_id.as_deref(), Some("cpp.adc.fixture"));
+    assert_eq!(registration.view.as_deref(), Some("fixture.quick"));
+    let target = SlotTarget::from(registration);
+    host.dispatch_slot_action(target, "call", &json!({ "method": "refresh", "args": {} }))
+        .expect("slot action dispatch");
+    let slot_view = host
+        .render_panel("cpp.adc.fixture", "fixture.quick")
+        .unwrap();
+    assert_eq!(slot_view["props"]["label"], "actions=2");
 
     // 未知插件仍然可读报错。
     let error = host
@@ -828,6 +841,155 @@ fn m4_adc_003_dispatch_action_reaches_plugin_and_updates_view() {
     assert!(matches!(&error, HostError::NotFound(_)), "{error:?}");
 
     host.unload("cpp.adc.fixture").unwrap();
+    assert!(host
+        .slot_registrations("conversation.input.left")
+        .is_empty());
+    assert!(host
+        .dispatch_slot_action(target, "call", &json!({}))
+        .is_err());
+}
+
+#[test]
+fn tool_slots_send_context_to_sdk_and_reject_mismatched_or_stale_bindings() {
+    let root = TempDir::new("adc-tool-views");
+    let plugin_id = "cpp.adc.toolviews";
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(spawn_fixture(root.path(), plugin_id, None)))
+        .unwrap();
+    let arguments = json!({"text": "fixture context"});
+    let value = host.call("echo", &arguments).unwrap();
+    let context = json!({"call_seq": 7, "tool": "echo", "arguments": arguments, "value": value});
+    let targets = host.tool_slot_targets("echo");
+    assert_eq!(targets.len(), 2);
+    assert_eq!(host.tool_slot_targets("slow"), vec![targets[1]]);
+    let render = host.render_tool_slot(targets[0], &context).unwrap();
+    assert_eq!(
+        render["props"]["value"],
+        "fixture.tool:7:echo:\"fixture context\":\"fixture context\""
+    );
+    let extra = host.render_tool_slot(targets[1], &context).unwrap();
+    assert!(extra["props"]["value"]
+        .as_str()
+        .unwrap()
+        .starts_with("fixture.extra:7:"));
+    let mut wrong_tool = context.clone();
+    wrong_tool["tool"] = json!("slow");
+    assert!(host.render_tool_slot(targets[0], &wrong_tool).is_err());
+    let mut failed = context.clone();
+    failed["value"]["is_error"] = json!(true);
+    assert!(host.render_tool_slot(targets[0], &failed).is_err());
+    assert!(host
+        .dispatch_slot_action(targets[0], "call", &json!({}))
+        .is_err());
+    let mut oversized = context.clone();
+    oversized["value"]["value"] = json!("x".repeat(128 * 1024));
+    assert!(host
+        .render_tool_slot(targets[0], &oversized)
+        .unwrap_err()
+        .to_string()
+        .contains("128 KiB"));
+    host.unload(plugin_id).unwrap();
+    assert!(host.render_tool_slot(targets[0], &context).is_err());
+}
+
+#[test]
+fn registered_commands_and_menu_items_dispatch_their_run_names_to_the_child() {
+    let root = TempDir::new("adc-commands");
+    let plugin_id = "cpp.adc.commands";
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(spawn_fixture(root.path(), plugin_id, None)))
+        .unwrap();
+    let command = SlotTarget::from(host.slot_registrations("command")[0]);
+    let menu = SlotTarget::from(host.slot_registrations("menu.item")[0]);
+    host.dispatch_registered_action(command).unwrap();
+    host.dispatch_registered_action(menu).unwrap();
+    let rendered = host.render_panel(plugin_id, "fixture.quick").unwrap();
+    assert_eq!(rendered["props"]["label"], "actions=2");
+    host.unload(plugin_id).unwrap();
+    assert!(host.dispatch_registered_action(command).is_err());
+    assert!(host.dispatch_registered_action(menu).is_err());
+}
+
+#[test]
+fn file_preview_delivers_only_the_selected_context_to_the_matching_view() {
+    use dshr_plugin_host::{FileViewContext, VIEWER_TAB};
+    let root = TempDir::new("adc-file-preview");
+    let plugin_id = "cpp.adc.viewer";
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(spawn_fixture(root.path(), plugin_id, None)))
+        .unwrap();
+    let target = SlotTarget::from(host.slot_registrations(VIEWER_TAB)[0]);
+    let mut context = FileViewContext {
+        name: "report.TXT".to_owned(),
+        file_type: "txt".to_owned(),
+        size_bytes: 4,
+        text: Some("data".to_owned()),
+        truncated: false,
+    };
+    let tree = host.render_file_slot(target, &context).unwrap();
+    assert_eq!(tree["props"]["value"], "report.TXT:txt:data");
+    context.file_type = "md".to_owned();
+    assert!(host.render_file_slot(target, &context).is_err());
+    assert!(host
+        .dispatch_slot_action(target, "call", &json!({}))
+        .is_err());
+    context.file_type = "txt".to_owned();
+    host.unload(plugin_id).unwrap();
+    assert!(host.render_file_slot(target, &context).is_err());
+}
+
+#[test]
+fn conversation_node_uses_the_publishing_plugins_key_and_strips_private_metadata() {
+    use dshr_plugin_host::ChatNodeContext;
+
+    let root = TempDir::new("adc-chat-node");
+    let plugin_id = "cpp.adc.node";
+    let mut host = PluginHost::new(AllowAll);
+    host.load(Box::new(spawn_fixture(root.path(), plugin_id, None)))
+        .unwrap();
+    let mut result = host
+        .call("echo", &json!({"text": "hello", "publish_node": true}))
+        .unwrap();
+    let input = result.clone();
+    let node = host.take_tool_chat_node("echo", &mut result).unwrap();
+    assert_eq!(
+        node,
+        json!({"key": "fixture.note", "fallback": "saved note", "data": "hello"})
+    );
+    assert_eq!(result["value"]["echo"], "hello");
+    assert!(result["meta"].get("adc_node").is_none());
+
+    let mut bad = input.clone();
+    bad["meta"]["adc_node"]["key"] = json!("other.note");
+    assert!(host.take_tool_chat_node("echo", &mut bad).is_none());
+    assert!(bad["meta"].get("adc_node").is_none());
+    let mut bad = input.clone();
+    bad["meta"]["adc_node"]["data"] = json!("x".repeat(16 * 1024));
+    assert!(host.take_tool_chat_node("echo", &mut bad).is_none());
+    let mut failed = input;
+    failed["is_error"] = json!(true);
+    assert!(host.take_tool_chat_node("echo", &mut failed).is_none());
+    assert!(failed["meta"].get("adc_node").is_none());
+
+    let (target, key) = host.chat_node_targets("echo")[0];
+    let mut context = ChatNodeContext {
+        key: key.to_owned(),
+        call_seq: 5u64.try_into().unwrap(),
+        data: node["data"].clone(),
+    };
+    let tree = host
+        .render_chat_node_slot(target, "echo", &context)
+        .unwrap();
+    assert_eq!(tree["props"]["value"], "fixture.note:5:hello");
+    context.key = "other.note".to_owned();
+    assert!(host
+        .render_chat_node_slot(target, "echo", &context)
+        .is_err());
+    context.key = "fixture.note".to_owned();
+    host.unload(plugin_id).unwrap();
+    assert!(host
+        .render_chat_node_slot(target, "echo", &context)
+        .is_err());
 }
 
 // ---------------------------------------------------------------------------

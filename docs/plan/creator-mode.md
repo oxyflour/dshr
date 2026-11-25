@@ -20,6 +20,7 @@
 | 14. 定位本机 Cargo | 桌面读取应用内工具链配置，复用自定义安装和离线缓存。 | `CPP-CREATOR-012` 与真实模型构建 |
 | 15. 交互面板开发 | 提供完整面板示例、只读控件预览、首次渲染校验与原会话重试。 | `CPP-CREATOR-013..014` |
 | 16. 会话中显示面板 | 试用结束后把面板快照交给桌面，在试用结果卡片内显示并随工具调用刷新。 | `CPP-CREATOR-015` |
+| 17. 按名称发现接口 | 先定义 `creator_inspect` 的查询参数与错误，再从槽位目录、元素 Schema 和 SDK 提供精确结果。修正试用工具对首次渲染的说明。 | `CPP-CREATOR-016..018`，通过现有宿主动作链验证模板外控件 |
 
 持久安装继续使用现有 CLI。
 
@@ -44,12 +45,18 @@ target\debug\dshr.exe --selftest-dsh
 node tools/conformance.mjs --quick
 ```
 
+### 精确查询验收
+
+常规桌面测试运行 `creator_inspect_exact_contracts_match_discovery_and_runtime`。在有 Cargo 和离线 SDK 依赖的环境另外运行 `cargo test -p dshr-desktop-gpui --bin dshr creator_inspect_drives_external_slot_callback -- --ignored`。该测试从工具返回的注册例子、元素定义和回调签名生成右栏滑块插件，经正式构建和试用工具启动子进程，再走桌面槽位动作派发验证刷新值。
+
 ### 真实模型验收
 
 将 `DSHR_LIVE_CREATOR_DIR` 指向空工作区或只含 `hello-world` 包副本的测试工作区。用应用数据根的 `creator-toolchain.json`、`PATH` 或 `DSHR_CREATOR_CARGO` 指向本机 Cargo，确保缓存包含 SDK 依赖。测试进程另需 `DEEPSEEK_API_KEY` 和 `DSHR_SIDECAR=dsh`。运行 `cargo test -p dshr-desktop-gpui --bin dshr live_creator_authors_and_invokes_hello_world -- --ignored --nocapture`。
 空工作区测试提交「做一个 hello world 插件，并试运行」。包副本测试要求继续构建并处理编译诊断。测试端只回应隔离工作区内的审批。会话日志须记录 agent 查指引、用 `creator_build_plugin` 构建、批准试用并调用插件工具的顺序。
 
 交互面板用例使用空工作区，运行 `cargo test -p dshr-desktop-gpui --bin dshr live_creator_authors_and_exercises_an_interactive_panel -- --ignored --nocapture`。真实模型需一次构建成功并试用已注册的面板。测试通过与桌面相同的动作派发提交输入和按钮，验证重新渲染后的问候文本。
+
+精确查询的真实模型用例使用空工作区，运行 `cargo test -p dshr-desktop-gpui --bin dshr live_creator_authors_a_slider_from_exact_contracts -- --ignored --nocapture`。会话日志须在首次写文件前出现右栏页签、`Slider` 和 SDK 的精确查询，随后首次构建和试用成功，宿主派发动作后滑块显示 `7.5`。
 
 ### 交互面板故障复盘
 
@@ -72,6 +79,8 @@ DSH Desktop `0.2.2-rc.5` 的安装包 `dsh-client-ui-cordis/src/client/CordisRun
 2026-11-22 在 Windows 原生窄窗复验。真实 DeepSeek 会话 `s-1795292369542` 对 `demo.notes-panel@0.1.0` 成功试用两次，第二次返回 `replaced: true`（12），随后调用新实例的 `notes_add`（14）。约 721 × 439 逻辑像素的窗口在回合结束后完整显示一张试用结果卡片，面板仅显示新实例的「对话卡片复验」，底部输入框仍可见。会话轨迹和窗口截图位于本地 `.tmp/notes-panel-inline-replay/`。38 项桌面测试和 26 项会话模型测试通过，包含调用 ID 重用、失败重试和两个插件的面板归属。此次窗口复验使用只读截图，未操作折叠和滚动控件。
 
 ## 进度
+
+- 2026-11-25 `creator_inspect` 支持按名称查询槽位、元素和 SDK。Windows 离线验收用查询结果构建了右栏 `Slider` 插件，通过正式试用和槽位动作派发将值由 `2.0` 更新至 `7.5`。真实模型用例已加入验收，当前环境缺少 DeepSeek 凭据，待运行。
 
 - 2026-11-21 确定首版采用原生创造会话与临时 CPP-v1 试用，先记录公开契约和失败条件。
 - 2026-11-21 Windows MSVC 通过 20 项桌面单测和 9 项 headless CLI 回归。`CPP-CREATOR-001..004`

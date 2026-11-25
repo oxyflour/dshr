@@ -182,6 +182,8 @@ impl ChatApp {
             } => {
                 let trial_call = self.inline_trial_call(row);
                 let expanded = !self.collapsed_trial_cards.contains(call_seq);
+                let (tool_body, tool_extras) = self.adc_tool_card_views(*call_seq, t, cx);
+                let use_default_body = tool_body.is_none();
                 let dot = if *pending {
                     p.state_warn
                 } else if *is_error {
@@ -259,20 +261,24 @@ impl ChatApp {
                                 )
                             }),
                     )
-                    .when(!detail.is_empty() && trial_call.is_none(), |el| {
-                        el.child(
-                            div()
-                                .text_size(t.type_scale.small)
-                                .line_height(t.type_scale.small_line)
-                                .text_color(p.color(p.label_tertiary))
-                                .child(detail.clone()),
-                        )
-                    })
+                    .when(
+                        use_default_body && !detail.is_empty() && trial_call.is_none(),
+                        |el| {
+                            el.child(
+                                div()
+                                    .text_size(t.type_scale.small)
+                                    .line_height(t.type_scale.small_line)
+                                    .text_color(p.color(p.label_tertiary))
+                                    .child(detail.clone()),
+                            )
+                        },
+                    )
                     // 有专用视图的工具结果：diff / terminal 用原生组件渲染正文，
                     // 不再只有一行摘要（正文已按卡片上限截断）。
                     .when_some(
                         card.as_ref().filter(|card| {
-                            matches!(card.kind, CardKind::Diff | CardKind::Terminal)
+                            use_default_body
+                                && matches!(card.kind, CardKind::Diff | CardKind::Terminal)
                                 && !card.body.is_empty()
                         }),
                         |el, card| {
@@ -283,6 +289,7 @@ impl ChatApp {
                             el.child(view)
                         },
                     )
+                    .children(tool_body)
                     // M4 W3：工具结果 `meta.ui` 的受限 ADC 附加区（tool card extra）。
                     .when_some(
                         card.as_ref().and_then(|card| card.extra.as_ref()),
@@ -297,6 +304,10 @@ impl ChatApp {
                             .enumerate()
                             .map(|(file_index, file)| {
                                 let path = file.path.clone();
+                                let preview_path = path.clone();
+                                let session = self.session_id.clone();
+                                let preview_session = session.clone();
+                                let seq = *call_seq;
                                 let label = file
                                     .path
                                     .file_name()
@@ -305,7 +316,7 @@ impl ChatApp {
                                     .into_owned();
                                 let button_id: gpui::SharedString =
                                     format!("delivered-file-{call_seq}").into();
-                                chrome_button((button_id, file_index), "", t)
+                                let open = chrome_button((button_id, file_index), "", t)
                                     .aria_label(format!("打开 {label}"))
                                     .child(label)
                                     .focusable()
@@ -317,20 +328,34 @@ impl ChatApp {
                                         )
                                     })
                                     .on_click(cx.listener(move |chat, _, _, cx| {
-                                        match dsh_deliverables::checked_file(
-                                            &chat.active_workspace,
-                                            &path,
-                                        ) {
-                                            Ok((path, _)) => cx.open_with_system(&path),
-                                            Err(_) => {
-                                                chat.workspace_notice =
-                                                    Some("交付文件已不可用".to_owned());
-                                                cx.notify();
-                                            }
+                                        if chat.session_id == session {
+                                            chat.open_delivered_in_system(&path, cx);
                                         }
-                                    }))
+                                    }));
+                                div().flex().items_center().gap(px(4.0)).child(open).when(
+                                    !self.busy && self.adc_file_target(&file.path).is_some(),
+                                    |row| {
+                                        let preview_id: gpui::SharedString =
+                                            format!("preview-file-{seq}").into();
+                                        row.child(
+                                            chrome_button((preview_id, file_index), "预览", t)
+                                                .focusable()
+                                                .aria_label(format!("预览 {}", file.path.display()))
+                                                .on_click(cx.listener(move |chat, _, _, cx| {
+                                                    if chat.session_id == preview_session {
+                                                        chat.open_adc_file_preview(
+                                                            seq,
+                                                            preview_path.clone(),
+                                                            cx,
+                                                        );
+                                                    }
+                                                })),
+                                        )
+                                    },
+                                )
                             }),
                     )
+                    .children(tool_extras)
                     .when_some(trial_call.filter(|_| expanded), |el, seq| {
                         el.child(
                             div()
@@ -371,12 +396,52 @@ impl ChatApp {
                         .child(text.clone()),
                 )
                 .into_any_element(),
+            Row::ChatNode(node) => {
+                let body = if let Some((view, tree)) = self.adc_chat_node_view(node) {
+                    self.adc_body(view, tree, t, cx).0
+                } else {
+                    div()
+                        .text_size(t.type_scale.body)
+                        .text_color(p.color(p.label_secondary))
+                        .child(node.fallback.clone())
+                        .into_any_element()
+                };
+                div()
+                    .id(("adc-chat-node", node.call_seq))
+                    .max_h(px(240.0))
+                    .overflow_y_scroll()
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .child(body)
+                    .into_any_element()
+            }
             Row::Stopped => div()
                 .text_size(t.type_scale.secondary)
                 .text_color(p.color(p.label_secondary))
                 .child("已停止")
                 .into_any_element(),
         }
+    }
+
+    fn estimated_transcript_row_height(&self, row: &Row) -> f32 {
+        let mut height = estimated_row_height(row);
+        if let Row::Tool { call_seq, .. } = row {
+            height += 80.0
+                * self
+                    .adc_panels
+                    .iter()
+                    .filter(|view| {
+                        view.tool_call_seq == Some(*call_seq)
+                            && view.slot.as_ref().is_some_and(|slot| {
+                                dshr_plugin_host::is_tool_view_slot(&slot.slot_id)
+                            })
+                    })
+                    .count() as f32;
+        }
+        if matches!(row, Row::ChatNode(node) if self.adc_chat_node_view(node).is_some()) {
+            height = 100.0;
+        }
+        height
     }
 
     pub(crate) fn transcript(
@@ -505,12 +570,12 @@ impl ChatApp {
                                 };
                                 Some(52.0 + panel_height)
                             } else {
-                                open.then(|| estimated_row_height(step) + 6.0)
+                                open.then(|| self.estimated_transcript_row_height(step) + 6.0)
                             }
                         })
                         .sum::<f32>()
                 }
-                row => estimated_row_height(row),
+                row => self.estimated_transcript_row_height(row),
             };
             let next = cumulative[index] + height + gap;
             cumulative.push(next);

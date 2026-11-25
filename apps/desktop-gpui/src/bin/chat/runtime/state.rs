@@ -24,12 +24,34 @@ pub(crate) struct AdcPanelView {
     pub(crate) trial: bool,
     /// 有活动试用实例时才绑定到对应的工具调用事件。
     pub(crate) trial_call_seq: Option<u64>,
+    pub(crate) tool_call_seq: Option<u64>,
     /// 面板声明的 view 名（`ui.action` 回传时用于定位插件状态）。
     pub(crate) view: String,
     /// `render_panel` 成功时的元素树；失败为 `None`，错误在 `error`。
     pub(crate) tree: Option<serde_json::Value>,
     /// 渲染失败的可读错误（未知 view / 插件不实现 view / 进程错误）。
     pub(crate) error: Option<String>,
+    pub(crate) slot: Option<dshr_ui_contributions::RegistrationRecord>,
+}
+
+type AdcSlotViews = std::collections::BTreeMap<(String, String, String), AdcPanelView>;
+
+pub(crate) fn render_slot_tree(
+    plugins: &mut PluginHost,
+    plugin_id: &str,
+    view: &str,
+) -> Result<serde_json::Value, String> {
+    let tree = plugins
+        .render_panel(plugin_id, view)
+        .map_err(|error| error.to_string())?;
+    let parsed = dshr_ui_contributions::parse_tree(&tree);
+    if let Some(diagnostic) = parsed.diagnostics.first() {
+        return Err(format!(
+            "view `{view}`: {}: {}",
+            diagnostic.path, diagnostic.message
+        ));
+    }
+    Ok(tree)
 }
 
 pub(crate) type ParsedAgentPresets = Result<dshr_profile::loader::AgentPresets, String>;
@@ -335,6 +357,7 @@ impl ChatState {
     /// 在同一个会话目录内切换日志，复用窗口持有的工具运行时。
     /// 返回是否已新建或恢复日志，供侧栏刷新索引。
     pub(crate) fn switch_session(&mut self, path: PathBuf, session_id: &str) -> bool {
+        self.adc_panels.retain(|view| view.tool_call_seq.is_none());
         let opened = open_session_log(&path, session_id);
         if let Some(access) = &self.l2_access {
             access.clear_snapshot();
@@ -528,13 +551,27 @@ impl ChatState {
     /// 等外部进程（`ui.render` 超时默认 10s）。未知 view / 不实现 view 的插件只留下
     /// 可读错误，不影响其它面板。
     pub(crate) fn refresh_adc_panels(&mut self) {
+        let tool_views = self.take_active_tool_views();
         let mut panels = std::collections::BTreeMap::new();
+        let mut slots = std::collections::BTreeMap::new();
         if let Some(scope) = self.creator_trials.get_mut(&self.session_id) {
             let calls = creator::trial_panel_calls(&self.log);
             Self::render_adc_panels(&mut scope.plugins, Some(&calls), &mut panels);
+            Self::render_adc_slots(&mut scope.plugins, true, &mut slots);
         }
         Self::render_adc_panels(&mut self.plugins, None, &mut panels);
+        Self::render_adc_slots(&mut self.plugins, false, &mut slots);
         self.adc_panels = panels.into_values().collect();
+        let mut slot_views: Vec<_> = slots.into_values().collect();
+        slot_views.sort_by(|left, right| match (&left.slot, &right.slot) {
+            (Some(left), Some(right)) => left
+                .order
+                .total_cmp(&right.order)
+                .then(left.registration_id.cmp(&right.registration_id)),
+            _ => std::cmp::Ordering::Equal,
+        });
+        self.adc_panels.extend(slot_views);
+        self.adc_panels.extend(tool_views);
     }
 
     pub(crate) fn apply_adc_action(
@@ -557,6 +594,35 @@ impl ChatState {
             _ => &mut self.plugins,
         };
         plugins.dispatch_action(plugin_id, view, action, payload)?;
+        self.refresh_adc_panels();
+        Ok(())
+    }
+
+    pub(crate) fn apply_adc_slot_action(
+        &mut self,
+        target: dshr_plugin_host::SlotTarget,
+        action: &str,
+        payload: &serde_json::Value,
+    ) -> Result<(), dshr_plugin_host::HostError> {
+        let inactive = || dshr_plugin_host::HostError::NotFound("inactive ADC slot".to_owned());
+        let visible = self
+            .adc_panels
+            .iter()
+            .find(|view| {
+                view.tree.is_some()
+                    && view.slot.as_ref().map(dshr_plugin_host::SlotTarget::from) == Some(target)
+            })
+            .ok_or_else(inactive)?;
+        let plugins = if visible.trial {
+            &mut self
+                .creator_trials
+                .get_mut(&self.session_id)
+                .ok_or_else(inactive)?
+                .plugins
+        } else {
+            &mut self.plugins
+        };
+        plugins.dispatch_slot_action(target, action, payload)?;
         self.refresh_adc_panels();
         Ok(())
     }
@@ -593,11 +659,75 @@ impl ChatState {
                         title,
                         trial: trial_calls.is_some(),
                         trial_call_seq,
+                        tool_call_seq: None,
                         view,
                         tree,
                         error,
+                        slot: None,
                     }
                 });
+        }
+    }
+
+    fn render_adc_slots(plugins: &mut PluginHost, trial: bool, views: &mut AdcSlotViews) {
+        for (slot, _) in dshr_plugin_host::DESKTOP_VIEW_SLOTS {
+            if dshr_plugin_host::is_tool_view_slot(slot) || *slot == dshr_plugin_host::CHAT_NODE {
+                continue;
+            }
+            let records: Vec<_> = plugins
+                .slot_registrations(slot)
+                .into_iter()
+                .cloned()
+                .collect();
+            for record in records {
+                if record.slot_id == dshr_plugin_host::VIEWER_TAB {
+                    if let (Some(key), Some(plugin_id), Some(view)) =
+                        (&record.key, &record.plugin_id, &record.view)
+                    {
+                        views
+                            .entry((record.slot_id.clone(), String::new(), key.clone()))
+                            .or_insert_with(|| AdcPanelView {
+                                plugin_id: plugin_id.clone(),
+                                title: key.clone(),
+                                trial,
+                                trial_call_seq: None,
+                                tool_call_seq: None,
+                                view: view.clone(),
+                                tree: None,
+                                error: None,
+                                slot: Some(record.clone()),
+                            });
+                    }
+                    continue;
+                }
+                let (Some(plugin_id), Some(view), Some(id), Some(label)) = (
+                    record.plugin_id.clone(),
+                    record.view.clone(),
+                    record.registration_id.clone(),
+                    record.label.clone(),
+                ) else {
+                    continue;
+                };
+                views
+                    .entry((record.slot_id.clone(), plugin_id.clone(), id))
+                    .or_insert_with(|| {
+                        let (tree, error) = match render_slot_tree(plugins, &plugin_id, &view) {
+                            Ok(tree) => (Some(tree), None),
+                            Err(error) => (None, Some(error)),
+                        };
+                        AdcPanelView {
+                            plugin_id,
+                            title: label,
+                            trial,
+                            trial_call_seq: None,
+                            tool_call_seq: None,
+                            view,
+                            tree,
+                            error,
+                            slot: Some(record),
+                        }
+                    });
+            }
         }
     }
 

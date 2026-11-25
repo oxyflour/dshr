@@ -13,11 +13,23 @@
 
 | 工具 | 参数 | 成功结果 |
 |---|---|---|
-| `creator_inspect` | 空对象 | 当前工具、构建状态、两种运行时的清单样例，以及可离线构建的交互面板示例 |
+| `creator_inspect` | 空对象，或同时传 `section` 和 `name` | 空对象返回创作入口与可查名称。精确查询返回一个槽位、ADC 元素或 Rust SDK 接口的契约 |
 | `creator_preview_panel` | `element` 为 ADC-v1 元素树 | 在工具结果中呈现只读视觉预览，包括合法的 Button 和 Input。校验失败时返回元素路径和修正指引 |
 | `creator_write_file` | `path` 为工作区相对文件路径，`content` 为完整 UTF-8 文本 | 写入文件并返回路径、字节数及覆盖前的快照 ID |
 | `creator_build_plugin` | `path` 为工作区相对的 Rust 外部进程插件目录 | 在用户批准后使用本机 Cargo 构建，自动提供匹配的 SDK，并把可执行文件放到清单的 `runtime.entry` |
 | `creator_try_plugin` | `path` 为工作区相对的 CPP-v1 包目录。面板任务同时传 `expect_panel: true` | 返回插件 ID、会话可用的工具、通过首次渲染校验的工作区面板及是否替换旧试用。包含面板时，`panel_location` 指明当前会话内的试用结果卡片 |
+
+### 精确查询
+
+`creator_inspect({})` 保留清单、构建状态、示例和当前工具列表，并在 `queries` 中列出各 `section` 的可查名称。写代码前按实际用到的接口查询。`section` 为 `slot`、`element` 或 `sdk`，`name` 大小写敏感。只提供一个字段、提供空名称、额外字段或未知名称时返回错误。未知名称错误提示对应的 `queries` 入口。查询为只读操作，无需审批。 [参数 Schema](../../schema/creator-mode/inspect-arguments.schema.json)
+
+| `section` | 示例 `name` | 详情 |
+|---|---|---|
+| `slot` | `viewer.tab` | 当前桌面支持的位置、作用域、注册字段和键规则、挂载触发、SDK 回调及其上下文、可用动作、试用验证阶段和实际验证方法。`workspace.panel` 返回 `PanelDecl` 路径 |
+| `element` | `Slider` | 从 ADC-v1 Schema 选出的节点和 props 定义，附相关 `$ref` 的定义和控件动作的触发及载荷。递归子节点引用 `#/$defs/node`，可按子元素名称继续查 |
+| `sdk` | `ViewHandler` | 随创造模式构建提供的 `dshr-plugin-sdk` 的函数签名或结构体字段，以及适用场景和载荷示例 |
+
+精确查询成功返回 `section`、`name` 和 `contract`。槽位查询中的 `validation` 对应试用结果，查询本身不启动插件。`registration` 表示仍需触发该槽位才能验证渲染或动作，`rendered` 表示试用已验证首次取树。元素查询返回创作时的严格 Schema 片段，挂载处是否派发动作仍取决于槽位及会话状态。 [ADC-v1 元素](adc-v1.md#6-元素词汇表)
 
 ### 清单指引
 
@@ -28,6 +40,8 @@
 `creator_preview_panel` 使用 ADC-v1 解析器与工具卡的 `meta.ui` 渲染路径。控件在预览中只显示外观，工具卡不派发动作。实际交互由试用中的工作区面板提供。
 
 面板任务先查看 `creator_inspect.workspace_panel`。示例用 `ReadyDecls::new(tools, vec![panel])` 注册外部进程面板，`PanelDecl` 的最后一个参数是 view ID。使用 `json!` 和 `Value` 时在 `Cargo.toml` 直接声明示例给出的 `serde_json` 版本。SDK 由构建工具注入临时构建目录。
+
+通过 `creator_inspect.adc_slots` 获取桌面位置和注册示例，通过 `ReadyDecls::with_slots` 声明。只试用槽位时省略 `expect_panel`。成功的 `slots` 条目包括 `slot_id`、`location` 和 `validation`，同时保留注册的 `id`、`key`、`label` 及 `view` 或 `run`。普通视图通过取树校验后返回 `validation: "rendered"`。工具卡、对话节点、文件预览和命令条目返回 `validation: "registration"`。在同一会话调用插件自身工具验证工具卡和插件发布的节点。选择交付文件验证预览，从菜单或快捷键验证命令。 [桌面槽位注册](adc-v1.md#52-桌面槽位注册)
 
 `Input.onChange` 和 `Button.onPress` 可用 `{"call":"方法名","args":{}}`。回调参数依次是 view ID、动作种类、载荷。`call` 的动作种类为 `"call"`，载荷包含 `method` 和 `args`，Input 提交值位于 `args.value`。`command` 的动作种类为 `"command"`，标识符位于 `payload.id`。
 [ADC-v1 元素](adc-v1.md) · [工具卡与面板](../m4-adc.md)
@@ -77,3 +91,6 @@
 | `CPP-CREATOR-013` | 面板缺失、渲染失败及无效 ADC 树拒绝试用；同一包可获准替换，失败时保留旧实例 |
 | `CPP-CREATOR-014` | 真实模型接到带界面的简短任务后写包、构建并试用，面板渲染成功，输入和按钮动作回传并改变视图 |
 | `CPP-CREATOR-015` | Windows 正常对话页的试用结果卡片内显示实际面板。面板随对话滚动，支持折叠、展开及内容刷新。成功重试只有新的结果卡片挂载活动面板 |
+| `CPP-CREATOR-016` | 精确查询接受正确的参数组合，目录中的名称均可查询。槽位字段、控件 Schema 和 SDK 上下文与对应注册或渲染契约一致 |
+| `CPP-CREATOR-017` | 从精确查询取得模板外槽位和控件的契约，构建并试用真实外部进程插件，经宿主动作派发验证回调和视图刷新 |
+| `CPP-CREATOR-018` | 真实模型只收到右栏滑块任务，通过查询槽位、元素和 SDK 取得契约，在首次构建和试用成功后触发回调 |

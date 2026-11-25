@@ -30,6 +30,17 @@ use dshr_plugin_api::{
 };
 use dshr_tool_runtime::{RegistryError, ToolDefinition, ToolOrigin, ToolPolicy, ToolRegistry};
 use serde_json::Value;
+use slots::PluginSlots;
+
+mod slots;
+pub use dshr_plugin_sdk::{ChatNodeContext, FileViewContext};
+pub use slots::{
+    desktop_slots, is_tool_view_slot, CommandShortcut, SlotTarget, BUILTIN_COMMAND_IDS, CHAT_NODE,
+    COMMAND_SLOT, COMPOSER_ADD_MENU, DESKTOP_MENU_KEYS, DESKTOP_VIEW_SLOTS, MENU_ITEM_SLOT,
+    TOOL_CALL_VIEW, TOOL_RESULT_EXTRA, VIEWER_TAB,
+};
+#[cfg(windows)]
+pub use slots::{APPLICATION_MENU, EDIT_MENU};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -63,6 +74,7 @@ pub struct PluginHost {
     registry: ToolRegistry,
     plugins: BTreeMap<String, Box<dyn Plugin>>,
     panels: BTreeMap<String, PanelRegistration>,
+    slots: PluginSlots,
 }
 
 impl PluginHost {
@@ -71,6 +83,7 @@ impl PluginHost {
             registry: ToolRegistry::new(policy),
             plugins: BTreeMap::new(),
             panels: BTreeMap::new(),
+            slots: PluginSlots::default(),
         }
     }
 
@@ -84,7 +97,7 @@ impl PluginHost {
         let mut ctx = PluginContext::new(id.clone());
         plugin.apply(&mut ctx)?;
         let (tools, panels) = ctx.take_registrations();
-        self.commit(plugin, tools, panels, false)
+        self.commit(plugin, tools, panels, ctx.take_slots(), false)
     }
 
     /// Move a validated candidate from a temporary host. Check collisions before
@@ -104,7 +117,13 @@ impl PluginHost {
             .filter(|registration| registration.plugin_id == plugin_id)
             .map(|registration| registration.panel)
             .collect();
-        self.commit(plugin, tools, panels, true)
+        self.commit(
+            plugin,
+            tools,
+            panels,
+            staged.slots.declarations(plugin_id),
+            true,
+        )
     }
 
     fn commit(
@@ -112,6 +131,7 @@ impl PluginHost {
         plugin: Box<dyn Plugin>,
         tools: Vec<ToolDefinition>,
         panels: Vec<PanelContribution>,
+        slots: Vec<Value>,
         replace: bool,
     ) -> Result<(), HostError> {
         let id = plugin.id().to_owned();
@@ -141,6 +161,8 @@ impl PluginHost {
                 return Err(RegistryError::Duplicate(tool.name.clone()).into());
             }
         }
+        slots::validate_tool_declarations(&tools, &slots)?;
+        let slots = self.slots.stage(&id, slots)?;
         if replace && self.plugins.contains_key(&id) {
             self.unload(&id)?;
         }
@@ -162,6 +184,9 @@ impl PluginHost {
         }
 
         self.plugins.insert(id, plugin);
+        if let Some(slots) = slots {
+            self.slots = slots;
+        }
         Ok(())
     }
 
@@ -327,6 +352,7 @@ impl PluginHost {
         }
 
         self.panels.retain(|_, reg| reg.plugin_id != plugin_id);
+        self.slots.retract(plugin_id);
         Ok(())
     }
 
@@ -535,6 +561,207 @@ impl PluginHost {
 
     pub fn panels(&self) -> Vec<&PanelRegistration> {
         self.panels.values().collect()
+    }
+
+    pub fn slot_registrations(
+        &self,
+        slot: &str,
+    ) -> Vec<&dshr_ui_contributions::RegistrationRecord> {
+        self.slots.registrations(slot)
+    }
+
+    pub fn active_slot(
+        &self,
+        target: SlotTarget,
+    ) -> Option<&dshr_ui_contributions::RegistrationRecord> {
+        self.slots.active(target)
+    }
+
+    pub fn tool_slot_targets(&self, name: &str) -> Vec<SlotTarget> {
+        let Some(ToolOrigin::Native { plugin_id }) =
+            self.registry.get(name).map(|tool| &tool.origin)
+        else {
+            return Vec::new();
+        };
+        [TOOL_CALL_VIEW, TOOL_RESULT_EXTRA]
+            .into_iter()
+            .flat_map(|slot| self.slots.registrations(slot))
+            .filter(|record| slots::matches_tool(record, plugin_id, name))
+            .map(SlotTarget::from)
+            .collect()
+    }
+
+    fn native_tool_owner(&self, tool: &str) -> Option<&str> {
+        match &self.registry.get(tool)?.origin {
+            ToolOrigin::Native { plugin_id } => Some(plugin_id),
+            _ => None,
+        }
+    }
+
+    pub fn chat_node_targets(&self, tool: &str) -> Vec<(SlotTarget, &str)> {
+        let Some(owner) = self.native_tool_owner(tool) else {
+            return Vec::new();
+        };
+        self.slots
+            .registrations(CHAT_NODE)
+            .into_iter()
+            .filter(|record| record.plugin_id.as_deref() == Some(owner))
+            .filter_map(|record| Some((SlotTarget::from(record), record.key.as_deref()?)))
+            .collect()
+    }
+
+    pub fn take_tool_chat_node(&self, tool: &str, result: &mut Value) -> Option<Value> {
+        let owner = self.native_tool_owner(tool)?;
+        let node = self.plugins.get(owner)?.take_chat_node(result)?;
+        let fields = node.as_object()?;
+        let key = node["key"].as_str()?;
+        let fallback = node["fallback"].as_str()?;
+        if fields.len() != 3
+            || !fields.contains_key("data")
+            || fallback.trim().is_empty()
+            || fallback.len() > 2048
+            || serde_json::to_vec(&node).ok()?.len() > 16 * 1024
+            || !self
+                .chat_node_targets(tool)
+                .iter()
+                .any(|(_, registered)| *registered == key)
+        {
+            return None;
+        }
+        Some(node)
+    }
+
+    pub fn render_chat_node_slot(
+        &mut self,
+        target: SlotTarget,
+        tool: &str,
+        context: &ChatNodeContext,
+    ) -> Result<Value, HostError> {
+        let inactive = || HostError::NotFound("ADC conversation node for this tool".to_owned());
+        let owner = self
+            .native_tool_owner(tool)
+            .ok_or_else(inactive)?
+            .to_owned();
+        let view = self
+            .slots
+            .active(target)
+            .filter(|record| {
+                record.slot_id == CHAT_NODE
+                    && record.plugin_id.as_deref() == Some(&owner)
+                    && record.key.as_deref() == Some(&context.key)
+            })
+            .and_then(|record| record.view.as_deref())
+            .ok_or_else(inactive)?;
+        let context = serde_json::to_value(context)
+            .map_err(|error| PluginError::Invalid(error.to_string()))?;
+        self.plugins
+            .get_mut(&owner)
+            .ok_or_else(inactive)?
+            .render_chat_node(view, &context)
+            .map_err(HostError::Plugin)
+    }
+
+    pub fn render_tool_slot(
+        &mut self,
+        target: SlotTarget,
+        context: &Value,
+    ) -> Result<Value, HostError> {
+        let inactive = || HostError::NotFound("ADC slot for this tool call".to_owned());
+        let name = context["tool"].as_str().ok_or_else(inactive)?;
+        let Some(ToolOrigin::Native { plugin_id }) =
+            self.registry.get(name).map(|tool| &tool.origin)
+        else {
+            return Err(inactive());
+        };
+        let view = self
+            .slots
+            .active(target)
+            .filter(|record| slots::matches_tool(record, plugin_id, name))
+            .and_then(|record| record.view.as_deref())
+            .ok_or_else(inactive)?;
+        let plugin = self.plugins.get_mut(plugin_id).ok_or_else(inactive)?;
+        let value = context
+            .get("value")
+            .and_then(|result| plugin.tool_view_value(result))
+            .ok_or_else(inactive)?;
+        let context = serde_json::json!({
+            "call_seq": context["call_seq"], "tool": name,
+            "arguments": context["arguments"], "value": value
+        });
+        if serde_json::to_vec(&context).map_or(true, |bytes| bytes.len() > 128 * 1024) {
+            return Err(
+                PluginError::Invalid("tool view context exceeds 128 KiB".to_owned()).into(),
+            );
+        }
+        plugin
+            .render_tool_view(view, &context)
+            .map_err(HostError::Plugin)
+    }
+
+    pub fn dispatch_slot_action(
+        &mut self,
+        target: SlotTarget,
+        action: &str,
+        payload: &Value,
+    ) -> Result<(), HostError> {
+        let Some((plugin_id, view)) = self
+            .slots
+            .active(target)
+            .filter(|record| {
+                !slots::is_tool_view_slot(&record.slot_id)
+                    && !matches!(record.slot_id.as_str(), VIEWER_TAB | CHAT_NODE)
+            })
+            .and_then(|record| record.plugin_id.clone().zip(record.view.clone()))
+        else {
+            return Err(PluginError::Invalid(
+                "ADC slot registration is no longer active".to_owned(),
+            )
+            .into());
+        };
+        self.dispatch_action(&plugin_id, &view, action, payload)
+    }
+
+    pub fn render_file_slot(
+        &mut self,
+        target: SlotTarget,
+        context: &FileViewContext,
+    ) -> Result<Value, HostError> {
+        let inactive = || HostError::NotFound("ADC preview for this file type".to_owned());
+        let (plugin, view) = self
+            .slots
+            .active(target)
+            .filter(|record| {
+                record.slot_id == VIEWER_TAB && record.key.as_deref() == Some(&context.file_type)
+            })
+            .and_then(|record| record.plugin_id.as_deref().zip(record.view.as_deref()))
+            .ok_or_else(inactive)?;
+        if !context.is_valid() {
+            return Err(PluginError::Invalid("invalid file preview context".to_owned()).into());
+        }
+        let context = serde_json::to_value(context)
+            .map_err(|error| PluginError::Invalid(error.to_string()))?;
+        self.plugins
+            .get_mut(plugin)
+            .ok_or_else(inactive)?
+            .render_file_view(view, &context)
+            .map_err(HostError::Plugin)
+    }
+
+    pub fn dispatch_registered_action(&mut self, target: SlotTarget) -> Result<(), HostError> {
+        let record = self
+            .slots
+            .active(target)
+            .filter(|record| matches!(record.slot_id.as_str(), COMMAND_SLOT | MENU_ITEM_SLOT))
+            .ok_or_else(|| HostError::NotFound("inactive ADC command or menu item".to_owned()))?;
+        let (Some(plugin), Some(run), Some(id)) =
+            (&record.plugin_id, &record.run, &record.registration_id)
+        else {
+            return Err(HostError::NotFound(
+                "ADC action registration is incomplete".to_owned(),
+            ));
+        };
+        let (plugin, run, payload) = (plugin.clone(), run.clone(), serde_json::json!({"id": id}));
+        self.dispatch_action(&plugin, &run, "command", &payload)
     }
 
     pub fn is_loaded(&self, plugin_id: &str) -> bool {

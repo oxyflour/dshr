@@ -713,11 +713,17 @@ pub(crate) fn selftest_adc_panel() -> i32 {
 
     // 4) 面板缓存：至少 2 条 workspace.panel（fixture 声明了 right/bottom 两条），
     //    每条都能构造元素；失败走错误占位（这里不应失败）。
-    let panels = state.adc_panels.len();
+    let ordinary_views = state.adc_panels.iter().filter(|panel| {
+        panel
+            .slot
+            .as_ref()
+            .is_none_or(|slot| slot.slot_id != dshr_plugin_host::VIEWER_TAB)
+    });
+    let panels = ordinary_views.clone().count();
     let mut rendered = 0usize;
     let mut panel_errors = 0usize;
     let mut diag_total = 0usize;
-    for panel in &state.adc_panels {
+    for panel in ordinary_views {
         match &panel.tree {
             Some(tree) => {
                 let (element, diagnostics) = adc_panel_body(&theme, tree);

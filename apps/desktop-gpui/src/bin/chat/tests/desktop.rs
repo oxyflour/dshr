@@ -3,6 +3,244 @@
 use super::*;
 
 #[test]
+fn desktop_tool_views_and_nodes_pair_each_result_with_its_own_call_and_plugin() {
+    use dshr_plugin_api::{PluginContext, PluginError};
+    use dshr_plugin_host::{SlotTarget, CHAT_NODE, TOOL_CALL_VIEW, TOOL_RESULT_EXTRA};
+    use std::collections::VecDeque;
+
+    struct ToolPlugin {
+        id: &'static str,
+        name: &'static str,
+        view_key: Option<&'static str>,
+    }
+    impl Plugin for ToolPlugin {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn apply(&mut self, ctx: &mut PluginContext) -> Result<(), PluginError> {
+            ctx.register_tool(ToolDefinition::new(
+                self.name,
+                "Tool for ADC card coverage",
+                ToolOrigin::Native {
+                    plugin_id: self.id.to_owned(),
+                },
+            ))?;
+            if let Some(key) = self.view_key {
+                ctx.register_slots([
+                    json!({"slot_id": TOOL_CALL_VIEW, "plugin_id": self.id, "key": key, "view": "primary"}),
+                    json!({"slot_id": TOOL_RESULT_EXTRA, "plugin_id": self.id, "id": "extra", "label": "Extra", "view": "extra"}),
+                    json!({"slot_id": CHAT_NODE, "plugin_id": self.id, "key": "fixture.note", "view": "note"}),
+                ]);
+            }
+            Ok(())
+        }
+
+        fn call(
+            &mut self,
+            _name: &str,
+            arguments: &serde_json::Value,
+        ) -> Result<serde_json::Value, PluginError> {
+            Ok(json!({"value": arguments["label"], "adc_node": {
+                "key": "fixture.note", "fallback": arguments["label"], "data": arguments["label"]
+            }}))
+        }
+
+        fn take_chat_node(&self, result: &mut serde_json::Value) -> Option<serde_json::Value> {
+            result.as_object_mut()?.remove("adc_node")
+        }
+
+        fn tool_view_value<'a>(
+            &self,
+            result: &'a serde_json::Value,
+        ) -> Option<&'a serde_json::Value> {
+            result.get("value")
+        }
+
+        fn render_chat_node(
+            &mut self,
+            view: &str,
+            context: &serde_json::Value,
+        ) -> Result<serde_json::Value, PluginError> {
+            assert_eq!(view, "note");
+            assert_eq!(context["key"], "fixture.note");
+            if context["data"] == "fallback" {
+                return Ok(json!({"type": "Invalid"}));
+            }
+            Ok(json!({"type": "Text", "props": {"value": format!("note:{}", context["call_seq"])}}))
+        }
+
+        fn render_tool_view(
+            &mut self,
+            view: &str,
+            context: &serde_json::Value,
+        ) -> Result<serde_json::Value, PluginError> {
+            assert_eq!(context["tool"], self.name);
+            assert_eq!(context["arguments"]["label"], context["value"]);
+            if view == "primary" && context["value"] == "fallback" {
+                return Ok(json!({"type": "Invalid"}));
+            }
+            Ok(
+                json!({"type": "Text", "props": {"value": format!("{view}:{}", context["value"].as_str().unwrap())}}),
+            )
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let store = SessionIndex::new(root.path().join("sessions"));
+    store
+        .create_root("tool-views", &root.path().to_string_lossy(), "1")
+        .unwrap();
+    let mut state = ChatState::open_in(
+        store.path_for("tool-views"),
+        "tool-views",
+        &Arc::new(AtomicBool::new(false)),
+        ApprovalBroker::noninteractive(),
+        DesktopSettings {
+            model: Arc::new(DesktopModel::Mock),
+            permission: Some(PermissionMode::DangerFullAccess),
+            reasoning: None,
+        },
+        ChatRuntime::Desktop {
+            allow_spawn: false,
+            sidecar: false,
+            diagnostics: false,
+        },
+    );
+    state
+        .plugins
+        .load(Box::new(ToolPlugin {
+            id: "fixture.owner",
+            name: "owned_tool",
+            view_key: Some("owned_tool"),
+        }))
+        .unwrap();
+    let forged = state.plugins.load(Box::new(ToolPlugin {
+        id: "fixture.forged",
+        name: "foreign_tool",
+        view_key: Some("owned_tool"),
+    }));
+    assert!(forged.unwrap_err().to_string().contains("same plugin"));
+    state
+        .plugins
+        .load(Box::new(ToolPlugin {
+            id: "fixture.foreign",
+            name: "foreign_tool",
+            view_key: None,
+        }))
+        .unwrap();
+    state.agent = Agent::new(Box::new(OfficialScript(VecDeque::from([
+        model_tools(&[
+            ("reused", "owned_tool", json!({"label": "first"})),
+            ("reused", "owned_tool", json!({"label": "fallback"})),
+            ("reused", "foreign_tool", json!({"label": "foreign"})),
+        ]),
+        ModelReply::text_only("Done"),
+    ]))));
+    let mut previewed_node = false;
+    state
+        .run_turn("Run tool views fixture", &[], &mut |update| {
+            if let TurnUpdate::Preview(log, text, reasoning) = update {
+                previewed_node |= view::rows_with_preview(log, text, reasoning).iter().any(
+                    |row| matches!(row, view::Row::ChatNode(node) if node.fallback == "first"),
+                );
+            }
+        })
+        .unwrap();
+    assert!(previewed_node);
+    let calls: Vec<_> = state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type == "tool.call")
+        .collect();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0].payload["plugin_id"], "fixture.owner");
+    let by_call = |seq| {
+        state
+            .adc_panels
+            .iter()
+            .filter(|panel| {
+                panel.tool_call_seq == Some(seq)
+                    && panel.slot.as_ref().unwrap().slot_id != CHAT_NODE
+            })
+            .map(|panel| {
+                panel.tree.as_ref().unwrap()["props"]["value"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(by_call(calls[0].seq), ["primary:first", "extra:first"]);
+    assert_eq!(by_call(calls[1].seq), ["extra:fallback"]);
+    assert!(by_call(calls[2].seq).is_empty());
+    let nodes = state
+        .adc_panels
+        .iter()
+        .filter(|panel| {
+            panel
+                .slot
+                .as_ref()
+                .is_some_and(|slot| slot.slot_id == CHAT_NODE)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].tool_call_seq, Some(calls[0].seq));
+    assert_eq!(
+        nodes[0].tree.as_ref().unwrap()["props"]["value"],
+        format!("note:{}", calls[0].seq)
+    );
+    for result in state
+        .log
+        .events()
+        .iter()
+        .filter(|event| event.event_type == "tool.result")
+    {
+        assert!(result.payload["value"].get("adc_node").is_none());
+        assert!(result.payload["content"][0]["value"]
+            .get("adc_node")
+            .is_none());
+    }
+    let history = SessionLog::from_jsonl("tool-views", &state.log.to_jsonl()).unwrap();
+    let nodes = view::rows_snapshot(&history, None)
+        .into_iter()
+        .filter_map(|row| match row {
+            view::Row::ChatNode(node) => Some((node.call_seq, node.plugin_id, node.fallback)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        nodes,
+        [
+            (calls[0].seq, "fixture.owner".to_owned(), "first".to_owned()),
+            (
+                calls[1].seq,
+                "fixture.owner".to_owned(),
+                "fallback".to_owned()
+            ),
+        ]
+    );
+    let target = SlotTarget::from(state.adc_panels[0].slot.as_ref().unwrap());
+    assert!(state
+        .apply_adc_slot_action(target, "call", &json!({}))
+        .is_err());
+    state.plugins.unload("fixture.owner").unwrap();
+    state.refresh_adc_panels();
+    assert!(state
+        .adc_panels
+        .iter()
+        .all(|view| view.tool_call_seq.is_none()));
+    assert_eq!(
+        state
+            .items()
+            .into_iter()
+            .filter(|item| matches!(item, Item::Tool(_)))
+            .count(),
+        3
+    );
+}
+
+#[test]
 fn switching_sessions_rebinds_native_writes_to_the_session_workspace() {
     let root = std::env::temp_dir().join(format!(
         "dshr-workspace-switch-{}-{}",
@@ -78,6 +316,10 @@ fn turn_rail_keeps_the_active_turn_visible_with_bounded_markers() {
 
 #[test]
 fn command_menu_matches_only_slash_prefixes() {
+    assert_eq!(
+        SlashCommand::ALL.map(SlashCommand::name),
+        dshr_plugin_host::BUILTIN_COMMAND_IDS
+    );
     assert_eq!(slash_commands("/").collect::<Vec<_>>(), SlashCommand::ALL);
     assert_eq!(
         slash_commands("/se").collect::<Vec<_>>(),

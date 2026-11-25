@@ -127,3 +127,74 @@ pub(super) fn run(handle: WindowHandle<ChatApp>, cx: &mut App) {
     })
     .detach();
 }
+
+pub(super) fn run_adc_command_flow(handle: WindowHandle<ChatApp>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let delay = Duration::from_millis(250);
+        cx.background_executor().timer(delay).await;
+        if !probe_adc_commands(handle, cx, delay).await {
+            std::process::exit(1);
+        }
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
+}
+
+async fn probe_adc_commands(
+    handle: WindowHandle<ChatApp>,
+    cx: &mut gpui::AsyncApp,
+    delay: Duration,
+) -> bool {
+    let fixture_count = |chat: &ChatApp| -> Option<u64> {
+        let panel = chat
+            .adc_panels
+            .iter()
+            .find(|panel| panel.plugin_id == "selftest.adc" && panel.view == "fixture.quick")?;
+        panel.tree.as_ref()?["props"]["label"]
+            .as_str()?
+            .strip_prefix("actions=")?
+            .parse()
+            .ok()
+    };
+    let start = handle
+        .update(cx, |chat, window, cx| {
+            let start = fixture_count(chat)?;
+            window.defer(cx, |window, cx| {
+                window.dispatch_keystroke(Keystroke::parse("ctrl-shift-g").unwrap(), cx);
+            });
+            Some(start)
+        })
+        .unwrap_or_default();
+    let Some(start) = start else {
+        eprintln!("[adc-command-flow] fixture is missing");
+        return false;
+    };
+    cx.background_executor().timer(delay).await;
+    let shortcut = handle
+        .update(cx, |chat, window, cx| {
+            let shortcut = fixture_count(chat) == Some(start + 1);
+            chat.input.update(cx, |input, cx| {
+                input.set_content("/fixture.refresh".to_owned(), window, cx)
+            });
+            shortcut
+        })
+        .unwrap_or(false);
+    cx.background_executor().timer(delay).await;
+    let shown = handle
+        .update(cx, |chat, window, cx| {
+            let shown = chat.composer_menu == Some(ComposerMenu::Commands);
+            window.defer(cx, |window, cx| {
+                window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+            });
+            shown
+        })
+        .unwrap_or(false);
+    cx.background_executor().timer(delay).await;
+    let slash = handle
+        .update(cx, |chat, _, cx| {
+            fixture_count(chat) == Some(start + 2) && chat.input.read(cx).content().is_empty()
+        })
+        .unwrap_or(false);
+    println!("[adc-command-flow] shortcut={shortcut} slash_menu={shown} submit={slash}");
+    shortcut && shown && slash
+}

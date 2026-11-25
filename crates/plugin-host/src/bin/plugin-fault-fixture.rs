@@ -60,6 +60,7 @@ fn main() {
             .and_then(|value| value.as_u64()),
         tools: vec![ToolDecl::new("fault_probe", "fault injection probe")],
         panels: Vec::<PanelDecl>::new(),
+        slots: Vec::new(),
     };
     if let Ok(envelope) = Envelope::with_payload(kind::PROCESS_READY, ready) {
         emit(&mut out, &envelope);

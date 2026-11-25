@@ -65,6 +65,7 @@ impl ChatApp {
             self.rows = rows_snapshot(&state.log, None);
             self.plugin_errors = state.load_errors();
             self.adc_panels = state.adc_panels.clone();
+            self.adc_actions = state.adc_action_entries();
             self.creator_mode = creator::is_creator_session(&state.log);
             self.active_preset = state
                 .log
@@ -74,9 +75,12 @@ impl ChatApp {
             index_changed
         };
         self.session_id = id;
+        self.adc_editor = None;
+        self.pending_external = None;
         self.header_menu = None;
         self.header_notice = None;
         self.right_sidebar_open = false;
+        self.adc_navigation = Default::default();
         self.open_processes.clear();
         self.copied_message = None;
         self.collapsed_trial_cards.clear();

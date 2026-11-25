@@ -3,6 +3,7 @@ use super::{
     chrome_button, desktop_icon, permission_label, save_atomic, toolbar_icon_button, ChatApp,
     DesktopModel, DesktopSettings, PermissionMode, Theme, ThemeKind, EDITABLE_PERMISSIONS,
 };
+use dshr_plugin_host::SlotTarget;
 use gpui::prelude::*;
 use gpui::{deferred, div, px, rgba, AnyElement, Context, FontWeight, Role, Window};
 use serde_json::{json, Value};
@@ -16,6 +17,7 @@ pub(super) enum SettingsTab {
     Models,
     Plugins,
     Components,
+    Adc(SlotTarget),
 }
 
 impl SettingsTab {
@@ -139,6 +141,8 @@ impl ChatApp {
         if self.settings_tab.take().is_none() {
             return false;
         }
+        self.adc_editor = None;
+        self.pending_external = None;
         self.model_settings.close_editor();
         if let Some(handle) = self.settings_restore_focus.take() {
             window.focus(&handle, cx);
@@ -156,6 +160,24 @@ impl ChatApp {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let active = self.settings_tab?;
+        let pages = self.adc_panels.iter().filter_map(|panel| {
+            let slot = panel
+                .slot
+                .as_ref()
+                .filter(|slot| slot.slot_id == "settings.section")?;
+            panel.tree.as_ref()?;
+            Some((
+                SettingsTab::Adc(SlotTarget::from(slot)),
+                panel.title.as_str(),
+                "\u{e71d}",
+            ))
+        });
+        let tabs: Vec<_> = SettingsTab::TABS.into_iter().chain(pages).collect();
+        let active = if tabs.iter().any(|(tab, _, _)| *tab == active) {
+            active
+        } else {
+            SettingsTab::General
+        };
         let p = t.palette;
         let compact = width < px(580.0);
         let content_id = if active == SettingsTab::Models && self.model_settings.editor_is_open() {
@@ -163,119 +185,132 @@ impl ChatApp {
         } else {
             "settings-content"
         };
-        let card = div()
-            .id("user-settings-dialog")
-            .role(Role::Dialog)
-            .aria_label("用户设置")
-            .track_focus(&self.settings_focus)
-            .occlude()
-            .w_full()
-            .h_full()
-            .max_w(px(800.0))
-            .max_h(px(800.0))
-            .rounded(t.radii.panel)
-            .border_1()
-            .border_color(p.color(p.border_l2))
-            .bg(p.color(p.bg_layer_2))
-            .shadow_lg()
-            .overflow_hidden()
-            .flex()
-            .child(
-                div()
-                    .w(px(if compact { 126.0 } else { 188.0 }))
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .px(px(12.0))
-                    .pt(px(16.0))
-                    .gap(px(4.0))
-                    .child(
-                        div()
-                            .px(px(12.0))
-                            .h(px(42.0))
-                            .flex()
-                            .items_center()
-                            .text_size(px(16.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(p.color(p.label_primary))
-                            .child("设置"),
-                    )
-                    .children(SettingsTab::TABS.into_iter().enumerate().map(
-                        |(index, (tab, label, icon))| {
-                            chrome_button(("settings-tab", index), "", t)
-                                .aria_label(label)
-                                .role(Role::Tab)
-                                .aria_selected(active == tab)
-                                .focusable()
-                                .h(px(40.0))
-                                .w_full()
-                                .rounded(t.radii.md)
-                                .justify_start()
-                                .gap(px(8.0))
+        let card =
+            div()
+                .id("user-settings-dialog")
+                .role(Role::Dialog)
+                .aria_label("用户设置")
+                .track_focus(&self.settings_focus)
+                .occlude()
+                .w_full()
+                .h_full()
+                .max_w(px(800.0))
+                .max_h(px(800.0))
+                .rounded(t.radii.panel)
+                .border_1()
+                .border_color(p.color(p.border_l2))
+                .bg(p.color(p.bg_layer_2))
+                .shadow_lg()
+                .overflow_hidden()
+                .flex()
+                .child(
+                    div()
+                        .id("settings-navigation")
+                        .w(px(if compact { 126.0 } else { 188.0 }))
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .px(px(12.0))
+                        .pt(px(16.0))
+                        .gap(px(4.0))
+                        .overflow_y_scroll()
+                        .child(
+                            div()
                                 .px(px(12.0))
-                                .when(active == tab, |button| {
-                                    button.bg(p.color(p.interactive_hover_solid))
-                                })
-                                .child(desktop_icon(icon, ""))
-                                .child(label)
-                                .on_click(cx.listener(move |chat, _, _, cx| {
-                                    if tab != SettingsTab::Models {
-                                        chat.model_settings.close_editor();
-                                    }
-                                    chat.settings_tab = Some(tab);
-                                    cx.notify();
+                                .h(px(42.0))
+                                .flex()
+                                .items_center()
+                                .text_size(px(16.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.color(p.label_primary))
+                                .child("设置"),
+                        )
+                        .children(tabs.into_iter().enumerate().map(
+                            |(index, (tab, label, icon))| {
+                                chrome_button(("settings-tab", index), "", t)
+                                    .aria_label(label.to_owned())
+                                    .role(Role::Tab)
+                                    .aria_selected(active == tab)
+                                    .focusable()
+                                    .h(px(40.0))
+                                    .w_full()
+                                    .rounded(t.radii.md)
+                                    .justify_start()
+                                    .gap(px(8.0))
+                                    .px(px(12.0))
+                                    .when(active == tab, |button| {
+                                        button.bg(p.color(p.interactive_hover_solid))
+                                    })
+                                    .child(desktop_icon(icon, ""))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.0))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(label.to_owned()),
+                                    )
+                                    .on_click(cx.listener(move |chat, _, _, cx| {
+                                        if tab != SettingsTab::Models {
+                                            chat.model_settings.close_editor();
+                                        }
+                                        chat.adc_editor = None;
+                                        chat.pending_external = None;
+                                        chat.settings_tab = Some(tab);
+                                        cx.notify();
+                                    }))
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .justify_end()
+                                .items_center()
+                                .h(px(54.0))
+                                .pr(px(14.0))
+                                .child(
+                                    toolbar_icon_button(
+                                        "close-user-settings",
+                                        "关闭设置",
+                                        "\u{e8bb}",
+                                        "×",
+                                        t,
+                                    )
+                                    .on_click(cx.listener(
+                                        |chat, _, window, cx| {
+                                            chat.close_settings(window, cx);
+                                        },
+                                    )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id(content_id)
+                                .min_h(px(0.0))
+                                .flex_1()
+                                .overflow_y_scroll()
+                                .px(px(if compact { 12.0 } else { 24.0 }))
+                                .pb(px(24.0))
+                                .children(self.settings_notice.as_ref().map(|error| {
+                                    div()
+                                        .mb(px(10.0))
+                                        .text_size(t.type_scale.small)
+                                        .text_color(p.color(p.state_error))
+                                        .child(error.clone())
                                 }))
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .justify_end()
-                            .items_center()
-                            .h(px(54.0))
-                            .pr(px(14.0))
-                            .child(
-                                toolbar_icon_button(
-                                    "close-user-settings",
-                                    "关闭设置",
-                                    "\u{e8bb}",
-                                    "×",
-                                    t,
-                                )
-                                .on_click(cx.listener(
-                                    |chat, _, window, cx| {
-                                        chat.close_settings(window, cx);
-                                    },
-                                )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(content_id)
-                            .min_h(px(0.0))
-                            .flex_1()
-                            .overflow_y_scroll()
-                            .px(px(if compact { 12.0 } else { 24.0 }))
-                            .pb(px(24.0))
-                            .children(self.settings_notice.as_ref().map(|error| {
-                                div()
-                                    .mb(px(10.0))
-                                    .text_size(t.type_scale.small)
-                                    .text_color(p.color(p.state_error))
-                                    .child(error.clone())
-                            }))
-                            .child(self.settings_section(active, t, cx)),
-                    ),
-            );
+                                .child(self.settings_section(active, t, cx)),
+                        )
+                        .children(self.external_confirm_bar(t, cx))
+                        .children(self.adc_editor_bar(t, cx)),
+                );
         let overlay = div()
             .absolute()
             .inset_0()
@@ -300,13 +335,13 @@ impl ChatApp {
 
     fn settings_section(&self, tab: SettingsTab, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = t.palette;
-        let section = |name: &'static str| {
+        let section = |name: &str| {
             div().flex().flex_col().gap(px(12.0)).child(
                 div()
                     .text_size(t.type_scale.h2)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(p.color(p.label_primary))
-                    .child(name),
+                    .child(name.to_owned()),
             )
         };
         let container = || {
@@ -330,6 +365,18 @@ impl ChatApp {
         };
 
         match tab {
+            SettingsTab::Adc(target) => {
+                let page = self
+                    .adc_panels
+                    .iter()
+                    .find(|panel| panel.slot.as_ref().map(SlotTarget::from) == Some(target));
+                match page.and_then(|panel| panel.tree.as_ref().map(|tree| (panel, tree))) {
+                    Some((panel, tree)) => section(&panel.title)
+                        .child(self.adc_body(panel, tree, t, cx).0)
+                        .into_any_element(),
+                    None => div().into_any_element(),
+                }
+            }
             SettingsTab::General => section("通用")
                 .child(
                     container().child(heading("外观")).child(
@@ -400,6 +447,7 @@ impl ChatApp {
                         },
                     ),
                 ))
+                .children(self.adc_slot_elements("settings.general.item", t, cx))
                 .into_any_element(),
             SettingsTab::Models => section("模型")
                 .child(self.model_settings_view(t, cx))

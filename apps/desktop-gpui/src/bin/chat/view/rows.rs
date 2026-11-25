@@ -11,6 +11,7 @@ pub(crate) enum Row {
     },
     Assistant(String),
     Streaming(String),
+    ChatNode(dshr_conversation_model::ChatNode),
     Process(Vec<Row>),
     Reasoning {
         text: String,
@@ -46,6 +47,7 @@ impl Row {
             Self::User { text, .. } => format!("你 · {text}"),
             Self::Assistant(text) | Self::Streaming(text) => format!("助手 · {text}"),
             Self::Process(_) => "思考过程".to_owned(),
+            Self::ChatNode(node) => node.fallback.clone(),
             Self::Reasoning { text, .. } => text.clone(),
             Self::Tool {
                 name,
@@ -145,6 +147,7 @@ pub(crate) fn estimated_row_height(row: &Row) -> f32 {
             .map(|line| (line.chars().count() as f32 / 42.0).ceil().max(1.0) * LINE)
             .sum(),
         Row::Meta(_) | Row::Stopped => 30.0,
+        Row::ChatNode(node) => (node.fallback.chars().count() as f32 / 36.0).ceil() * LINE + 12.0,
     }
 }
 
@@ -167,6 +170,7 @@ pub(crate) fn describe(item: &Item) -> Row {
             streaming: false,
         },
         Item::Stopped => Row::Stopped,
+        Item::ChatNode(node) => Row::ChatNode(node.clone()),
         Item::Tool(tool) => {
             let (status, pending) = match &tool.state {
                 ToolState::Pending => ("运行中".to_owned(), true),

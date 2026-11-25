@@ -368,6 +368,7 @@ impl ChatApp {
                         })),
                     ),
             )
+            .children(self.adc_right_tabs(t, cx))
             .child(
                 div()
                     .id("right-sidebar-content")
@@ -375,17 +376,24 @@ impl ChatApp {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .px(px(8.0))
-                    .child(if self.adc_panels.is_empty() {
-                        div()
-                            .px(px(4.0))
-                            .py(px(8.0))
-                            .text_size(t.type_scale.small)
-                            .text_color(p.color(p.label_secondary))
-                            .child("暂无可用的插件视图")
-                            .into_any_element()
-                    } else {
-                        self.plugin_panels(None, t, cx)
-                    }),
+                    .child(
+                        if let Some(view) = self
+                            .adc_file_preview_body(t, cx)
+                            .or_else(|| self.adc_right_tab_body(t, cx))
+                        {
+                            view
+                        } else if !self.has_workspace_panels() {
+                            div()
+                                .px(px(4.0))
+                                .py(px(8.0))
+                                .text_size(t.type_scale.small)
+                                .text_color(p.color(p.label_secondary))
+                                .child("暂无可用的插件视图")
+                                .into_any_element()
+                        } else {
+                            self.plugin_panels(None, t, cx)
+                        },
+                    ),
             )
             .into_any_element()
     }

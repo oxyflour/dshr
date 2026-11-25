@@ -429,6 +429,7 @@ impl ChatApp {
                 gpui::Anchor::BottomLeft,
                 cx.listener(Self::dismiss_composer_menu),
             ))
+            .children(self.adc_composer_slot("conversation.input.left", t, cx))
             .child(div().flex_1().min_w(px(0.0)))
             .child(popover::attach_dismissible(
                 model_picker,
@@ -446,6 +447,7 @@ impl ChatApp {
                         .child("正在停止…"),
                 )
             })
+            .children(self.adc_composer_slot("conversation.input.right", t, cx))
             .child(
                 div()
                     .id("send-button")

@@ -156,6 +156,40 @@ fn creator_guidance_matches_the_manifest_parser_and_trial_errors() {
     let root = tempfile::tempdir().unwrap();
     let mut state = state(root.path(), ApprovalBroker::noninteractive());
     let result = state.execute_tool(&call(INSPECT_TOOL, json!({})));
+    let supported = result.value["adc_slots"]["supported"].as_array().unwrap();
+    assert_eq!(supported.len(), dshr_plugin_host::desktop_slots().count());
+    let catalog = dshr_ui_contributions::SlotCatalog::builtin();
+    let available: std::collections::BTreeSet<_> = supported
+        .iter()
+        .map(|descriptor| descriptor["slot_id"].as_str().unwrap())
+        .chain([result.value["panel_slot"].as_str().unwrap()])
+        .collect();
+    assert_eq!(
+        available,
+        catalog
+            .all()
+            .iter()
+            .map(|spec| spec.slot_id.as_str())
+            .collect()
+    );
+    assert_eq!(
+        result.value["adc_slots"]["menu_keys"],
+        json!(dshr_plugin_host::DESKTOP_MENU_KEYS)
+    );
+    let mut slots = dshr_ui_contributions::ContributionRegistry::new();
+    slots
+        .set_closed_key_domain(
+            dshr_plugin_host::MENU_ITEM_SLOT,
+            dshr_plugin_host::DESKTOP_MENU_KEYS
+                .iter()
+                .map(|key| (*key).to_owned()),
+        )
+        .unwrap();
+    for descriptor in supported {
+        assert!(descriptor["location"].is_string());
+        assert_eq!(descriptor["slot_id"], descriptor["example"]["slot_id"]);
+        slots.register(&descriptor["example"], 1).unwrap();
+    }
     let guidance = &result.value["manifest"];
     let external = guidance["examples"]["external-process"].as_str().unwrap();
     let wasm = guidance["examples"]["wasm-component"].as_str().unwrap();
@@ -202,6 +236,255 @@ fn creator_guidance_matches_the_manifest_parser_and_trial_errors() {
     assert!(detail.contains("缺少构建产物") && detail.contains(BUILD_PLUGIN_TOOL));
 }
 
+// CPP-CREATOR-016
+#[test]
+fn creator_inspect_exact_contracts_match_discovery_and_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let mut state = state(root.path(), ApprovalBroker::noninteractive());
+    let discovery = state.execute_tool(&call(INSPECT_TOOL, json!({})));
+    let queries = discovery.value["queries"].as_object().unwrap();
+    for (section, names) in queries {
+        for name in names.as_array().unwrap() {
+            let result = state.execute_tool(&call(
+                INSPECT_TOOL,
+                json!({"section": section, "name": name}),
+            ));
+            assert!(!result.is_error, "{section} {name}: {:?}", result.content);
+            assert_eq!(result.value["section"], section.as_str());
+            assert_eq!(&result.value["name"], name);
+            assert!(result.value["contract"].is_object());
+            assert!(result.value.get("workspace_panel").is_none());
+        }
+    }
+    assert_eq!(
+        queries["slot"].as_array().unwrap().len(),
+        dshr_ui_contributions::SlotCatalog::builtin().len()
+    );
+    let mut lookup = |section: &str, name: &str| {
+        let result = state.execute_tool(&call(
+            INSPECT_TOOL,
+            json!({"section": section, "name": name}),
+        ));
+        assert!(!result.is_error, "{:?}", result.content);
+        result.value["contract"].clone()
+    };
+    let file = lookup("slot", "viewer.tab");
+    assert_eq!(
+        file["registration"]["required"],
+        json!(["slot_id", "plugin_id", "key", "view"])
+    );
+    assert_eq!(file["callback"]["context"], "FileViewContext");
+    assert_eq!(
+        file["callback"]["context_contract"],
+        lookup("sdk", "FileViewContext")
+    );
+    assert_eq!(
+        file["registration"]["fields"]["key"],
+        file["callback"]["context_contract"]["schema"]["properties"]["file_type"]
+    );
+    assert_eq!(file["actions"], json!(["copy", "openExternal"]));
+    assert_eq!(file["validation"], "registration");
+    let menu = lookup("slot", "menu.item");
+    assert_eq!(
+        menu["registration"]["fields"]["key"]["enum"],
+        json!(dshr_plugin_host::DESKTOP_MENU_KEYS)
+    );
+    assert_eq!(menu["callback"]["action"], "command");
+    assert_eq!(
+        lookup("slot", "workspace.panel")["registration"]["sdk"],
+        "PanelDecl"
+    );
+    let slider = lookup("element", "Slider");
+    assert_eq!(slider["schema"]["properties"]["type"]["const"], "Slider");
+    assert_eq!(
+        slider["references"]["#/$defs/props/Slider"]["required"],
+        json!(["value"])
+    );
+    assert_eq!(slider["event"]["call_args"]["value"]["type"], "number");
+    assert!(!slider["references"]["#/$defs/action"].is_null());
+    assert!(lookup("element", "Switch")["event"]["call_args"].is_string());
+    assert_eq!(lookup("element", "List")["event"]["dispatch"], false);
+    let stack = lookup("element", "Stack");
+    assert_eq!(
+        stack["references"]["#/$defs/children"]["items"]["$ref"],
+        "#/$defs/node"
+    );
+    assert!(stack["references"].get("#/$defs/node").is_none());
+
+    for input in [
+        json!({"section":"sdk"}),
+        json!({"name":"ToolDecl"}),
+        json!({"section":"slot","name":""}),
+        json!({"section":"slot","name":"   "}),
+        json!({"section":"unknown","name":"x"}),
+        json!({"section":"sdk","name":"ToolDecl","extra":true}),
+    ] {
+        assert!(state.execute_tool(&call(INSPECT_TOOL, input)).is_error);
+    }
+    let unknown = state.execute_tool(&call(
+        INSPECT_TOOL,
+        json!({"section":"element","name":"slider"}),
+    ));
+    assert!(unknown.is_error && unknown.content.to_string().contains("queries.element"));
+}
+
+// CPP-CREATOR-017
+#[test]
+#[ignore = "requires native Cargo with the offline SDK dependencies"]
+fn creator_inspect_drives_external_slot_callback() {
+    let root = tempfile::tempdir().unwrap();
+    let approvals = ApprovalBroker::new();
+    let mut state = state(root.path(), approvals.clone());
+    let discovery = state.execute_tool(&call(INSPECT_TOOL, json!({})));
+    assert_eq!(
+        discovery.value["build"]["cargo_found"], true,
+        "{:?}",
+        discovery.content
+    );
+    let template = &discovery.value["workspace_panel"];
+    let mut lookup = |section, name| {
+        let result = state.execute_tool(&call(
+            INSPECT_TOOL,
+            json!({"section": section, "name": name}),
+        ));
+        assert!(!result.is_error, "{:?}", result.content);
+        result.value["contract"].clone()
+    };
+    let slot = lookup("slot", "workspace.sidebar.tab");
+    let slider = lookup("element", "Slider");
+    let action = lookup("sdk", "ActionHandler");
+    let registration = &slot["registration"]["example"];
+    let event = slider["event"]["prop"].as_str().unwrap();
+    assert_eq!(slider["event"]["call_args"]["value"]["type"], "number");
+    assert_eq!(
+        slider["references"]["#/$defs/props/Slider"]["properties"]["value"]["type"],
+        "number"
+    );
+    let method = action["examples"]["call"]["payload"]["method"]
+        .as_str()
+        .unwrap();
+    let tree = json!({"type": slider["schema"]["properties"]["type"]["const"], "props": {
+        "a11yLabel": "Volume", "value": 2.0, "min": 0.0, "max": 10.0, "step": 0.5,
+        (event): {"call": method, "args": {}}
+    }});
+    let source = r#"
+use dshr_plugin_sdk::{ActionHandler, CancelFlag, ChildSession, ReadyDecls, SessionError, ToolCall, ToolError, ToolResult, ViewHandler};
+use std::sync::{Arc, Mutex};
+
+struct Slider(Arc<Mutex<f64>>);
+
+impl ViewHandler for Slider {
+    __RENDER__ {
+        assert_eq!(view, __VIEW__);
+        let _ = state_seq;
+        let mut tree: serde_json::Value = serde_json::from_str(__TREE__).unwrap();
+        tree["props"]["value"] = serde_json::json!(*self.0.lock().unwrap());
+        Ok(tree)
+    }
+}
+
+impl ActionHandler for Slider {
+    __ACTION__ {
+        assert_eq!(view, __VIEW__);
+        assert_eq!(action, "call");
+        assert_eq!(payload["method"], __METHOD__);
+        *self.0.lock().unwrap() = payload["args"]["value"].as_f64()
+            .ok_or_else(|| ToolError::invalid_arguments("value must be a number"))?;
+        Ok(())
+    }
+}
+
+fn main() -> Result<(), SessionError> {
+    let state = Arc::new(Mutex::new(2.0));
+    let registration = serde_json::from_str(__REGISTRATION__).unwrap();
+    let decls = ReadyDecls::new(vec![], vec![]).with_slots(vec![registration]);
+    ChildSession::serve_with_views_and_actions(
+        decls, Slider(state.clone()), Slider(state),
+        |_: &ToolCall, _: &CancelFlag| -> Result<ToolResult, ToolError> {
+            Err(ToolError::invalid_arguments("no tools"))
+        },
+    )
+}
+"#
+    .replace("__RENDER__", slot["callback"]["signature"].as_str().unwrap())
+    .replace("__ACTION__", action["signatures"][0].as_str().unwrap())
+    .replace("__VIEW__", &format!("{:?}", registration["view"].as_str().unwrap()))
+    .replace("__METHOD__", &format!("{method:?}"))
+    .replace("__TREE__", &format!("{:?}", tree.to_string()))
+    .replace("__REGISTRATION__", &format!("{:?}", registration.to_string()));
+    let package = root.path().join("slider-plugin");
+    fs::create_dir_all(package.join("src")).unwrap();
+    for file in ["plugin.toml", "Cargo.toml"] {
+        fs::write(package.join(file), template[file].as_str().unwrap()).unwrap();
+    }
+    fs::write(package.join("src/main.rs"), source).unwrap();
+
+    let mut execute_approved = |tool: &str| {
+        let approvals = approvals.clone();
+        let expected = tool.to_owned();
+        let answerer = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(pending) = approvals.pending().into_iter().next() {
+                    let allow =
+                        pending.tool == expected && pending.arguments["path"] == "slider-plugin";
+                    approvals.resolve(
+                        &pending.call_id,
+                        if allow {
+                            ApprovalOutcome::AllowOnce
+                        } else {
+                            ApprovalOutcome::Deny
+                        },
+                    );
+                    return;
+                }
+                assert!(Instant::now() < deadline, "missing approval for {expected}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let result = state.execute_tool(&call(tool, json!({"path": "slider-plugin"})));
+        answerer.join().unwrap();
+        assert!(!result.is_error, "{tool}: {:?}", result.content);
+        result.value
+    };
+    execute_approved(BUILD_PLUGIN_TOOL);
+    let trial = execute_approved(TRY_PLUGIN_TOOL);
+    assert_eq!(trial["slots"][0]["slot_id"], "workspace.sidebar.tab");
+    assert_eq!(trial["slots"][0]["validation"], slot["validation"]);
+    state.refresh_adc_panels();
+    let find = |state: &ChatState| {
+        let panel = state
+            .adc_panels
+            .iter()
+            .find(|panel| {
+                panel.trial
+                    && panel
+                        .slot
+                        .as_ref()
+                        .is_some_and(|slot| slot.slot_id == "workspace.sidebar.tab")
+            })
+            .unwrap();
+        let tree = panel.tree.as_ref().unwrap();
+        assert!(parse_tree(tree).diagnostics.is_empty());
+        (
+            dshr_plugin_host::SlotTarget::from(panel.slot.as_ref().unwrap()),
+            tree["props"]["value"].clone(),
+        )
+    };
+    let (target, initial) = find(&state);
+    assert_eq!(initial, 2.0);
+    let mut payload = action["examples"]["call"]["payload"].clone();
+    payload["args"]["value"] = json!(7.5);
+    state
+        .apply_adc_slot_action(
+            target,
+            action["examples"]["call"]["action"].as_str().unwrap(),
+            &payload,
+        )
+        .unwrap();
+    assert_eq!(find(&state).1, 7.5);
+}
+
 // CPP-CREATOR-002
 #[test]
 fn creator_preview_checks_the_adc_tree_before_returning_it() {
@@ -228,10 +511,8 @@ fn creator_preview_checks_the_adc_tree_before_returning_it() {
         let result = state.execute_tool(&call(PREVIEW_TOOL, json!({ "element": element })));
         assert!(result.is_error);
         assert!(result.meta.is_none());
-        assert!(result.content[0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("creator_inspect.workspace_panel"));
+        let diagnostic = result.content[0]["text"].as_str().unwrap();
+        assert!(diagnostic.contains(INSPECT_TOOL) && diagnostic.contains("element"));
     }
 }
 
@@ -470,6 +751,25 @@ fn sessions_restore_their_own_tool_instances_and_panels() {
                 "Counter",
                 "workspace.panel",
             ));
+            ctx.register_slots(
+                [
+                    "conversation.input.right",
+                    "settings.section",
+                    "workspace.sidebar.tab",
+                    "workspace.page",
+                    "status.bar.item",
+                ]
+                .map(|slot| {
+                    json!({
+                        "slot_id": slot, "plugin_id": self.id(),
+                        "id": "counter.quick", "label": "Quick Counter", "view": "counter.quick"
+                    })
+                }),
+            );
+            ctx.register_slots([json!({
+                "slot_id": dshr_plugin_host::TOOL_CALL_VIEW, "plugin_id": self.id(),
+                "key": "fixture_counter", "view": "counter.result"
+            })]);
             Ok(())
         }
 
@@ -480,6 +780,18 @@ fn sessions_restore_their_own_tool_instances_and_panels() {
 
         fn render_view(&mut self, _: &str) -> Result<Value, PluginError> {
             Ok(json!({ "type": "Text", "props": { "value": self.0.to_string() } }))
+        }
+
+        fn handle_action(
+            &mut self,
+            view: &str,
+            action: &str,
+            _: &Value,
+        ) -> Result<(), PluginError> {
+            assert_eq!(view, "counter.quick");
+            assert_eq!(action, "call");
+            self.0 += 1;
+            Ok(())
         }
     }
 
@@ -501,6 +813,26 @@ fn sessions_restore_their_own_tool_instances_and_panels() {
             },
         );
         scope.plugins.load(Box::new(Counter(count))).unwrap();
+        let reported = validate_trial_slots(&mut scope.plugins, "creator.counter").unwrap();
+        assert!(reported.iter().any(|slot| {
+            slot["slot_id"] == dshr_plugin_host::TOOL_CALL_VIEW
+                && slot["key"] == "fixture_counter"
+                && slot["validation"] == "registration"
+        }));
+        for slot_id in [
+            "settings.section",
+            "workspace.sidebar.tab",
+            "workspace.page",
+            "status.bar.item",
+        ] {
+            let expected = dshr_plugin_host::DESKTOP_VIEW_SLOTS
+                .iter()
+                .find_map(|(slot, location)| (*slot == slot_id).then_some(*location))
+                .unwrap();
+            assert!(reported
+                .iter()
+                .any(|slot| slot["slot_id"] == slot_id && slot["location"] == expected));
+        }
         state.creator_trials.insert(id.to_owned(), scope);
     }
     let request = call("fixture_counter", json!({}));
@@ -510,19 +842,43 @@ fn sessions_restore_their_own_tool_instances_and_panels() {
         .tree
         .as_ref()
         .is_some_and(|tree| tree["props"]["value"] == "100")));
+    let slot_target = |state: &ChatState| {
+        state
+            .adc_panels
+            .iter()
+            .filter_map(|panel| panel.slot.as_ref())
+            .find(|slot| slot.slot_id == "conversation.input.right")
+            .map(dshr_plugin_host::SlotTarget::from)
+            .unwrap()
+    };
+    let second_slot = slot_target(&state);
     assert_eq!(state.execute_tool(&request).value, 101);
     state.switch_session(store.path_for("creator"), "creator");
+    assert!(state
+        .apply_adc_slot_action(second_slot, "call", &json!({}))
+        .is_err());
     assert!(state.adc_panels.iter().any(|panel| panel
         .tree
         .as_ref()
         .is_some_and(|tree| tree["props"]["value"] == "1")));
     assert_eq!(state.execute_tool(&request).value, 2);
+    state
+        .apply_adc_slot_action(slot_target(&state), "call", &json!({}))
+        .unwrap();
+    assert!(state.adc_panels.iter().any(|panel| panel
+        .slot
+        .as_ref()
+        .is_some_and(|slot| slot.slot_id == "conversation.input.right")
+        && panel
+            .tree
+            .as_ref()
+            .is_some_and(|tree| tree["props"]["value"] == "3")));
     assert!(broker.take_records().is_empty());
 
     store.delete("second").unwrap();
     state.drop_session_scope("second");
     assert!(!state.creator_trials.contains_key("second"));
-    assert_eq!(state.execute_tool(&request).value, 3);
+    assert_eq!(state.execute_tool(&request).value, 4);
     store.delete("creator").unwrap();
     state.drop_session_scope("creator");
     assert!(state.execute_tool(&request).is_error);

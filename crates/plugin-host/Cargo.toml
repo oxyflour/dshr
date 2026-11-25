@@ -10,6 +10,7 @@ dshr-plugin-sdk = { path = "../plugin-sdk" }
 dshr-plugin-wasm = { path = "../plugin-wasm" }
 dshr-sidecar-guard = { path = "../sidecar-guard" }
 dshr-tool-runtime = { path = "../tool-runtime" }
+dshr-ui-contributions = { path = "../ui-contributions" }
 serde_json.workspace = true
 thiserror.workspace = true
 

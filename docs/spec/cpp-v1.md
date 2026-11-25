@@ -274,13 +274,13 @@ trace_id/ts/payload/error`），`version` 固定 `"cpp-process/v1"`：
 | kind | 方向 | payload | 说明 |
 |---|---|---|---|
 | `process.hello` | host → child | `{protocol, host_version, plugin_id, generation, manifest}` | 启动后宿主先发，10 s 内必须收到 ready |
-| `process.ready` | child → host | `{protocol, plugin_id, tools[], panels[]}` | `tools[]`/`panels[]` 见 §12.3；未知协议/插件 id 不符即拒绝 |
+| `process.ready` | child → host | `{protocol, plugin_id, tools[], panels[], slots?}` | 声明见 §12.3。未知协议或插件 ID 不符即拒绝。 |
 | `process.ping` / `process.pong` | ↔ | `{}` | 健康检查（宿主 15 s 一次） |
 | `tool.invoke` | host → child | `{tool, arguments, timeout_ms, cancelable}` | 调用一次工具；同一 `request_id` 唯一 |
 | `tool.chunk` | child → host | `{seq, text}` / `{seq, content}` | 可选流式；宿主只记诊断/转发，不阻塞结算 |
 | `tool.result` | child → host | `{content[], value?, meta?, is_error}` | 恰好一次；形状对齐 §7.3 |
 | `tool.cancel` | host → child | `{reason}` | child MUST 5 s 内以 result（`E_CANCELLED`）或 aborted 结算 |
-| `ui.render` | host → child | `{view, state_seq}` | 声明过的 view 的元素树（ADC-v1 JSON） |
+| `ui.render` | host → child | `{view, state_seq, tool_context?, file_context?, node_context?}` | 声明过的 view 的元素树（ADC-v1 JSON） |
 | `ui.result` | child → host | `{tree}` 或 `{error}` | 宿主用 `parse_tree` 校验/降级后交给 ADC 渲染器 |
 | `ui.action` | host → child | `{view, action, payload}` | ADC 动作回传（`call`/`command`；`openExternal`/`copy` 由宿主处理）。**fire-and-forget，无 result envelope**；插件更新状态后由宿主再次 `ui.render` |
 | `process.shutdown` | host → child | `{timeout_ms}` | 优雅退出；超时 `TerminateJobObject` |
@@ -303,14 +303,37 @@ trace_id/ts/payload/error`），`version` 固定 `"cpp-process/v1"`：
     "presentation": "generic"
   }],
   "panels": [{ "slot": "workspace.panel", "id": "cad.inspector", "label": "CAD Inspector",
-               "view": "cad.inspector", "location": "right", "order": 100 }]
+               "view": "cad.inspector", "location": "right", "order": 100 }],
+  "slots": [{ "slot_id": "conversation.input.left", "plugin_id": "example.cad",
+              "id": "cad.quick", "label": "CAD Quick Action", "view": "cad.quick" }]
 }
 ```
 
 - `input_schema`/`output_schema` **内联**（≤8 KiB），必须是 JSON Schema 子集；宿主按 §7.1 校验。
-- `panels` 走 ADC-v1 slot 契约（`workspace.panel` 等），注册校验由 `ui-contributions` 完成；
-  未声明 view 的 panel 拒绝。`view` 的树由 `ui.render` 提供，宿主不缓存旧树。
+- `panels` 是既有工作区面板声明。桌面消费 `workspace.panel`，按 `view` 调用 `ui.render`。
+- 可选 `slots` 数组使用 [ADC 注册形状](../../schema/adc-v1/slot-registration.schema.json) 和 [桌面槽位契约](adc-v1.md#52-桌面槽位注册)。条目的 `plugin_id` 必须等于握手已验证的包 ID。宿主原子校验并提交工具、面板和槽位。非法条目使装载失败，替换失败时保留旧实例。
+- SDK 的 `ReadyDecls::with_slots` 声明该数组。空数组省略字段，既有声明可以继续在旧宿主上装载。发送非空数组需要支持该字段的宿主。
 - 工具名全局唯一（与 Native/Sidecar/MCP 同表）；冲突 → `plugin.failed`（`E_TOOL_CONFLICT`）。
+
+#### 工具视图上下文
+
+`tool.call.toolview.key` 必须是同一 `process.ready.tools` 中声明的工具名。`tool.result.extra` 要求该插件至少声明一个工具。宿主只对这两个槽位发 `tool_context`，形状为 `{call_seq, tool, arguments, value}`，上限为编码后的 128 KiB。`call_seq` 是执行会话中 `tool.call` 的事件序号，`tool` 和 `arguments` 取该次调用的工具名和参数。`value` 取成功结算的结构化值，即外部进程 `ToolResult.value`，省略时为 `null`。普通视图请求省略 `tool_context`。完整请求仍受帧大小约束。 [请求 Schema](../../schema/cpp-v1/render-request.schema.json)
+
+Rust SDK 的 `ViewHandler::render_tool` 处理工具视图，默认调用既有 `render`。宿主只向实际执行该工具的插件实例发送上下文。外部进程工具视图的响应预算为 1 s。宿主找不到注册、上下文超限或渲染失败时保留内建工具卡。已声明工具视图的试用包可以在该次试用所在会话调用自己的工具验证渲染。
+
+#### 文件视图上下文
+
+`viewer.tab` 在桌面用户选择预览后收到 `{ "view": "<view>", "state_seq": 0, "file_context": { "name": "report.txt", "file_type": "txt", "size_bytes": 7, "text": "example", "truncated": false } }`。`name` 为交付文件名，不带目录。`file_type` 为归一化扩展名，与当前注册的 `key` 一致。`size_bytes` 取文件句柄报告的长度。`text` 最多包含 16 KiB 的 UTF-8 前缀，尾部只保留完整字符。无有效 UTF-8 文本时为 `null`。`truncated` 表示仅读取了文件的一部分。协议不给此视图提供绝对路径、额外读文件能力或其他文件数据。`file_context` 与 `tool_context` 互斥。SDK 的 `ViewHandler::render_file` 默认调用 `render`，可覆盖处理上下文。外部进程文件视图的响应预算为 1 s。 [请求 Schema](../../schema/cpp-v1/render-request.schema.json)
+
+#### 对话节点上下文
+
+`conversation.chat.node` 的插件可在自己的成功 `ToolResult.meta` 中提供 `adc_node: { "key": "example.note", "fallback": "报告已生成", "data": { "count": 3 } }`。`key` 需匹配已注册的节点类型。`fallback` 为非空纯文本且不超过 2 KiB。完整 `adc_node` 编码后不超过 16 KiB。外部进程结果中这段元数据从模型可见内容移出，宿主通过日志的 `tool.result.meta` 持久化。缺少匹配注册、失败结果或无效元数据不创建节点。普通工具结果照常返回。
+
+节点渲染请求带 `node_context: { "key": "example.note", "call_seq": 42, "data": { "count": 3 } }`。`call_seq` 为工具调用事件序号。`node_context`、`file_context`、`tool_context` 互斥。Rust SDK 的 `ViewHandler::render_node` 默认调用 `render`，可覆盖处理节点数据。外部进程节点视图的响应预算为 1 s。宿主只调用该工具当前实例所属的已注册节点视图。 [请求 Schema](../../schema/cpp-v1/render-request.schema.json)
+
+#### 桌面命令派发
+
+桌面通过 `process.ready.slots` 注册 `command` 和 `menu.item`。用户触发后，宿主检查可见注册、会话和权限，向拥有该注册的插件发送 `ui.action`。载荷为 `{ "view": "<run>", "action": "command", "payload": { "id": "<注册 id>" } }`。SDK `ActionHandler` 的第一个参数在此类请求中是 `run` 方法名。宿主派发后刷新普通视图。命令和菜单项的试用回报验证注册，实际执行由用户操作触发。 [桌面槽位契约](adc-v1.md#52-桌面槽位注册)
 
 ### 12.4 配额（与 Wasmtime 主方案同构，ADR-0010 §1）
 

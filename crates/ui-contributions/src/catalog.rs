@@ -420,7 +420,7 @@ impl SlotCatalog {
         &self.slots
     }
 
-    /// slot 数量（v1 = 12）。
+    /// slot 数量。
     pub fn len(&self) -> usize {
         self.slots.len()
     }

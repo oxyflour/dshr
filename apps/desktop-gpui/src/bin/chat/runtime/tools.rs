@@ -160,6 +160,7 @@ enum ToolLocation {
 pub(crate) struct ResolvedTool {
     pub(crate) definition: ToolDefinition,
     location: ToolLocation,
+    pub(super) views: Vec<super::adc_tool_views::ToolViewBinding>,
 }
 
 pub(crate) type ToolStep = std::rc::Rc<RefCell<std::collections::BTreeMap<String, ResolvedTool>>>;
@@ -211,11 +212,27 @@ impl ToolExecutor for ChatExecutor<'_> {
             {
                 return;
             }
+            let mut views = Vec::new();
+            if !self.headless && matches!(definition.origin, ToolOrigin::Native { .. }) {
+                let trial = matches!(location, ToolLocation::Trial);
+                let host = match location {
+                    ToolLocation::Global => Some(&*self.plugins),
+                    ToolLocation::Trial => {
+                        self.creator.as_ref().map(|creator| &creator.scope.plugins)
+                    }
+                    _ => None,
+                };
+                if let Some(host) = host {
+                    views =
+                        super::adc_tool_views::call_view_bindings(host, &definition.name, trial);
+                }
+            }
             tools.insert(
                 definition.name.clone(),
                 ResolvedTool {
                     definition,
                     location,
+                    views,
                 },
             );
         };
@@ -443,6 +460,7 @@ impl ToolExecutor for ChatExecutor<'_> {
             let Some(ResolvedTool {
                 definition,
                 location,
+                ..
             }) = tool
             else {
                 outcomes[index] = ToolOutcome::failure(format!(
@@ -577,11 +595,9 @@ impl ToolExecutor for ChatExecutor<'_> {
                 max_parallel.max(1),
                 Some(self.cancel),
             );
-            for (index, result) in indices.into_iter().zip(results) {
+            for ((index, (tool, _)), result) in indices.into_iter().zip(calls).zip(results) {
                 outcomes[index] = match result {
-                    Ok(value) => {
-                        ToolOutcome::success(json!([{ "type": "json", "value": value }]), value)
-                    }
+                    Ok(value) => super::adc_tool_views::native_tool_outcome(plugins, &tool, value),
                     Err(error) => ToolOutcome::failure(error),
                 };
             }

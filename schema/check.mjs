@@ -5,7 +5,7 @@
 // Replace with ajv once the JS toolchain is pinned; keep the fixture list as a stable regression baseline.
 //
 // ADC-v1 冻结工件（M3）在此文件里多两层校验：
-//   slots            → schema/adc-v1/slots.v1.json 的目录自检（12 slot / kind / scope / 契约 / key 域 / contribution）
+//   slots            → schema/adc-v1/slots.v1.json 的目录自检（kind / scope / 契约 / key 域 / contribution）
 //   registrationContract → 注册载荷先过 slot-registration.schema.json（kind 级形状），再按 slot_id 查目录做字段级契约校验
 // 两层都对齐 docs/spec/adc-v1.md §5；未知元素在作者期 lint 仍判 invalid（运行时降级另做，见 spec §11）。
 
@@ -19,6 +19,8 @@ const schemas = {
   element: load('adc-v1/element.schema.json'),
   slotRegistration: load('adc-v1/slot-registration.schema.json'),
   manifest: load('cpp-v1/manifest.schema.json'),
+  renderRequest: load('cpp-v1/render-request.schema.json'),
+  creatorInspect: load('creator-mode/inspect-arguments.schema.json'),
   trust: load('cpp-v1/trust.schema.json'),
   trustKeys: load('cpp-v1/trust-keys.schema.json'),
   envelope: load('sidecar-rpc/envelope.schema.json'),
@@ -56,6 +58,7 @@ function resolveRef(root, ref) {
 function validate(schema, data, path, root) {
   const errors = []
   if (schema === true || schema === undefined) return errors
+  if (schema === false) return [`${path}: not allowed`]
   if (schema.$ref) {
     return validate(resolveRef(root, schema.$ref), data, path, root)
   }
@@ -158,6 +161,8 @@ const FROZEN_SLOT_IDS = [
   'tool.call.toolview',
   'tool.result.extra',
   'status.bar.item',
+  'workspace.sidebar.tab',
+  'workspace.page',
 ]
 const KINDS = ['single', 'list', 'keyed', 'chain']
 const SCOPES = ['root', 'session', 'session-maybe']
@@ -238,7 +243,6 @@ function checkSlotsCatalog(cat) {
 
   const slots = cat.slots
   if (!Array.isArray(slots)) return errors.concat('$: slots must be an array')
-  if (slots.length !== 12) errors.push(`$: slots must contain 12 entries, got ${slots.length}`)
   if (!sameSet(slots.map((s) => s.slot_id), FROZEN_SLOT_IDS)) {
     errors.push('$: slot_id set must match frozen ADC-v1 list (see docs/spec/adc-v1.md §5)')
   }
@@ -409,6 +413,36 @@ const runtimeFixture = (asset) => ({
 })
 
 const cases = [
+  ['creatorInspect', 'valid: discovery', {}, true],
+  ['creatorInspect', 'valid: exact slot lookup', {section: 'slot', name: 'viewer.tab'}, true],
+  ['creatorInspect', 'invalid: section without name', {section: 'element'}, false],
+  ['creatorInspect', 'invalid: name without section', {name: 'Input'}, false],
+  ['creatorInspect', 'invalid: blank name', {section: 'element', name: '  '}, false],
+  ['creatorInspect', 'invalid: unknown section', {section: 'context', name: 'FileViewContext'}, false],
+  ['creatorInspect', 'invalid: extra property', {section: 'sdk', name: 'ViewHandler', limit: 1}, false],
+  ['renderRequest', 'valid: legacy view request', {view: 'workspace.panel', state_seq: 0}, true],
+  ['renderRequest', 'valid: conversation node', {
+    view: 'report.note', node_context: {key: 'report.note', call_seq: 8, data: {items: 1}},
+  }, true],
+  ['renderRequest', 'invalid: node context with path separator', {
+    view: 'report.note', node_context: {key: 'report/note', call_seq: 8, data: null},
+  }, false],
+  ['renderRequest', 'valid: selected file preview', {
+    view: 'report.preview', file_context: {name: 'report.txt', file_type: 'txt', size_bytes: 3, text: 'abc', truncated: false},
+  }, true],
+  ['renderRequest', 'invalid: multiple render contexts', {
+    view: 'report.preview', file_context: {name: 'report.txt', file_type: 'txt', size_bytes: 3, text: 'abc', truncated: false},
+    tool_context: {call_seq: 3, tool: 'example_tool', arguments: {}, value: null},
+  }, false],
+  ['renderRequest', 'valid: tool view request', {
+    view: 'tool.view', tool_context: {call_seq: 3, tool: 'example_tool', arguments: {}, value: null},
+  }, true],
+  ['renderRequest', 'invalid: tool context without value', {
+    view: 'tool.view', tool_context: {call_seq: 3, tool: 'example_tool', arguments: {}},
+  }, false],
+  ['renderRequest', 'invalid: zero tool call sequence', {
+    view: 'tool.view', tool_context: {call_seq: 0, tool: 'example_tool', arguments: {}, value: null},
+  }, false],
   ['runtimeComponents', 'valid: offline component catalog', runtimeFixture(pythonAsset), true],
   ['runtimeComponents', 'invalid: component archive outside package directory',
     runtimeFixture({ ...pythonAsset, archive: '../python.zip' }), false],
@@ -537,6 +571,18 @@ const cases = [
     slot_id: 'workspace.panel', plugin_id: 'cad.validate', id: 'cad.inspector',
     location: 'right', view: 'cad.inspector',
   }, false],
+  ['registrationContract', 'valid: composer contribution', {
+    slot_id: 'conversation.input.left', plugin_id: 'demo.quick', id: 'quick.left',
+    label: 'Quick action', view: 'quick.toolbar', order: 20,
+  }, true],
+  ['registrationContract', 'invalid: general settings contribution missing label', {
+    slot_id: 'settings.general.item', plugin_id: 'demo.quick', id: 'quick.settings',
+    view: 'quick.preferences',
+  }, false],
+  ['registrationContract', 'valid: settings section', {
+    slot_id: 'settings.section', plugin_id: 'cad.settings', id: 'cad.settings',
+    label: 'CAD', view: 'cad.preferences',
+  }, true],
   ['registrationContract', 'invalid: settings.section extra location field', {
     slot_id: 'settings.section', plugin_id: 'cad.settings', id: 'x',
     label: 'X', location: 'left', view: 'v',
@@ -544,6 +590,10 @@ const cases = [
   ['registrationContract', 'valid: command with keys', {
     slot_id: 'command', plugin_id: 'cad.validate', id: 'cad.validate.run',
     label: 'Validate', run: 'cad.validate', keys: ['Ctrl+Shift+V'],
+  }, true],
+  ['registrationContract', 'valid: menu item with host-validated key', {
+    slot_id: 'menu.item', plugin_id: 'cad.validate', key: 'composer.add',
+    id: 'cad.validate.menu', label: 'Validate', run: 'cad.validate',
   }, true],
   ['registrationContract', 'invalid: command missing run', {
     slot_id: 'command', plugin_id: 'cad.validate', id: 'cad.validate.run', label: 'Validate',
@@ -559,7 +609,14 @@ const cases = [
   }, false],
 
   // ---- ADC slots.v1.json 目录自检 ----
-  ['slots', 'valid: 目录自检（12 slot / kind / scope / 契约 / key 域 / contribution）', catalog, true],
+  ['registrationContract', 'valid: workspace sidebar tab', {
+    slot_id: 'workspace.sidebar.tab', plugin_id: 'demo.quick', id: 'quick.tab',
+    label: 'Quick tab', view: 'quick.details',
+  }, true],
+  ['registrationContract', 'invalid: workspace page requires label', {
+    slot_id: 'workspace.page', plugin_id: 'demo.quick', id: 'quick.page', view: 'quick.main',
+  }, false],
+  ['slots', 'valid: 目录自检（kind / scope / 契约 / key 域 / contribution）', catalog, true],
   ['slots', 'invalid: keyed slot 缺 key_domain', (() => {
     const copy = cloneCatalog()
     delete copy.slots.find((s) => s.slot_id === 'conversation.chat.node').key_domain
@@ -792,6 +849,8 @@ const validators = {
   element: (data) => validate(schemas.element, data, '$', schemas.element),
   slotRegistration: (data) => validate(schemas.slotRegistration, data, '$', schemas.slotRegistration),
   manifest: (data) => validate(schemas.manifest, data, '$', schemas.manifest),
+  renderRequest: (data) => validate(schemas.renderRequest, data, '$', schemas.renderRequest),
+  creatorInspect: (data) => validate(schemas.creatorInspect, data, '$', schemas.creatorInspect),
   trust: (data) => validate(schemas.trust, data, '$', schemas.trust),
   trustKeys: (data) => validate(schemas.trustKeys, data, '$', schemas.trustKeys),
   envelope: (data) => validate(schemas.envelope, data, '$', schemas.envelope),

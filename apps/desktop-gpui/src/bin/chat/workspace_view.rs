@@ -170,6 +170,7 @@ impl ChatApp {
                 self.creator_mode = creator::is_creator_session(&state.log);
                 self.plugin_errors = state.load_errors();
                 self.adc_panels = state.adc_panels.clone();
+                self.adc_actions = state.adc_action_entries();
                 if !self.blank_root {
                     self.rows = rows_snapshot(&state.log, None);
                 }

@@ -407,7 +407,7 @@ impl ChatApp {
                             .text_color(p.color(p.label_primary))
                             .child("已安装"),
                     )
-                    .when(!self.adc_panels.is_empty(), |row| {
+                    .when(self.has_workspace_panels(), |row| {
                         row.child(
                             chrome_button("plugin-view-panels", "插件面板", t)
                                 .focusable()

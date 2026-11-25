@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "section": {
+      "type": "string",
+      "enum": ["slot", "element", "sdk"],
+      "description": "Choose a section from queries in the discovery result. Pass section and name together."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Exact case-sensitive name returned by discovery, such as viewer.tab, Slider, or ViewHandler."
+    }
+  },
+  "oneOf": [
+    {"properties": {"section": false, "name": false}},
+    {"required": ["section", "name"]}
+  ]
+}

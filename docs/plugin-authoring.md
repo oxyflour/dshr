@@ -26,6 +26,8 @@
 
 开始写包前可调用 `creator_inspect`，获取可直接套用的 `plugin.toml`。清单至少包含 `[plugin]` 和 `[runtime]`。Windows 的 `external-process` 入口指向包内编译好的 `.exe`，例如 `bin/hello-world.exe`。可选的 `[[ui]].view` 填运行时渲染标识。静态 ADC 树可以先在对话中预览，正式面板通过 SDK 注册并渲染。[CPP-v1 清单字段](spec/cpp-v1.md#33-字段表)
 
+从 `creator_inspect({})` 的 `queries` 选名称。传 `{"section":"slot","name":"viewer.tab"}` 查看槽位注册、上下文和触发方法，传 `{"section":"element","name":"Slider"}` 查看控件 props 与动作载荷，传 `{"section":"sdk","name":"ViewHandler"}` 查看准确的 Rust 签名。试用结果为 `validation: "registration"` 时，按槽位查询返回的 `verify` 触发实际视图或命令。 [精确查询契约](spec/creator-mode.md#精确查询)
+
 默认流程为 `creator_inspect` → 写包 → `creator_build_plugin` → `creator_try_plugin` → 调用插件工具验证。构建阶段为 Rust 插件的 `path = "sdk"` 依赖提供同版本 SDK。Windows x64 可从「设置 → 运行组件」安装创造模式构建组件，组件附带 Cargo、链接器和 SDK 依赖。构建和试用分别在应用内审批。开发者也可在数据根的 `creator-toolchain.json` 指定已有 `cargo` 和 `cargo_home` 的绝对路径。安装组件或保存配置后可在当前会话重试。已有编译产物可直接试用。[构建工具契约](spec/creator-mode.md#对话内构建) · [运行组件](spec/runtime-components.md)
 
 带界面的插件可从 `creator_inspect.workspace_panel` 里的三份文件开始。预览会显示 Button 和 Input 的外观，实际动作在试用面板执行。构建后调用 `creator_try_plugin` 并传 `expect_panel: true`，确认返回的 `panels` 包含面板标题。这一轮结束后，面板会在对话流中的试用结果卡片内展开，可随消息滚动或单独收起。修改并重建后，在同一会话用同一路径再次试用。新实例校验通过后，活动面板会移到新的试用结果卡片。[面板示例](../apps/desktop-gpui/src/bin/chat/creator/panel-example.rs) · [试用规则](spec/creator-mode.md#试用与失败条件)
@@ -276,7 +278,7 @@ let panel = PanelDecl::new(
     "Echo Panel",                   // label
     "demo.echo.panel.view",         // view 名：ui.render 用它分派
 )
-.with_location("right")             // left/right/bottom/center
+.with_location("right")             // 兼容旧面板声明，显示位置由宿主决定
 .with_order(100.0);                 // list slot 排序（越小越靠前）
 
 ChildSession::serve_with_views_and_actions(
@@ -353,6 +355,58 @@ fn panel_tree() -> serde_json::Value {
 - 配额：树深 ≤ 8、节点 ≤ 200、文本 ≤ 8 KB；元素不会触发网络，图片只能引用附件。
 - 动作只允许 `call` / `command` / `openExternal`（仅 https，需用户确认）/ `copy`。
 - `ui.action` 会把动作回传给插件；`openExternal` 由宿主处理，插件不要自己打开链接。
+
+### 5.1 桌面视图槽位
+
+Rust 外部进程插件可以在同一个 `ReadyDecls` 中追加槽位，使用同一套视图和动作处理器。每条声明的 `plugin_id` 填 `plugin.toml` 中的包 ID。按实际位置填写 `slot_id`。
+
+| `slot_id` | 桌面位置 |
+|---|---|
+| `conversation.input.left` | 输入卡工具行左侧 |
+| `conversation.input.right` | 输入卡工具行，发送按钮前 |
+| `settings.general.item` | 「设置 → 常规」 |
+| `settings.section` | 设置导航中的独立页面 |
+| `workspace.sidebar.tab` | 会话右侧栏的独立页签 |
+| `workspace.page` | 左侧导航入口及对应中央页 |
+| `status.bar.item` | 主内容区底部状态栏 |
+| `tool.call.toolview` | 替换本插件指定工具成功调用的卡片正文，`key` 为工具名 |
+| `tool.result.extra` | 在本插件的成功结果卡底部附加视图 |
+| `conversation.chat.node` | 在对话中插入本插件发布的独立节点，`key` 为节点类型 |
+| `viewer.tab` | 交付文件的右栏预览，`key` 为小写扩展名 |
+| `command` | `/` 和「添加」菜单中的命令，可提供快捷键 |
+| `menu.item` | 按 `key` 插入「添加」或 Windows 窗口菜单 |
+
+```rust
+let declarations = ReadyDecls::new(tools, panels).with_slots(vec![
+    serde_json::json!({
+        "slot_id": "conversation.input.left",
+        "plugin_id": "example.quick-actions",
+        "id": "quick.insert",
+        "label": "快捷操作",
+        "view": "quick.toolbar"
+    }),
+]);
+```
+
+用 `serve_with_views_and_actions` 为 `quick.toolbar` 返回带 `a11yLabel` 的简短按钮，并处理它的 `onPress`。设置槽位可使用输入和切换控件。单独试用槽位时省略 `expect_panel`，在 `creator_try_plugin` 返回的 `slots` 中核对位置，然后在实际挂载处测试操作。当前可用位置和注册例子也由 `creator_inspect.adc_slots` 返回。 [桌面槽位契约](spec/adc-v1.md#52-桌面槽位注册)
+
+工具卡视图实现 `ViewHandler::render_tool`，从 `ToolViewContext` 读取该次调用序号、参数和成功结算值。工具与槽位放进同一份 `ReadyDecls`。`creator_try_plugin` 对工具槽位返回 `validation: "registration"`。在同一会话成功调用该工具即可查看卡片。按钮动作可用 `copy` 或需宿主确认的 `openExternal`。 [工具视图请求](spec/cpp-v1.md#工具视图上下文)
+
+对话节点在 `ReadyDecls` 中声明 `key` 和 `view`。工具成功时用 `ToolResult::with_meta` 发布相同类型的节点，并由 `ViewHandler::render_node` 从 `ChatNodeContext` 读取本次调用序号与 `data`。试用先验证注册，成功调用工具后可在对话流中查看。重开会话时显示 `fallback` 文本。 [节点视图请求](spec/cpp-v1.md#对话节点上下文)
+
+```rust
+let result = ToolResult::text("报告已生成").with_meta(serde_json::json!({
+    "adc_node": {
+        "key": "example.note",
+        "fallback": "报告已生成，共 3 项。",
+        "data": {"count": 3}
+    }
+}));
+```
+
+文件预览以 `viewer.tab` 声明，如 `key: "txt"`。在 `ViewHandler::render_file` 读取 `FileViewContext` 的文件名、类型、字节长度和有界文本。试用返回 `validation: "registration"`。在当前会话选择匹配的交付文件后验证预览。 [文件视图请求](spec/cpp-v1.md#文件视图上下文)
+
+命令和菜单条目使用 `run`。在 SDK 的 `ActionHandler` 匹配 `(run, "command", payload)`，从 `payload.id` 取得注册 ID。`command` 可选 `keys: ["Ctrl+Shift+G"]`。`menu.item.key` 使用 `creator_inspect.adc_slots.menu_keys` 提供的值。试用返回 `validation: "registration"`，在当前会话选择入口验证执行。 [命令协议](spec/cpp-v1.md#桌面命令派发)
 
 ## 6. 构建、打包与信任
 
